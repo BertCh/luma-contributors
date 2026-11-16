@@ -1,0 +1,10 @@
+{
+  "oracle": "SciPy scipy.sparse.csgraph.maximum_flow (Dinic), unit capacities",
+  "nodeCount": 100000,
+  "edgeCount": 199996,
+  "maximumFlow": 99998,
+  "cutCapacity": 99998,
+  "sourceReachable": [
+    0
+  ]
+}

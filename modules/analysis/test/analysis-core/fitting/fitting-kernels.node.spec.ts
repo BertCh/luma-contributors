@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {describe, expect, it} from 'vitest';
+import {describe, expect, it, vi} from 'vitest';
 import {
   GPUAdamStep,
   GPUFittingCoordinateEncoder,
@@ -64,7 +64,7 @@ describe('construction-time fitting limits', () => {
             ...props,
             output: {...props.output, secondMoment: props.output.firstMoment}
           })
-      ).toThrow(/separate buffers/);
+      ).toThrow(/firstMoment.*secondMoment.*logical.*overlap/);
       expect(
         () =>
           new GPUFittingGradientSums({
@@ -241,7 +241,13 @@ it('checks aligned binding footprints at construction and device limits before n
     Object.defineProperty(device, 'limits', {
       value: {...device.limits, maxStorageBufferBindingSize: 8}
     });
-    expect(() => contributor.getCommandNodes(graph)).toThrow(/view 0 needs 12 bytes.*limit 8/);
+    const allocate = vi.spyOn(graph, 'createTransientBuffer');
+    const createView = vi.spyOn(graph, 'createDataView');
+    expect(() => contributor.getCommandNodes(graph)).toThrow(
+      /^fitting-gradient-sums view 0 chunk 0 needs 12 bytes in one binding \(limit 8\)/
+    );
+    expect(allocate).not.toHaveBeenCalled();
+    expect(createView).not.toHaveBeenCalled();
     expect((graph as unknown as {nodes: unknown[]}).nodes).toHaveLength(0);
   } finally {
     device.destroy();

@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPU_EARTH_MEAN_RADIUS_METERS} from '../../../analysis-core/contracts/earth';
+import {AnalysisGeographicExtentAccumulator} from './analysis-geographic-extent';
 import type {
   GPUAnalysisCoordinateModel,
   GPUAnalysisSpacingStatistics
@@ -490,41 +491,16 @@ function computeExtent(
   return [minimumX, minimumY, maximumX, maximumY];
 }
 
-/**
- * Extent of geographic points with the longitude range taken on the circle: the smallest arc
- * that covers every longitude (360 degrees minus the largest gap between sorted longitudes).
- * When that arc is shorter than the plain range of the source longitudes, west and east are the
- * ends of the arc in [-180, 180], and west is greater than east if the arc crosses the
- * antimeridian; otherwise they are the minimum and maximum of the source longitudes.
- */
+/** Exact point covering arc; geometry profiling shares the same interval conventions. */
 function computeGeographicExtent(
   longitude: Float64Array,
   latitude: Float64Array
 ): readonly [number, number, number, number] {
-  const plain = computeExtent(longitude, latitude);
-  const count = longitude.length;
-  const wrapped = new Float64Array(count);
-  for (let index = 0; index < count; index++) {
-    wrapped[index] = ((longitude[index] % 360) + 360) % 360;
+  const accumulator = new AnalysisGeographicExtentAccumulator();
+  for (let index = 0; index < longitude.length; index++) {
+    accumulator.add(longitude[index], latitude[index]);
   }
-  wrapped.sort();
-  // The gap before element `index` runs from element `index - 1`; gap 0 is the one across 0/360.
-  let largestGap = wrapped[0] + 360 - wrapped[count - 1];
-  let westIndex = 0;
-  for (let index = 1; index < count; index++) {
-    const gap = wrapped[index] - wrapped[index - 1];
-    if (gap > largestGap) {
-      largestGap = gap;
-      westIndex = index;
-    }
-  }
-  const arcWidth = 360 - largestGap;
-  if (!(arcWidth < plain[2] - plain[0] - 1e-9)) {
-    return plain;
-  }
-  const eastIndex = (westIndex + count - 1) % count;
-  const toSigned = (degrees: number) => (degrees > 180 ? degrees - 360 : degrees);
-  return [toSigned(wrapped[westIndex]), plain[1], toSigned(wrapped[eastIndex]), plain[3]];
+  return accumulator.getCovering() as [number, number, number, number];
 }
 
 /**

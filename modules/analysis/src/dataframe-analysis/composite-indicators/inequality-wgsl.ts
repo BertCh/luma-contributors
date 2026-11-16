@@ -7,6 +7,7 @@ import {
   GET_ORDERED_KEY_WGSL,
   IS_FINITE_BITS_WGSL
 } from '../../analysis-core/kernels/wgsl-common';
+import {SCALED_QUOTIENT_WGSL} from '../../analysis-core/kernels/scaled-quotient-wgsl';
 
 /** Floats per zone in the interleaved statistics buffer. */
 export const INEQUALITY_STATS_STRIDE = 10;
@@ -27,6 +28,7 @@ export const INEQUALITY_STAT = {
 
 /** Shared WGSL helpers. */
 export const INEQUALITY_HELPERS_WGSL = /* wgsl */ `
+${SCALED_QUOTIENT_WGSL}
 ${GET_NAN_WGSL}
 
 ${IS_FINITE_BITS_WGSL}
@@ -37,7 +39,7 @@ fn interpolateLorenz(cut: f32, previousP: f32, nextP: f32, previousL: f32, nextL
   if (cut >= nextP) {
     return nextL;
   }
-  return previousL + (cut - previousP) / (nextP - previousP) * (nextL - previousL);
+  return previousL + getScaledQuotient(cut - previousP, nextP - previousP, 1.0, 0) * (nextL - previousL);
 }
 `;
 
@@ -122,7 +124,7 @@ export function getInequalityZoneStatsBody(weightExpression: string): string {
       hasZero = true;
     }
   }
-  let mean = totalIncome / totalWeight;
+  let mean = getScaledQuotient(totalIncome, totalWeight, 1.0, 0);
   stats[base] = mean;
   stats[base + 7u] = totalWeight;
   stats[base + 8u] = totalIncome;
@@ -160,13 +162,13 @@ export function getInequalityZoneStatsBody(weightExpression: string): string {
     let w = ${weightExpression};
     cumulativeWeight = cumulativeWeight + w;
     cumulativeIncome = cumulativeIncome + w * x;
-    let nextP = cumulativeWeight / totalWeight;
-    let nextL = cumulativeIncome / totalIncome;
+    let nextP = getScaledQuotient(cumulativeWeight, totalWeight, 1.0, 0);
+    let nextL = getScaledQuotient(cumulativeIncome, totalIncome, 1.0, 0);
     trapezoidArea = trapezoidArea + (nextP - previousP) * (previousL + nextL);
     sumAbsolute = sumAbsolute + w * abs(x - mean);
     if (x > 0.0) {
-      let logRatio = log(x / mean);
-      sumTheilT = sumTheilT + w * (x / mean) * logRatio;
+      let logRatio = log(getScaledQuotient(x, mean, 1.0, 0));
+      sumTheilT = sumTheilT + w * (getScaledQuotient(x, mean, 1.0, 0)) * logRatio;
       sumLog = sumLog + w * logRatio;
       if (usePower) {
         sumPower = sumPower + w * exp(power * logRatio);
@@ -200,20 +202,20 @@ export function getInequalityZoneStatsBody(weightExpression: string): string {
   }
 
   stats[base + 1u] = 1.0 - trapezoidArea;
-  stats[base + 2u] = sumTheilT / totalWeight;
-  stats[base + 3u] = select(-sumLog / totalWeight, nan, hasZero);
+  stats[base + 2u] = getScaledQuotient(sumTheilT, totalWeight, 1.0, 0);
+  stats[base + 3u] = select(-getScaledQuotient(sumLog, totalWeight, 1.0, 0), nan, hasZero);
   var atkinson = nan;
   if (!usePower) {
     if (!hasZero) {
-      atkinson = 1.0 - exp(sumLog / totalWeight);
+      atkinson = 1.0 - exp(getScaledQuotient(sumLog, totalWeight, 1.0, 0));
     }
   } else if (power > 0.0 || !hasZero) {
-    let powerMean = sumPower / totalWeight;
+    let powerMean = getScaledQuotient(sumPower, totalWeight, 1.0, 0);
     atkinson = 1.0 - pow(powerMean, 1.0 / power);
   }
   stats[base + 4u] = select(nan, atkinson, isFiniteBits(atkinson));
-  stats[base + 5u] = sumAbsolute / (2.0 * totalIncome);
-  stats[base + 6u] = select(nan, (1.0 - topCutL) / bottomL, bottomL > 0.0);`;
+  stats[base + 5u] = getScaledQuotient(sumAbsolute, totalIncome, 2.0, 0);
+  stats[base + 6u] = select(nan, getScaledQuotient(1.0 - topCutL, bottomL, 1.0, 0), bottomL > 0.0);`;
 }
 
 /** Lanes of the cooperative workgroup used by the global summary and pooled-Gini finish kernels. */
@@ -282,9 +284,9 @@ export const INEQUALITY_GLOBAL_SUMS_BODY = /* wgsl */ `let lane = localInvocatio
     if (!(zoneIncome > 0.0)) {
       continue;
     }
-    let incomeShare = zoneIncome / totalIncome;
-    let populationShare = stats[base + 7u] / totalWeight;
-    laneBetween = laneBetween + incomeShare * log(incomeShare / populationShare);
+    let incomeShare = getScaledQuotient(zoneIncome, totalIncome, 1.0, 0);
+    let populationShare = getScaledQuotient(stats[base + 7u], totalWeight, 1.0, 0);
+    laneBetween = laneBetween + incomeShare * log(getScaledQuotient(incomeShare, populationShare, 1.0, 0));
     laneWithin = laneWithin + incomeShare * stats[base + 2u];
   }
   laneFirst[lane] = laneBetween;
@@ -300,7 +302,7 @@ export const INEQUALITY_GLOBAL_SUMS_BODY = /* wgsl */ `let lane = localInvocatio
   if (lane == 0u) {
     let nan = getNaN();
     summary[summaryOffset + 4u] = f32(includedCount);
-    summary[summaryOffset + 5u] = select(nan, totalIncome / totalWeight, includedCount != 0u);
+    summary[summaryOffset + 5u] = select(nan, getScaledQuotient(totalIncome, totalWeight, 1.0, 0), includedCount != 0u);
     summary[summaryOffset + 6u] = totalWeight;
     summary[summaryOffset + 7u] = totalIncome;
     if (!hasIncome) {
@@ -308,7 +310,12 @@ export const INEQUALITY_GLOBAL_SUMS_BODY = /* wgsl */ `let lane = localInvocatio
       summary[summaryOffset + 1u] = nan;
       summary[summaryOffset + 2u] = nan;
     } else {
-      summary[summaryOffset] = weightedXLogX / totalIncome - log(totalIncome / totalWeight);
+      // The direct x*log(x) moment can overflow while normalized Theil terms remain finite.
+      var pooledTheil = laneFirst[0] + laneSecond[0];
+      if (isFiniteBits(weightedXLogX)) {
+        pooledTheil = getScaledQuotient(weightedXLogX, totalIncome, 1.0, 0) - log(getScaledQuotient(totalIncome, totalWeight, 1.0, 0));
+      }
+      summary[summaryOffset] = pooledTheil;
       summary[summaryOffset + 1u] = laneFirst[0];
       summary[summaryOffset + 2u] = laneSecond[0];
     }
@@ -411,8 +418,8 @@ export function getInequalityGiniTileAreaBody(weightExpression: string): string 
     let endPosition = min(firstPosition + GINI_TILE_ROWS, ROW_COUNT);
     var cumulativeWeight = tileTotals[tileTotalsOffset + 2u * index];
     var cumulativeIncome = tileTotals[tileTotalsOffset + 2u * index + 1u];
-    var previousP = cumulativeWeight / totalWeight;
-    var previousL = cumulativeIncome / totalIncome;
+    var previousP = getScaledQuotient(cumulativeWeight, totalWeight, 1.0, 0);
+    var previousL = getScaledQuotient(cumulativeIncome, totalIncome, 1.0, 0);
     for (var position = firstPosition; position < endPosition; position++) {
       if (sortedValueKeys[sortedValueKeysOffset + position] == 0xffffffffu) {
         break;
@@ -421,8 +428,8 @@ export function getInequalityGiniTileAreaBody(weightExpression: string): string 
       let w = ${weightExpression};
       cumulativeWeight = cumulativeWeight + w;
       cumulativeIncome = cumulativeIncome + w * values[valuesOffset + row];
-      let nextP = cumulativeWeight / totalWeight;
-      let nextL = cumulativeIncome / totalIncome;
+      let nextP = getScaledQuotient(cumulativeWeight, totalWeight, 1.0, 0);
+      let nextL = getScaledQuotient(cumulativeIncome, totalIncome, 1.0, 0);
       area = area + (nextP - previousP) * (previousL + nextL);
       previousP = nextP;
       previousL = nextL;

@@ -20,8 +20,11 @@ import {
   validateGraphViewsBelongToGraph,
   validateCompactOutput,
   validateMaximumCount,
-  validateSinglePackedView
+  validateSinglePackedView,
+  validateGPUStorageBindingByteLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateSpatialOutputViews} from './spatial-output-validation';
 import {getKeyGroupNodes, getKeyPairSortNodes} from '../spatial-weights/key-pair-grouping';
 import {
   createSpatialClusteringBorderNode,
@@ -390,6 +393,50 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
         );
       }
     }
+    validateSpatialOutputViews(
+      id,
+      {
+        labels: props.output.labels,
+        rootRows: props.output.rootRows,
+        coreFlags: props.output.coreFlags,
+        clusterCount: props.output.clusterCount,
+        clusterIds: rows > 0 ? props.output.clusters?.ids : undefined,
+        count: props.output.clusters?.status.count,
+        overflow: props.output.clusters?.status.overflow,
+        requiredCount: props.output.clusters?.status.requiredCount,
+        clusterSizes: props.output.clusterSizes,
+        clusterCentroids: props.output.clusterCentroids,
+        drawInstanceCount: props.output.clusters ? props.output.drawInstanceCount : undefined
+      },
+      [
+        ...(rows > 0
+          ? [
+              {read: [props.output.coreFlags], write: [props.output.rootRows]},
+              {read: [props.output.rootRows], write: [props.output.labels]},
+              ...(props.output.clusters
+                ? [
+                    {read: [props.output.labels], write: [props.output.clusterSizes]},
+                    {read: [props.output.clusterSizes], write: [props.output.clusterCentroids]}
+                  ]
+                : [])
+            ]
+          : []),
+        ...(props.output.clusters
+          ? [
+              {
+                read: [props.output.clusterCount],
+                write: [
+                  rows > 0 ? props.output.clusters.ids : undefined,
+                  props.output.clusters.status.count,
+                  props.output.clusters.status.overflow,
+                  props.output.clusters.status.requiredCount,
+                  props.output.drawInstanceCount
+                ]
+              }
+            ]
+          : [])
+      ]
+    );
     validateGraphOutputsDisjointFromInputs(
       id,
       [
@@ -484,6 +531,46 @@ export class GPUSpatialClustering implements GPUCommandNodeProducer {
     );
     const rows = positions.length;
     const capacity = clusters?.ids.length ?? 0;
+    validateGraphChunkBindingRanges(graph, id, {
+      // The empty route only fills scalar/cluster outputs. Its zero-byte point buffers and
+      // parameters are never bound, so they need neither a dummy storage row nor STORAGE usage.
+      ...(rows > 0
+        ? {
+            positions,
+            parameters,
+            times: props.times,
+            sourceIds: clusters ? props.sourceIds : undefined,
+            labels: props.output.labels,
+            rootRows: props.output.rootRows,
+            coreFlags: props.output.coreFlags
+          }
+        : {}),
+      clusterCount: props.output.clusterCount,
+      ...(clusters
+        ? {
+            clusterIds: rows > 0 ? clusters.ids : undefined,
+            count: clusters.status.count,
+            overflow: clusters.status.overflow,
+            requiredCount: clusters.status.requiredCount,
+            clusterSizes: props.output.clusterSizes,
+            clusterCentroids: props.output.clusterCentroids,
+            drawInstanceCount: props.output.drawInstanceCount
+          }
+        : {})
+    });
+    for (const [name, byteLength] of [
+      // The 8-byte point planes also cover row scans and radix histograms; local sorts use no histogram.
+      ['point scratch', rows * 8],
+      ['grid offsets', rows > 0 ? (cellCount + 1) * 4 : 0],
+      ['centroid sums', rows > 0 && props.output.clusterCentroids ? capacity * 4 : 0]
+    ] as const)
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        name,
+        byteLength,
+        'reduce positions rows, gridSize or output capacity'
+      );
     const wantsCentroids = Boolean(props.output.clusterCentroids);
     const nodes: GPUCommandNode<Parameters>[] = [];
 

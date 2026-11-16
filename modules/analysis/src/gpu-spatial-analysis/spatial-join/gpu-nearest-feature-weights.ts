@@ -3,6 +3,16 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  validateDisjointWritableViews,
+  validateGraphChunkBindingRanges
+} from '../../analysis-core/kernels/graph-chunk-dispatch';
+
+import {
+  getStorageTopKAccessors,
+  createStorageTopKNode
+} from '../../analysis-core/kernels/storage-backed-top-k';
+
+import {
   GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
   resolveGPUSpatialContext,
   type GPUSpatialContext
@@ -16,14 +26,17 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
-  createWGSLKernelNode,
-  getWGSLFloatLiteral
+  getWGSLFloatLiteral,
+  type WGSLKernelProps
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
-  validateGraphOutputsDisjointFromInputs,
+  validateGPUStorageBindingByteLength,
+  validateMaximumCount,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView,
-  validateCapacity
+  validateCapacity,
+  validateCommandNodeBudget,
+  validateFiniteNumber
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   describeGPUSpatialWeights,
@@ -34,6 +47,11 @@ import {
 import {GPU_INVERSE_DISTANCE_DEFAULT_DISTANCE_FLOOR} from '../neighbor-search/neighbor-search-parameters';
 import {GPU_SPATIAL_JOIN_NO_FEATURE} from './spatial-join-types';
 import {validateStatusScalars} from './spatial-join-geometry';
+import {validateDisjointOutputs} from './spatial-join-passes';
+import {
+  NEAREST_PRIVATE_NEIGHBOR_CAPACITY,
+  NEAREST_MAXIMUM_NEIGHBOR_CAPACITY
+} from './nearest-types';
 
 /** Contexts of the producing join's distances and this adapter's distance floor. */
 const NEAREST_FEATURE_WEIGHTS_SPATIAL_CONTEXT_SUPPORT = Object.freeze({
@@ -43,8 +61,18 @@ const NEAREST_FEATURE_WEIGHTS_SPATIAL_CONTEXT_SUPPORT = Object.freeze({
 
 const OPERATION = 'GPUNearestFeatureWeights';
 
-/** Largest per-query slot count of the nearest join (`neighborCapacity` is at most 64). */
-const MAXIMUM_SLOTS = 64;
+/** Slot indices use the producing join's packed uint32 scratch layout. */
+const MAXIMUM_SLOTS = NEAREST_MAXIMUM_NEIGHBOR_CAPACITY;
+/** The maximum CSR total must fit uint32 before its exclusive scan. */
+const MAXIMUM_TOTAL_SLOTS = 0xffffffff;
+/** A storage-sort batch must contain at least one query to advance its cursor. */
+const MINIMUM_SCRATCH_ROW_COUNT = 1;
+/** Covers the recursive published scan plus counts and offset publication for uint32 rows. */
+const SCAN_COMMAND_NODE_ALLOWANCE = 64;
+/** POWER and FLOOR are WGSL f32 literals, so finite JS doubles alone are insufficient. */
+const MAXIMUM_SHADER_FLOAT = 3.4028234663852886e38;
+/** Positive weight parameters must stay nonzero after conversion to f32. */
+const MINIMUM_SHADER_POSITIVE_FLOAT = 1.401298464324817e-45;
 
 /**
  * Properties for {@link GPUNearestFeatureWeights}.
@@ -67,8 +95,10 @@ export type GPUNearestFeatureWeightsProps = {
    * `weights.distances`.
    */
   neighborDistances?: GraphDataView<'float32'>;
-  /** The join's `neighborCapacity`: slots per query in the input layout. An integer in `[1, 64]`. */
+  /** The join's `neighborCapacity`: slots per query in the input layout. A positive integer; above 64 the adapter sorts in storage scratch. */
   slotCapacity: number;
+  /** Compile-time maximum queries per storage-sort dispatch; defaults to the device-sized batch. */
+  scratchChunkRowCount?: number;
   /**
    * Neighbors kept per row, taken in the join's `(distance, feature row)` order. Defaults to
    * `slotCapacity`, or to `slotCapacity - 1` with `excludeSelf`. Rows with fewer valid slots keep
@@ -133,6 +163,8 @@ export class GPUNearestFeatureWeights implements GPUCommandNodeProducer {
   readonly rows: number;
   /** Resolved neighbors kept per row. */
   readonly k: number;
+  /** Upper bound including every storage sorting chunk and the scan. */
+  readonly estimatedCommandNodeCount: number;
   /** Resolved context of the producing join. */
   readonly spatialContext: GPUSpatialContext;
   /** Output CSR carrying the producing join context and weights metadata. */
@@ -149,17 +181,44 @@ export class GPUNearestFeatureWeights implements GPUCommandNodeProducer {
     );
     const {slotCapacity} = props;
     validateCapacity(id, 'slotCapacity', slotCapacity, 1, MAXIMUM_SLOTS);
+    if (props.scratchChunkRowCount !== undefined) {
+      validateCapacity(
+        id,
+        'scratchChunkRowCount',
+        props.scratchChunkRowCount,
+        MINIMUM_SCRATCH_ROW_COUNT,
+        MAXIMUM_TOTAL_SLOTS
+      );
+    }
     this.k = props.k ?? (props.excludeSelf ? Math.max(slotCapacity - 1, 1) : slotCapacity);
     validateCapacity(id, 'k', this.k, 1, slotCapacity);
     validateSinglePackedView(props.neighborIds, ['uint32'], `${id} neighborIds`);
     validateSinglePackedView(props.neighborCounts, ['uint32'], `${id} neighborCounts`);
     this.rows = props.neighborCounts.length;
+    validateMaximumCount(id, 'rows * slotCapacity', this.rows * slotCapacity, MAXIMUM_TOTAL_SLOTS);
     if (this.rows < 1) {
       throw new Error(`${id} neighborCounts needs at least one row`);
     }
     if (props.neighborIds.length !== this.rows * slotCapacity) {
       throw new Error(`${id} neighborIds needs rows * slotCapacity rows`);
     }
+    const scratchRows = Math.max(
+      1,
+      Math.floor(
+        ((props.neighborIds.buffer.graph as GPUCommandGraph).device.limits
+          .maxStorageBufferBindingSize /
+          4 -
+          1) /
+          (this.k * 2)
+      )
+    );
+    this.estimatedCommandNodeCount =
+      SCAN_COMMAND_NODE_ALLOWANCE +
+      (slotCapacity > NEAREST_PRIVATE_NEIGHBOR_CAPACITY
+        ? 2 *
+          Math.ceil(this.rows / Math.min(scratchRows, props.scratchChunkRowCount ?? scratchRows))
+        : 1);
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     const weightType = props.weightType ?? 'binary';
     if (weightType !== 'binary' && weightType !== 'inverse-distance') {
       throw new Error(`${id} weightType must be 'binary' or 'inverse-distance'`);
@@ -177,8 +236,8 @@ export class GPUNearestFeatureWeights implements GPUCommandNodeProducer {
       ['power', props.power],
       ['distanceFloor', props.distanceFloor]
     ] as const) {
-      if (value !== undefined && !(Number.isFinite(value) && value > 0)) {
-        throw new Error(`${id} ${name} must be a positive finite number`);
+      if (value !== undefined) {
+        validateFiniteNumber(id, name, value, MINIMUM_SHADER_POSITIVE_FLOAT, MAXIMUM_SHADER_FLOAT);
       }
     }
     if (validateGPUSpatialWeights(id, props.output) !== this.rows) {
@@ -199,16 +258,23 @@ export class GPUNearestFeatureWeights implements GPUCommandNodeProducer {
       throw new Error(`${id} writes only output.status.overflow`);
     }
     validateStatusScalars(id, {overflow: status.overflow});
-    validateGraphOutputsDisjointFromInputs(
+    validateDisjointWritableViews(id, {
+      offsets: props.output.offsets,
+      neighbors: props.output.neighbors,
+      weights: props.output.weights,
+      distances: props.output.distances,
+      overflow: status.overflow
+    });
+    validateDisjointOutputs(
       id,
+      [props.neighborIds, props.neighborCounts, props.neighborDistances],
       [
         props.output.offsets,
         props.output.neighbors,
         props.output.weights,
         props.output.distances,
         status.overflow
-      ],
-      [props.neighborIds, props.neighborCounts, props.neighborDistances]
+      ]
     );
   }
 
@@ -228,6 +294,51 @@ export class GPUNearestFeatureWeights implements GPUCommandNodeProducer {
       weights.distances,
       weights.status.overflow
     ]);
+    const storageBacked = slotCapacity > NEAREST_PRIVATE_NEIGHBOR_CAPACITY;
+    validateGraphChunkBindingRanges(graph, id, {
+      neighborIds: props.neighborIds,
+      neighborCounts: props.neighborCounts,
+      neighborDistances: props.neighborDistances,
+      offsets: weights.offsets,
+      neighbors: weights.neighbors,
+      weights: weights.weights,
+      distances: weights.distances,
+      overflow: weights.status.overflow
+    });
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'counts and scan scratch',
+      rows * 4,
+      'reduce neighborCounts length'
+    );
+    const scratchRows = Math.min(
+      rows,
+      props.scratchChunkRowCount ?? rows,
+      Math.max(1, Math.floor((graph.device.limits.maxStorageBufferBindingSize / 4 - 1) / (k * 2)))
+    );
+    const cursorWord = scratchRows * k * 2;
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'kept neighbor scratch',
+      storageBacked ? (cursorWord + 1) * 4 : 0,
+      'reduce rows or k'
+    );
+    const keptScratch = storageBacked
+      ? createTransientView(graph, `${id}-kept`, 'uint32', cursorWord + 1)
+      : undefined;
+    const storageList = getStorageTopKAccessors(
+      'keptScratch',
+      'keptScratchOffset + scratchIndex * KEEP * 2u'
+    );
+    const readId = (slot: string) => (keptScratch ? storageList.readRow(slot) : `keptIds[${slot}]`);
+    const readDistance = (slot: string) =>
+      keptScratch ? storageList.readDistance(slot) : `keptDistances[${slot}]`;
+    const writeId = (slot: string, value: string) =>
+      keptScratch ? storageList.writeRow(slot, value) : `keptIds[${slot}] = ${value};`;
+    const writeDistance = (slot: string, value: string) =>
+      keptScratch ? storageList.writeDistance(slot, value) : `keptDistances[${slot}] = ${value};`;
     const capacity = weights.neighbors.length;
     const counts = createTransientView(graph, `${id}-counts`, 'uint32', rows);
     const starts = createTransientView(graph, `${id}-starts`, 'uint32', rows);
@@ -268,8 +379,8 @@ const FLOOR: f32 = ${getWGSLFloatLiteral(props.distanceFloor ?? GPU_INVERSE_DIST
     ${onKeep}
     kept++;
   }`;
-    return [
-      createWGSLKernelNode<Parameters>(graph, {
+    const nodes = [
+      createStorageTopKNode<Parameters>(graph, {
         id: `${id}-counts`,
         operation: OPERATION,
         variant: 'counts',
@@ -288,7 +399,7 @@ const FLOOR: f32 = ${getWGSLFloatLiteral(props.distanceFloor ?? GPU_INVERSE_DIST
         output: starts,
         mode: 'exclusive'
       }).getCommandNodes(graph),
-      createWGSLKernelNode<Parameters>(graph, {
+      createStorageTopKNode<Parameters>(graph, {
         id: `${id}-offsets`,
         operation: OPERATION,
         variant: 'offsets',
@@ -308,54 +419,99 @@ const CAPACITY: u32 = ${capacity}u;`,
     offsets[offsetsOffset + ROWS] = min(total, CAPACITY);
     overflow[overflowOffset] = select(0u, 1u, total > CAPACITY);
   }`
-      }),
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-emit`,
-        operation: OPERATION,
-        variant: 'emit',
-        bindings: [
-          ...inputBindings,
-          {name: 'offsets', view: weights.offsets, type: 'u32', access: 'read'},
-          {name: 'neighbors', view: weights.neighbors, type: 'u32', access: 'read_write'},
-          {name: 'values', view: weights.weights, type: 'f32', access: 'read_write'},
-          ...(weights.distances
-            ? [
-                {
-                  name: 'outDistances',
-                  view: weights.distances,
-                  type: 'f32' as const,
-                  access: 'read_write' as const
-                }
-              ]
-            : [])
-        ],
-        invocationCount: rows,
-        declarations,
-        body: `var keptIds: array<u32, ${MAXIMUM_SLOTS}>;
-  var keptDistances: array<f32, ${MAXIMUM_SLOTS}>;
+      })
+    ];
+    if (keptScratch) {
+      nodes.push(
+        createStorageTopKNode(graph, {
+          id: `${id}-reset-cursor`,
+          operation: OPERATION,
+          variant: 'reset-sort-cursor',
+          bindings: [{name: 'keptScratch', view: keptScratch, type: 'u32', access: 'read_write'}],
+          invocationCount: 1,
+          body: `keptScratch[keptScratchOffset + ${cursorWord}u] = 0u;`
+        })
+      );
+    }
+
+    const emitProps: WGSLKernelProps<Parameters> = {
+      id: `${id}-emit`,
+      operation: OPERATION,
+      variant: 'emit',
+      bindings: [
+        ...inputBindings,
+        ...(keptScratch
+          ? [{name: 'keptScratch', view: keptScratch, type: 'u32', access: 'read_write'} as const]
+          : []),
+        {name: 'offsets', view: weights.offsets, type: 'u32', access: 'read'},
+        {name: 'neighbors', view: weights.neighbors, type: 'u32', access: 'read_write'},
+        {name: 'values', view: weights.weights, type: 'f32', access: 'read_write'},
+        ...(weights.distances
+          ? [
+              {
+                name: 'outDistances',
+                view: weights.distances,
+                type: 'f32' as const,
+                access: 'read_write' as const
+              }
+            ]
+          : [])
+      ],
+      invocationCount: keptScratch ? scratchRows : rows,
+      declarations,
+      body: `${keptScratch ? '' : `var keptIds: array<u32, ${NEAREST_PRIVATE_NEIGHBOR_CAPACITY}>;\n  var keptDistances: array<f32, ${NEAREST_PRIVATE_NEIGHBOR_CAPACITY}>;`}
   ${visit(`var position = kept;
     let distance = ${props.neighborDistances ? 'slotDistances[slotDistancesOffset + index * SLOTS + slot]' : '0.0'};
     // Insertion sort by neighbor ID keeps the CSR rows ascending.
-    while (position > 0u && keptIds[position - 1u] > neighbor) {
-      keptIds[position] = keptIds[position - 1u];
-      keptDistances[position] = keptDistances[position - 1u];
+    while (position > 0u && ${readId('position - 1u')} > neighbor) {
+      ${writeId('position', readId('position - 1u'))}
+      ${writeDistance('position', readDistance('position - 1u'))}
       position--;
     }
-    keptIds[position] = neighbor;
-    keptDistances[position] = distance;`)}
+    ${writeId('position', 'neighbor')}
+    ${writeDistance('position', 'distance')}`)}
   let begin = offsets[offsetsOffset + index];
   let end = offsets[offsetsOffset + index + 1u];
   for (var position = 0u; position < kept && begin + position < end; position++) {
     let outSlot = begin + position;
-    neighbors[neighborsOffset + outSlot] = keptIds[position];
+    neighbors[neighborsOffset + outSlot] = ${readId('position')};
     ${
       inverse
-        ? 'let safeDistance = max(keptDistances[position], FLOOR);\n    let weight = 1.0 / pow(safeDistance, POWER);\n    values[valuesOffset + outSlot] = select(0.0, weight, weight < 3.0e38);'
+        ? `let safeDistance = max(${readDistance('position')}, FLOOR);\n    let weight = 1.0 / pow(safeDistance, POWER);\n    values[valuesOffset + outSlot] = select(0.0, weight, weight < 3.0e38);`
         : 'values[valuesOffset + outSlot] = 1.0;'
     }
-    ${weights.distances ? 'outDistances[outDistancesOffset + outSlot] = keptDistances[position];' : ''}
+    ${weights.distances ? `outDistances[outDistancesOffset + outSlot] = ${readDistance('position')};` : ''}
   }`
-      })
-    ];
+    };
+
+    for (let chunk = 0; chunk < (keptScratch ? Math.ceil(rows / scratchRows) : 1); chunk++) {
+      nodes.push(
+        createStorageTopKNode(graph, {
+          ...emitProps,
+          id: keptScratch ? `${id}-emit-${chunk}` : `${id}-emit`,
+          invocationCount: keptScratch ? Math.min(scratchRows, rows - chunk * scratchRows) : rows,
+          body: keptScratch
+            ? `{ let scratchIndex = index;
+  let index = index + keptScratch[keptScratchOffset + ${cursorWord}u];
+  if (index >= ${rows}u) { return; }
+  ${emitProps.body}
+}`
+            : emitProps.body
+        })
+      );
+      if (keptScratch && chunk + 1 < Math.ceil(rows / scratchRows)) {
+        nodes.push(
+          createStorageTopKNode(graph, {
+            id: `${id}-advance-${chunk}`,
+            operation: OPERATION,
+            variant: 'advance-sort-cursor',
+            bindings: [{name: 'keptScratch', view: keptScratch, type: 'u32', access: 'read_write'}],
+            invocationCount: 1,
+            body: `keptScratch[keptScratchOffset + ${cursorWord}u] += ${scratchRows}u;`
+          })
+        );
+      }
+    }
+    return nodes;
   }
 }

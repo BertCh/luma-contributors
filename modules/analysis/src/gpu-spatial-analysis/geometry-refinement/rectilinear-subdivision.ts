@@ -205,3 +205,17 @@ function getRectilinearSplitBody(pass: 'count' | 'write', maximumSplits: number)
  ${pass === 'count' ? 'leafCounts[leafCountsOffset+seed]=leaves;if(exhausted) {atomicStore(&exhaustedFlag[exhaustedFlagOffset],1u);}' : ''}
 }`;
 }
+
+/** All per-seed storage, including the nested convex decomposition, before allocation. */
+export function getRectilinearSubdivisionScratchByteLengths(
+  vertexCount: number,
+  ringCount: number
+): Record<string, number> {
+  const seedCapacity = Math.max(1, vertexCount + 2 * ringCount);
+  return {
+    seedPositions: seedCapacity * 128 * 8,
+    seedPieces: seedCapacity * 16,
+    splitQueue: 128 * 260 * Math.min(seedCapacity, RECTILINEAR_QUEUE_THREADS) * 4,
+    leafCountsAndScan: seedCapacity * 4
+  };
+}

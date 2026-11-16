@@ -11,10 +11,10 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
-  createWGSLKernelNode,
   getWGSLFloatLiteral,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {createStatisticsKernelNode as createWGSLKernelNode} from '../spatial-weights/statistics-kernel-node';
 import {
   validateCapacity,
   validateFiniteNumber,
@@ -51,6 +51,16 @@ import {
   GPU_EMERGING_HOT_SPOTS_STATISTICS_LENGTH
 } from './emerging-hot-spot-parameters';
 
+import {validateSpatialStatisticsBindings} from '../spatial-weights/spatial-statistics-bindings';
+import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {createSpatialStatisticsCollectiveNode} from '../spatial-weights/spatial-statistics-collective-node';
+import {SPATIAL_STATISTICS_COUNTS_WGSL} from '../spatial-weights/spatial-statistics-counts-wgsl';
+
+import {
+  resolveStatisticsPopulationCount,
+  type SpatialStatisticsPopulationOutput
+} from '../spatial-weights/spatial-statistics-population-output';
+
 const OPERATION = 'GPUEmergingHotSpots';
 /** Bins reduced by one workgroup in the first level of the moment sums. */
 const BIN_BLOCK = 4096;
@@ -64,10 +74,17 @@ const MANN_KENDALL_WORKGROUP_SIZE = 64;
 const MANN_KENDALL_COOPERATIVE_SLICE_COUNT = 64;
 /** Two-sided normal critical z of a 95% lag filter, the Hamed-Rao default. */
 const DEFAULT_TREND_CORRECTION_CRITICAL_Z = 1.959963984540054;
+/** Signed bin indices in the space-time kernels must remain in i32 range. */
 const MAXIMUM_BIN_COUNT = 2 ** 31 - 1;
+/** Retains the existing cell-capacity contract independently of the cube-wide bin/count bound. */
+const MAXIMUM_CELL_COUNT = 2 ** 24 - 1;
+
+/** Four legacy moments plus two exact 16-bit words for the included-bin count. */
+const EMERGING_HOT_SPOTS_MOMENT_WORD_COUNT = 6;
 
 /** Caller-owned outputs of {@link GPUEmergingHotSpots}. */
-export type GPUEmergingHotSpotsOutput = {
+export type GPUEmergingHotSpotsOutput = SpatialStatisticsPopulationOutput & {
+  // includedCount is exact; globalStatistics[0] retains the compatible float32 count.
   /** Caller-owned per-bin Gi* z-scores in cube layout; NaN for missing bins. */
   giZScores: GraphDataView<'float32'>;
   /** Optional caller-owned per-bin two-sided normal p-value of the Gi* z, cube layout, NaN for missing bins. */
@@ -164,7 +181,7 @@ export type GPUEmergingHotSpotsProps = {
    * the method that controls the false discovery rate under arbitrary dependence, at a cost in
    * power of about `ln m`. `'none'` reproduces the pre-correction rule `|z| >= criticalZ` exactly
    * and is the only method that accepts the `criticalZ` parameter. The family size is limited to
-   * fewer than 2^24 bins unless `'none'` is used without `pValues` and `adjustedPValues`.
+   * at most 2^31 bins when adjustment or p-value outputs are requested.
    */
   multipleTesting?: GPUMultipleTestingMethod;
   /**
@@ -202,7 +219,7 @@ export type GPUEmergingHotSpotsProps = {
  *
  * Passes, each deterministic and free of float atomics:
  * 1. Global `n`, mean and population standard deviation of valid bins: per-block sums over fixed
- *    1024-bin blocks, then one invocation adding the block partials in order (mean first, then
+ *    1024-bin blocks, then one invocation adding the blockIndex partials in order (mean first, then
  *    the sum of squared deviations). The mean gets a second-pass correction
  *    (`mean += sum(x - mean) / n`) and every `x_j - X` below is the stored first-pass deviation
  *    minus the mean of those deviations, the scheme of `GPUGlobalSpatialStatistics` and
@@ -286,6 +303,7 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUEmergingHotSpotsProps;
+  private readonly populationCount?: GraphDataView<'uint32'>;
   /** Resolved correction method (`'benjamini-hochberg'` when the prop is omitted). */
   readonly multipleTesting: GPUMultipleTestingMethod;
   /** Resolved final slice rule (`'require'` when the prop is omitted). */
@@ -296,6 +314,7 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
   constructor(props: GPUEmergingHotSpotsProps) {
     this.id = props.id ?? 'emerging-hot-spots';
     this.props = props;
+    this.populationCount = resolveStatisticsPopulationCount(this.id, props.output);
     const id = this.id;
     const {output} = props;
     this.multipleTesting = resolveGPUMultipleTestingMethod(
@@ -325,7 +344,12 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
       validateCapacity(id, 'trendCorrectionMaximumLag', props.trendCorrectionMaximumLag, 1);
     }
     if (props.trendCorrectionCriticalZ !== undefined) {
-      validateFiniteNumber(id, 'trendCorrectionCriticalZ', props.trendCorrectionCriticalZ, 0);
+      validateFiniteNumber(
+        id,
+        'trendCorrectionCriticalZ float32',
+        Math.fround(props.trendCorrectionCriticalZ),
+        0
+      );
     }
     const {gridWidth, gridHeight, sliceCount} = props;
     const hasLattice = gridWidth !== undefined || gridHeight !== undefined;
@@ -333,8 +357,8 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
       throw new Error(`${id} needs exactly one of gridWidth and gridHeight, or weights`);
     }
     const selfWeight = props.selfWeight ?? 1;
-    if (!Number.isFinite(selfWeight) || selfWeight < 0) {
-      throw new Error(`${id} selfWeight must be a finite number >= 0`);
+    if (!Number.isFinite(Math.fround(selfWeight)) || selfWeight < 0) {
+      throw new Error(`${id} selfWeight must round to a finite float32 >= 0`);
     }
     if (hasLattice) {
       validateCapacity(id, 'gridWidth', gridWidth ?? Number.NaN);
@@ -344,8 +368,8 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
     const cellCount = props.weights
       ? validateGPUSpatialWeightsOrChunks(id, props.weights)
       : gridWidth! * gridHeight!;
-    if (cellCount >= 2 ** 24) {
-      throw new Error(`${id} must have fewer than 2^24 cells`);
+    if (cellCount > MAXIMUM_CELL_COUNT) {
+      throw new Error(`${id} cellCount must be at most ${MAXIMUM_CELL_COUNT}`);
     }
     const binCount = cellCount * sliceCount;
     if (binCount > MAXIMUM_BIN_COUNT) {
@@ -391,8 +415,10 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
       (this.multipleTesting !== 'none' || output.pValues || output.adjustedPValues) &&
       binCount >= GPU_MULTIPLE_TESTING_MAXIMUM_ROWS
     ) {
-      // The adjustment ranks bins as exact f32 integers.
-      throw new Error(`${id} multiple testing needs fewer than 2^24 bins`);
+      // Adjustment ranks are uint32 and bounded by the published sort limit.
+      throw new Error(
+        `${id} multiple testing bins must be less than ${GPU_MULTIPLE_TESTING_MAXIMUM_ROWS}`
+      );
     }
     if (output.lastValidSlice) {
       validatePackedUint32View(output.lastValidSlice, `${id} lastValidSlice`);
@@ -424,6 +450,20 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
         throw new Error(`${id} globalStatistics is too short`);
       }
     }
+    if (this.populationCount) {
+      validatePackedUint32View(
+        this.populationCount,
+        `${id} output.${output.includedCount ? 'includedCount' : 'count'}`
+      );
+      validateCapacity(
+        id,
+        `output.${output.includedCount ? 'includedCount' : 'count'} length`,
+        this.populationCount.length,
+        1,
+        1
+      );
+    }
+    validateDisjointWritableViews(id, output);
     validateGraphOutputsDisjointFromInputs(
       id,
       [
@@ -437,7 +477,8 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
         output.category,
         output.hotSliceCount,
         output.coldSliceCount,
-        output.globalStatistics
+        output.globalStatistics,
+        this.populationCount
       ],
       [
         props.values,
@@ -491,6 +532,10 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
+    validateSpatialStatisticsBindings(graph, id, props, {
+      'centered bins': props.values.length * 4,
+      moments: EMERGING_HOT_SPOTS_MOMENT_WORD_COUNT * 4
+    });
     const {values, mask, parameters, weights, sliceCount, output} = props;
     const {giZScores} = output;
     const gridWidth = props.gridWidth ?? 1;
@@ -541,14 +586,12 @@ export class GPUEmergingHotSpots implements GPUCommandNodeProducer {
       'float32',
       blockCount
     );
-    const statistics =
-      output.globalStatistics ??
-      createTransientView(
-        graph,
-        `${id}-statistics`,
-        'float32',
-        GPU_EMERGING_HOT_SPOTS_STATISTICS_LENGTH
-      );
+    const statistics = createTransientView(
+      graph,
+      `${id}-statistics`,
+      'float32',
+      EMERGING_HOT_SPOTS_MOMENT_WORD_COUNT
+    );
     // Mean centering, the scheme of GPUGlobalSpatialStatistics and the local statistics: the
     // first-pass deviation of every bin from the provisional mean is stored (NaN for a bin outside
     // the analysis), the mean of those deviations corrects the mean, and a centered value is the
@@ -716,19 +759,19 @@ fn isBinValid(bin: u32, cell: u32) -> bool {
     let squareSum = weightSum;`;
     // Lattice weights are 1, so the squared-weight sum equals the weight sum; the weights path
     // keeps the squared-weight sum separately.
-    const getGiBody = (dispatch?: (typeof dispatches)[number]) => {
-      const rowStart = dispatch?.rowStartWGSL;
-      const localCell = rowStart ? `(cell - ${rowStart})` : 'cell';
-      const chunkEnd = rowStart ? `${rowStart} + ${dispatch!.rowCount}u` : 'CELL_COUNT';
-      return `let group = index / ${GI_WORKGROUP_SIZE}u;
+    const getGiBody = () => {
+      const localCell = '(cell - chunkRowStart)';
+      return `let chunkRowStart = getChunkParameter(36u);
+  let chunkRowCount = getChunkParameter(37u);
+  let group = index / ${GI_WORKGROUP_SIZE}u;
   let local = localInvocationIndex;
   let cellInGroup = local / SLICE_COUNT;
   let slice = local % SLICE_COUNT;
-  let cell = group * CELLS_PER_GROUP + cellInGroup${rowStart ? ` + ${rowStart}` : ''};
-  let isActive = index < INVOCATION_COUNT && cellInGroup < CELLS_PER_GROUP && cell < ${chunkEnd};
+  let cell = group * CELLS_PER_GROUP + cellInGroup + chunkRowStart;
+  let isActive = index < INVOCATION_COUNT && cellInGroup < CELLS_PER_GROUP && cell < chunkRowStart + chunkRowCount;
   let rawRadius = ${weights ? '0.0' : 'parameters[parametersOffset]'};
   let rawWindow = parameters[parametersOffset + 1u];
-  let count = statistics[statisticsOffset];
+  let count = (u32(statistics[statisticsOffset + 4u]) << 16u) | u32(statistics[statisticsOffset + 5u]);
   let variance = statistics[statisticsOffset + 2u];
   let deviation = statistics[statisticsOffset + 3u];
   let parametersValid = isFiniteFloat(rawRadius) && isFiniteFloat(rawWindow) && rawRadius >= 0.0 && rawWindow >= 0.0;
@@ -751,10 +794,10 @@ fn isBinValid(bin: u32, cell: u32) -> bool {
       ${windowSumWGSL}
       ${
         weights
-          ? 'let spread = (count * squareSum - weightSum * weightSum) / (count - 1.0);'
-          : 'let spread = weightSum * (count - weightSum) / (count - 1.0);'
+          ? 'let spread = divideBySpatialCount(multiplyBySpatialCount(squareSum, count) - weightSum * weightSum, max(count, 1u) - 1u);'
+          : 'let spread = divideBySpatialCount(multiplyBySpatialCount(weightSum, count) - weightSum * weightSum, max(count, 1u) - 1u);'
       }
-      if (count >= 2.0 && variance > 0.0 && spread > 0.0 && isFiniteFloat(spread)) {
+      if (count >= 2u && variance > 0.0 && spread > 0.0 && isFiniteFloat(spread)) {
         // sum_j w_j (x_j - X): the stored deviations from the provisional mean, corrected once by
         // the mean of those deviations.
         let centeredSum = weightedSum - residualMean[residualMeanOffset] * weightSum;
@@ -831,7 +874,7 @@ fn isBinValid(bin: u32, cell: u32) -> bool {
             access: 'read_write'
           }
         ],
-        // One workgroup per block: strided per-thread partials (coalesced reads) and a fixed tree.
+        // One workgroup per blockIndex: strided per-thread partials (coalesced reads) and a fixed tree.
         workgroupSize: MOMENT_WORKGROUP_SIZE,
         invocationCount: blockCount * MOMENT_WORKGROUP_SIZE,
         guardIndex: false,
@@ -839,12 +882,12 @@ fn isBinValid(bin: u32, cell: u32) -> bool {
 var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;
 var<workgroup> partialCounts: array<u32, ${MOMENT_WORKGROUP_SIZE}>;`,
         // No early return: every invocation of a workgroup must reach the barriers.
-        body: `let block = index / ${MOMENT_WORKGROUP_SIZE}u;
+        body: `let blockIndex = index / ${MOMENT_WORKGROUP_SIZE}u;
   let isInRange = index < INVOCATION_COUNT;
   var sum = 0.0;
   var count = 0u;
   if (isInRange) {
-    let begin = block * BIN_BLOCK;
+    let begin = blockIndex * BIN_BLOCK;
     let end = min(begin + BIN_BLOCK, BIN_COUNT);
     for (var bin = begin + localInvocationIndex; bin < end; bin += ${MOMENT_WORKGROUP_SIZE}u) {
       if (isBinValid(bin, bin / SLICE_COUNT)) {
@@ -864,8 +907,8 @@ var<workgroup> partialCounts: array<u32, ${MOMENT_WORKGROUP_SIZE}>;`,
     workgroupBarrier();
   }
   if (isInRange && localInvocationIndex == 0u) {
-    sumPartials[sumPartialsOffset + block] = partialSums[0];
-    countPartials[countPartialsOffset + block] = partialCounts[0];
+    sumPartials[sumPartialsOffset + blockIndex] = partialSums[0];
+    countPartials[countPartialsOffset + blockIndex] = partialCounts[0];
   }`
       }),
       createWGSLKernelNode<Parameters>(graph, {
@@ -887,18 +930,19 @@ var<workgroup> partialCounts: array<u32, ${MOMENT_WORKGROUP_SIZE}>;`,
           },
           statisticsBinding('read_write')
         ],
-        // One workgroup combines the block partials with a fixed tree instead of one serial loop.
+        // One workgroup combines the blockIndex partials with a fixed tree instead of one serial loop.
         workgroupSize: MOMENT_WORKGROUP_SIZE,
         invocationCount: MOMENT_WORKGROUP_SIZE,
         guardIndex: false,
-        declarations: `const BLOCK_COUNT: u32 = ${blockCount}u;
+        declarations: `${SPATIAL_STATISTICS_COUNTS_WGSL}
+const BLOCK_COUNT: u32 = ${blockCount}u;
 var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;
 var<workgroup> partialCounts: array<u32, ${MOMENT_WORKGROUP_SIZE}>;`,
         body: `var sum = 0.0;
   var count = 0u;
-  for (var block = localInvocationIndex; block < BLOCK_COUNT; block += ${MOMENT_WORKGROUP_SIZE}u) {
-    sum += sumPartials[sumPartialsOffset + block];
-    count += countPartials[countPartialsOffset + block];
+  for (var blockIndex = localInvocationIndex; blockIndex < BLOCK_COUNT; blockIndex += ${MOMENT_WORKGROUP_SIZE}u) {
+    sum += sumPartials[sumPartialsOffset + blockIndex];
+    count += countPartials[countPartialsOffset + blockIndex];
   }
   partialSums[localInvocationIndex] = sum;
   partialCounts[localInvocationIndex] = count;
@@ -913,13 +957,15 @@ var<workgroup> partialCounts: array<u32, ${MOMENT_WORKGROUP_SIZE}>;`,
   if (localInvocationIndex == 0u) {
     count = partialCounts[0];
     statistics[statisticsOffset] = f32(count);
-    statistics[statisticsOffset + 1u] = select(0.0, partialSums[0] / f32(count), count > 0u);
+    statistics[statisticsOffset + 4u] = f32(count >> 16u);
+    statistics[statisticsOffset + 5u] = f32(count & 65535u);
+    statistics[statisticsOffset + 1u] = select(0.0, divideBySpatialCount(partialSums[0], count), count > 0u);
     statistics[statisticsOffset + 2u] = 0.0;
     statistics[statisticsOffset + 3u] = 0.0;
   }`
       }),
       // Second-pass mean: the first-pass deviation of every bin from the provisional mean is
-      // stored, and the block sums of the deviations measure the rounding error of that mean.
+      // stored, and the blockIndex sums of the deviations measure the rounding error of that mean.
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-block-deviations`,
         operation: OPERATION,
@@ -941,12 +987,12 @@ var<workgroup> partialCounts: array<u32, ${MOMENT_WORKGROUP_SIZE}>;`,
         guardIndex: false,
         declarations: `${declarations}
 var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;`,
-        body: `let block = index / ${MOMENT_WORKGROUP_SIZE}u;
+        body: `let blockIndex = index / ${MOMENT_WORKGROUP_SIZE}u;
   let isInRange = index < INVOCATION_COUNT;
   let provisionalMean = statistics[statisticsOffset + 1u];
   var sum = 0.0;
   if (isInRange) {
-    let begin = block * BIN_BLOCK;
+    let begin = blockIndex * BIN_BLOCK;
     let end = min(begin + BIN_BLOCK, BIN_COUNT);
     for (var bin = begin + localInvocationIndex; bin < end; bin += ${MOMENT_WORKGROUP_SIZE}u) {
       let valid = isBinValid(bin, bin / SLICE_COUNT);
@@ -964,7 +1010,7 @@ var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;`,
     workgroupBarrier();
   }
   if (isInRange && localInvocationIndex == 0u) {
-    deviationPartials[deviationPartialsOffset + block] = partialSums[0];
+    deviationPartials[deviationPartialsOffset + blockIndex] = partialSums[0];
   }`
       }),
       createWGSLKernelNode<Parameters>(graph, {
@@ -989,11 +1035,12 @@ var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;`,
         workgroupSize: MOMENT_WORKGROUP_SIZE,
         invocationCount: MOMENT_WORKGROUP_SIZE,
         guardIndex: false,
-        declarations: `const BLOCK_COUNT: u32 = ${blockCount}u;
+        declarations: `${SPATIAL_STATISTICS_COUNTS_WGSL}
+const BLOCK_COUNT: u32 = ${blockCount}u;
 var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;`,
         body: `var sum = 0.0;
-  for (var block = localInvocationIndex; block < BLOCK_COUNT; block += ${MOMENT_WORKGROUP_SIZE}u) {
-    sum += deviationPartials[deviationPartialsOffset + block];
+  for (var blockIndex = localInvocationIndex; blockIndex < BLOCK_COUNT; blockIndex += ${MOMENT_WORKGROUP_SIZE}u) {
+    sum += deviationPartials[deviationPartialsOffset + blockIndex];
   }
   partialSums[localInvocationIndex] = sum;
   workgroupBarrier();
@@ -1004,15 +1051,15 @@ var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;`,
     workgroupBarrier();
   }
   if (localInvocationIndex == 0u) {
-    let count = statistics[statisticsOffset];
+    let count = (u32(statistics[statisticsOffset + 4u]) << 16u) | u32(statistics[statisticsOffset + 5u]);
     // Mean of the first-pass deviations: added to the reported mean and subtracted from every
     // stored deviation by the next kernel.
-    let residual = select(0.0, partialSums[0] / count, count > 0.0);
+    let residual = select(0.0, divideBySpatialCount(partialSums[0], count), count > 0u);
     statistics[statisticsOffset + 1u] += residual;
     residualMean[residualMeanOffset] = residual;
   }`
       }),
-      // Reduces the squared centered values of every block: the centered value is the stored
+      // Reduces the squared centered values of every blockIndex: the centered value is the stored
       // deviation minus the residual mean (read back from memory, not recomputed from the raw
       // value).
       createWGSLKernelNode<Parameters>(graph, {
@@ -1034,12 +1081,12 @@ var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;`,
         guardIndex: false,
         declarations: `${centeredDeclarations}
 var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;`,
-        body: `let block = index / ${MOMENT_WORKGROUP_SIZE}u;
+        body: `let blockIndex = index / ${MOMENT_WORKGROUP_SIZE}u;
   let isInRange = index < INVOCATION_COUNT;
   let residual = residualMean[residualMeanOffset];
   var sum = 0.0;
   if (isInRange) {
-    let begin = block * BIN_BLOCK;
+    let begin = blockIndex * BIN_BLOCK;
     let end = min(begin + BIN_BLOCK, BIN_COUNT);
     for (var bin = begin + localInvocationIndex; bin < end; bin += ${MOMENT_WORKGROUP_SIZE}u) {
       if (isBinValid(bin, bin / SLICE_COUNT)) {
@@ -1057,7 +1104,7 @@ var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;`,
     workgroupBarrier();
   }
   if (isInRange && localInvocationIndex == 0u) {
-    squarePartials[squarePartialsOffset + block] = partialSums[0];
+    squarePartials[squarePartialsOffset + blockIndex] = partialSums[0];
   }`
       }),
       createWGSLKernelNode<Parameters>(graph, {
@@ -1076,11 +1123,12 @@ var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;`,
         workgroupSize: MOMENT_WORKGROUP_SIZE,
         invocationCount: MOMENT_WORKGROUP_SIZE,
         guardIndex: false,
-        declarations: `const BLOCK_COUNT: u32 = ${blockCount}u;
+        declarations: `${SPATIAL_STATISTICS_COUNTS_WGSL}
+const BLOCK_COUNT: u32 = ${blockCount}u;
 var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;`,
         body: `var sum = 0.0;
-  for (var block = localInvocationIndex; block < BLOCK_COUNT; block += ${MOMENT_WORKGROUP_SIZE}u) {
-    sum += squarePartials[squarePartialsOffset + block];
+  for (var blockIndex = localInvocationIndex; blockIndex < BLOCK_COUNT; blockIndex += ${MOMENT_WORKGROUP_SIZE}u) {
+    sum += squarePartials[squarePartialsOffset + blockIndex];
   }
   partialSums[localInvocationIndex] = sum;
   workgroupBarrier();
@@ -1091,15 +1139,51 @@ var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;`,
     workgroupBarrier();
   }
   if (localInvocationIndex == 0u) {
-    let count = statistics[statisticsOffset];
-    let variance = select(0.0, partialSums[0] / count, count > 0.0);
+    let count = (u32(statistics[statisticsOffset + 4u]) << 16u) | u32(statistics[statisticsOffset + 5u]);
+    let variance = select(0.0, divideBySpatialCount(partialSums[0], count), count > 0u);
     statistics[statisticsOffset + 2u] = variance;
     statistics[statisticsOffset + 3u] = sqrt(variance);
   }`
       }),
+      ...(output.globalStatistics || this.populationCount
+        ? [
+            createWGSLKernelNode<Parameters>(graph, {
+              id: `${id}-publish-moments`,
+              operation: OPERATION,
+              invocationCount: output.globalStatistics
+                ? GPU_EMERGING_HOT_SPOTS_STATISTICS_LENGTH
+                : 1,
+              bindings: [
+                statisticsBinding('read'),
+                ...(output.globalStatistics
+                  ? [
+                      {
+                        name: 'globalStatistics',
+                        view: output.globalStatistics,
+                        type: 'f32' as const,
+                        access: 'read_write' as const
+                      }
+                    ]
+                  : []),
+                ...(this.populationCount
+                  ? [
+                      {
+                        name: 'exactCount',
+                        view: this.populationCount,
+                        type: 'u32' as const,
+                        access: 'read_write' as const
+                      }
+                    ]
+                  : [])
+              ],
+              body: `${output.globalStatistics ? 'globalStatistics[globalStatisticsOffset + index] = statistics[statisticsOffset + index];' : ''}
+          ${this.populationCount ? 'if (index == 0u) { exactCount[exactCountOffset] = (u32(statistics[statisticsOffset + 4u]) << 16u) | u32(statistics[statisticsOffset + 5u]); }' : ''}`
+            })
+          ]
+        : []),
       // One Gi* kernel per weights chunk (a whole CSR or the lattice is a single kernel).
       ...(weights ? dispatches : [undefined]).map(dispatch =>
-        createWGSLKernelNode<Parameters>(graph, {
+        createSpatialStatisticsCollectiveNode<Parameters>(graph, {
           id: `${id}-gi-star${dispatch?.idSuffix ?? ''}`,
           operation: OPERATION,
           variant: weights ? 'gi-star-weights' : 'gi-star',
@@ -1140,13 +1224,13 @@ var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;`,
           workgroupSize: GI_WORKGROUP_SIZE,
           invocationCount:
             Math.ceil((dispatch?.rowCount ?? cellCount) / cellsPerGroup) * GI_WORKGROUP_SIZE,
-          guardIndex: false,
-          declarations: `${centeredDeclarations}${dispatch?.constantsWGSL ? `\n${dispatch.constantsWGSL}` : ''}
+          parameterValues: [dispatch?.rowStart ?? 0, dispatch?.rowCount ?? cellCount],
+          declarations: `${centeredDeclarations}
 const CELLS_PER_GROUP: u32 = ${cellsPerGroup}u;
 var<workgroup> instantWeighted: array<f32, ${GI_WORKGROUP_SIZE}>;
 var<workgroup> instantWeight: array<f32, ${GI_WORKGROUP_SIZE}>;
 var<workgroup> instantSquare: array<f32, ${GI_WORKGROUP_SIZE}>;`,
-          body: getGiBody(dispatch)
+          body: getGiBody()
         })
       ),
       ...(needsPValues ? getPValueNodes() : []),

@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {SPATIAL_STATISTICS_COUNTS_WGSL} from '../spatial-weights/spatial-statistics-counts-wgsl';
+import {createSpatialStatisticsCollectiveNode} from '../spatial-weights/spatial-statistics-collective-node';
+import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateSpatialStatisticsBindings} from '../spatial-weights/spatial-statistics-bindings';
 import {
   createTransientView,
   GPUHistogram,
@@ -188,8 +192,14 @@ export class GPURegionStatistics implements GPUCommandNodeProducer {
       const {domain} = histogram;
       if (Array.isArray(domain)) {
         const [minimum, maximum] = domain as readonly number[];
-        if (!Number.isFinite(minimum) || !Number.isFinite(maximum) || minimum > maximum) {
-          throw new Error(`${id} histogram.domain must be finite with min <= max`);
+        if (
+          !Number.isFinite(Math.fround(minimum)) ||
+          !Number.isFinite(Math.fround(maximum)) ||
+          minimum > maximum
+        ) {
+          throw new Error(
+            `${id} histogram.domain must have finite float32 endpoints with min <= max`
+          );
         }
       } else if (domain && domain !== 'selection') {
         validateSinglePackedView(domain as GraphDataView, ['float32'], `${id} histogram.domain`);
@@ -234,6 +244,16 @@ export class GPURegionStatistics implements GPUCommandNodeProducer {
     if (props.spatialIndex) {
       validateGridIndexProps(id, {...props, spatialIndex: props.spatialIndex});
     }
+    validateDisjointWritableViews(id, {
+      summary,
+      mask: outputMask,
+      ids: output?.ids,
+      selectedCount: output?.status.count,
+      selectedOverflow: output?.status.overflow,
+      selectedRequiredCount: output?.status.requiredCount,
+      drawInstanceCount,
+      ...props.output.status
+    });
     validateGraphOutputsDisjointFromInputs(
       id,
       [
@@ -257,6 +277,12 @@ export class GPURegionStatistics implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateSpatialStatisticsBindings(graph, this.id, this.props, {
+      'row scratch': this.rowCount * 4,
+      'candidate positions': this.props.spatialIndex
+        ? Math.min(this.props.spatialIndex.candidateCapacity, this.rowCount) * 8
+        : 0
+    });
     const {id, props, rowCount} = this;
     const {region: selection, positions, values, sourceIds, histogram} = props;
     const {mask: outputMask, selectedRows: output, summary, drawInstanceCount} = props.output;
@@ -627,15 +653,15 @@ function getCountNodes<Parameters>(
       }
       bindings.push({name: 'counts', view: counts, type: 'atomic<u32>', access: 'read_write'});
       nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
+        createSpatialStatisticsCollectiveNode<Parameters>(graph, {
           id: isVector ? `${id}-count-chunk-${chunkIndex}` : `${id}-count`,
           operation: OPERATION,
           variant: 'count',
           bindings,
           invocationCount: chunkLength,
           workgroupSize: COUNT_WORKGROUP_SIZE,
-          guardIndex: false,
-          declarations: `const ROW_START: u32 = ${rowStart}u;
+          parameterValues: [rowStart],
+          declarations: `
 var<workgroup> localSelectedCount: atomic<u32>;
 var<workgroup> localValueCount: atomic<u32>;
 ${REGION_STATISTICS_WGSL_HELPERS}`,
@@ -645,7 +671,7 @@ ${REGION_STATISTICS_WGSL_HELPERS}`,
   }
   workgroupBarrier();
   if (index < INVOCATION_COUNT) {
-    let row = ROW_START + index;
+    let row = getChunkParameter(36u) + index;
     let selected = mask[maskOffset + row] != 0u;
     ${
       chunk
@@ -711,7 +737,8 @@ function getSummaryNode<Parameters>(
     variant: 'summary',
     bindings,
     invocationCount: Math.max(binCount, 1),
-    declarations: `const BIN_COUNT: u32 = ${binCount}u;
+    declarations: `${SPATIAL_STATISTICS_COUNTS_WGSL}
+const BIN_COUNT: u32 = ${binCount}u;
 const SELECTION_CAPACITY: u32 = ${props.selectionCapacity}u;`,
     body: `${bins ? 'if (index < BIN_COUNT) { summary[summaryOffset + 8u + index] = bins[binsOffset + index]; }' : ''}
   if (index == 0u) {
@@ -721,7 +748,7 @@ const SELECTION_CAPACITY: u32 = ${props.selectionCapacity}u;`,
     ${
       sumValue && extentValue
         ? `let sum = select(0.0, sumValue[sumValueOffset], hasValues);
-    let mean = select(0.0, sum / f32(max(valueCount, 1u)), hasValues);
+    let mean = select(0.0, divideBySpatialCount(sum, max(valueCount, 1u)), hasValues);
     let minimum = select(0.0, extentValue[extentValueOffset], hasValues);
     let maximum = select(0.0, extentValue[extentValueOffset + 1u], hasValues);`
         : `let sum = 0.0;

@@ -15,6 +15,13 @@ import {
   type WGSLDispatchGate,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  GENERALIZED_GWR_FOCUS_BATCH_ROWS,
+  GENERALIZED_GWR_SCORE_TILE_ROWS,
+  GENERALIZED_GWR_MAXIMUM_FINAL_SCORE_TILES,
+  GENERALIZED_GWR_FOCUS_WORKGROUP_SIZE,
+  getGeneralizedGWRScoreMergeLayout
+} from './generalized-gwr-limits';
 import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {validateGraphViewsBelongToGraph} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -24,8 +31,6 @@ import {
   getRegressionWGSL
 } from './gpu-generalized-geographically-weighted-regression';
 
-/** Bounded row sums parallelize the score; the final reference pass visits at most 4,096 tiles. */
-const SCORE_TILE_ROWS = 256;
 /** Finish narrow adaptive brackets by evaluating all at most five integer candidates. */
 const INTEGER_FINISH_MAXIMUM_SPAN = 4;
 const COMMON = `${GET_NAN_WGSL}\n${IS_FINITE_BITS_WGSL}`;
@@ -44,7 +49,8 @@ export function getGeneralizedSelectionNodes<Parameters>(
   const candidateCount = isGolden ? 2 * maximumIterations : selection.bandwidths.length;
   const rows = props.response.length;
   const columns = props.predictorCount + 1;
-  const tileCount = Math.ceil(rows / SCORE_TILE_ROWS);
+  const scoreLayout = getGeneralizedGWRScoreMergeLayout(rows);
+  const {tileCount} = scoreLayout;
   const read = (
     name: string,
     view: GraphDataView,
@@ -62,13 +68,26 @@ export function getGeneralizedSelectionNodes<Parameters>(
   ]);
   const transient = (name: string, length: number) =>
     createTransientView(graph, `${id}-${name}`, 'float32', length);
-  const parameters = transient('selected-parameters', 2);
+  const parameters = transient('selected-parameters', 3);
+  const candidateValues = !isGolden ? transient('candidate-values', candidateCount) : undefined;
+  const fitState = transient(
+    'selection-fit-state',
+    Math.min(rows, GENERALIZED_GWR_FOCUS_BATCH_ROWS) * (2 * columns + 4) + 1
+  );
+  const focusGate = createWGSLDispatchGate<Parameters>(graph, {
+    id: `${id}-selection-focus-dispatch`,
+    operation: OPERATION,
+    shapes: [
+      [Math.min(rows, GENERALIZED_GWR_FOCUS_BATCH_ROWS), GENERALIZED_GWR_FOCUS_WORKGROUP_SIZE]
+    ]
+  });
   const coefficients = transient('selection-coefficients', rows * columns);
   const fitted = transient('selection-fitted', rows);
   const codes = createTransientView(graph, `${id}-selection-codes`, 'uint32', rows);
   const iterationCount = createTransientView(graph, `${id}-selection-iterations`, 'uint32', rows);
   const eligible = createTransientView(graph, `${id}-selection-eligible`, 'uint32', rows);
   const tileScores = transient('selection-tile-scores', tileCount * 4);
+  const mergedScores = transient('selection-merged-scores', scoreLayout.mergedTileCount * 4);
   const standardErrors = isAICc ? transient('selection-errors', rows * columns) : undefined;
   const influence = isAICc ? transient('selection-influence', rows) : undefined;
   // Share the training index across all candidates and the final fit, including masked responses.
@@ -103,7 +122,12 @@ export function getGeneralizedSelectionNodes<Parameters>(
     ? createWGSLDispatchGate<Parameters>(graph, {
         id: `${id}-search-dispatch`,
         operation: OPERATION,
-        shapes: [[rows], [1], [tileCount]]
+        shapes: [
+          [Math.min(rows, GENERALIZED_GWR_FOCUS_BATCH_ROWS)],
+          [1],
+          [tileCount],
+          [scoreLayout.mergedTileCount]
+        ]
       })
     : undefined;
   const historyBindings = selection.output.evaluatedBandwidths
@@ -116,6 +140,9 @@ export function getGeneralizedSelectionNodes<Parameters>(
       invocationCount: candidateCount,
       bindings: [
         write('scores', selection.output.scores),
+        write('parameters', parameters),
+        write('focalDispatch', focusGate.view, 'u32'),
+        ...(candidateValues ? [write('candidateValues', candidateValues)] : []),
         ...historyBindings,
         ...(isGolden
           ? [read('bounds', selection.parameters), write('state', state!), gate!.binding]
@@ -123,8 +150,15 @@ export function getGeneralizedSelectionNodes<Parameters>(
       ],
       declarations: COMMON,
       body: `scores[scoresOffset + index] = getNaN();
+      ${!isGolden ? `let values = array<f32, ${candidateCount}>(${selection.bandwidths.map(getWGSLFloatLiteral).join(', ')}); candidateValues[candidateValuesOffset + index] = values[index];` : ''}
       ${historyBindings.length ? 'history[historyOffset + index] = getNaN();' : ''}
       if (index != 0u) { return; }
+      parameters[parametersOffset + 2u] = 0.0;
+      // Initialize once, unconditionally, so skipped candidates never see stale transient alias data.
+      // Every completed candidate disarms this same record before the next candidate uses it.
+      focalDispatch[focalDispatchOffset] = 0u;
+      focalDispatch[focalDispatchOffset + 1u] = 1u;
+      focalDispatch[focalDispatchOffset + 2u] = 1u;
     ${
       isGolden
         ? `
@@ -154,11 +188,7 @@ export function getGeneralizedSelectionNodes<Parameters>(
     })
   );
 
-  const evaluate = (
-    candidate: number,
-    bandwidth: string,
-    candidateGate?: WGSLDispatchGate<Parameters>
-  ) => {
+  const evaluate = (candidate: number, candidateGate?: WGSLDispatchGate<Parameters>) => {
     nodes.push(
       createWGSLKernelNode(graph, {
         id: `${id}-candidate-${candidate}-parameters`,
@@ -168,12 +198,13 @@ export function getGeneralizedSelectionNodes<Parameters>(
         bindings: [
           read('source', props.parameters),
           write('parameters', parameters),
-          ...(state ? [read('state', state)] : []),
+          ...(state ? [read('state', state)] : [read('candidateValues', candidateValues!)]),
           ...historyBindings
         ],
-        body: `parameters[parametersOffset] = ${bandwidth};
+        body: `let candidateSlot = u32(parameters[parametersOffset + 2u]);
+        parameters[parametersOffset] = ${isGolden ? 'state[stateOffset + 2u + candidateSlot % 2u]' : 'candidateValues[candidateValuesOffset + candidateSlot]'};
         parameters[parametersOffset + 1u] = source[sourceOffset + 1u];
-        ${historyBindings.length ? `history[historyOffset + ${candidate}u] = parameters[parametersOffset];` : ''}`
+        ${historyBindings.length ? `history[historyOffset + candidateSlot] = parameters[parametersOffset];` : ''}`
       })
     );
     nodes.push(
@@ -187,7 +218,7 @@ export function getGeneralizedSelectionNodes<Parameters>(
         fittedScale: 'link',
         parameters,
         output: {coefficients, fitted, status: {codes, iterationCount}}
-      }).getCommandNodes(graph, {gridSetup, gate: candidateGate})
+      }).getCommandNodes(graph, {gridSetup, gate: candidateGate, fits: fitState, focusGate})
     );
     nodes.push(
       createWGSLKernelNode(graph, {
@@ -205,8 +236,8 @@ export function getGeneralizedSelectionNodes<Parameters>(
         ],
         declarations: COMMON,
         body: `var deviance = 0.0; var trace = 0.0; var count = 0.0; var failed = 0.0;
-        let endRow = min((index + 1u) * ${SCORE_TILE_ROWS}u, ${rows}u);
-        for (var row = index * ${SCORE_TILE_ROWS}u; row < endRow; row++) {
+        let endRow = min((index + 1u) * ${GENERALIZED_GWR_SCORE_TILE_ROWS}u, ${rows}u);
+        for (var row = index * ${GENERALIZED_GWR_SCORE_TILE_ROWS}u; row < endRow; row++) {
           if (eligible[eligibleOffset + row] == 0u) { continue; }
           count += 1.0;
           if (codes[codesOffset + row] != 0u) { failed += 1.0; continue; }
@@ -231,17 +262,49 @@ export function getGeneralizedSelectionNodes<Parameters>(
         tiles[base + 2u] = count; tiles[base + 3u] = failed;`
       })
     );
+    let scoreTotals = tileScores;
+    if (scoreLayout.usesParallelMerge) {
+      // The same scratch is reused by all candidates. The binding length bounds the final partial tile.
+      scoreTotals = mergedScores;
+      nodes.push(
+        createWGSLKernelNode(graph, {
+          id: `${id}-candidate-${candidate}-merge-scores`,
+          operation: OPERATION,
+          invocationCount: scoreLayout.finalTileCount,
+          ...(candidateGate?.getGate(3) ?? {}),
+          bindings: [read('tiles', tileScores), write('totals', scoreTotals)],
+          body: `var totalsValue = vec4f(0.0);
+        let endTile = min((index + 1u) * ${GENERALIZED_GWR_SCORE_TILE_ROWS}u, arrayLength(&tiles) / 4u);
+        for (var tile = index * ${GENERALIZED_GWR_SCORE_TILE_ROWS}u; tile < endTile; tile++) {
+          let base = tilesOffset + tile * 4u;
+          totalsValue += vec4f(tiles[base], tiles[base + 1u], tiles[base + 2u], tiles[base + 3u]);
+        }
+        for (var component = 0u; component < 4u; component++) {
+          totals[totalsOffset + index * 4u + component] = totalsValue[component];
+        }`
+        })
+      );
+    }
     nodes.push(
       createWGSLKernelNode(graph, {
         id: `${id}-candidate-${candidate}-score`,
         operation: OPERATION,
-        // contract-allow: single-invocation; reference tier, at most 16 AICc or 4,096 legacy LOO tile totals.
+        // contract-allow: single-invocation; fixed 256-slot capacity; excess score tiles merge in parallel first.
         invocationCount: 1,
         ...(candidateGate?.getGate(1) ?? {}),
-        bindings: [read('tiles', tileScores), write('scores', selection.output.scores)],
+        bindings: [
+          read('tiles', scoreTotals),
+          write('scores', selection.output.scores),
+          write('parameters', parameters)
+        ],
         declarations: COMMON,
         body: `var deviance = 0.0; var trace = 0.0; var count = 0.0; var failed = 0.0;
-        for (var tile = 0u; tile < ${tileCount}u; tile++) {
+        // Fixed order: increasing rows within 256-row tiles, increasing adjacent tiles within
+        // 256-tile groups when needed, then increasing groups. Each invocation adds at most 256
+        // values, avoiding the float32 drift of a serial sum of 4,096 non-integer tile scores.
+        let totalCount = (arrayLength(&tiles) - tilesOffset) / 4u;
+        for (var tile = 0u; tile < ${GENERALIZED_GWR_MAXIMUM_FINAL_SCORE_TILES}u; tile++) {
+          if (tile >= totalCount) { break; }
           let base = tilesOffset + tile * 4u;
           deviance += tiles[base]; trace += tiles[base + 1u];
           count += tiles[base + 2u]; failed += tiles[base + 3u];
@@ -250,15 +313,17 @@ export function getGeneralizedSelectionNodes<Parameters>(
         if (failed == 0.0 && count > 0.0 ${isAICc ? '&& count > trace + 1.0' : ''}) {
           score = ${isAICc ? 'deviance + 2.0 * trace + 2.0 * trace * (trace + 1.0) / (count - trace - 1.0)' : 'deviance / count'};
         }
-        scores[scoresOffset + ${candidate}u] = score;`
+        let candidateSlot = u32(parameters[parametersOffset + 2u]);
+        scores[scoresOffset + candidateSlot] = score;
+        parameters[parametersOffset + 2u] += 1.0;`
       })
     );
   };
 
   if (isGolden) {
     for (let iteration = 0; iteration < maximumIterations; iteration++) {
-      evaluate(2 * iteration, 'state[stateOffset + 2u]', gate);
-      evaluate(2 * iteration + 1, 'state[stateOffset + 3u]', gate);
+      evaluate(2 * iteration, gate);
+      evaluate(2 * iteration + 1, gate);
       nodes.push(
         createWGSLKernelNode(graph, {
           id: `${id}-search-${iteration}-iterate`,
@@ -266,6 +331,7 @@ export function getGeneralizedSelectionNodes<Parameters>(
           invocationCount: 1,
           bindings: [
             read('scores', selection.output.scores),
+            read('parameters', parameters),
             read('bounds', selection.parameters),
             write('state', state!),
             gate!.binding
@@ -276,8 +342,9 @@ fn getFeasibilityFraction(ordinal: u32) -> f32 {
   return f32(2u * (ordinal - levelSize) + 1u) / f32(2u * levelSize);
 }`,
           body: `if (state[stateOffset + 8u] == 0.0) { return; }
-          let firstScore = scores[scoresOffset + ${2 * iteration}u];
-          let secondScore = scores[scoresOffset + ${2 * iteration + 1}u];
+          let candidateSlot = u32(parameters[parametersOffset + 2u]);
+          let firstScore = scores[scoresOffset + candidateSlot - 2u];
+          let secondScore = scores[scoresOffset + candidateSlot - 1u];
           let firstValid = isFiniteBits(firstScore); let secondValid = isFiniteBits(secondScore);
           let chooseFirst = firstValid && (!secondValid || firstScore <= secondScore);
           let winner = select(state[stateOffset + 3u], state[stateOffset + 2u], chooseFirst);
@@ -343,9 +410,7 @@ fn getFeasibilityFraction(ordinal: u32) -> f32 {
       );
     }
   } else {
-    selection.bandwidths.forEach((bandwidth, candidate) =>
-      evaluate(candidate, getWGSLFloatLiteral(bandwidth))
-    );
+    selection.bandwidths.forEach((_, candidate) => evaluate(candidate));
   }
   const statusBindings = Object.entries(selection.status ?? {})
     .filter((entry): entry is [string, GraphDataView<'uint32'>] => entry[1] !== undefined)
@@ -400,7 +465,7 @@ fn getFeasibilityFraction(ordinal: u32) -> f32 {
       id: `${id}-selected-fit`,
       bandwidthSelection: undefined,
       parameters
-    }).getCommandNodes(graph, {gridSetup})
+    }).getCommandNodes(graph, {gridSetup, fits: fitState, focusGate})
   );
   return nodes;
 }

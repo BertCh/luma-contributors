@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateTerrainBindings} from '../terrain-processing/terrain-binding-preflight';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -230,6 +231,13 @@ export class GPUSolarShadowMask implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateTerrainBindings(graph, this.id, this.props, {
+      'texture staging':
+        (this.props.output.sunVisibilityTexture && !this.props.output.sunVisibility) ||
+        (this.props.output.illuminationTexture && !this.props.output.illumination)
+          ? 4 * this.props.grid.width * this.props.grid.height
+          : 0
+    });
     const {id, props} = this;
     const {output} = props;
     const {directionCount} = props;

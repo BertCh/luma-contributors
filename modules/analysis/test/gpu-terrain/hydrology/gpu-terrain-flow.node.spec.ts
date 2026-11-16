@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {expect, it} from 'vitest';
+import {expect, it, vi} from 'vitest';
 import {
   GPU_TERRAIN_FLOW_CELL_CLASS,
   GPU_TERRAIN_FLOW_PARAMETER_LENGTH,
@@ -348,8 +348,17 @@ it('GPUTerrainFlow rejects routing scratch above the binding limit at getCommand
     flowRouting: 'd-infinity',
     output: {accumulation: createTransientView(graph, 'large-accumulation', 'float32', cellCount)}
   });
+  const allocations = vi.spyOn(graph, 'createTransientBuffer');
+  const declarations = vi.spyOn(graph, 'add');
   expect(() => flow.getCommandNodes(graph)).toThrow(
-    /routing-prepare binding routing needs 162000000 bytes/
+    'terrain-flow fractional routing records needs 162000000 bytes in one binding (limit 134217728)'
   );
+  expect(allocations).not.toHaveBeenCalled();
+  expect(declarations).not.toHaveBeenCalled();
+  // The same layout is accepted at its exact eight-byte-per-cell binding requirement.
+  Object.defineProperty(device.limits, 'maxStorageBufferBindingSize', {value: cellCount * 8});
+  expect(() => flow.getCommandNodes(graph)).not.toThrow();
+  allocations.mockRestore();
+  declarations.mockRestore();
   device.destroy();
 });

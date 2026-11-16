@@ -1025,3 +1025,25 @@ for (const sumOrder of ['atomic', 'sorted'] as const) {
 }
 
 registerPolygonConsumerGPUTests('GPUZonalStatistics');
+
+it('zonal quotients retain finite weighted means and densities across extreme normal scales', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const scale of [2 ** 126, 2 ** -120]) {
+    const fixture = createRowsFixture(device, {
+      rows: [0, 0, 1, 1],
+      featureCount: 2,
+      values: [0.25, 0.75, 0.25, 0.75],
+      weights: [scale, scale, scale, scale],
+      areas: [2 * scale, 2 * scale],
+      sumOrder: 'sorted',
+      outputKeys: ['means', 'weightedDensities']
+    });
+    fixture.run();
+    expect(await readFloat32(fixture.outputs.means!, 2)).toEqual([0.5, 0.5]);
+    const density = await readFloat32(fixture.outputs.weightedDensities!, 2);
+    for (const value of density) expect(value).toBeCloseTo(1, 6);
+    fixture.destroy();
+  }
+  device.destroy();
+});

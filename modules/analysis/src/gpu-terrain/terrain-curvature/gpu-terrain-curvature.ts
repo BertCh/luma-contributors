@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateTerrainBindings} from '../terrain-processing/terrain-binding-preflight';
 import {
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -355,6 +356,9 @@ export class GPUTerrainCurvature implements GPUCommandNodeProducer, GPURasterHal
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateTerrainBindings(graph, this.id, this.props, {
+      'canonical elevation': 4 * this.props.grid.width * this.props.grid.height
+    });
     const {id, props} = this;
     const {output} = props;
     validateRasterBandBelongsToGraph(id, graph, props.elevation, []);

@@ -72,9 +72,23 @@ it('urban morphology recipes name the limit they reject', () => {
     expect(() =>
       addBuildingTessellationRecipe(graph, {...tessellation, sampleCapacity: 129})
     ).toThrow(/^building-tessellation sampleCapacity must be an integer in \[1, 128\]$/);
-    expect(() => addBuildingTessellationRecipe(graph, {...tessellation, sampleSpacing: 0})).toThrow(
-      /^building-tessellation sampleSpacing must be a positive finite number$/
-    );
+    // Spacing must remain positive and finite after conversion to the shader's float32 type.
+    const bufferCount = (graph as unknown as {buffers: Map<string, unknown>}).buffers.size;
+    for (const sampleSpacing of [
+      0,
+      -1,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+      Number.MAX_VALUE,
+      Number.MIN_VALUE
+    ]) {
+      expect(() => addBuildingTessellationRecipe(graph, {...tessellation, sampleSpacing})).toThrow(
+        /^building-tessellation sampleSpacing must be a positive finite float32 number$/
+      );
+      expect(getNodeCount(graph)).toBe(0);
+      expect((graph as unknown as {buffers: Map<string, unknown>}).buffers.size).toBe(bufferCount);
+    }
 
     const positions = view('float32x2', 2);
     expect(() =>

@@ -106,6 +106,19 @@ export type GPUNetworkIsochronesRaster = {
    */
   maximumSamplesPerEdge?: number;
   /**
+   * Additional directed paths from snapped sources to their road endpoints. Min raster mode only.
+   * Uses the same positions/extent units and splat budgets as the main network. Costs are the
+   * starting cost at each path node, not a second routing search. This retains direct source-road
+   * travel that cannot be reconstructed from the main network's endpoint costs alone.
+   */
+  sourcePaths?: {
+    topology: GPUNetworkTopology & {nodePositions: GraphDataView<'float32x2'>};
+    costs: GraphDataView<'float32'>;
+    /** Required with pixelFacilities; uses the main network's facility/start-row identity. */
+    assignments?: GraphDataView<'uint32'>;
+  };
+
+  /**
    * Value of pixels that no edge sample reached. Defaults to 1e30, a finite number far above any
    * break, so unreached space lands in the last band. Pixels next to the network interpolate
    * toward it, which insets the outer contour by up to one pixel.
@@ -463,6 +476,41 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
       ] as const) {
         validateCapacity(id, name, value, minimum, maximum);
       }
+      if (raster.sourcePaths) {
+        const paths = raster.sourcePaths;
+        validateRequirement(
+          id,
+          this.mode === 'min',
+          "raster.sourcePaths requires raster.mode 'min'"
+        );
+        const {nodeCount: pathNodeCount} = validateGPUNetworkTopology(id, paths.topology, {
+          weights: true,
+          nodePositions: true
+        });
+        validateSinglePackedView(paths.costs, ['float32'], `${id} raster.sourcePaths.costs`);
+        validateRequirement(
+          id,
+          paths.costs.length === pathNodeCount,
+          'raster.sourcePaths.costs must contain one row per path node'
+        );
+        if (paths.assignments) {
+          validateSinglePackedView(
+            paths.assignments,
+            ['uint32'],
+            `${id} raster.sourcePaths.assignments`
+          );
+          validateRequirement(
+            id,
+            paths.assignments.length === pathNodeCount,
+            'raster.sourcePaths.assignments must contain one row per path node'
+          );
+        }
+        validateRequirement(
+          id,
+          !raster.output.pixelFacilities || Boolean(paths.assignments),
+          'raster.sourcePaths.assignments is required with pixelFacilities'
+        );
+      }
       const unreached = raster.unreachedCost ?? DEFAULT_UNREACHED_COST;
       if (!Number.isFinite(unreached) || !(unreached > 0) || unreached >= 3.0e38) {
         throw new Error(`${id} raster.unreachedCost must be a positive finite number below 3e38`);
@@ -541,6 +589,7 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
     }
     const inputs = [
       ...getGPUNetworkTopologyViews(props.topology),
+      ...collectGraphViews(raster?.sourcePaths),
       props.costBreaks,
       props.parameters,
       props.startNodes,
@@ -597,6 +646,7 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
     const {offsets, neighbors, weights, nodePositions} = props.topology;
     validateGraphViewsBelongToGraph(id, graph, [
       ...getGPUNetworkTopologyViews(props.topology),
+      ...collectGraphViews(raster?.sourcePaths),
       props.costs,
       props.startNodes,
       props.startCosts,
@@ -712,6 +762,30 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
           encoded,
           assignments: raster.output.pixelFacilities ? props.assignments : undefined
         }),
+        ...(raster.sourcePaths
+          ? [
+              createIsochronesSplatNode<Parameters>(graph, {
+                id: `${id}-source-paths-splat`,
+                nodeCount: raster.sourcePaths.costs.length,
+                width,
+                height,
+                mode,
+                maximumBufferPixels: raster.maximumBufferPixels ?? DEFAULT_MAXIMUM_BUFFER_PIXELS,
+                maximumSamplesPerEdge:
+                  raster.maximumSamplesPerEdge ?? DEFAULT_MAXIMUM_SAMPLES_PER_EDGE,
+                offsets: raster.sourcePaths.topology.offsets,
+                neighbors: raster.sourcePaths.topology.neighbors,
+                weights: raster.sourcePaths.topology.weights!,
+                costs: raster.sourcePaths.costs,
+                nodePositions: raster.sourcePaths.topology.nodePositions,
+                parameters: props.parameters,
+                encoded,
+                assignments: raster.output.pixelFacilities
+                  ? raster.sourcePaths.assignments
+                  : undefined
+              })
+            ]
+          : []),
         createIsochronesDecodeNode<Parameters>(graph, {
           id: `${id}-decode`,
           mode,

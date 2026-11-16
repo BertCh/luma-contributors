@@ -4,21 +4,27 @@
 
 import {
   createTransientView,
+  GPUReduction,
   validatePackedUint32View,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
-import {
-  createWGSLKernelNode,
-  type WGSLKernelBinding
-} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {type WGSLKernelBinding} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {createStatisticsKernelNode as createWGSLKernelNode} from '../spatial-weights/statistics-kernel-node';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateSpatialStatisticsBindings} from '../spatial-weights/spatial-statistics-bindings';
+import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {
+  validateGPUStatusPort,
+  type GPUInvalidStatusPort
+} from '../../analysis-core/contracts/status';
+import {validateCapacity} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createFloat32ValuesNodes,
   validateFloat32OrUint32Values,
@@ -26,9 +32,16 @@ import {
 } from '../spatial-weights/float32-values';
 import {SPATIAL_AUTOCORRELATION_FLOAT_WGSL} from '../spatial-autocorrelation/spatial-autocorrelation-kernels';
 
+import {
+  resolveStatisticsPopulationCount,
+  type SpatialStatisticsPopulationOutput
+} from '../spatial-weights/spatial-statistics-population-output';
+
 const OPERATION = 'GPUEmpiricalBayesRates';
 /** Lanes of the reduction workgroups. */
 const LANES = 256;
+/** Padding the last workgroup must leave uint32 row indices and reduction counts in range. */
+const MAXIMUM_EMPIRICAL_BAYES_ROWS = 0xffffffff - LANES;
 
 /** Fields of the `summary` view of {@link GPUEmpiricalBayesRates}. */
 export const GPU_EMPIRICAL_BAYES_SUMMARY = {
@@ -51,7 +64,11 @@ export const GPU_EMPIRICAL_BAYES_SUMMARY = {
 } as const;
 
 /** Caller-owned outputs of {@link GPUEmpiricalBayesRates}; at least one must be given. */
-export type GPUEmpiricalBayesRatesOutput = {
+export type GPUEmpiricalBayesRatesOutput = SpatialStatisticsPopulationOutput & {
+  // Exact population cardinality uses includedCount; legacy count remains an alias.
+  // summary.count retains its compatible float32 layout.
+  /** Unmasked non-finite events or invalid populations (non-finite or non-positive). */
+  status?: GPUInvalidStatusPort;
   /**
    * Optional caller-owned Assunção-Reis standardized rate per row (esda `assuncao_rate`), quiet NaN
    * for excluded rows. This is the column to give `GPULocalMoran` and `GPUGlobalSpatialStatistics`
@@ -132,13 +149,16 @@ export class GPUEmpiricalBayesRates implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUEmpiricalBayesRatesProps;
+  private readonly populationCount?: GraphDataView<'uint32'>;
 
   constructor(props: GPUEmpiricalBayesRatesProps) {
     const id = props.id ?? 'empirical-bayes-rates';
     this.id = id;
     this.props = props;
+    this.populationCount = resolveStatisticsPopulationCount(id, props.output);
     const {output} = props;
     const rows = validateFloat32OrUint32Values(props.events, `${id} events`);
+    validateCapacity(id, 'events rows', rows, 1, MAXIMUM_EMPIRICAL_BAYES_ROWS);
     if (rows < 1) {
       throw new Error(`${id} events must hold at least one row`);
     }
@@ -175,10 +195,23 @@ export class GPUEmpiricalBayesRates implements GPUCommandNodeProducer {
       !output.smoothedRates &&
       !output.rawRates &&
       !output.summary &&
-      !output.excessRisk
+      !output.excessRisk &&
+      !this.populationCount &&
+      !output.status?.invalidCount
     ) {
       throw new Error(`${id} requests no output`);
     }
+    validateGPUStatusPort(id, output.status ?? {});
+    for (const [name, view] of [
+      [output.includedCount ? 'includedCount' : 'count', this.populationCount],
+      ['status.invalidCount', output.status?.invalidCount]
+    ] as const) {
+      if (view) {
+        validateSinglePackedView(view, ['uint32'], `${id} output.${name}`);
+        validateCapacity(id, `output.${name} length`, view.length, 1, 1);
+      }
+    }
+    validateDisjointWritableViews(id, {...output, status: undefined, ...output.status});
     validateGraphOutputsDisjointFromInputs(
       id,
       [
@@ -186,7 +219,9 @@ export class GPUEmpiricalBayesRates implements GPUCommandNodeProducer {
         output.smoothedRates,
         output.rawRates,
         output.summary,
-        output.excessRisk
+        output.excessRisk,
+        this.populationCount,
+        output.status?.invalidCount
       ],
       [props.events, props.populations, props.mask]
     );
@@ -197,6 +232,11 @@ export class GPUEmpiricalBayesRates implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
+    validateSpatialStatisticsBindings(graph, id, props, {
+      'summary moments': GPU_EMPIRICAL_BAYES_SUMMARY.length * 4,
+      'row conversion and invalid flags': props.events.length * 4,
+      'three-column partials': Math.ceil(props.events.length / LANES) * 3 * 4
+    });
     const {mask, output} = props;
     validateGraphViewsBelongToGraph(id, graph, [
       props.events,
@@ -224,6 +264,9 @@ export class GPUEmpiricalBayesRates implements GPUCommandNodeProducer {
     const summary =
       output.summary ??
       createTransientView(graph, `${id}-summary`, 'float32', GPU_EMPIRICAL_BAYES_SUMMARY.length);
+    const countPartials = createTransientView(graph, `${id}-count-partials`, 'uint32', groups);
+    const exactCount =
+      this.populationCount ?? createTransientView(graph, `${id}-count`, 'uint32', 1);
     const S = GPU_EMPIRICAL_BAYES_SUMMARY;
     const clampPriorVariance = props.clampPriorVariance ?? true;
     const constants = `const ROWS: u32 = ${rows}u;
@@ -269,7 +312,8 @@ fn reduceSum(value: f32, lane: u32) -> f32 {
           {name: 'events', view: events, type: 'f32', access: 'read'},
           {name: 'populations', view: populations, type: 'f32', access: 'read'},
           ...maskBinding,
-          {name: 'partialsA', view: partialsA, type: 'f32', access: 'read_write'}
+          {name: 'partialsA', view: partialsA, type: 'f32', access: 'read_write'},
+          {name: 'countPartials', view: countPartials, type: 'u32', access: 'read_write'}
         ],
         invocationCount: groups * LANES,
         workgroupSize: LANES,
@@ -282,11 +326,18 @@ fn reduceSum(value: f32, lane: u32) -> f32 {
   let eventSum = reduceSum(select(0.0, e, included), lane);
   let populationSum = reduceSum(select(0.0, b, included), lane);
   if (lane == 0u) {
+    countPartials[countPartialsOffset + group] = u32(count);
     partialsA[partialsAOffset + group] = count;
     partialsA[partialsAOffset + GROUPS + group] = eventSum;
     partialsA[partialsAOffset + 2u * GROUPS + group] = populationSum;
   }`
       }),
+      ...new GPUReduction({
+        id: `${id}-exact-count`,
+        input: countPartials,
+        output: exactCount,
+        operation: 'sum'
+      }).getCommandNodes(graph),
       // One workgroup per column sums the block partials: lane l takes blocks l, l + 256, ...
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-totals-a`,
@@ -343,6 +394,7 @@ fn reduceSum(value: f32, lane: u32) -> f32 {
         variant: 'summary',
         bindings: [
           {name: 'totalsA', view: totalsA, type: 'f32', access: 'read'},
+          {name: 'exactCount', view: exactCount, type: 'u32', access: 'read'},
           {name: 'partialsB', view: partialsB, type: 'f32', access: 'read'},
           {name: 'summary', view: summary, type: 'f32', access: 'read_write'}
         ],
@@ -357,17 +409,17 @@ fn reduceSum(value: f32, lane: u32) -> f32 {
   }
   let deviationSum = reduceSum(sum, lane);
   if (lane == 0u) {
-    let count = totalsA[totalsAOffset];
+    let count = exactCount[exactCountOffset];
     let eventSum = totalsA[totalsAOffset + 1u];
     let populationSum = totalsA[totalsAOffset + 2u];
     let pooledRate = eventSum / populationSum;
     let weightedVariance = deviationSum / populationSum;
-    summary[summaryOffset + ${S.count}u] = count;
+    summary[summaryOffset + ${S.count}u] = f32(count);
     summary[summaryOffset + ${S.eventSum}u] = eventSum;
     summary[summaryOffset + ${S.populationSum}u] = populationSum;
     summary[summaryOffset + ${S.pooledRate}u] = pooledRate;
     summary[summaryOffset + ${S.weightedRateVariance}u] = weightedVariance;
-    let priorVariance = weightedVariance - pooledRate / (populationSum / count);
+    let priorVariance = weightedVariance - pooledRate / (divideBySpatialCount(populationSum, count));
     summary[summaryOffset + ${S.priorVariance}u] = priorVariance;
     summary[summaryOffset + ${S.clampedPriorVariance}u] = max(priorVariance, 0.0);
     for (var field = ${S.clampedPriorVariance + 1}u; field < ${S.length}u; field++) {
@@ -377,6 +429,31 @@ fn reduceSum(value: f32, lane: u32) -> f32 {
       })
     ];
 
+    if (output.status?.invalidCount) {
+      const invalidFlags = createTransientView(graph, `${id}-invalid-flags`, 'uint32', rows);
+      nodes.push(
+        createWGSLKernelNode(graph, {
+          id: `${id}-invalid-flags`,
+          operation: OPERATION,
+          invocationCount: rows,
+          bindings: [
+            {name: 'events', view: events, type: 'f32', access: 'read'},
+            {name: 'populations', view: populations, type: 'f32', access: 'read'},
+            ...maskBinding,
+            {name: 'invalidFlags', view: invalidFlags, type: 'u32', access: 'read_write'}
+          ],
+          declarations: constants,
+          body: `let e = events[eventsOffset + index]; let b = populations[populationsOffset + index];
+  invalidFlags[invalidFlagsOffset + index] = u32(${mask ? 'mask[maskOffset + index] != 0u && ' : ''}!(isFiniteFloat(e) && isFiniteFloat(b) && b > 0.0));`
+        }),
+        ...new GPUReduction({
+          id: `${id}-invalid-count`,
+          input: invalidFlags,
+          output: output.status.invalidCount,
+          operation: 'sum'
+        }).getCommandNodes(graph)
+      );
+    }
     const outputBindings: WGSLKernelBinding[] = [];
     const outputWGSL: string[] = [];
     const excludedWGSL: string[] = [];
@@ -392,6 +469,7 @@ fn reduceSum(value: f32, lane: u32) -> f32 {
         excludedWGSL.push(`${name}[${name}Offset + index] = nan;`);
       }
     }
+    if (outputBindings.length === 0) return nodes;
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-rates`,

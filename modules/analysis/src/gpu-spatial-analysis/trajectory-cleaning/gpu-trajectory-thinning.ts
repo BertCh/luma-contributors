@@ -3,6 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  validateTrajectoryBindings,
+  validateTrajectoryWritableDispatches,
+  validateTrajectoryOutputRanges
+} from '../trajectory-analysis/trajectory-binding-validation';
+import {
   createTransientView,
   GPUCompaction,
   type GPUCommandGraph,
@@ -84,7 +89,7 @@ export function getGPUTrajectoryThinningParameterValues(
   settings: GPUTrajectoryThinningSettings,
   target: Float32Array = new Float32Array(GPU_TRAJECTORY_THINNING_PARAMETER_LENGTH)
 ): Float32Array {
-  if (!Number.isFinite(settings.tolerance) || settings.tolerance < 0) {
+  if (!Number.isFinite(Math.fround(settings.tolerance)) || settings.tolerance < 0) {
     throw new Error('Thinning tolerance must be finite and non-negative');
   }
   target.set([settings.tolerance, 0, 0, 0]);
@@ -192,6 +197,20 @@ export class GPUTrajectoryThinning implements GPUCommandNodeProducer {
       validateSinglePackedView(output.timestamps, [timestamps.format], `${id} output.timestamps`);
       validateViewLength(id, 'output.timestamps', output.timestamps, this.capacity);
     }
+    validateTrajectoryOutputRanges(this.id, this.props.output);
+    validateTrajectoryWritableDispatches(this.id, [
+      {positions: output.positions, timestamps: output.timestamps},
+      {
+        count: output.status.count,
+        overflow: output.status.overflow,
+        requiredCount: output.status.requiredCount
+      }
+    ]);
+    validateGraphOutputsDisjointFromInputs(
+      id,
+      [output.positions, output.timestamps],
+      [output.rowIds]
+    );
     validateGraphOutputsDisjointFromInputs(id, this.getOutputViews(), [
       positions,
       timestamps,
@@ -236,6 +255,7 @@ export class GPUTrajectoryThinning implements GPUCommandNodeProducer {
       rowCount * 8,
       'split the tracks over several graphs'
     );
+    validateTrajectoryBindings(graph, this.id, this.props);
     const timeMode = getTrajectoryTimeMode(props);
     const radius = getGPUGreatCircleRadius(this.spatialContext);
     const rowStarts = createTransientView(graph, `${id}-row-starts`, 'uint32', rowCount);
@@ -336,20 +356,24 @@ export class GPUTrajectoryThinning implements GPUCommandNodeProducer {
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-offsets`,
         operation: OPERATION,
-        invocationCount: 1,
+        invocationCount: trackCount + 1,
         bindings: [
-          {name: 'rowCount', view: keep, type: 'u32', access: 'read'},
+          {name: 'keptRows', view: keptRows, type: 'u32', access: 'read'},
+          {name: 'keptTotal', view: keptTotal, type: 'u32', access: 'read'},
           {name: 'trackOffsets', view: trackOffsets, type: 'u32', access: 'read'},
           {name: 'outOffsets', view: output.trackOffsets, type: 'u32', access: 'read_write'}
         ],
-        body: `var accumulated = 0u;
-  outOffsets[outOffsetsOffset] = 0u;
-  for (var track = 0u; track < ${trackCount}u; track++) {
-    let begin = min(trackOffsets[trackOffsetsOffset + track], ${rowCount}u);
-    let end = min(trackOffsets[trackOffsetsOffset + track + 1u], ${rowCount}u);
-    for (var row = begin; row < end; row++) { accumulated += rowCount[rowCountOffset + row]; }
-    outOffsets[outOffsetsOffset + track + 1u] = min(accumulated, ${capacity}u);
-  }`
+        // Stable compaction preserves source-row order. Each track boundary independently
+        // searches the compact list, including duplicate boundaries for empty tracks.
+        body: `let boundary = min(trackOffsets[trackOffsetsOffset + index], ${rowCount}u);
+  var low = 0u;
+  var high = min(keptTotal[keptTotalOffset], ${rowCount}u);
+  while (low < high) {
+    let middle = low + (high - low) / 2u;
+    if (keptRows[keptRowsOffset + middle] < boundary) { low = middle + 1u; }
+    else { high = middle; }
+  }
+  outOffsets[outOffsetsOffset + index] = min(low, ${capacity}u);`
       }),
       createPublishNode<Parameters>(graph, {
         id: `${id}-publish`,

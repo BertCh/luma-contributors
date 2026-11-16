@@ -111,12 +111,18 @@ function createFixture(device: Device, distanceValue: number): Fixture {
     buffers,
     distance,
     importInput: (name, values, format, length) => {
-      const buffer = createInputBuffer(device, values);
+      // An empty chunk still binds one backing row (validateGraphChunkBindingRanges).
+      const buffer = createInputBuffer(
+        device,
+        values.length > 0
+          ? values
+          : new (values.constructor as Uint32ArrayConstructor)(format === 'float32x2' ? 2 : 1)
+      );
       buffers.push(buffer);
       return importGraphBuffer(graph, name, buffer, format, length);
     },
     importOutput: (name, length, format) => {
-      const buffer = createOutputBuffer(device, length);
+      const buffer = createOutputBuffer(device, Math.max(length, 1));
       buffers.push(buffer);
       return {
         buffer,

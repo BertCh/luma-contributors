@@ -58,7 +58,13 @@ function isLess(left: number, right: number): boolean {
 }
 
 /** Operation of an oracle aggregate. */
-export type OracleAggregateOperation = 'count' | 'sum' | 'mean' | 'minimum' | 'maximum';
+export type OracleAggregateOperation =
+  | 'count'
+  | 'sum'
+  | 'mean'
+  | 'minimum'
+  | 'maximum'
+  | 'count-distinct';
 
 /** Inputs of {@link joinOnCPU}. */
 export type OracleJoinInput = {
@@ -151,7 +157,9 @@ export function joinOnCPU(input: OracleJoinInput): OracleJoinResult {
     for (const [index, aggregate] of (input.aggregates ?? []).entries()) {
       const out = result.aggregates[index];
       if (!rows) {
-        out.values.push(aggregate.operation === 'count' ? 0 : NaN);
+        out.values.push(
+          aggregate.operation === 'count' || aggregate.operation === 'count-distinct' ? 0 : NaN
+        );
         out.sums.push(0n);
         continue;
       }
@@ -178,6 +186,9 @@ export function joinOnCPU(input: OracleJoinInput): OracleJoinResult {
       switch (aggregate.operation) {
         case 'count':
           out.values.push(aggregate.values ? finite.length : rows.length);
+          break;
+        case 'count-distinct':
+          out.values.push(Math.fround(new Set(finite).size));
           break;
         case 'sum':
           out.values.push(decoded);

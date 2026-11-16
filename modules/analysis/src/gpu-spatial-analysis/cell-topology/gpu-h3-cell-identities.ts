@@ -4,61 +4,178 @@
 // SPDX-FileCopyrightText: Copyright 2020-2021 Uber Technologies, Inc.
 // Vertex ownership and orientation follow H3 vertex.c (Apache-2.0).
 import {
+  createGPUComputeCommandNode,
+  getBoundedDispatchLayout,
+  getViewBinding,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
-  type GraphDataView
+  type GraphDataView,
+  type GraphVectorView
 } from '@luma.gl/graph/gpu-core';
-import {dggs} from '@luma.gl/shaders';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {Kernel} from '@luma.gl/graph';
 import {
+  createGraphChunkDispatchParameters,
+  planGraphChunkDispatch,
+  validateDisjointWritableViews,
+  validateGraphChunkBindingRanges,
+  validateGraphChunkDispatchBindings,
+  type GraphChunkDispatchPlan
+} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {
+  getGraphViewChunks,
+  validateCommandNodeBudget,
+  validateMaximumCount,
+  validateRequirement,
+  validateCapacity,
   validateSinglePackedView,
-  validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import type {WGSLKernelProps} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+
+import {dggs} from '@luma.gl/shaders';
+
 import {H3_NEIGHBOR_WGSL} from './h3-neighbor-wgsl';
 import {CELL_INDEX_H3_BASE_CELL_PACKED_TABLE} from '../cell-indexing/h3-index-tables';
+
+/** Fixed workgroup size makes chunk lengths runtime dispatch metadata. */
+const CHUNK_WORKGROUP_SIZE = 256;
+/** Storage component indices of whole fixed-stride records cannot wrap uint32. */
+const MAXIMUM_CHUNK_COMPONENT_COUNT = 0xffffffff;
+/** Guard padded workgroups before multiplying their index into a uint32 invocation index. */
+const MAXIMUM_LINEAR_WORKGROUP_COUNT = 16777216;
 
 export type GPUH3CellIdentitiesProps = {
   id?: string;
   /** Little-endian (low, high) H3 cells. Invalid cells produce zeros. */
-  cells: GraphDataView<'uint32x2'>;
+  cells: GraphDataView<'uint32x2'> | GraphVectorView<'uint32x2'>;
   operation: 'directed-edges' | 'vertices';
   /** Six little-endian keys per cell. Edge slot d-1 is direction d; deleted pentagon edge is zero.
    * Vertex slots follow cellToVertexes; pentagon slot 5 is zero. These are H3 edge/vertex IDs,
    * not cell IDs, and must not be passed to cell-only APIs.
    */
-  output: GraphDataView<'uint32x2'>;
+  output: GraphDataView<'uint32x2'> | GraphVectorView<'uint32x2'>;
 };
 
-/** Exact integer H3 directed edge and canonical vertex identities, including pentagons and faces. */
+/**
+ * Exact integer H3 directed edge and canonical vertex identities, including pentagons and faces.
+ *
+ * Accepts packed or chunked row inputs; output chunks mirror inputs and keep whole fixed-stride records.
+ */
 export class GPUH3CellIdentities implements GPUCommandNodeProducer {
   readonly id: string;
+  /** Upload plus one dispatch per nonempty chunk. */
+  readonly estimatedCommandNodeCount: number;
+  private readonly chunkPlan: GraphChunkDispatchPlan;
+  private readonly recordChunks: Readonly<Record<string, readonly GraphDataView[]>>;
+
   constructor(readonly props: GPUH3CellIdentitiesProps) {
     this.id = props.id ?? 'h3-cell-identities';
-    validateSinglePackedView(props.cells, ['uint32x2'], this.id);
-    validateSinglePackedView(props.output, ['uint32x2'], this.id);
-    if (props.output.length !== props.cells.length * 6)
-      throw new Error('H3 identities require six output rows per cell');
+    const id = this.id;
+    validateRequirement(
+      id,
+      ['directed-edges', 'vertices'].includes(props.operation),
+      "operation must be 'directed-edges' or 'vertices'"
+    );
+    this.chunkPlan = planGraphChunkDispatch(id, {cells: props.cells});
+    validateCapacity(id, 'cells row count', this.chunkPlan.totalLength, 0);
+    for (const chunk of this.chunkPlan.chunks) {
+      if (chunk.views['cells'])
+        validateSinglePackedView(
+          chunk.views['cells'],
+          ['uint32x2'],
+          `${id} cells chunk ${chunk.chunkIndex}`
+        );
+      validateMaximumCount(
+        id,
+        'cells chunk components',
+        chunk.length * 2,
+        MAXIMUM_CHUNK_COMPONENT_COUNT
+      );
+    }
+    const recordChunks: Record<string, readonly GraphDataView[]> = {};
+    recordChunks['identities'] = props.output ? getGraphViewChunks(props.output) : [];
+    if (props.output) {
+      validateRequirement(
+        id,
+        props.output.length === this.chunkPlan.totalLength * 6,
+        'output length must equal input rows * record stride'
+      );
+      validateRequirement(
+        id,
+        recordChunks['identities'].length === this.chunkPlan.chunks.length,
+        'output must match input chunk topology'
+      );
+      for (const chunk of this.chunkPlan.chunks) {
+        const view = recordChunks['identities'][chunk.chunkIndex];
+        validateSinglePackedView(view, ['uint32x2'], `${id} identities chunk ${chunk.chunkIndex}`);
+        validateRequirement(
+          id,
+          view.length === chunk.length * 6,
+          `output chunk ${chunk.chunkIndex} length must equal input chunk rows * record stride`
+        );
+        validateMaximumCount(
+          id,
+          'identities chunk components',
+          view.length * 2,
+          MAXIMUM_CHUNK_COMPONENT_COUNT
+        );
+      }
+    }
+    this.recordChunks = recordChunks;
+    validateDisjointWritableViews(id, {output: props.output});
+    this.estimatedCommandNodeCount =
+      (this.chunkPlan.chunks.length > 0 ? 1 : 0) + this.chunkPlan.nonemptyChunkCount;
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     validateGraphOutputsDisjointFromInputs(this.id, [props.output], [props.cells]);
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    validateGraphViewsBelongToGraph(id, graph, [props.cells, props.output]);
-    return [
-      createWGSLKernelNode(graph, {
+    validateMaximumCount(
+      id,
+      'storage bindings',
+      3,
+      graph.device.limits.maxStorageBuffersPerShaderStage
+    );
+    validateGraphChunkDispatchBindings(graph, id, this.chunkPlan);
+    validateGraphChunkBindingRanges(graph, id, {output: props.output});
+    const invocationsPerRow = 6;
+    const layouts = this.chunkPlan.chunks.map(chunk =>
+      getBoundedDispatchLayout(
         id,
-        operation: 'GPUH3CellIdentities',
-        variant: props.operation,
-        invocationCount: props.cells.length * 6,
-        bindings: [
-          {name: 'cells', view: props.cells, type: 'u32', access: 'read'},
-          {name: 'output', view: props.output, type: 'u32', access: 'read_write'}
-        ],
-        declarations: `${dggs.source}\n${H3_NEIGHBOR_WGSL}\n${H3_VERTEX_IDENTITY_WGSL}`,
-        body: `let row = index / 6u; let slot = index % 6u;
+        Math.max(chunk.length * invocationsPerRow, 1),
+        CHUNK_WORKGROUP_SIZE,
+        graph.device.limits.maxComputeWorkgroupsPerDimension
+      )
+    );
+    const {slots, nodes} = createGraphChunkDispatchParameters(graph, {
+      id: `${id}-chunks`,
+      plan: this.chunkPlan
+    });
+    // Every chunk closes over the same source string, including assembled fp64 modules.
+    let sharedShaderSource: string | undefined;
+    const chunkNodes = this.chunkPlan.chunks
+      .filter(chunk => chunk.length > 0)
+      .map(chunk => {
+        const kernelProps: WGSLKernelProps<Parameters> = {
+          id,
+          operation: 'GPUH3CellIdentities',
+          variant: props.operation,
+          invocationCount: chunk.length * invocationsPerRow,
+          bindings: [
+            {name: 'chunkParameters', view: slots[chunk.chunkIndex], type: 'u32', access: 'read'},
+            {name: 'cells', view: chunk.views['cells'], type: 'u32', access: 'read'},
+            {
+              name: 'output',
+              view: this.recordChunks['identities'][chunk.chunkIndex],
+              type: 'u32',
+              access: 'read_write'
+            }
+          ],
+          declarations: `${dggs.source}\n${H3_NEIGHBOR_WGSL}\n${H3_VERTEX_IDENTITY_WGSL}`,
+          body: `let row = index / 6u; let slot = index % 6u;
   let cell = vec2u(cells[cellsOffset + row * 2u + 1u], cells[cellsOffset + row * 2u]);
   var key = vec2u(0u);
   if (dggs_h3_is_valid_cell_id(cell)) {
@@ -71,8 +188,84 @@ export class GPUH3CellIdentities implements GPUCommandNodeProducer {
   }
   output[outputOffset + index * 2u] = key.y;
   output[outputOffset + index * 2u + 1u] = key.x;`
-      })
-    ];
+        };
+        const storageDeclarations = kernelProps.bindings
+          .map(
+            (binding, location) =>
+              `@group(0) @binding(${location}) var<storage, ${binding.access}> ${binding.name}: array<${binding.type}>;`
+          )
+          .join('\n');
+        const bindingComponentCounts: Record<string, number> = {cells: 2, output: 6 * 2};
+        const bindingOffsets = kernelProps.bindings
+          .filter(binding => binding.name !== 'chunkParameters')
+          .map(
+            binding =>
+              `let ${binding.name}Offset = arrayLength(&${binding.name}) - rowCount * ${bindingComponentCounts[binding.name]}u;`
+          )
+          .join('\n  ');
+        const source =
+          sharedShaderSource ??
+          `${storageDeclarations}
+${kernelProps.declarations ?? ''}
+@compute @workgroup_size(${CHUNK_WORKGROUP_SIZE})
+fn main(@builtin(workgroup_id) workgroupId: vec3u,
+  @builtin(num_workgroups) workgroupCount: vec3u,
+  @builtin(local_invocation_index) localInvocationIndex: u32) {
+  let workgroupIndex = (workgroupId.z * workgroupCount.y + workgroupId.y) * workgroupCount.x + workgroupId.x;
+  if (workgroupIndex >= ${MAXIMUM_LINEAR_WORKGROUP_COUNT}u) { return; }
+  let index = workgroupIndex * ${CHUNK_WORKGROUP_SIZE}u + localInvocationIndex;
+  let rowCount = chunkParameters[1];
+  if (index >= rowCount * ${invocationsPerRow}u) { return; }
+  ${bindingOffsets}
+  ${kernelProps.body}
+}`;
+        sharedShaderSource = source;
+        const kernelBindings = kernelProps.bindings;
+        const operationName = kernelProps.operation;
+        const layout = layouts[chunk.chunkIndex];
+        return createGPUComputeCommandNode<Parameters>({
+          id: `${kernelProps.id}-${chunk.chunkIndex}`,
+          resources: kernelProps.bindings.map(binding => ({
+            buffer: binding.view,
+            usage: binding.access === 'read' ? 'storage-read' : 'storage-read-write'
+          })),
+          workload: {
+            operation: kernelProps.operation,
+            ...(kernelProps.variant ? {variant: kernelProps.variant} : {}),
+            commandCount: 1,
+            maximumWorkgroupCount: layout.x * layout.y * layout.z,
+            maximumInvocationCount: chunk.length * invocationsPerRow
+          },
+          compile: ({device}) => {
+            const kernel = new Kernel(device, {
+              id: operationName,
+              source,
+              shaderLayout: {
+                bindings: kernelBindings.map((binding, location) => ({
+                  name: binding.name,
+                  group: 0,
+                  location,
+                  type: binding.access === 'read' ? 'read-only-storage' : 'storage'
+                }))
+              }
+            });
+            return {
+              encode: ({computePass, getBuffer}) =>
+                kernel.dispatch(computePass, {
+                  bindings: Object.fromEntries(
+                    kernelBindings.map(binding => [
+                      binding.name,
+                      getViewBinding(binding.view, getBuffer)
+                    ])
+                  ),
+                  ...layout
+                }),
+              destroy: () => kernel.destroy()
+            };
+          }
+        });
+      });
+    return [...nodes, ...chunkNodes];
   }
 }
 

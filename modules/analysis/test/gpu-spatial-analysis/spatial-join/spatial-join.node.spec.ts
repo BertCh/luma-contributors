@@ -4,7 +4,7 @@
 
 import type {GPUSpatialContext} from '../../../src/analysis-core/contracts/spatial-context';
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {expect, it} from 'vitest';
+import {expect, it, vi} from 'vitest';
 import {
   GPUNearestFeatureJoin,
   GPUPointInPolygonJoin,
@@ -118,10 +118,14 @@ it('GPUPointInPolygonJoin schedules nodes in dependency order', () => {
     'j-bounds',
     'j-clear',
     'j-probe',
-    'j-probe-scan-level-0-scan',
-    'j-probe-total',
-    'j-probe-carry',
+    'j-probe-scan-clear-high',
+    'j-probe-scan-low-level-0-scan',
+    'j-probe-scan-carry-0',
+    'j-probe-scan-high-level-0-scan',
+    'j-probe-scan-saturate',
+    'j-probe-write-query-range',
     'j-probe-write',
+    'j-page-count',
     'j-candidate-dispatch',
     'j-classify',
     'j-resolve',
@@ -177,9 +181,11 @@ it('GPUNearestFeatureJoin schedules nodes in dependency order', () => {
     'n-bounds',
     'n-clear',
     'n-probe',
-    'n-probe-scan-level-0-scan',
-    'n-probe-total',
-    'n-probe-carry',
+    'n-probe-scan-clear-high',
+    'n-probe-scan-low-level-0-scan',
+    'n-probe-scan-carry-0',
+    'n-probe-scan-high-level-0-scan',
+    'n-probe-scan-saturate',
     'n-probe-write',
     'n-candidate-dispatch',
     'n-expand',
@@ -909,7 +915,7 @@ it('GPUNearestFeatureJoin stays within 8 storage buffers with every filter enabl
   device.destroy();
 });
 
-it('GPUSpatialPredicateJoin rejects capacities whose cooperative lanes overflow u32', () => {
+it('GPUSpatialPredicateJoin bounds cooperative lanes per tile while paging larger global capacities', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   const left = createTransientView(graph, 'c-left', 'float32x2', 4);
@@ -936,16 +942,39 @@ it('GPUSpatialPredicateJoin rejects capacities whose cooperative lanes overflow 
     });
   // The fast engine has one lane per candidate, so a very large capacity is still accepted.
   expect(() => createJoin({candidateCapacity: 2 ** 30})).not.toThrow();
-  // Cooperative dwithin launches 64 lanes per candidate, the relate engine 256.
+  expect(() => createJoin({candidateCapacity: 0x7fffffff})).toThrow(
+    /candidateCapacity.*2147483646/
+  );
+  // Cooperative dwithin launches 64 lanes per tile candidate, the relate engine 256.
   const distance = createTransientView(graph, 'c-distance', 'float32', 1);
   const dwithin = {predicate: 'dwithin', distance, engine: 'relate'} as const;
   expect(() => createJoin({...dwithin, candidateCapacity: 2 ** 26 - 1})).not.toThrow();
-  expect(() => createJoin({...dwithin, candidateCapacity: 2 ** 26})).toThrow(
-    /candidateCapacity exceeds 67108863/
-  );
-  expect(() =>
-    createJoin({predicate: 'relate', pattern: 'T********', candidateCapacity: 2 ** 24})
-  ).toThrow(/candidateCapacity exceeds 16777215/);
+  for (const [route, globalCapacity, maximumTile, laneCount] of [
+    [dwithin, 2 ** 26, 67108863, 64],
+    [{predicate: 'relate', pattern: 'T********'} as const, 2 ** 24, 16777215, 256]
+  ] as const) {
+    const paged = createJoin({...route, candidateCapacity: globalCapacity});
+    expect(paged.candidatePages.pageCount).toBeGreaterThan(1);
+    expect(paged.candidatePages.capacity * laneCount).toBeLessThanOrEqual(0xffffffff);
+    // A large synthetic device isolates uint32 invocation addressing from binding-size limits.
+    Object.defineProperty(device, 'limits', {
+      configurable: true,
+      value: {...device.limits, maxStorageBufferBindingSize: 2 ** 38, maxBufferSize: 2 ** 38}
+    });
+    const boundary = createJoin({
+      ...route,
+      candidateCapacity: globalCapacity,
+      candidateTileCapacity: maximumTile
+    });
+    expect(boundary.candidatePages.capacity).toBe(maximumTile);
+    expect(() =>
+      createJoin({
+        ...route,
+        candidateCapacity: globalCapacity,
+        candidateTileCapacity: maximumTile + 1
+      })
+    ).toThrow(new RegExp(`candidateTileCapacity.*${maximumTile}`));
+  }
   device.destroy();
 });
 
@@ -964,4 +993,50 @@ it('distance measurements reject Lambert frames and accept AEQD meters', () => {
     create({...lambert, frame: {...lambert.frame, kind: 'local-azimuthal-equidistant'}})
   ).not.toThrow();
   device.destroy();
+});
+
+it('two chunked query-sorted point-in-polygon joins prefix every declared resource and node', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const previousIds = new Set<string>();
+  try {
+    for (const id of ['first-join', 'second-join']) {
+      const props = createPolygonProps(graph, `input-${id}-`);
+      const vector = <Format extends 'float32x2' | 'uint32'>(name: string, format: Format) =>
+        createVectorView(
+          `input-${id}-${name}`,
+          format,
+          [2, 3, 5].map((length, index) =>
+            createTransientView(graph, `input-${id}-${name}-${index}`, format, length)
+          )
+        );
+      const contributor = new GPUPointInPolygonJoin({
+        ...props,
+        id,
+        querySort: true,
+        points: {kind: 'points', positions: vector('positions', 'float32x2')},
+        output: {
+          ...props.output,
+          pointFeatureIds: vector('assignments', 'uint32'),
+          candidateTruncated: vector('flags', 'uint32')
+        }
+      });
+      const declarations = vi.spyOn(graph, 'createTransientBuffer');
+      try {
+        const nodes = contributor.getCommandNodes(graph);
+        expect(declarations).toHaveBeenCalled();
+        for (const [descriptor] of declarations.mock.calls)
+          expect(descriptor.id).toMatch(new RegExp(`^${id}-`));
+        for (const node of nodes) {
+          expect(node.id.startsWith(`${id}-`)).toBe(true);
+          expect(previousIds.has(node.id)).toBe(false);
+        }
+        for (const node of nodes) previousIds.add(node.id);
+      } finally {
+        declarations.mockRestore();
+      }
+    }
+  } finally {
+    device.destroy();
+  }
 });

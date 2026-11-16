@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateWGSLIdentifier} from './wgsl-identifiers';
+
 /** Element type of the sorted storage array searched by {@link getBinarySearchWGSL}. @internal */
 export type BinarySearchKeyType = 'u32' | 'f32' | 'u64';
 
@@ -47,7 +49,9 @@ export function getBinarySearchWGSL(
   keyType: BinarySearchKeyType = 'u32',
   functionSuffix: string = bindingName.charAt(0).toUpperCase() + bindingName.slice(1)
 ): string {
-  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(bindingName) || !/^[A-Za-z0-9_]+$/.test(functionSuffix)) {
+  validateWGSLIdentifier('getBinarySearchWGSL', 'bindingName', bindingName);
+  validateWGSLIdentifier('getBinarySearchWGSL', 'binding offset', `${bindingName}Offset`);
+  if (!/^[\p{XID_Continue}]+$/u.test(functionSuffix)) {
     throw new Error(
       `getBinarySearchWGSL bindingName and functionSuffix must be WGSL identifiers, got ${bindingName}, ${functionSuffix}`
     );

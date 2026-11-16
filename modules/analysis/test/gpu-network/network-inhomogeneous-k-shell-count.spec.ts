@@ -74,7 +74,9 @@ async function expectAngNumerators(
   radii: number[],
   pairDistances: number[][],
   shellCounts: number[][],
-  eventNodes?: number[]
+  eventNodes?: number[],
+  verifyNormalized = false,
+  correction: 'ang' | 'none' = 'ang'
 ): Promise<void> {
   const graph = new GPUCommandGraph(device);
   const buffers: Buffer[] = [];
@@ -105,6 +107,7 @@ async function expectAngNumerators(
   };
   const events = eventNodes ?? Array.from({length: network.nodeCount}, (_, node) => node);
   const numerator = output('float32', radii.length);
+  const normalized = output('float32', radii.length);
   const status = output('uint32', radii.length);
   graph.add(
     new GPUNetworkInhomogeneousK({
@@ -115,9 +118,9 @@ async function expectAngNumerators(
       edgeNodes: input('uint32x2', network.edges.flat()),
       edgeLengths: input('float32', network.lengths),
       radii: input('float32', radii),
-      correction: 'ang',
+      correction,
       output: {
-        k: output('float32', radii.length).view,
+        k: normalized.view,
         numerator: numerator.view,
         normalization: output('float32', 3).view,
         status: status.view
@@ -127,6 +130,9 @@ async function expectAngNumerators(
   const compiled = graph.compile();
   submitGraph(device, compiled, undefined);
   const actual = await readFloat32(numerator.buffer, radii.length);
+  const actualNormalized = verifyNormalized
+    ? await readFloat32(normalized.buffer, radii.length)
+    : undefined;
   expect(await readUint32(status.buffer, radii.length)).toEqual(radii.map(() => 0));
   for (let radiusIndex = 0; radiusIndex < radii.length; radiusIndex++) {
     let expected = 0;
@@ -146,6 +152,13 @@ async function expectAngNumerators(
       }
     }
     expect(Math.abs(actual[radiusIndex] - expected)).toBeLessThanOrEqual(2e-5 * expected);
+    if (actualNormalized) {
+      const expectedNormalized =
+        expected / network.lengths.reduce((total, length) => total + length, 0);
+      expect(Math.abs(actualNormalized[radiusIndex] - expectedNormalized)).toBeLessThanOrEqual(
+        2e-5 * expectedNormalized
+      );
+    }
   }
   compiled.destroy();
   for (const buffer of buffers) {
@@ -580,4 +593,44 @@ it('Ang shell count takes nodes on the shell that a very short edge joins as one
       throw new Error(`${name}: ${(error as Error).message}`);
     }
   }
+});
+
+it('inhomogeneous K preserves mixed intensity scales and a large network-length divisor', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  await expectAngNumerators(
+    device,
+    {nodeCount: 2, edges: [[0, 1]], lengths: [1]},
+    [2e-38, 3e38].map(Math.fround),
+    [1.5],
+    [
+      [0, 1],
+      [1, 0]
+    ],
+    [
+      [0, 1],
+      [1, 0]
+    ],
+    undefined,
+    true,
+    'none'
+  );
+  const length = Math.fround(3e38);
+  await expectAngNumerators(
+    device,
+    {nodeCount: 2, edges: [[0, 1]], lengths: [length]},
+    [1e-19, 1e-19].map(Math.fround),
+    [Math.fround(3.2e38)],
+    [
+      [0, length],
+      [length, 0]
+    ],
+    [
+      [0, 1],
+      [1, 0]
+    ],
+    undefined,
+    true,
+    'none'
+  );
 });

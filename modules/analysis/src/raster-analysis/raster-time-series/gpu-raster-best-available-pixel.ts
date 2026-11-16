@@ -4,23 +4,26 @@
 
 import type {
   GraphDataView,
+  GraphVectorView,
   GPUCommandGraph,
   GPUCommandNode,
   GPUCommandNodeProducer
 } from '@luma.gl/graph/gpu-core';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  createRasterTimeSeriesKernelNode,
+  planRasterTimeSeriesChunks,
+  validateRasterTimeSeriesBindings,
+  validateRasterTimeSeriesViews,
+  type RasterTimeSeriesField,
+  type RasterTimeSeriesScalarView
+} from './raster-time-series-chunks';
 import {
   validateCapacity,
+  validateCommandNodeBudget,
   validateFiniteNumber,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {
-  RASTER_FINITE_WGSL,
-  rasterBinding,
-  validateRasterGraph,
-  validateRasterViews,
-  type RasterScalarView
-} from '../remote-sensing/raster-kernel-utils';
+import {RASTER_FINITE_WGSL, rasterBinding} from '../remote-sensing/raster-kernel-utils';
 
 /** Slices per cell: one invocation scores every slice in turn. */
 export const MAXIMUM_BEST_AVAILABLE_PIXEL_SLICE_COUNT = 256;
@@ -94,7 +97,9 @@ export function getGPURasterBestAvailablePixelParameterValues(
 }
 
 /** Properties of {@link GPURasterBestAvailablePixel}. */
-export type GPURasterBestAvailablePixelProps = {
+export type GPURasterBestAvailablePixelProps<
+  Rows extends GraphDataView<'uint32'> | GraphVectorView<'uint32'> = GraphDataView<'uint32'>
+> = {
   id?: string;
   cellCount: number;
   /** Slices in `[1, 256]`. */
@@ -106,26 +111,26 @@ export type GPURasterBestAvailablePixelProps = {
    */
   bandCount: number;
   /** Observations `(cell * sliceCount + slice) * bandCount + band`; required when `bandCount > 0`. */
-  values?: GraphDataView<'float32'>;
+  values?: RasterTimeSeriesField<'float32', Rows>;
   /** Per-observation QA `cell * sliceCount + slice`; zero (for example a cloud or shadow) rejects the observation. */
-  mask?: GraphDataView<'uint32'>;
+  mask?: RasterTimeSeriesField<'uint32', Rows>;
   /**
    * Distance in pixels from each observation to the nearest cloud or shadow pixel of its slice,
    * `cell * sliceCount + slice`, for example from `GPUDistanceField` run on each slice's mask.
    * Positive infinity means no cloud in reach. Without it the cloud score is zero.
    */
-  cloudDistance?: GraphDataView<'float32'>;
+  cloudDistance?: RasterTimeSeriesField<'float32', Rows>;
   /** Per-slice scene attributes: `[dayOfYear, year]` for slice `s` at `2 * s` and `2 * s + 1`. */
   sliceAttributes: GraphDataView<'float32'>;
   /** Float32, see {@link getGPURasterBestAvailablePixelParameterValues}. */
   parameters: GraphDataView<'float32'>;
   output: {
     /** Winning slice per cell, `0xffffffff` when no valid observation exists. */
-    bestSlice: GraphDataView<'uint32'>;
+    bestSlice: Rows;
     /** Winning score per cell, NaN when `bestSlice` is `0xffffffff`. */
-    bestScore: GraphDataView<'float32'>;
+    bestScore: RasterTimeSeriesField<'float32', Rows>;
     /** Optional composite `cell * bandCount + band` of the winning observation; NaN without one. */
-    composite?: GraphDataView<'float32'>;
+    composite?: RasterTimeSeriesField<'float32', Rows>;
   };
 };
 
@@ -136,12 +141,20 @@ export type GPURasterBestAvailablePixelProps = {
  * distance in days to the target day of year, and the cell takes the highest-scoring slice (the
  * earliest on ties). A missing cloud distance scores zero. The output is a real acquisition.
  *
+ * Cell-major fields accept packed views or matching vector chunks of complete cell records.
+ * Shared date, model and parameter tables remain packed.
+ *
  * Per-frame: `parameters`, `sliceAttributes` and the contents of the views. Compile-time:
  * `cellCount`, `sliceCount`, `bandCount` and which optional views exist.
  */
-export class GPURasterBestAvailablePixel implements GPUCommandNodeProducer {
+export class GPURasterBestAvailablePixel<
+  Rows extends GraphDataView<'uint32'> | GraphVectorView<'uint32'> = GraphDataView<'uint32'>
+> implements GPUCommandNodeProducer
+{
   readonly id: string;
-  constructor(readonly props: GPURasterBestAvailablePixelProps) {
+  readonly estimatedCommandNodeCount: number;
+  private readonly chunkProps: readonly GPURasterBestAvailablePixelProps<Rows>[];
+  constructor(readonly props: GPURasterBestAvailablePixelProps<Rows>) {
     const id = props.id ?? 'raster-best-available-pixel';
     this.id = id;
     validateCapacity(id, 'cellCount', props.cellCount);
@@ -186,10 +199,20 @@ export class GPURasterBestAvailablePixel implements GPUCommandNodeProducer {
           props.output.composite.length >= props.cellCount * props.bandCount),
       'output.bestSlice and bestScore must hold one entry per cell and composite cellCount times bandCount'
     );
-    validateRasterViews(id, this.getInputs(), this.getOutputs());
+    this.chunkProps = planRasterTimeSeriesChunks(id, props, {
+      values: props.sliceCount * props.bandCount,
+      mask: props.sliceCount,
+      cloudDistance: props.sliceCount,
+      'output.bestSlice': 1,
+      'output.bestScore': 1,
+      'output.composite': props.bandCount
+    });
+    this.estimatedCommandNodeCount = this.chunkProps.length * 1;
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
+    validateRasterTimeSeriesViews(id, this.getInputs(), this.getOutputs());
   }
 
-  private getInputs(): RasterScalarView[] {
+  private getInputs(): RasterTimeSeriesScalarView[] {
     const {values, mask, cloudDistance, sliceAttributes, parameters} = this.props;
     return [
       sliceAttributes,
@@ -200,7 +223,7 @@ export class GPURasterBestAvailablePixel implements GPUCommandNodeProducer {
     ];
   }
 
-  private getOutputs(): RasterScalarView[] {
+  private getOutputs(): RasterTimeSeriesScalarView[] {
     const {bestSlice, bestScore, composite} = this.props.output;
     return [bestSlice, bestScore, ...(composite ? [composite] : [])];
   }
@@ -208,7 +231,20 @@ export class GPURasterBestAvailablePixel implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {props, id} = this;
+    validateRasterTimeSeriesBindings(graph, this.id, [...this.getInputs(), ...this.getOutputs()]);
+    return this.chunkProps.flatMap((props, chunkIndex) =>
+      this.getChunkCommandNodes(graph, {
+        ...props,
+        id: `${this.id}-chunk-${chunkIndex}`
+      } as unknown as GPURasterBestAvailablePixelProps)
+    );
+  }
+
+  private getChunkCommandNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>,
+    props: GPURasterBestAvailablePixelProps
+  ): readonly GPUCommandNode<Parameters>[] {
+    const id = props.id!;
     const {
       sliceCount: slices,
       bandCount: bands,
@@ -219,9 +255,8 @@ export class GPURasterBestAvailablePixel implements GPUCommandNodeProducer {
       parameters,
       output
     } = props;
-    validateRasterGraph(id, graph, this.getInputs(), this.getOutputs());
     return [
-      createWGSLKernelNode<Parameters>(graph, {
+      createRasterTimeSeriesKernelNode<Parameters>(graph, {
         id,
         operation: 'GPURasterBestAvailablePixel',
         invocationCount: props.cellCount,

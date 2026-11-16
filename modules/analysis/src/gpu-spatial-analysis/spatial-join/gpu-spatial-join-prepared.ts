@@ -5,6 +5,7 @@
 import {Buffer} from '@luma.gl/core';
 import {
   createTransientView,
+  GPUBVH,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -12,7 +13,9 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {
   importGraphBuffer,
-  validateGraphViewsBelongToGraph,
+  getStorageBindingElementLimit,
+  validateCapacity,
+  validateSinglePackedView,
   validatePowerOfTwo,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -34,10 +37,33 @@ import {
   getPolygonEdgeLayoutLength,
   getPolygonEdgeLayoutNodes,
   getSortedFeatureBVHNodes,
+  validateDisjointOutputs,
   type SpatialJoinBVHStorage
 } from './spatial-join-passes';
-import {getPolygonEdgeSlabNodes, type PolygonEdgeSlabs} from './polygon-edge-slabs';
+import {
+  getPolygonEdgeSlabNodes,
+  POLYGON_EDGE_SLAB_PARAMS_STRIDE,
+  type PolygonEdgeSlabs
+} from './polygon-edge-slabs';
+import {
+  validateSpatialJoinBindings,
+  validateSpatialJoinReadWriteBindings
+} from './spatial-join-binding-preflight';
+import {validateGraphChunkGroupKernelSupport} from '../../analysis-core/kernels/graph-chunk-groups';
 import type {GPUSpatialJoinGeometry} from './spatial-join-types';
+
+/** Geometry lengths and every generated row address are uint32. */
+const SPATIAL_JOIN_PREPARED_MAXIMUM_ROWS = 0xffffffff;
+/** A complete binary tree has 2 * leafCapacity - 1 uint32-addressed nodes. */
+const SPATIAL_JOIN_PREPARED_MAXIMUM_LEAF_CAPACITY = 0x80000000;
+/** Published radix sort processes 256 keys per workgroup and four key bits per digit. */
+const SPATIAL_JOIN_PREPARED_SORT_WORKGROUP_SIZE = 256;
+/** Four-bit radix digits have sixteen histogram buckets. */
+const SPATIAL_JOIN_PREPARED_RADIX_BUCKET_COUNT = 16;
+/** Matches the shared edge-slab builder's default entry budget, including small geometries. */
+const SPATIAL_JOIN_PREPARED_SLAB_ENTRIES_PER_VERTEX = 4;
+/** The shared slab builder reserves at least this many optional edge entries. */
+const SPATIAL_JOIN_PREPARED_MINIMUM_SLAB_ENTRIES = 1024;
 
 /**
  * Persistent output storage of a {@link GPUSpatialJoinPrepared} handle.
@@ -141,6 +167,14 @@ export class GPUSpatialJoinPrepared implements GPUCommandNodeProducer {
     this.props = props;
     this.geometry = props.geometry;
     validateSpatialJoinGeometry(this.id, 'geometry', props.geometry);
+    for (const view of getSpatialJoinGeometryViews(props.geometry))
+      validateCapacity(
+        this.id,
+        'geometry view length',
+        view.length,
+        0,
+        SPATIAL_JOIN_PREPARED_MAXIMUM_ROWS
+      );
     this.featureCount = getSpatialJoinFeatureCount(props.geometry);
     this.partitioning = props.partitioning;
     if (this.partitioning) {
@@ -154,11 +188,48 @@ export class GPUSpatialJoinPrepared implements GPUCommandNodeProducer {
       throw new Error(`${this.id} edgeSlabs needs polygon geometry`);
     }
     this.leafCapacity = props.leafCapacity ?? getNextPowerOfTwo(Math.max(this.featureCount, 1));
-    validatePowerOfTwo(this.id, 'leafCapacity', this.leafCapacity);
+    validatePowerOfTwo(
+      this.id,
+      'leafCapacity',
+      this.leafCapacity,
+      1,
+      SPATIAL_JOIN_PREPARED_MAXIMUM_LEAF_CAPACITY
+    );
     this.spatialSort = props.spatialSort ?? getDefaultSpatialSort(this.featureCount);
     this.preparedStorage = props.storage;
     if (props.storage) {
       this.validateStorage(props.storage);
+      const {nodeMinima, nodeMaxima, nodeChildren, leafIds, count, overflow} = props.storage;
+      const featureRings =
+        props.geometry.kind === 'polygons' ? props.storage.featureRings : undefined;
+      validateDisjointOutputs(
+        this.id,
+        getSpatialJoinGeometryViews(props.geometry),
+        [nodeMinima, nodeMaxima, nodeChildren, leafIds, count, overflow, featureRings],
+        [{nodeMinima, nodeMaxima, nodeChildren, leafIds, count, overflow}]
+      );
+      // Ask the published builder which strategy this device uses. Fused builds bind every
+      // tree field writable; only the level route reads children while updating node bounds.
+      const hierarchy = new GPUBVH({
+        id: `${this.id}-storage-layout`,
+        minima: this.geometry.positions,
+        maxima: this.geometry.positions,
+        leafCapacity: this.leafCapacity,
+        nodeMinima,
+        nodeMaxima,
+        nodeChildren,
+        leafIds,
+        count,
+        overflow
+      });
+      if (hierarchy.resolvedStrategy === 'level' && this.leafCapacity > 1)
+        validateSpatialJoinReadWriteBindings(this.id, [nodeChildren], [nodeMinima, nodeMaxima]);
+      if (props.geometry.kind === 'polygons')
+        validateSpatialJoinReadWriteBindings(
+          this.id,
+          [props.geometry.featureOffsets, props.geometry.polygonOffsets],
+          [featureRings]
+        );
     }
   }
 
@@ -213,21 +284,40 @@ export class GPUSpatialJoinPrepared implements GPUCommandNodeProducer {
 
   private validateStorage(storage: GPUSpatialJoinPreparedStorage): void {
     const nodeCount = 2 * this.leafCapacity - 1;
-    const expectations: [string, GraphDataView | undefined, number][] = [
-      ['nodeMinima', storage.nodeMinima, nodeCount],
-      ['nodeMaxima', storage.nodeMaxima, nodeCount],
-      ['nodeChildren', storage.nodeChildren, nodeCount],
-      ['leafIds', storage.leafIds, this.leafCapacity],
-      ['count', storage.count, 1],
-      ['overflow', storage.overflow, 1]
+    const expectations: [
+      string,
+      GraphDataView | undefined,
+      number,
+      'float32x2' | 'uint32x2' | 'uint32'
+    ][] = [
+      ['nodeMinima', storage.nodeMinima, nodeCount, 'float32x2'],
+      ['nodeMaxima', storage.nodeMaxima, nodeCount, 'float32x2'],
+      ['nodeChildren', storage.nodeChildren, nodeCount, 'uint32x2'],
+      ['leafIds', storage.leafIds, this.leafCapacity, 'uint32'],
+      ['count', storage.count, 1, 'uint32'],
+      ['overflow', storage.overflow, 1, 'uint32']
     ];
     if (this.geometry.kind === 'polygons') {
-      expectations.push(['featureRings', storage.featureRings, this.featureCount]);
+      expectations.push(['featureRings', storage.featureRings, this.featureCount, 'uint32x2']);
     }
-    for (const [name, view, length] of expectations) {
+    for (const [name, view, length, format] of expectations) {
       if (!view || view.length < length) {
         throw new Error(`${this.id} storage.${name} needs ${length} rows`);
       }
+      validateSinglePackedView(view, [format], `${this.id} storage.${name}`);
+      validateCapacity(
+        this.id,
+        `storage.${name}.length`,
+        view.length,
+        length,
+        SPATIAL_JOIN_PREPARED_MAXIMUM_ROWS
+      );
+      if (name !== 'featureRings' && name !== 'count' && name !== 'overflow')
+        validateRequirement(
+          this.id,
+          view.length === length,
+          `storage.${name}.length must equal ${length} rows for the published BVH layout`
+        );
     }
   }
 
@@ -271,7 +361,8 @@ export class GPUSpatialJoinPrepared implements GPUCommandNodeProducer {
    */
   private getEdgeSlabNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>,
-    geometry: Extract<GPUSpatialJoinGeometry, {kind: 'polygons'}>
+    geometry: Extract<GPUSpatialJoinGeometry, {kind: 'polygons'}>,
+    entryCapacity: number
   ): GPUCommandNode<Parameters>[] {
     const {id} = this;
     const create = <Format extends 'uint32' | 'uint32x2'>(
@@ -291,6 +382,7 @@ export class GPUSpatialJoinPrepared implements GPUCommandNodeProducer {
       id: `${id}-edges`,
       operation: 'GPUSpatialJoinPrepared',
       owner: 'polygon',
+      entryCapacity: entryCapacity || undefined,
       positions: geometry.positions,
       polygonOffsets: geometry.polygonOffsets,
       ringOffsets: geometry.ringOffsets
@@ -341,6 +433,18 @@ export class GPUSpatialJoinPrepared implements GPUCommandNodeProducer {
     ];
   }
 
+  /** Mirrors the shared builder's binding-sized budget, before its transient declarations. */
+  private getEdgeSlabEntryCapacity<Parameters>(graph: GPUCommandGraph<Parameters>): number {
+    const vertexCount = this.geometry.positions.length;
+    return Math.min(
+      Math.max(0, getStorageBindingElementLimit(graph.device, 8, vertexCount)),
+      Math.max(
+        SPATIAL_JOIN_PREPARED_SLAB_ENTRIES_PER_VERTEX * vertexCount,
+        SPATIAL_JOIN_PREPARED_MINIMUM_SLAB_ENTRIES
+      )
+    );
+  }
+
   /**
    * Returns the bounds, feature-ring and BVH build nodes, each conditioned on the rebuild
    * decision of the current encoding.
@@ -352,20 +456,63 @@ export class GPUSpatialJoinPrepared implements GPUCommandNodeProducer {
     if (this.graph) {
       throw new Error(`${id} is already added to a graph`);
     }
-    // Validate the caller's views before allocating, so a rejected call leaves nothing behind.
-    validateGraphViewsBelongToGraph(id, graph, getSpatialJoinGeometryViews(geometry));
-    if (this.preparedStorage) {
-      const caller = this.preparedStorage;
-      validateGraphViewsBelongToGraph(id, graph, [
-        caller.nodeMinima,
-        caller.nodeMaxima,
-        caller.nodeChildren,
-        caller.leafIds,
-        caller.count,
-        caller.overflow,
-        caller.featureRings
-      ]);
+    // All caller ranges/usage and nested allocation envelopes precede persistent allocation,
+    // graph declaration and handle state changes, so a failed preflight is retryable.
+    const caller = this.preparedStorage;
+    const inputViews = Object.fromEntries(
+      getSpatialJoinGeometryViews(geometry).map((view, index) => [`geometry[${index}]`, view])
+    );
+    const treeNodeCount = 2 * this.leafCapacity - 1;
+    const sort = this.spatialSort && featureCount > 1;
+    const scratchBytes: Record<string, number> = {
+      'BVH node bounds/children': caller ? 0 : treeNodeCount * 8,
+      'BVH leaf IDs': caller ? 0 : this.leafCapacity * 4,
+      'BVH status': 4,
+      'feature bounds and sorted bounds': featureCount * 8,
+      'feature radix histogram': sort
+        ? SPATIAL_JOIN_PREPARED_RADIX_BUCKET_COUNT *
+          Math.ceil(featureCount / SPATIAL_JOIN_PREPARED_SORT_WORKGROUP_SIZE) *
+          4
+        : 0,
+      'feature sort tile/scene bounds': sort
+        ? Math.max(1, Math.ceil(featureCount / SPATIAL_JOIN_PREPARED_SORT_WORKGROUP_SIZE)) * 16
+        : 0,
+      'feature ring ranges': geometry.kind === 'polygons' && !caller ? featureCount * 8 : 0
+    };
+    const slabEntryCapacity = this.edgeSlabs ? this.getEdgeSlabEntryCapacity(graph) : 0;
+    if (this.edgeSlabs && geometry.kind === 'polygons') {
+      const vertexCount = geometry.positions.length;
+      const ownerCount = geometry.polygonOffsets.length - 1;
+      Object.assign(scratchBytes, {
+        'edge slab parameters': Math.max(ownerCount, 1) * POLYGON_EDGE_SLAB_PARAMS_STRIDE * 4,
+        'edge slab owner scans': (ownerCount + 1) * 4,
+        'edge slab ring owners': Math.max(geometry.ringOffsets.length - 1, 1) * 4,
+        'edge slab vertex owners': vertexCount * 4,
+        'edge slab counters/offsets': (Math.floor(vertexCount / 4) + 2) * 4,
+        'edge slab entries': (vertexCount + slabEntryCapacity) * 8,
+        'edge slab layout': getPolygonEdgeLayoutLength(vertexCount, featureCount) * 4
+      });
     }
+    validateSpatialJoinBindings(
+      graph,
+      id,
+      {
+        ...inputViews,
+        ...(caller
+          ? {
+              'storage.nodeMinima': caller.nodeMinima,
+              'storage.nodeMaxima': caller.nodeMaxima,
+              'storage.nodeChildren': caller.nodeChildren,
+              'storage.leafIds': caller.leafIds,
+              'storage.count': caller.count,
+              'storage.overflow': caller.overflow,
+              'storage.featureRings': geometry.kind === 'polygons' ? caller.featureRings : undefined
+            }
+          : {})
+      },
+      scratchBytes
+    );
+    validateGraphChunkGroupKernelSupport(graph, id, 8);
     this.graph = graph;
     if (!this.preparedStorage) {
       this.preparedStorage = this.allocateStorage(graph);
@@ -407,7 +554,7 @@ export class GPUSpatialJoinPrepared implements GPUCommandNodeProducer {
     nodes.push(...bvhNodes);
 
     if (this.edgeSlabs && geometry.kind === 'polygons') {
-      nodes.push(...this.getEdgeSlabNodes(graph, geometry));
+      nodes.push(...this.getEdgeSlabNodes(graph, geometry, slabEntryCapacity));
     }
 
     // Every node of one encoding sees the same decision: it is latched when the first node of the

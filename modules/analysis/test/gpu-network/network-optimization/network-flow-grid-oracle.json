@@ -1,0 +1,12 @@
+{
+  "oracle": "SciPy scipy.sparse.csgraph.maximum_flow, integral unit capacities",
+  "rows": 250,
+  "columns": 400,
+  "nodeCount": 100000,
+  "edgeCount": 199350,
+  "maximumFlow": 2,
+  "cutCapacity": 2,
+  "sourceReachable": [
+    0
+  ]
+}

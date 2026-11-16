@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateSpatialOutputViews} from '../spatial-clustering/spatial-output-validation';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {getGraphOutputViews} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createTransientView,
   GPUSort,
@@ -15,6 +18,7 @@ import {createFillNode, createWGSLKernelNode} from '../../analysis-core/kernels/
 import {
   validateCapacity,
   validateCommandNodeBudget,
+  validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView,
@@ -200,6 +204,25 @@ export class GPURedcapSingleLinkage implements GPUCommandNodeProducer {
       2 * (props.componentIterations ?? GPU_REDCAP_SINGLE_LINKAGE_DEFAULT_COMPONENT_ITERATIONS) +
       1;
     validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
+    validateSpatialOutputViews(
+      this.id,
+      Object.fromEntries(
+        getGraphOutputViews({
+          ...props.output,
+          status: {
+            converged: props.output.status?.converged,
+            iterationLimitReached: props.output.status?.iterationLimitReached,
+            invalidCount: props.output.status?.invalidCount
+          }
+        }).map((view, index) => [`output[${index}]`, view])
+      ),
+      [
+        {
+          read: [props.output.status?.converged],
+          write: [props.output.status?.iterationLimitReached]
+        }
+      ]
+    );
     validateGraphOutputsDisjointFromInputs(
       id,
       [props.output.labels, props.output.regionCount, ...Object.values(props.output.status ?? {})],
@@ -231,6 +254,36 @@ export class GPURedcapSingleLinkage implements GPUCommandNodeProducer {
     const rows = weights.offsets.length - 1;
     const slots = weights.neighbors.length;
     const edgeCapacity = Math.max(rows - 1, 1);
+    validateGraphChunkBindingRanges(graph, id, {
+      values: props.values,
+      parameters: props.parameters,
+      offsets: weights.offsets,
+      neighbors: weights.neighbors,
+      ...Object.fromEntries(
+        getGraphOutputViews({
+          ...output,
+          status: {
+            converged: output.status?.converged,
+            iterationLimitReached: output.status?.iterationLimitReached,
+            invalidCount: output.status?.invalidCount
+          }
+        }).map((view, index) => [`output[${index}]`, view])
+      )
+    });
+    for (const [name, byteLength] of [
+      ['standardized table', rows * (props.columnCount ?? 1) * 4],
+      ['row scratch', rows * 4],
+      ['neighbor scratch', Math.max(1, slots) * 4],
+      // GPUSort's radix histogram is smaller than the edge plane; small sorts stay local.
+      ['edge scratch', edgeCapacity * 4]
+    ] as const)
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        name,
+        byteLength,
+        'reduce row or neighbor slot counts'
+      );
     const iterations =
       props.componentIterations ?? GPU_REDCAP_SINGLE_LINKAGE_DEFAULT_COMPONENT_ITERATIONS;
     const treeEdgeFlags = createTransientView(graph, `${id}-tree-edge-flags`, 'uint32', slots);

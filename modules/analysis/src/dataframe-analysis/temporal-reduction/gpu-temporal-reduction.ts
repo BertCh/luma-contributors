@@ -7,7 +7,8 @@ import {
   GPUVisibilityWorkflow,
   type GPUCommandGraph,
   type GPUCommandNode,
-  type GraphDataView
+  GraphDataView,
+  GraphVectorView
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCompactOutput} from '../../analysis-core/kernels/gpu-contributor-types';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
@@ -21,11 +22,12 @@ import {
 import {
   getStorageBindingElementLimit,
   validateCapacity,
+  validateMaximumCount,
   validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
   validateCompactOutput,
-  validateSinglePackedView
+  validateSinglePackedView,
+  getGraphViewChunks
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {TIME_WORDS_WGSL} from '../time-window-filter/time-words';
 import {TEMPORAL_REDUCTION_WORD_DIVISION_WGSL} from './temporal-reduction-word-division';
@@ -41,6 +43,11 @@ import {
   IS_NAN_BITS_WGSL
 } from '../../analysis-core/kernels/wgsl-common';
 
+import {
+  validateGraphChunkBindingRanges,
+  validateDisjointWritableViews
+} from '../../analysis-core/kernels/graph-chunk-dispatch';
+
 const OPERATION = 'GPUTemporalReduction';
 /** Largest slot count reduced in workgroup-private tables (5 words per slot). */
 const PRIVATIZED_SLOT_LIMIT = 256;
@@ -49,6 +56,8 @@ const NO_SLOT = '0xffffffffu';
 const SORTED_WORKGROUP_SIZE = 256;
 /** Largest slot count; `0xffffffff` is the internal "no slot" sentinel. */
 const MAXIMUM_SLOT_COUNT = 0xfffffffe;
+/** Row indices and exact slot counters use uint32; 0xffffffff remains an unused row sentinel. */
+const MAXIMUM_ROW_COUNT = 0xffffffff;
 /**
  * Largest bucket count in float32 mode. Below 2^20 the 2.5 ULP error of an f32 division moves the
  * quotient by well under one bucket and `fround(b * width)` is strictly increasing in `b`.
@@ -172,9 +181,7 @@ export class GPUTemporalReduction implements GPUCommandNodeProducer {
       throw new Error(`${id} cellCount * bucketCount must not exceed ${MAXIMUM_SLOT_COUNT}`);
     }
     const rows = props.values.length;
-    if (rows < 1) {
-      throw new Error(`${id} needs at least one row`);
-    }
+    validateCapacity(id, 'values length', rows, 1, MAXIMUM_ROW_COUNT);
     const isWordMode = props.timestamps.format === 'uint32x2';
     validateSinglePackedView(props.cellIds, ['uint32'], `${id} cellIds`);
     validateSinglePackedView(
@@ -225,6 +232,70 @@ export class GPUTemporalReduction implements GPUCommandNodeProducer {
       }
     }
     validateCompactOutput(id, output.occupiedSlots);
+    {
+      const writableOutputs: Readonly<Record<string, GraphDataView | GraphVectorView | undefined>> =
+        {
+          counts: output.counts,
+          minimums: output.minimums,
+          maximums: output.maximums,
+          first: output.first,
+          last: output.last,
+          ids: output.occupiedSlots.ids,
+          count: output.occupiedSlots.status.count,
+          overflow: output.occupiedSlots.status.overflow,
+          requiredCount: output.occupiedSlots.status.requiredCount
+        };
+      const publicationPasses: readonly (readonly (
+        | GraphDataView
+        | GraphVectorView
+        | undefined
+      )[])[] = [
+        [output.counts, output.first, output.last],
+        [output.counts, output.minimums, output.maximums],
+        [
+          output.occupiedSlots.status.count,
+          output.occupiedSlots.status.overflow,
+          output.occupiedSlots.status.requiredCount,
+          ...(output.occupiedSlots.ids.length < this.slotCount ? [output.occupiedSlots.ids] : [])
+        ]
+      ];
+      // Model all logical writes as separate chunks; only the explicit publication groups coexist.
+      const writableWordChunks = Object.values(writableOutputs)
+        .flatMap(view => (view ? getGraphViewChunks(view) : []))
+        .map(
+          view =>
+            new GraphDataView(view.buffer, {
+              format: 'uint32',
+              length: (view.length * view.rowByteLength) / 4,
+              byteOffset: view.byteOffset,
+              byteStride: 4,
+              rowByteLength: 4
+            })
+        );
+      const writableWordCount = writableWordChunks.reduce(
+        (total, chunk) => total + chunk.length,
+        0
+      );
+      validateDisjointWritableViews(id, {
+        outputs: new GraphVectorView({
+          id: `${id}-writable-ranges`,
+          name: 'outputs',
+          format: 'uint32',
+          length: writableWordCount,
+          valueLength: writableWordCount,
+          stride: 1,
+          byteStride: 4,
+          rowByteLength: 4,
+          data: writableWordChunks
+        })
+      });
+      for (const fields of publicationPasses) {
+        validateDisjointWritableViews(
+          id,
+          Object.fromEntries(fields.map((view, index) => [String(index), view]))
+        );
+      }
+    }
     validateGraphOutputsDisjointFromInputs(
       id,
       [
@@ -248,22 +319,22 @@ export class GPUTemporalReduction implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id, slotCount} = this;
     const {output, cellCount, bucketCount} = props;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.cellIds,
-      props.timestamps,
-      props.values,
-      props.mask,
-      props.parameters,
-      output.counts,
-      output.minimums,
-      output.maximums,
-      output.first,
-      output.last,
-      output.occupiedSlots.ids,
-      output.occupiedSlots.status.count,
-      output.occupiedSlots.status.overflow,
-      output.occupiedSlots.status.requiredCount
-    ]);
+    validateGraphChunkBindingRanges(graph, id, {
+      cellIds: props.cellIds,
+      timestamps: props.timestamps,
+      values: props.values,
+      mask: props.mask,
+      parameters: props.parameters,
+      counts: output.counts,
+      minimums: output.minimums,
+      maximums: output.maximums,
+      first: output.first,
+      last: output.last,
+      occupiedIds: output.occupiedSlots.ids,
+      count: output.occupiedSlots.status.count,
+      overflow: output.occupiedSlots.status.overflow,
+      requiredCount: output.occupiedSlots.status.requiredCount
+    });
     const rows = props.values.length;
     const isWordMode = props.timestamps.format === 'uint32x2';
     // Per-row bindings: the timestamps and, in word mode, the two-word row time keys of the same
@@ -294,6 +365,25 @@ export class GPUTemporalReduction implements GPUCommandNodeProducer {
         );
       }
     }
+    const scratchWords = Math.max(
+      1,
+      rows + (props.sorted ? 2 : 0),
+      rows * (isWordMode ? 2 : 1),
+      slotCount * (isWordMode ? 2 : 1)
+    );
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'temporal scratch',
+      scratchWords * 4,
+      'reduce rows or slot count'
+    );
+    validateMaximumCount(
+      id,
+      'temporal scratch byteLength',
+      scratchWords * 4,
+      graph.device.limits.maxBufferSize
+    );
     const u32 = (name: string, length: number) =>
       createTransientView(graph, `${id}-${name}`, 'uint32', length);
     const sorted = props.sorted === true;
@@ -604,11 +694,12 @@ var<workgroup> localLastTimes: array<atomic<u32>, ${slotCount}>;`,
         id: `${id}-finish-values`,
         operation: OPERATION,
         variant: 'finish-values',
+        // Keep retained counts compatible with packed writable first/last fields.
         bindings: [
           read('values', props.values, 'f32'),
           read('firstRows', firstRows, 'u32'),
           read('lastRows', lastRows, 'u32'),
-          read('counts', counts, 'u32'),
+          write('counts', counts, 'u32'),
           write('firstOut', output.first, 'f32'),
           write('lastOut', output.last, 'f32'),
           write('occupied', occupied)
@@ -632,7 +723,7 @@ var<workgroup> localLastTimes: array<atomic<u32>, ${slotCount}>;`,
         bindings: [
           read('minKeys', minKeys, 'u32'),
           read('maxKeys', maxKeys, 'u32'),
-          read('counts', counts, 'u32'),
+          write('counts', counts, 'u32'),
           write('minOut', output.minimums, 'f32'),
           write('maxOut', output.maximums, 'f32')
         ],

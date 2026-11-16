@@ -118,7 +118,7 @@ export const FOREST_INFERENCE_AUDIT_CASES: readonly KernelAuditCase[] = [
   },
   {
     exportName: 'GPUForestInference',
-    name: 'empty rows and one leaf',
+    name: 'one row and one leaf',
     build: ({graph, view}) =>
       graph.add(
         new GPUForestInference({
@@ -131,14 +131,41 @@ export const FOREST_INFERENCE_AUDIT_CASES: readonly KernelAuditCase[] = [
             task: 'regression',
             transform: 'identity'
           },
-          rowCount: 0,
-          features: view('float32', 0),
+          rowCount: 1,
+          features: view('float32', 1),
           nodes: view('uint32', 6),
           trees: view('uint32', 4),
           leafValues: view('float32', 1),
           parameters: view('float32', 2),
-          output: {predictions: view('float32', 0), validity: view('uint32', 0)}
+          output: {predictions: view('float32', 1), validity: view('uint32', 1)}
         })
       )
   }
 ];
+
+/** Empty batches are valid no-ops and are checked separately from the nonempty kernel sweep. */
+export const FOREST_INFERENCE_EMPTY_AUDIT_CASE: KernelAuditCase = {
+  exportName: 'GPUForestInference',
+  name: 'empty rows and one leaf',
+  build: ({graph, view}) =>
+    graph.add(
+      new GPUForestInference({
+        model: {
+          featureCount: 1,
+          treeCount: 1,
+          nodeCount: 1,
+          outputCount: 1,
+          maximumDepth: 0,
+          task: 'regression',
+          transform: 'identity'
+        },
+        rowCount: 0,
+        features: view('float32', 0),
+        nodes: view('uint32', 6),
+        trees: view('uint32', 4),
+        leafValues: view('float32', 1),
+        parameters: view('float32', 2),
+        output: {predictions: view('float32', 0), validity: view('uint32', 0)}
+      })
+    )
+};

@@ -3,6 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  validateTrajectoryBindings,
+  validateTrajectoryWritableDispatches,
+  validateTrajectoryOutputRanges
+} from '../trajectory-analysis/trajectory-binding-validation';
+import {
   createTransientView,
   GPUCompaction,
   type GPUCommandGraph,
@@ -114,13 +119,13 @@ export function getGPUTrajectoryStaypointsParameterValues(
       `Staypoint target must hold ${GPU_TRAJECTORY_STAYPOINTS_PARAMETER_LENGTH} elements`
     );
   }
-  if (!Number.isFinite(distanceThreshold) || distanceThreshold <= 0) {
+  if (!Number.isFinite(Math.fround(distanceThreshold)) || Math.fround(distanceThreshold) <= 0) {
     throw new Error('Staypoint distanceThreshold must be finite and positive');
   }
-  if (!Number.isFinite(timeThreshold) || timeThreshold < 0) {
+  if (!Number.isFinite(Math.fround(timeThreshold)) || timeThreshold < 0) {
     throw new Error('Staypoint timeThreshold must be finite and non-negative');
   }
-  if (!Number.isFinite(maximumGap) || maximumGap < 0) {
+  if (!Number.isFinite(Math.fround(maximumGap)) || maximumGap < 0) {
     throw new Error('Staypoint maximumGap must be finite and non-negative');
   }
   warnGPUShortLongitudeLatitudeDistance(
@@ -262,6 +267,27 @@ export class GPUTrajectoryStaypoints implements GPUCommandNodeProducer {
       validateSinglePackedView(output.staypointIds, ['uint32'], `${id} output.staypointIds`);
       validateViewLength(id, 'output.staypointIds', output.staypointIds, positions.length);
     }
+    validateTrajectoryOutputRanges(this.id, this.props.output);
+    validateTrajectoryWritableDispatches(this.id, [
+      {ids: output.ids, startRows: output.startRows},
+      {endRows: output.endRows, finishRows: output.finishRows},
+      {
+        count: output.status.count,
+        overflow: output.status.overflow,
+        requiredCount: output.status.requiredCount,
+        drawInstanceCount: output.drawInstanceCount
+      }
+    ]);
+    validateGraphOutputsDisjointFromInputs(
+      id,
+      [output.durations],
+      [output.startRows, output.finishRows]
+    );
+    validateGraphOutputsDisjointFromInputs(
+      id,
+      [output.centroids, output.staypointIds],
+      [output.startRows, output.endRows]
+    );
     validateGraphOutputsDisjointFromInputs(id, this.getOutputViews(), this.getInputViews());
   }
 
@@ -304,6 +330,7 @@ export class GPUTrajectoryStaypoints implements GPUCommandNodeProducer {
       rowCount * 8,
       'split the tracks over several graphs'
     );
+    validateTrajectoryBindings(graph, this.id, this.props);
     const timeMode = getTrajectoryTimeMode(props);
     const radius = getGPUGreatCircleRadius(this.spatialContext);
     const timeBindings = getTrajectoryTimeBindings(props);

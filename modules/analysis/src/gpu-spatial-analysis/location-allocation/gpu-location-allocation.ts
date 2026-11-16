@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateSpatialOutputViews} from '../spatial-clustering/spatial-output-validation';
 import type {Device} from '@luma.gl/core';
 import {
   createTransientView,
@@ -23,7 +25,8 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validateSinglePackedView
+  validateSinglePackedView,
+  validateGPUStorageBindingByteLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createSparseTransposeNodes,
@@ -79,6 +82,8 @@ export const GPU_LOCATION_ALLOCATION_MAXIMUM_SWAP_ITERATIONS = 1000;
  * 20 key bits, so 64 covers every accepted size.
  */
 const SPARSE_TRANSPOSE_SORT_NODE_ALLOWANCE = 64;
+/** Five indirect triples gate the list, prepare, removal, score and choose swap passes. */
+const LOCATION_ALLOCATION_SWAP_DISPATCH_BYTE_LENGTH = 5 * 3 * 4;
 
 /**
  * A swap must improve the objective by more than this fraction of the objective scale (the sum of
@@ -377,6 +382,10 @@ export class GPULocationAllocation implements GPUCommandNodeProducer {
         throw new Error(`${id} output.assignedCosts must hold one row per demand`);
       }
     }
+    validateSpatialOutputViews(id, output, [
+      [output.selectedFacilities, output.assignments, output.objective, output.status],
+      {read: [output.selectedFacilities], write: [output.assignments, output.assignedCosts]}
+    ]);
     validateGraphOutputsDisjointFromInputs(
       id,
       [
@@ -1020,6 +1029,12 @@ swapState[swapStateOffset + 1u] = swapState[swapStateOffset + 1u] + 1u;`
       output.objective,
       output.status
     ]);
+    validateGraphChunkBindingRanges(graph, id, {
+      ...Object.fromEntries(this.getCostViews().map((view, index) => [`costs[${index}]`, view])),
+      demandWeights: props.demandWeights,
+      coverageDistance: props.coverageDistance,
+      ...output
+    });
     validateCapacity(
       id,
       'facilityCount',
@@ -1056,6 +1071,31 @@ swapState[swapStateOffset + 1u] = swapState[swapStateOffset + 1u] + 1u;`
         );
       }
     }
+    for (const [name, byteLength] of [
+      ['demand scratch', demandCount * (this.maximumSwapIterations > 0 ? 12 : 4)],
+      ['facility scores', facilityCount * 8],
+      [
+        'swap totals',
+        this.maximumSwapIterations > 0 ? (3 * props.maximumFacilityCount + 2) * 4 : 0
+      ],
+      [
+        'swap pair scores',
+        this.maximumSwapIterations > 0 ? 8 * props.maximumFacilityCount * facilityCount : 0
+      ],
+      ['sparse transpose entries', props.sparseCosts ? props.sparseCosts.facilities.length * 8 : 0],
+      ['sparse transpose offsets', props.sparseCosts ? (facilityCount + 1) * 4 : 0],
+      [
+        'swap dispatch',
+        this.maximumSwapIterations > 0 ? LOCATION_ALLOCATION_SWAP_DISPATCH_BYTE_LENGTH : 0
+      ]
+    ] as const)
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        name,
+        byteLength,
+        'reduce demand or facility counts'
+      );
     const bestCosts = createTransientView(graph, `${id}-best-costs`, 'float32', demandCount);
     const facilityScores = createTransientView(
       graph,

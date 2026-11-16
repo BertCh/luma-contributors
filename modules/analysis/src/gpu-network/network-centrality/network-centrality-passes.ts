@@ -32,7 +32,7 @@ const OPERATION = 'GPUNetworkCentrality';
 export const CENTRALITY_ALIGNMENT_ELEMENTS = 64;
 
 /** Workgroup size of the per-lane closeness reduction. @internal */
-const CLOSENESS_WORKGROUP_SIZE = 256;
+export const CLOSENESS_WORKGROUP_SIZE = 256;
 
 /**
  * Word offsets of the six packed arrays of the adjacency buffer: the forward and the reverse CSR

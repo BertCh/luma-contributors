@@ -2,19 +2,21 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {
   type GPUCommandGraph,
   type GPUCommandNode,
-  type GraphDataView
+  GraphDataView,
+  GraphVectorView
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
   validateMaximumCount,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
   validateSinglePackedView,
-  validateRequirement
+  validateRequirement,
+  getGraphViewChunks
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getColumnProfileNodes, type ColumnProfileColumn} from './column-profile-kernels';
 import {
@@ -26,8 +28,10 @@ import {
 } from './column-profile-parameters';
 
 const OPERATION = 'GPUColumnProfile';
-/** Largest column: row counts are held in float32, which is exact only up to 2^24. */
-const MAXIMUM_ROW_COUNT = 2 ** 24;
+/** Row indices and all scratch counts are uint32; device binding limits are checked separately. */
+const MAXIMUM_ROW_COUNT = 0xffffffff;
+/** Retains the dictionary capacity contract independently of the wider row counts. */
+const MAXIMUM_CATEGORY_COUNT = 2 ** 24;
 /** Largest histogram bin count; keeps the f32 bin estimate within one bin of the answer. */
 const MAXIMUM_HISTOGRAM_BIN_COUNT = 2 ** 20;
 const DEFAULT_HYPERLOGLOG_PRECISION = 12;
@@ -93,7 +97,7 @@ export type GPUColumnProfileOutput = {
 export type GPUColumnProfileProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'column-profile'`. */
   id?: string;
-  /** 1 to 16 columns of one table: all have the same length, at most 2^24 rows. */
+  /** 1 to 16 columns of one table: all have the same length, at most 2^32 - 1 rows (each packed binding must fit the device). */
   columns: readonly GPUColumnProfileColumn[];
   /** Optional packed `uint32` row mask applied to every column; zero skips the row. */
   mask?: GraphDataView<'uint32'>;
@@ -127,7 +131,7 @@ export type GPUColumnProfileProps = {
  * rows per invocation sequentially, reduces them with a binary tree of Chan merges, then one
  * workgroup merges the tile partials in a second fixed tree. No float atomics are used, so the
  * float statistics are bitwise identical from run to run and independent of GPU thread order,
- * with partial means stored relative to separately retained first-value origins. This keeps
+ * with uint32 counts through both reduction levels and partial means stored relative to separately retained first-value origins. This keeps
  * mean updates at the scale of the deviations when the column has a large common offset.
  * Histogram counts, registers, and category counts are integer
  * atomics and are exact. Histogram bins have the convention of the official `GPUHistogram` of
@@ -151,7 +155,8 @@ export type GPUColumnProfileProps = {
  * histogram. The top list picks K times by (count descending, code ascending), so ties break on
  * the smallest code.
  *
- * Inputs must be single packed views. Cost is one pass per column per product (moments, histogram,
+ * The float32 statistics count fields round to float32; `output.counts` retains the exact
+ * uint32 counts, including above 2^24. Inputs must be single packed views. Cost is one pass per column per product (moments, histogram,
  * HyperLogLog, category counts), each a few ms or less for millions of rows.
  */
 export class GPUColumnProfile implements GPUCommandNodeProducer {
@@ -193,7 +198,7 @@ export class GPUColumnProfile implements GPUCommandNodeProducer {
     validateRequirement(
       id,
       rowCount <= MAXIMUM_ROW_COUNT,
-      `columns[0] length must be at most ${MAXIMUM_ROW_COUNT} (2^24): row counts are held in float32 and are exact only up to 2^24`
+      `columns[0] length must be at most ${MAXIMUM_ROW_COUNT}: row indices and counts use uint32`
     );
     this.rowCount = rowCount;
     let categoryBase = 0;
@@ -204,7 +209,13 @@ export class GPUColumnProfile implements GPUCommandNodeProducer {
       }
       if (column.kind === 'category') {
         validateSinglePackedView(column.values, ['uint32'], `${id} ${name}.values`);
-        validateCapacity(id, `${name}.categoryCount`, column.categoryCount, 1, MAXIMUM_ROW_COUNT);
+        validateCapacity(
+          id,
+          `${name}.categoryCount`,
+          column.categoryCount,
+          1,
+          MAXIMUM_CATEGORY_COUNT
+        );
         const base = categoryBase;
         categoryBase += column.categoryCount;
         return {
@@ -263,6 +274,59 @@ export class GPUColumnProfile implements GPUCommandNodeProducer {
     if (Boolean(output.topCategories) !== Boolean(output.topCategoryCounts)) {
       throw new Error(`${id} output.topCategories and output.topCategoryCounts go together`);
     }
+    {
+      const writableOutputs: Readonly<Record<string, GraphDataView | GraphVectorView | undefined>> =
+        output;
+      const publicationPasses: readonly (readonly (
+        | GraphDataView
+        | GraphVectorView
+        | undefined
+      )[])[] = [
+        [output.topCategories, output.topCategoryCounts],
+        [
+          output.statistics,
+          output.counts,
+          output.hyperLogLogRegisters,
+          ...(props.columns.some(column => column.kind === 'category') ? [output.histograms] : [])
+        ]
+      ];
+      // Model all logical writes as separate chunks; only the explicit publication groups coexist.
+      const writableWordChunks = Object.values(writableOutputs)
+        .flatMap(view => (view ? getGraphViewChunks(view) : []))
+        .map(
+          view =>
+            new GraphDataView(view.buffer, {
+              format: 'uint32',
+              length: (view.length * view.rowByteLength) / 4,
+              byteOffset: view.byteOffset,
+              byteStride: 4,
+              rowByteLength: 4
+            })
+        );
+      const writableWordCount = writableWordChunks.reduce(
+        (total, chunk) => total + chunk.length,
+        0
+      );
+      validateDisjointWritableViews(id, {
+        outputs: new GraphVectorView({
+          id: `${id}-writable-ranges`,
+          name: 'outputs',
+          format: 'uint32',
+          length: writableWordCount,
+          valueLength: writableWordCount,
+          stride: 1,
+          byteStride: 4,
+          rowByteLength: 4,
+          data: writableWordChunks
+        })
+      });
+      for (const fields of publicationPasses) {
+        validateDisjointWritableViews(
+          id,
+          Object.fromEntries(fields.map((view, index) => [String(index), view]))
+        );
+      }
+    }
     validateGraphOutputsDisjointFromInputs(
       id,
       [
@@ -286,18 +350,6 @@ export class GPUColumnProfile implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
-    const {output} = props;
-    validateGraphViewsBelongToGraph(id, graph, [
-      ...props.columns.map(column => column.values),
-      props.mask,
-      props.parameters,
-      output.statistics,
-      output.counts,
-      output.histograms,
-      output.hyperLogLogRegisters,
-      output.topCategories,
-      output.topCategoryCounts
-    ]);
     validateMaximumCount(
       id,
       'category columns categoryCount total',
@@ -314,7 +366,7 @@ export class GPUColumnProfile implements GPUCommandNodeProducer {
       histogramBinCount: props.histogramBinCount,
       hyperLogLogPrecision: this.hyperLogLogPrecision,
       topCategoryCount: this.topCategoryCount,
-      output
+      output: props.output
     });
   }
 }

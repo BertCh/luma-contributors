@@ -164,7 +164,35 @@ export class GPUTerrainDepressionHierarchy implements GPUCommandNodeProducer {
     checkTerrainViews(
       this.id,
       [props.elevation, props.outlets, props.stages, ...(props.validity ? [props.validity] : [])],
-      getOutputViews(props.output)
+      getOutputViews(props.output),
+      [
+        {
+          reads: !props.validity ? [props.elevation] : [],
+          writes: [props.output.cellNodes, props.output.status]
+        },
+        {reads: [props.output.status], writes: [props.output.nodes, props.output.levels]},
+        ...(props.stages.length
+          ? [
+              {
+                reads: [
+                  ...(!props.validity ? [props.elevation] : []),
+                  props.output.cellNodes,
+                  props.output.nodes,
+                  props.stages,
+                  props.output.status
+                ],
+                writes: [props.output.curves]
+              }
+            ]
+          : []),
+        {
+          reads: [props.output.status],
+          writes: [
+            props.output.ports?.status.requiredCount,
+            props.output.ports?.status.overflow
+          ].filter((view): view is GraphDataView<'uint32'> => Boolean(view))
+        }
+      ]
     );
   }
   getCommandNodes<Parameters>(

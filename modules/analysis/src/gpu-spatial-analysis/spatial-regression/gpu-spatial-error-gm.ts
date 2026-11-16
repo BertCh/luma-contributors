@@ -2,6 +2,18 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRegressionOutputDispatches} from './regression-output-dispatches';
+
+import {
+  getRegressionErrorGMAllocationLengths,
+  getRegressionWeightBindings,
+  getRegressionMaximumEdgeCount
+} from './regression-binding-plans';
+
+import {validateRegressionAllocations} from './spatial-likelihood-allocations';
+
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -16,12 +28,13 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
+  validateRequirement,
+  validateMaximumCount,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
-  getGPUSpatialWeightsOrChunksViews,
   isGPUChunkedSpatialWeights,
   validateGPUSpatialWeightsOrChunks,
   type GPUChunkedSpatialWeights,
@@ -40,7 +53,11 @@ import {
   validateGPUSpatialWeightsTracesParameters
 } from './gpu-spatial-weights-traces';
 import {GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH} from './ordinary-least-squares-parameters';
-import type {GPUSpatialWeightsTracesMode} from './spatial-weights-traces-parameters';
+import {
+  GPU_SPATIAL_WEIGHTS_TRACES_EXACT_ROW_LIMIT,
+  GPU_SPATIAL_WEIGHTS_TRACES_DEFAULT_PROBE_COUNT,
+  type GPUSpatialWeightsTracesMode
+} from './spatial-weights-traces-parameters';
 import {
   GPU_SPATIAL_ERROR_GM_DEFAULT_ESTIMATOR,
   GPU_SPATIAL_ERROR_GM_LAMBDA_BOUND_FRACTION,
@@ -256,6 +273,28 @@ export class GPUSpatialErrorGM implements GPUCommandNodeProducer {
     this.estimator = estimator;
     validateGPUSpatialWeightsTracesParameters(id, 'traceParameters', props.traceParameters);
     const rows = validateGPUSpatialWeightsOrChunks(id, props.weights);
+    if (estimator === 'homoskedastic') {
+      validateRequirement(
+        id,
+        props.traceMode === undefined ||
+          props.traceMode === 'exact' ||
+          props.traceMode === 'stochastic',
+        "traceMode must be 'exact' or 'stochastic'"
+      );
+      validateCapacity(
+        id,
+        'traceProbeCount',
+        props.traceProbeCount ?? GPU_SPATIAL_WEIGHTS_TRACES_DEFAULT_PROBE_COUNT
+      );
+      if (props.traceMode === 'exact')
+        validateMaximumCount(
+          id,
+          'exact trace rows',
+          rows,
+          GPU_SPATIAL_WEIGHTS_TRACES_EXACT_ROW_LIMIT
+        );
+    }
+
     if (estimator === 'homoskedastic' && isGPUChunkedSpatialWeights(props.weights)) {
       // The homoskedastic estimator needs the Gram traces of W, which need W' (no chunked transpose).
       throw new Error(`${id} homoskedastic estimator needs whole weights`);
@@ -297,10 +336,19 @@ export class GPUSpatialErrorGM implements GPUCommandNodeProducer {
       Math.max(MINIMUM_DEFAULT_TILE_ROWS, Math.ceil(rows / MAXIMUM_DEFAULT_TILE_COUNT));
     // Tiles never span chunks; a whole CSR has ceil(rows / tileRowCount) tiles.
     this.tileCount = getGPUSpatialWeightsTilePlan(props.weights, this.tileRowCount).tileCount;
+    validateRegressionOutputDispatches(
+      this.id,
+      {...output, status: undefined, code: output.status.code},
+      [['table', 'summary', 'code']]
+    );
     validateGraphOutputsDisjointFromInputs(
       id,
       [output.table, output.summary, output.status.code, output.residuals],
-      [props.predictors, props.response, ...getGPUSpatialWeightsOrChunksViews(props.weights)]
+      [
+        props.predictors,
+        props.response,
+        ...Object.values(getRegressionWeightBindings(props.weights))
+      ]
     );
   }
 
@@ -316,10 +364,34 @@ export class GPUSpatialErrorGM implements GPUCommandNodeProducer {
     const {id, props, rowCount, tileRowCount, tileCount, estimator} = this;
     const homoskedastic = estimator === 'homoskedastic';
     const {weights, output, predictorCount: k} = props;
+    validateGraphChunkBindingRanges(graph, id, {
+      predictors: props.predictors,
+      response: props.response,
+      ...getRegressionWeightBindings(weights),
+      traceParameters: homoskedastic ? props.traceParameters : undefined,
+      table: output.table,
+      summary: output.summary,
+      code: output.status.code,
+      residuals: output.residuals
+    });
+    validateRegressionAllocations(
+      graph.device,
+      id,
+      getRegressionErrorGMAllocationLengths({
+        rowCount,
+        predictorCount: k,
+        edgeCount: getRegressionMaximumEdgeCount(weights),
+        tileRowCount,
+        tileCount,
+        homoskedastic,
+        traceMode: props.traceMode,
+        traceProbeCount: props.traceProbeCount
+      })
+    );
     validateGraphViewsBelongToGraph(id, graph, [
       props.predictors,
       props.response,
-      ...getGPUSpatialWeightsOrChunksViews(weights),
+      ...Object.values(getRegressionWeightBindings(weights)),
       output.table,
       output.summary,
       output.status.code,

@@ -42,13 +42,14 @@ export type HawkesGPUOptions = {
 };
 
 /** Runs `GPUSpaceTimeHawkes` once on `events` with every output present. */
-export async function runHawkesGPU(
+export async function runHawkesGPUSequence(
   device: Device,
   events: readonly HawkesEvent[],
   window: HawkesWindow,
   initial: HawkesParameters,
-  options: HawkesGPUOptions = {}
-): Promise<HawkesGPUResult> {
+  options: HawkesGPUOptions = {},
+  parameterFrames: readonly Readonly<Record<number, number>>[] = [options.parameterOverride ?? {}]
+): Promise<HawkesGPUResult[]> {
   const graph = new GPUCommandGraph(device, {id: 'space-time-hawkes'});
   const buffers: Buffer[] = [];
   const input = (values: Float32Array) => {
@@ -86,16 +87,13 @@ export async function runHawkesGPU(
     invalidCount: output(1),
     approximation: output(1)
   };
+  const parameterValues = getGPUSpaceTimeHawkesParameterValues(settings);
+  const parameterBuffer = input(parameterValues);
   graph.add(
     new GPUSpaceTimeHawkes({
       positions: importGraphBuffer(graph, 'positions', input(positions), 'float32x2'),
       times: importGraphBuffer(graph, 'times', input(times), 'float32'),
-      parameters: importGraphBuffer(
-        graph,
-        'parameters',
-        input(overrideParameters(getGPUSpaceTimeHawkesParameterValues(settings), options)),
-        'float32'
-      ),
+      parameters: importGraphBuffer(graph, 'parameters', parameterBuffer, 'float32'),
       maximumIterations: options.maximumIterations,
       maximumParents: options.maximumParents ?? window.maximumParents,
       output: {
@@ -151,23 +149,30 @@ export async function runHawkesGPU(
   );
   const compiled = graph.compile();
   try {
-    submitGraph(device, compiled, undefined);
-    const [background, branchingRatio, decayRate, spatialStandardDeviation] = await readFloat32(
-      outputs.estimates,
-      4
-    );
-    const [logLikelihood] = await readFloat32(outputs.logLikelihood, 1);
-    return {
-      estimates: {background, branchingRatio, decayRate, spatialStandardDeviation},
-      logLikelihood,
-      backgroundProbability: await readFloat32(outputs.backgroundProbability, rowCount),
-      converged: (await readUint32(outputs.converged, 1))[0],
-      iterationLimitReached: (await readUint32(outputs.iterationLimitReached, 1))[0],
-      iterationCount: (await readUint32(outputs.iterationCount, 1))[0],
-      candidateOverflow: (await readUint32(outputs.candidateOverflow, 1))[0],
-      invalidCount: (await readUint32(outputs.invalidCount, 1))[0],
-      approximation: (await readUint32(outputs.approximation, 1))[0]
-    };
+    const results: HawkesGPUResult[] = [];
+    for (const frame of parameterFrames) {
+      parameterBuffer.write(
+        overrideParameters(parameterValues.slice(), {parameterOverride: frame})
+      );
+      submitGraph(device, compiled, undefined);
+      const [background, branchingRatio, decayRate, spatialStandardDeviation] = await readFloat32(
+        outputs.estimates,
+        4
+      );
+      const [logLikelihood] = await readFloat32(outputs.logLikelihood, 1);
+      results.push({
+        estimates: {background, branchingRatio, decayRate, spatialStandardDeviation},
+        logLikelihood,
+        backgroundProbability: await readFloat32(outputs.backgroundProbability, rowCount),
+        converged: (await readUint32(outputs.converged, 1))[0],
+        iterationLimitReached: (await readUint32(outputs.iterationLimitReached, 1))[0],
+        iterationCount: (await readUint32(outputs.iterationCount, 1))[0],
+        candidateOverflow: (await readUint32(outputs.candidateOverflow, 1))[0],
+        invalidCount: (await readUint32(outputs.invalidCount, 1))[0],
+        approximation: (await readUint32(outputs.approximation, 1))[0]
+      });
+    }
+    return results;
   } finally {
     compiled.destroy();
     for (const buffer of buffers) {
@@ -181,4 +186,15 @@ function overrideParameters(values: Float32Array, options: HawkesGPUOptions): Fl
     values[Number(slot)] = value;
   }
   return values;
+}
+
+/** Runs a single encoding; sequence tests use the same compiled graph across parameter writes. */
+export async function runHawkesGPU(
+  device: Device,
+  events: readonly HawkesEvent[],
+  window: HawkesWindow,
+  initial: HawkesParameters,
+  options: HawkesGPUOptions = {}
+): Promise<HawkesGPUResult> {
+  return (await runHawkesGPUSequence(device, events, window, initial, options))[0];
 }

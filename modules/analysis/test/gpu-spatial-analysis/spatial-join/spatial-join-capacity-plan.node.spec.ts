@@ -64,51 +64,63 @@ describe('getGPUSpatialJoinCapacityPlan', () => {
     ['polygons', 'polygons', 'touches'],
     ['lines', 'polygons', 'crosses']
   ] as const) {
-    it(`equals the declared transient bytes of a ${leftKind}/${rightKind} ${predicate} join`, () => {
-      const graph = new GPUCommandGraph(createNullWebGPUDevice());
-      const leftCount = 10;
-      const rightCount = 20;
-      const candidateCapacity = 37;
-      const pairCapacity = 9;
-      const pairView = (name: string, length: number) =>
-        createTransientView(graph, `input-pairs-${name}`, 'uint32', length);
-      const props: GPUSpatialPredicateJoinProps = {
-        id: 'join',
-        left: createGeometry(graph, 'left', leftKind, leftCount),
-        right: createGeometry(graph, 'right', rightKind, rightCount),
-        predicate,
-        candidateCapacity,
-        output: {
-          pairs: {
-            leftIds: pairView('left', pairCapacity),
-            rightIds: pairView('right', pairCapacity),
-            status: {
-              count: pairView('count', 1),
-              overflow: pairView('overflow', 1)
+    for (const [leftCount, candidateTileCapacity, candidateCapacity] of [
+      [10, undefined, 37],
+      [10, 7, 37],
+      [257, 7, 37],
+      [257, 257, 781]
+    ] as const) {
+      it(`equals the declared transient bytes of a ${leftKind}/${rightKind} ${predicate} join${candidateTileCapacity ? ` (${leftCount} rows, tile ${candidateTileCapacity})` : ''}`, () => {
+        const graph = new GPUCommandGraph(createNullWebGPUDevice());
+        const rightCount = 20;
+        const pairCapacity = 9;
+        const pairView = (name: string, length: number) =>
+          createTransientView(graph, `input-pairs-${name}`, 'uint32', length);
+        const props: GPUSpatialPredicateJoinProps = {
+          id: 'join',
+          left: createGeometry(graph, 'left', leftKind, leftCount),
+          right: createGeometry(graph, 'right', rightKind, rightCount),
+          predicate,
+          candidateCapacity,
+          candidateTileCapacity,
+          output: {
+            pairs: {
+              leftIds: pairView('left', pairCapacity),
+              rightIds: pairView('right', pairCapacity),
+              status: {
+                count: pairView('count', 1),
+                overflow: pairView('overflow', 1)
+              }
             }
           }
+        };
+        const join = new GPUSpatialPredicateJoin(props);
+        join.getCommandNodes(graph);
+        const plan = getGPUSpatialJoinCapacityPlan({
+          leftCount,
+          rightCount,
+          leftKind,
+          rightKind,
+          relate: join.usesRelateEngine,
+          candidateCapacity,
+          candidateTileCapacity,
+          pairCapacity
+        });
+        expect(plan.estimatedPeakTransientBytes).toBe(getJoinTransientBytes(graph, 'join'));
+        if (leftCount === 10 && leftKind === 'lines' && rightKind === 'lines') {
+          // 2128 bounds/BVH bytes, 240 count-scan bytes, 48 state/page words, 16 per slot,
+          // and one 12-byte indirect triple per page (six triples for tile capacity seven).
+          expect(plan.estimatedPeakTransientBytes).toBe(candidateTileCapacity ? 2600 : 3020);
         }
-      };
-      const join = new GPUSpatialPredicateJoin(props);
-      join.getCommandNodes(graph);
-      const plan = getGPUSpatialJoinCapacityPlan({
-        leftCount,
-        rightCount,
-        leftKind,
-        rightKind,
-        relate: join.usesRelateEngine,
-        candidateCapacity,
-        pairCapacity
+        // The join's own plan for the next frame, from the counts it reported, is the same plan.
+        const next = join.getCapacityPlan({
+          candidateCount: candidateCapacity,
+          requiredCount: pairCapacity
+        });
+        expect(next.estimatedPeakTransientBytes).toBe(plan.estimatedPeakTransientBytes);
+        expect(plan.estimatedOutputBytes).toBe(pairCapacity * 8);
       });
-      expect(plan.estimatedPeakTransientBytes).toBe(getJoinTransientBytes(graph, 'join'));
-      // The join's own plan for the next frame, from the counts it reported, is the same plan.
-      const next = join.getCapacityPlan({
-        candidateCount: candidateCapacity,
-        requiredCount: pairCapacity
-      });
-      expect(next.estimatedPeakTransientBytes).toBe(plan.estimatedPeakTransientBytes);
-      expect(plan.estimatedOutputBytes).toBe(pairCapacity * 8);
-    });
+    }
   }
 
   it('defaults the join candidate capacity from the plan', () => {
@@ -203,5 +215,8 @@ describe('getGPUSpatialJoinCapacityPlan', () => {
     expect(() =>
       getGPUSpatialJoinCapacityPlan({leftCount: 1, rightCount: 3, pairCapacity: -1})
     ).toThrow(/capacity/);
+    expect(() =>
+      getGPUSpatialJoinCapacityPlan({leftCount: 1, rightCount: 3, candidateTileCapacity: 0})
+    ).toThrow(/candidateTileCapacity/);
   });
 });

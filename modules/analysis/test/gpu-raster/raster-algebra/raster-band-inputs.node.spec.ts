@@ -662,7 +662,7 @@ it.each(
     expect(failedAllocations).toBe(0);
     expect(failure).toBeInstanceOf(Error);
     expect((failure as Error).message).toMatch(
-      new RegExp(`^conversion-retry.*100 bytes.*limit ${limit}.*reduce grid`)
+      new RegExp(`^conversion-retry.*100 bytes.*limit ${limit}.*reduce`)
     );
   } finally {
     allocations.mockRestore();

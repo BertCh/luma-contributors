@@ -2,12 +2,14 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRasterStorageBindings} from './raster-grid/raster-storage-preflight';
 import {validateGPUStatusPort} from '../analysis-core/contracts/status';
 import {
   getGraphOutputViews,
   validateCommandNodeBudget,
   validateMaximumCount,
-  validateRequirement
+  validateRequirement,
+  getGraphOutputViews as getRasterPreflightOutputViews
 } from '../analysis-core/kernels/gpu-contributor-utils';
 import {
   createTransientView,
@@ -93,6 +95,15 @@ export class GPURasterSkeleton implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    const storageProps = this.props;
+    const storageCellCount = storageProps.grid.width * storageProps.grid.height;
+    validateRasterStorageBindings(
+      graph,
+      this.id,
+      [storageProps.input, ...getRasterPreflightOutputViews(storageProps.output)],
+      {'thinning planes': storageCellCount * 4, 'iteration state': 16}
+    );
+
     const {id, props} = this;
     const {grid, output} = props;
     const count = grid.width * grid.height;

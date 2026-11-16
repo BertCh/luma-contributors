@@ -2164,7 +2164,13 @@ const NETWORK_COARSENING_CASES: KernelAuditCase[] = [
         const {graph, view, maximumRows} = context;
         const nodes = maximumRows(8);
         const edges = maximumRows(4);
-        const groups = GPU_NETWORK_COARSENING_MAXIMUM_GROUP_CAPACITY;
+        // The exported maximum bounds uint32 addressing, not the capacity of this device.
+        // Each group owns a ten-word accumulator in one storage binding.
+        const groups = Math.min(
+          GPU_NETWORK_COARSENING_MAXIMUM_GROUP_CAPACITY,
+          Math.floor(context.device.limits.maxStorageBufferBindingSize / 40),
+          Math.floor(context.device.limits.maxBufferSize / 40)
+        );
         graph.add(
           new GPUNetworkCoarsening({
             topology: topology(context, nodes, edges) as never,

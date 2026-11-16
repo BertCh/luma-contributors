@@ -3,6 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  validateGraphChunkBindingRanges,
+  validateDisjointWritableViews
+} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {
   validatePackedUint32View,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -88,6 +92,7 @@ export class GPULocalPermutationReplay implements GPUCommandNodeProducer {
     validateSinglePackedView(props.output.replayInfo, ['float32'], `${this.id} replayInfo`);
     validateCapacity(this.id, 'replayInfo length', props.output.replayInfo.length, 3);
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [props.row]);
+    validateDisjointWritableViews(this.id, props.output);
   }
 
   /** Returns setup and a single-invocation replay, after the test's preparation nodes. */
@@ -107,6 +112,13 @@ export class GPULocalPermutationReplay implements GPUCommandNodeProducer {
       props.row,
       ...(inputs.negativeCount ? [inputs.negativeCount] : [])
     ];
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(
+        [...reads, ...Object.values(props.output)].map((view, index) => [`binding ${index}`, view])
+      )
+    );
     validateGraphViewsBelongToGraph(id, graph, [...reads, ...Object.values(props.output)]);
     validateGraphOutputsDisjointFromInputs(id, Object.values(props.output), reads);
     const {declarations, body} = getLocalPermutationKernelWGSL(inputs.kernel, 'replay');
@@ -131,7 +143,7 @@ export class GPULocalPermutationReplay implements GPUCommandNodeProducer {
                 {
                   name: 'negativeCount',
                   view: inputs.negativeCount,
-                  type: 'f32' as const,
+                  type: 'u32' as const,
                   access: 'read' as const
                 }
               ]
@@ -143,7 +155,7 @@ export class GPULocalPermutationReplay implements GPUCommandNodeProducer {
   replayInfo[replayInfoOffset] = 0x7fc00000u;
   replayInfo[replayInfoOffset + 1u] = 0u;
   replayInfo[replayInfoOffset + 2u] = pinnedRow;
-  if (pinnedRow < ${props.test.props.values.length}u${inputs.negativeCount ? ' && negativeCount[negativeCountOffset] == 0.0' : ''}) {
+  if (pinnedRow < ${props.test.props.values.length}u${inputs.negativeCount ? ' && negativeCount[negativeCountOffset] == 0u' : ''}) {
     replayInfo[replayInfoOffset] = bitcast<u32>(observedRaw[observedRawOffset + pinnedRow]);
   }`
       }),

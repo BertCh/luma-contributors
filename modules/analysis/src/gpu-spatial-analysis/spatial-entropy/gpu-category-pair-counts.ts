@@ -22,6 +22,9 @@ import {
   validateGPUSpatialWeights
 } from '../spatial-weights/spatial-weights';
 
+import {validateSpatialStatisticsBindings} from '../spatial-weights/spatial-statistics-bindings';
+import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
+
 const OPERATION = 'GPUCategoryPairCounts';
 
 /**
@@ -118,6 +121,7 @@ export class GPUCategoryPairCounts implements GPUCommandNodeProducer {
       props.output.categoryRowCounts.length >= props.categoryCount,
       'output.categoryRowCounts must hold categoryCount entries'
     );
+    validateDisjointWritableViews(id, props.output);
     validateGraphOutputsDisjointFromInputs(
       id,
       [props.output.pairCounts, props.output.categoryRowCounts],
@@ -130,6 +134,7 @@ export class GPUCategoryPairCounts implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
+    validateSpatialStatisticsBindings(graph, id, props);
     const {weights, output} = props;
     validateGraphViewsBelongToGraph(id, graph, [
       props.categories,

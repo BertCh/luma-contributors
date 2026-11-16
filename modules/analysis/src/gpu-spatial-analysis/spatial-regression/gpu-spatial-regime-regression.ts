@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRegressionOutputDispatches} from './regression-output-dispatches';
+
+import {validateRegressionAllocations} from './spatial-likelihood-allocations';
+
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+
 import {
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -94,6 +100,10 @@ export class GPUSpatialRegimeRegression implements GPUCommandNodeProducer {
         validateViewLength(this.id, name, view, length);
       }
     }
+    validateRegressionOutputDispatches(this.id, props.output, [
+      ['coefficients', 'status', 'counts'],
+      {read: ['coefficients', 'status'], write: ['fitted']}
+    ]);
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
       props.predictors,
       props.response,
@@ -107,6 +117,18 @@ export class GPUSpatialRegimeRegression implements GPUCommandNodeProducer {
     const {props, id} = this;
     const rows = props.response.length;
     const columns = props.predictorCount;
+    validateGraphChunkBindingRanges(graph, id, {
+      predictors: props.predictors,
+      response: props.response,
+      regimes: props.regimes,
+      mask: props.mask,
+      ...props.output
+    });
+    validateRegressionAllocations(graph.device, id, {
+      'regime row sorting and radix/scan scratch': rows,
+      'regime offsets': props.regimeCount + 1,
+      'regime moments': props.regimeCount * getRegimeMomentStride(columns)
+    });
     // The predictor view is the largest binding: rows * predictorCount float32 values.
     if (rows > getStorageBindingElementLimit(graph.device, 4 * columns))
       throw new Error(`${id}: invalid regime regression shape`);

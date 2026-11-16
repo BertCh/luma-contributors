@@ -3,7 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
-import {GPUNetworkPointRouting} from './gpu-network-point-routing';
+import {
+  GPUNetworkPointRouting,
+  type GPUNetworkPointRoutingProps
+} from './gpu-network-point-routing';
 
 /** Graph values with explicit edge and query counts for the predecessor matrix. */
 export type NetworkPointRoutingOperationProps = {
@@ -14,6 +17,8 @@ export type NetworkPointRoutingOperationProps = {
   costs: string;
   queries: string;
   fractions: string;
+  /** Scalable CSR by default; reference preserves turn-order ties and the original budgets. */
+  mode?: GPUNetworkPointRoutingProps['mode'];
   maximumRelaxations?: number;
   output: {costs: string; status: string; predecessorEdges: string};
 };
@@ -44,6 +49,7 @@ export class GPUNetworkPointRoutingOperation extends GPUContributorOperation {
           costs: getView<'float32'>('edgeCosts'),
           queries: getView<'uint32x2'>('queries'),
           fractions: getView<'float32x2'>('fractions'),
+          mode: props.mode,
           maximumRelaxations: props.maximumRelaxations,
           output: {
             costs: getView<'float32'>('costs'),

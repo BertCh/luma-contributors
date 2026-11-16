@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {expect, it} from 'vitest';
+import {expect, it, vi} from 'vitest';
 import {Buffer} from '@luma.gl/core';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {GPUCommandGraph, createTransientView} from '@luma.gl/graph/gpu-core';
@@ -20,10 +20,19 @@ import {computeNetworkLouvainOnCPU} from '../../../src/gpu-network/network-optim
 import {GPUNetworkLouvainOperation} from '../../../src/gpu-network/network-optimization/gpu-network-louvain-operation';
 import {
   createNullWebGPUDevice,
+  createVectorView,
   getGPUCommandNodeKernelSources,
   getStorageBindingCount
 } from '../../utils/gpu-contributor-test-utils';
-import {auditWGSLModule} from '../../analysis-core/kernel-audit/kernel-audit-wgsl';
+import {
+  createNetworkLouvainQuotientFixture,
+  createNetworkLouvainMixedDuplicateFixture
+} from './network-louvain-scalability-fixtures';
+import {getSparseNetworkLouvainNodes} from '../../../src/gpu-network/network-optimization/network-louvain-sparse';
+import {
+  auditWGSLModule,
+  WGSL_RESERVED_WORDS
+} from '../../analysis-core/kernel-audit/kernel-audit-wgsl';
 
 function createContributor(
   nodeCount: number,
@@ -103,38 +112,39 @@ it('sparse kernels parse, audit, stay within eight bindings and gate published p
   }
 });
 
-it('command allowances cover empty and maximum sparse shapes without GPU allocation', () => {
+it('command allowances cover empty, old and binding-sized sparse shapes without GPU allocation', () => {
   for (const [nodeCount, edgeCount] of [
     [1, 0],
-    [65535, 1048576]
+    [65535, 1048576],
+    [65536, 1048577],
+    [8388608, 8388608]
   ]) {
     const {device, graph, contributor} = createContributor(nodeCount, edgeCount, 2, 1);
     try {
       const commands = contributor.getCommandNodes(graph);
-      const initial = commands.filter(
-        command =>
-          !command.id.includes('level-') &&
-          !command.id.includes('aggregate-') &&
-          !command.id.endsWith('-publish-summary') &&
-          !command.id.endsWith('-status')
+      const firstRound = commands.findIndex(
+        command => command.id === 'sparse-louvain-level-0-round-0-gate'
       );
-      expect(initial.length).toBeLessThanOrEqual(256);
+      expect(firstRound).toBeGreaterThan(0);
+      expect(firstRound).toBeLessThanOrEqual(352);
       expect(commands.length).toBeLessThanOrEqual(contributor.estimatedCommandNodeCount);
       expect(
         commands.filter(command => command.id.includes('level-0-round-0')).length
-      ).toBeLessThanOrEqual(224);
+      ).toBeLessThanOrEqual(320);
       expect(
         commands.filter(command => command.id.includes('aggregate-0')).length
-      ).toBeLessThanOrEqual(112);
+      ).toBeLessThanOrEqual(208);
     } finally {
       device.destroy();
     }
   }
 });
 
-it('construction enforces pair-key, slot, round and command budgets by name', () => {
-  expect(() => createContributor(65536, 1)).toThrow(/sparse-louvain.*nodeCount/);
-  expect(() => createContributor(2, 1048577)).toThrow(/sparse-louvain.*topology.neighbors.length/);
+it('construction enforces uint32 addressing, round and command budgets by name', () => {
+  expect(() => createContributor(1073741824, 1)).toThrow(/sparse-louvain.*nodeCount/);
+  expect(() => createContributor(2, 1073741824)).toThrow(
+    /sparse-louvain.*topology.neighbors.length/
+  );
   expect(() => createContributor(2, 2, 0)).toThrow(/sparse-louvain.*maximumLevels/);
   expect(() => createContributor(2, 2, 32, 64)).toThrow(/sparse-louvain.*command node count/);
 });
@@ -579,3 +589,559 @@ for (const failurePoint of [
     }
   });
 }
+
+it('checks two-word edge and four-word node scratch before creating command resources', () => {
+  for (const [nodeCount, edgeCount, scratch] of [
+    [65, 1, 'node'],
+    [2, 65, 'edge']
+  ] as const) {
+    const {device, graph, contributor} = createContributor(nodeCount, edgeCount);
+    Object.defineProperty(device, 'limits', {
+      value: {...device.limits, maxStorageBufferBindingSize: 1024}
+    });
+    const createBuffer = vi.spyOn(graph, 'createTransientBuffer');
+    try {
+      expect(() => contributor.getCommandNodes(graph)).toThrow(
+        new RegExp(`sparse-louvain sparse ${scratch} scratch needs 1040 bytes.*limit 1024`)
+      );
+      expect(createBuffer).not.toHaveBeenCalled();
+    } finally {
+      device.destroy();
+    }
+  }
+});
+
+it('topology selects the sparse route at small and large sizes; dense retains its 32-node cap', () => {
+  for (const nodeCount of [4, 65536]) {
+    const {device, graph, contributor} = createContributor(nodeCount, 2);
+    try {
+      const kernels = getGPUCommandNodeKernelSources(contributor.getCommandNodes(graph));
+      expect(kernels.some(kernel => kernel.id.endsWith('-initialize-edges'))).toBe(true);
+      const {topology: unusedTopology, ...props} = contributor.props;
+      const denseProps = {
+        ...props,
+        weights: createTransientView(graph, 'dense-weights', 'float32', nodeCount ** 2)
+      };
+      if (nodeCount > 32) {
+        expect(() => new GPUNetworkLouvain(denseProps)).toThrow(/sparse-louvain.*nodeCount.*32/);
+      } else {
+        expect(new GPUNetworkLouvain(denseProps).estimatedCommandNodeCount).toBe(2);
+      }
+    } finally {
+      device.destroy();
+    }
+  }
+});
+
+it('two-word initialization keeps high vertex IDs and padding separate', () => {
+  const {device, graph, contributor} = createContributor(131072, 3);
+  try {
+    const kernel = getGPUCommandNodeKernelSources(contributor.getCommandNodes(graph)).find(
+      candidate => candidate.id.endsWith('-initialize-edges')
+    )!;
+    const source = kernel.source
+      .replace(/^\s*_\s*=[^;]*;/gm, '')
+      .replace(/@workgroup_size\(\s*(\d+)u?\s*\)/g, '@workgroup_size($1, 1, 1)');
+    const keys = new Uint32Array(12);
+    const weights = new Float32Array(6);
+    new WgslExec(new WgslParser().parse(source)).dispatchWorkgroups(
+      'main',
+      1,
+      {
+        0: {
+          0: Uint32Array.of(32768, 65536, 131071),
+          1: Uint32Array.of(0, 65537, 131071),
+          2: Float32Array.of(1, 1, 0),
+          3: Float32Array.of(2),
+          4: keys,
+          5: weights
+        }
+      },
+      {constants: kernel.constants}
+    );
+    // The first pair would overflow the old packed key to zero at this node count.
+    expect(Array.from(keys)).toEqual([
+      0, 32768, 32768, 0, 65537, 65536, 65536, 65537, 131072, 131072, 131072, 131072
+    ]);
+    expect(Array.from(weights)).toEqual([0.5, 0.5, 0.5, 0.5, 0, 0]);
+  } finally {
+    device.destroy();
+  }
+});
+
+it('command allowances cover the uint32 addressing bounds and the default large-graph schedule', () => {
+  for (const [nodeCount, edgeCount, maximumLevels, maximumIterations] of [
+    [1073741823, 1073741823, 2, 1],
+    [8388608, 8388608, 8, 16]
+  ]) {
+    const {device, graph, contributor} = createContributor(
+      nodeCount,
+      edgeCount,
+      maximumLevels,
+      maximumIterations
+    );
+    // Describe the theoretical uint32 shape only; no buffers are allocated. Real devices
+    // reject it at the binding check. The 128 MiB shape uses the actual default limit.
+    if (nodeCount === 1073741823) {
+      Object.defineProperty(device, 'limits', {
+        value: {...device.limits, maxStorageBufferBindingSize: 16 * nodeCount}
+      });
+    }
+    try {
+      const commands = contributor.getCommandNodes(graph);
+      expect(commands.length).toBeLessThanOrEqual(contributor.estimatedCommandNodeCount);
+      const firstRound = commands.findIndex(
+        command => command.id === 'sparse-louvain-level-0-round-0-gate'
+      );
+      expect(firstRound).toBeGreaterThan(0);
+      expect(firstRound).toBeLessThanOrEqual(352);
+      if (nodeCount === 1073741823) expect(firstRound).toBe(348);
+      expect(
+        commands.filter(command => command.id.includes('level-0-round-0')).length
+      ).toBeLessThanOrEqual(320);
+      expect(
+        commands.filter(command => command.id.includes('aggregate-0')).length
+      ).toBeLessThanOrEqual(208);
+    } finally {
+      device.destroy();
+    }
+  }
+});
+
+it('two-word symmetry lookup distinguishes reverse keys above the old packing limit', () => {
+  const {device, graph, contributor} = createContributor(131072, 3);
+  try {
+    const kernel = getGPUCommandNodeKernelSources(contributor.getCommandNodes(graph)).find(
+      candidate => candidate.id.endsWith('-symmetry-validate')
+    )!;
+    const source = kernel.source
+      .replace(/^\s*_\s*=[^;]*;/gm, '')
+      .replace(/@workgroup_size\(\s*(\d+)u?\s*\)/g, '@workgroup_size($1, 1, 1)');
+    const keys = Uint32Array.of(
+      32768,
+      0,
+      0,
+      32768,
+      65537,
+      65536,
+      65536,
+      65537,
+      131072,
+      131072,
+      131072,
+      131072
+    );
+    for (const asymmetric of [false, true]) {
+      const failures = new Uint32Array(6);
+      new WgslExec(new WgslParser().parse(source)).dispatchWorkgroups(
+        'main',
+        1,
+        {
+          0: {
+            0: keys,
+            1: Float32Array.of(1, 1, asymmetric ? 2 : 1, 1, 0, 0),
+            2: failures
+          }
+        },
+        {constants: kernel.constants}
+      );
+      expect(Array.from(failures)).toEqual(asymmetric ? [0, 0, 1, 1, 0, 0] : [0, 0, 0, 0, 0, 0]);
+    }
+  } finally {
+    device.destroy();
+  }
+});
+
+it('audits every generated identifier against the full W3C reserved-word list in both key encodings', () => {
+  // The shared audit list was checked against WGSL 16.2 (2026-11-06), rather than the
+  // interpreter's token list. Keep the caller-requested `sample` guard as well.
+  for (const reserved of ['target', 'active', 'filter', 'module', 'meta', 'NULL', 'yield']) {
+    expect(WGSL_RESERVED_WORDS.has(reserved), reserved).toBe(true);
+  }
+  for (const [nodeCount, encoding] of [
+    [32, 'dense'],
+    [32, 'dense-seeded'],
+    [64, 'packed-reference'],
+    [65535, 'two-word'],
+    [65536, 'two-word'],
+    [65537, 'two-word']
+  ] as const) {
+    const {device, graph, contributor} = createContributor(nodeCount, 384, 2, 2);
+    try {
+      const props = contributor.props;
+      if (!props.topology) throw new Error('expected CSR props');
+      const nodes =
+        encoding === 'dense' || encoding === 'dense-seeded'
+          ? new GPUNetworkLouvain({
+              ...props,
+              topology: undefined,
+              weights: createTransientView(
+                graph,
+                'dense-reserved-word-weights',
+                'float32',
+                nodeCount * nodeCount
+              ),
+              seed: encoding === 'dense-seeded' ? 42 : undefined
+            }).getCommandNodes(graph)
+          : getSparseNetworkLouvainNodes(graph, contributor.id, props, encoding);
+      for (const kernel of getGPUCommandNodeKernelSources(nodes)) {
+        expect(auditWGSLModule(kernel.source, kernel.constants), kernel.id).toEqual([]);
+        const tokens =
+          kernel.source
+            .replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, '')
+            .match(/\b[A-Za-z_][A-Za-z_0-9]*\b/g) ?? [];
+        expect(
+          tokens.filter(token => WGSL_RESERVED_WORDS.has(token) || token === 'sample'),
+          kernel.id
+        ).toEqual([]);
+      }
+    } finally {
+      device.destroy();
+    }
+  }
+});
+
+it('the internal packed-key reference retains the old named node limit', () => {
+  const {device, graph, contributor} = createContributor(65536, 1);
+  try {
+    const props = contributor.props;
+    if (!props.topology) throw new Error('expected CSR props');
+    expect(() =>
+      getSparseNetworkLouvainNodes(graph, contributor.id, props, 'packed-reference')
+    ).toThrow(/sparse-louvain.*packed-reference nodeCount.*65535/);
+  } finally {
+    device.destroy();
+  }
+});
+
+it('weighted scalability fixtures require an improving move after quotient aggregation', () => {
+  const fixture = createNetworkLouvainQuotientFixture(16);
+  const input = {topology: fixture, parameters: Float32Array.of(fixture.resolution, 1e-8)};
+  const firstLevel = computeNetworkLouvainOnCPU(input, {
+    nodeCount: 16,
+    maximumLevels: 1,
+    maximumIterations: 4
+  });
+  const multilevel = computeNetworkLouvainOnCPU(input, {
+    nodeCount: 16,
+    maximumLevels: 3,
+    maximumIterations: 4
+  });
+  expect(new Set(firstLevel.communities).size).toBe(8);
+  expect(new Set(multilevel.communities).size).toBe(4);
+  expect(Array.from(multilevel.summary)).toEqual([1, 1, 3, 5]);
+  expect(multilevel.objectiveTrace[3]).toBeGreaterThan(multilevel.objectiveTrace[2]);
+  expect(multilevel.objectiveTrace[5]).toBeCloseTo(0, 7);
+
+  const duplicates = createNetworkLouvainMixedDuplicateFixture();
+  expect(duplicates.offsets[1]).toBe(3 * 384);
+  expect(Math.max(...duplicates.weights) / Math.min(...duplicates.weights)).toBeGreaterThan(10000);
+  expect(duplicates.weights.reduce((sum, weight) => sum + weight, 0)).toBe(18);
+  for (const nodeCount of [65535, 65536, 65537, 131072]) {
+    const large = createNetworkLouvainQuotientFixture(nodeCount, {
+      duplicateArcs: true,
+      selfLoops: true
+    });
+    expect(large.offsets[nodeCount]).toBe(large.neighbors.length);
+    expect(large.neighbors.includes(nodeCount - 1)).toBe(true);
+  }
+});
+
+it('distinct shader and pipeline keys remain constant as sparse rounds and levels grow', () => {
+  const sourceCounts: number[] = [];
+  const pipelineCounts: number[] = [];
+  for (const [maximumLevels, maximumIterations] of [
+    [2, 2],
+    [3, 4],
+    [4, 6]
+  ]) {
+    const {device, graph, contributor} = createContributor(
+      64,
+      192,
+      maximumLevels,
+      maximumIterations
+    );
+    try {
+      const kernels = getGPUCommandNodeKernelSources(contributor.getCommandNodes(graph));
+      const sources = new Set(kernels.map(kernel => kernel.source));
+      const pipelines = new Set(
+        kernels.map(kernel =>
+          JSON.stringify([
+            kernel.source,
+            Object.entries(kernel.constants).sort(([left], [right]) => left.localeCompare(right)),
+            kernel.shaderLayout
+          ])
+        )
+      );
+      sourceCounts.push(sources.size);
+      pipelineCounts.push(pipelines.size);
+      for (const kernel of kernels)
+        expect(auditWGSLModule(kernel.source, kernel.constants), kernel.id).toEqual([]);
+    } finally {
+      device.destroy();
+    }
+  }
+  expect(new Set(sourceCounts).size, `shader counts: ${sourceCounts}`).toBe(1);
+  expect(new Set(pipelineCounts).size, `pipeline counts: ${pipelineCounts}`).toBe(1);
+});
+
+it('dense schedule budgets also use bound lengths without source or pipeline variants', () => {
+  const sources = new Set<string>();
+  const pipelines = new Set<string>();
+  for (const [maximumLevels, maximumIterations] of [
+    [2, 2],
+    [3, 4],
+    [4, 6]
+  ]) {
+    const {device, graph, contributor} = createContributor(4, 4, maximumLevels, maximumIterations);
+    try {
+      const dense = new GPUNetworkLouvain({
+        ...contributor.props,
+        topology: undefined,
+        weights: createTransientView(graph, 'dense-schedule-weights', 'float32', 16)
+      });
+      for (const kernel of getGPUCommandNodeKernelSources(dense.getCommandNodes(graph))) {
+        sources.add(kernel.source);
+        pipelines.add(JSON.stringify([kernel.source, kernel.constants, kernel.shaderLayout]));
+        expect(auditWGSLModule(kernel.source, kernel.constants), kernel.id).toEqual([]);
+      }
+    } finally {
+      device.destroy();
+    }
+  }
+  // One dense solver and one named-status publisher, independent of schedule lengths.
+  expect(sources.size).toBe(2);
+  expect(pipelines.size).toBe(2);
+});
+
+it('checks aligned input/output ranges and bounded dispatch scratch without changing the graph', () => {
+  for (const field of [
+    'parameters',
+    'offsets',
+    'neighbors',
+    'weights',
+    'nodePositions',
+    'communities',
+    'objectiveTrace',
+    'summary',
+    'status',
+    'dispatch'
+  ] as const) {
+    const {device, graph, contributor} = createContributor(2, 2);
+    const prefixed = <Format extends 'uint32' | 'float32' | 'float32x2'>(
+      format: Format,
+      length: number
+    ) => {
+      const buffer = createTransientView(graph, `prefixed-${field}`, 'uint32', 80).buffer;
+      return graph.createDataView(buffer, {format, byteOffset: 252, length});
+    };
+    const base = contributor.props;
+    if (!base.topology) throw new Error('expected CSR props');
+    const props = {
+      ...base,
+      parameters: field === 'parameters' ? prefixed('float32', 2) : base.parameters,
+      topology: {
+        ...base.topology,
+        offsets: field === 'offsets' ? prefixed('uint32', 3) : base.topology.offsets,
+        neighbors: field === 'neighbors' ? prefixed('uint32', 2) : base.topology.neighbors,
+        weights: field === 'weights' ? prefixed('float32', 2) : base.topology.weights,
+        nodePositions: field === 'nodePositions' ? prefixed('float32x2', 2) : undefined
+      },
+      output: {
+        ...base.output,
+        communities: field === 'communities' ? prefixed('uint32', 2) : base.output.communities,
+        objectiveTrace:
+          field === 'objectiveTrace' ? prefixed('float32', 2) : base.output.objectiveTrace,
+        summary: field === 'summary' ? prefixed('uint32', 4) : base.output.summary,
+        status: field === 'status' ? {converged: prefixed('uint32', 1)} : base.output.status
+      }
+    };
+    const candidate = new GPUNetworkLouvain(props);
+    Object.defineProperty(device, 'limits', {
+      value: {
+        ...device.limits,
+        maxStorageBufferBindingSize: field === 'dispatch' ? 1024 : 255
+      }
+    });
+    const declarations = [
+      vi.spyOn(graph, 'createTransientBuffer'),
+      vi.spyOn(graph, 'createDataView'),
+      vi.spyOn(graph, 'importBuffer'),
+      vi.spyOn(graph, 'getUniqueResourceId'),
+      vi.spyOn(graph, 'add')
+    ];
+    try {
+      expect(() => candidate.getCommandNodes(graph)).toThrow(
+        new RegExp(
+          field === 'dispatch'
+            ? 'sparse dispatch gate allowance.*3840 bytes'
+            : `${field === 'status' ? 'output.status.converged' : field}.*needs (256|260|264|268) bytes`
+        )
+      );
+      for (const declaration of declarations) expect(declaration).not.toHaveBeenCalled();
+    } finally {
+      device.destroy();
+    }
+  }
+});
+
+it('dense aligned binding failures also precede all resource declarations', () => {
+  const {device, graph, contributor} = createContributor(4, 4);
+  const buffer = createTransientView(graph, 'prefixed-dense-buffer', 'uint32', 80).buffer;
+  const dense = new GPUNetworkLouvain({
+    ...contributor.props,
+    topology: undefined,
+    weights: graph.createDataView(buffer, {format: 'float32', byteOffset: 252, length: 16})
+  });
+  Object.defineProperty(device, 'limits', {
+    value: {...device.limits, maxStorageBufferBindingSize: 300}
+  });
+  const createBuffer = vi.spyOn(graph, 'createTransientBuffer');
+  const createDataView = vi.spyOn(graph, 'createDataView');
+  try {
+    expect(() => dense.getCommandNodes(graph)).toThrow(/sparse-louvain weights needs 316 bytes/);
+    expect(createBuffer).not.toHaveBeenCalled();
+    expect(createDataView).not.toHaveBeenCalled();
+  } finally {
+    device.destroy();
+  }
+});
+
+it('measures the graph-node budget near the contributor maximum without allocating GPU storage', () => {
+  for (const [maximumLevels, maximumIterations] of [
+    [8, 16],
+    [16, 12]
+  ]) {
+    const {device, graph, contributor} = createContributor(
+      1073741823,
+      1073741823,
+      maximumLevels,
+      maximumIterations
+    );
+    Object.defineProperty(device, 'limits', {
+      value: {...device.limits, maxStorageBufferBindingSize: 16 * 1073741823}
+    });
+    try {
+      const commands = contributor.getCommandNodes(graph);
+      const initialization = commands.findIndex(
+        command => command.id === 'sparse-louvain-level-0-round-0-gate'
+      );
+      const round = commands.filter(command =>
+        command.id.includes('sparse-louvain-level-0-round-0')
+      ).length;
+      const aggregation = commands.filter(command =>
+        command.id.includes('sparse-louvain-aggregate-0')
+      ).length;
+      expect(initialization).toBe(348);
+      expect(round).toBe(264);
+      expect(aggregation).toBe(163);
+      const expected = maximumLevels === 8 ? 35283 : 53483;
+      expect(commands.length).toBe(expected);
+      expect(commands.length).toBe(
+        initialization +
+          maximumLevels * maximumIterations * round +
+          (maximumLevels - 1) * aggregation +
+          2
+      );
+      expect(expected).toBeGreaterThan(32768);
+      expect(commands.length).toBeLessThanOrEqual(contributor.estimatedCommandNodeCount);
+    } finally {
+      device.destroy();
+    }
+  }
+});
+
+it('runtime round/level control WGSL produces independently specified stopping states', () => {
+  const {device, graph, contributor} = createContributor(4, 4, 3, 4);
+  try {
+    const kernels = getGPUCommandNodeKernelSources(contributor.getCommandNodes(graph));
+    const round = kernels.find(kernel => kernel.id.endsWith('level-0-round-0-control'))!;
+    const aggregate = kernels.find(kernel => kernel.id.endsWith('aggregate-0-control'))!;
+    const run = (kernel: typeof round, state: Uint32Array, anyChanged?: number) => {
+      const source = kernel.source
+        .replace(/^\s*_\s*=[^;]*;/gm, '')
+        .replace(/@workgroup_size\(\s*(\d+)u?\s*\)/g, '@workgroup_size($1, 1, 1)');
+      new WgslExec(new WgslParser().parse(source)).dispatchWorkgroups(
+        'main',
+        1,
+        {
+          0:
+            anyChanged === undefined
+              ? {0: state}
+              : {
+                  0: state,
+                  1: Uint32Array.of(anyChanged),
+                  2: new Uint32Array(4),
+                  3: new Uint32Array(3)
+                }
+        },
+        {constants: kernel.constants}
+      );
+    };
+    for (const scene of [
+      {
+        name: 'initially stable',
+        before: [1, 1, 0, 0, 1, 0, 0, 0, 0, 0],
+        changed: 0,
+        after: [0, 0, 0, 0, 1, 1, 1, 1, 1, 0]
+      },
+      {
+        name: 'round budget exhausted after improvement',
+        before: [1, 1, 1, 0, 1, 0, 2, 4, 3, 1],
+        changed: 1,
+        after: [0, 1, 1, 0, 1, 0, 2, 5, 4, 1]
+      },
+      {
+        name: 'last level stabilizes after changes',
+        before: [1, 1, 1, 0, 1, 0, 3, 4, 1, 2],
+        changed: 0,
+        after: [0, 0, 1, 0, 1, 0, 3, 5, 2, 2]
+      },
+      {
+        name: 'inactive control is inert',
+        before: [0, 1, 1, 0, 1, 0, 2, 4, 3, 1],
+        changed: 1,
+        after: [0, 1, 1, 0, 1, 0, 2, 4, 3, 1]
+      }
+    ]) {
+      const state = Uint32Array.from(scene.before);
+      run(round, state, scene.changed);
+      expect(Array.from(state), scene.name).toEqual(scene.after);
+    }
+    const state = Uint32Array.of(1, 1, 1, 0, 1, 0, 1, 1, 1, 0);
+    run(round, state, 0);
+    expect(Array.from(state)).toEqual([1, 0, 1, 0, 1, 0, 1, 2, 2, 0]);
+    run(aggregate, state);
+    expect(Array.from(state)).toEqual([1, 1, 0, 0, 1, 0, 1, 2, 0, 1]);
+    run(round, state, 0);
+    expect(Array.from(state)).toEqual([0, 0, 0, 0, 1, 1, 2, 3, 1, 1]);
+  } finally {
+    device.destroy();
+  }
+});
+
+it('rejects chunked writable outputs at construction before inspecting buffer identities', () => {
+  const {device, graph, contributor} = createContributor(4, 4);
+  try {
+    for (const field of ['communities', 'objectiveTrace', 'summary', 'status'] as const) {
+      const format = field === 'objectiveTrace' ? 'float32' : 'uint32';
+      const chunked = createVectorView(`chunked-${field}`, format, [
+        createTransientView(graph, `chunked-${field}-first`, format, 1),
+        createTransientView(graph, `chunked-${field}-second`, format, 1)
+      ]);
+      const output =
+        field === 'status'
+          ? {...contributor.props.output, status: {converged: chunked}}
+          : {...contributor.props.output, [field]: chunked};
+      expect(
+        () =>
+          new GPUNetworkLouvain({
+            ...contributor.props,
+            output: output as unknown as typeof contributor.props.output
+          })
+      ).toThrow(new RegExp(`sparse-louvain.*${field === 'status' ? '' : field}.*one packed`));
+    }
+  } finally {
+    device.destroy();
+  }
+});

@@ -728,3 +728,93 @@ it('GPUCellTableCompare compares two real GPUCellAggregation periods in one grap
     fixture.destroy();
   }
 });
+
+it('packed comparison measures and derived columns share one import across separate dispatches', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = new Fixture(device);
+  const graph = new GPUCommandGraph(device);
+  const before = createInputTable(fixture, 1);
+  const after = createInputTable(fixture, 1);
+  writeInputTable(before, [{key: 10n, count: 2, sum: 0n}]);
+  writeInputTable(after, [{key: 10n, count: 8, sum: 0n}]);
+  const output = importCompareOutput(graph, createCompareBuffers(fixture, 2), 2);
+  const packed = fixture.output(192);
+  const handle = importGraphBuffer(graph, 'packed-numerics', packed, 'float32').buffer;
+  const offsets = {before: 4, after: 12, delta: 20, ratio: 28, percentChange: 260, zScore: 516};
+  for (const name of Object.keys(offsets) as (keyof typeof offsets)[])
+    output[name] = graph.createDataView(handle, {
+      format: 'float32',
+      length: 2,
+      byteOffset: offsets[name]
+    });
+  graph.add(
+    new GPUCellTableCompare({
+      before: importInputTable(graph, 'before', before),
+      after: importInputTable(graph, 'after', after),
+      output
+    })
+  );
+  const compiled = graph.compile();
+  try {
+    submitGraph(device, compiled, undefined);
+    const words = await readFloat32(packed);
+    const expected = {
+      before: 2,
+      after: 8,
+      delta: 6,
+      ratio: 4,
+      percentChange: 300,
+      zScore: 6 / Math.sqrt(10)
+    };
+    for (const name of Object.keys(offsets) as (keyof typeof offsets)[]) {
+      expect(words[offsets[name] / 4]).toBeCloseTo(expected[name], 5);
+      const tail = words[offsets[name] / 4 + 1];
+      if (name === 'before' || name === 'after') expect(tail).toBe(0);
+      else expect(Number.isNaN(tail)).toBe(true);
+    }
+  } finally {
+    compiled.destroy();
+    fixture.destroy();
+    device.destroy();
+  }
+});
+
+it('sum comparison preserves finite measures, ratios and percentages at extreme scales', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const sumScale of [2 ** 126, 2 ** -120]) {
+    const fixture = new Fixture(device);
+    const graph = new GPUCommandGraph(device);
+    const before = createInputTable(fixture, 1);
+    const after = createInputTable(fixture, 1);
+    const sum = sumScale > 1 ? 1n << 60n : 32n;
+    writeInputTable(before, [{key: 1n, count: 1, sum}]);
+    writeInputTable(after, [{key: 1n, count: 1, sum: 2n * sum}]);
+    const buffers = createCompareBuffers(fixture, 1);
+    graph.add(
+      new GPUCellTableCompare({
+        measure: 'sum',
+        sumScale,
+        before: importInputTable(graph, 'before', before),
+        after: importInputTable(graph, 'after', after),
+        output: importCompareOutput(graph, buffers, 1)
+      })
+    );
+    const compiled = graph.compile();
+    try {
+      submitGraph(device, compiled, undefined);
+      const result = await readCompare(buffers, 1);
+      const expected = Number(sum) / sumScale;
+      expect(result.columns.before).toEqual([expected]);
+      expect(result.columns.after).toEqual([2 * expected]);
+      expect(result.columns.delta).toEqual([expected]);
+      expect(result.columns.ratio[0]).toBeCloseTo(2, 6);
+      expect(result.columns.percentChange[0]).toBeCloseTo(100, 5);
+    } finally {
+      compiled.destroy();
+      fixture.destroy();
+    }
+  }
+  device.destroy();
+});

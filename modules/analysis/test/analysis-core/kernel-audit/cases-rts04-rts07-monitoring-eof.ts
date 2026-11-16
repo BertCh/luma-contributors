@@ -30,7 +30,8 @@ function makeAxis({view}: KernelAuditContext, slices: number): GPURasterIrregula
 function harmonicRegression(
   context: KernelAuditContext,
   slices: number,
-  harmonicCount: number
+  harmonicCount: number,
+  mode: 'reference' | 'storage' = 'storage'
 ): void {
   const {graph, view} = context;
   const columns = 2 + 2 * harmonicCount;
@@ -39,6 +40,7 @@ function harmonicRegression(
       cellCount: CELLS,
       sliceCount: slices,
       harmonicCount,
+      mode,
       values: view('float32', CELLS * slices),
       mask: view('uint32', CELLS * slices),
       parameters: view('float32', 1),
@@ -178,12 +180,22 @@ export const RTS04_RTS07_MONITORING_EOF_AUDIT_CASES: readonly KernelAuditCase[] 
   {
     exportName: 'GPURasterHarmonicRegression',
     name: 'rts04-maximum-memory-one-harmonic',
-    build: context => harmonicRegression(context, 256, 1)
+    build: context => harmonicRegression(context, 256, 1, 'reference')
   },
   {
     exportName: 'GPURasterHarmonicRegression',
     name: 'rts04-memory-above-maximum',
-    build: context => harmonicRegression(context, 256, 2)
+    build: context => harmonicRegression(context, 256, 2, 'reference')
+  },
+  {
+    exportName: 'GPURasterHarmonicRegression',
+    name: 'rts04-storage-maximum-slices',
+    build: context => harmonicRegression(context, 4096, 1, 'storage')
+  },
+  {
+    exportName: 'GPURasterHarmonicRegression',
+    name: 'rts04-storage-slices-above-maximum',
+    build: context => harmonicRegression(context, 4097, 1, 'storage')
   },
   {
     exportName: 'GPURasterCOLDMonitor',

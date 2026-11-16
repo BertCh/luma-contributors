@@ -7,11 +7,11 @@ import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {
-  GPUBufferSurface,
   GPUPolygonOverlay,
   type GPUPolygonOverlayOperation,
   type GPUPolygonOverlayOutput
-} from '../../../src/gpu-spatial-analysis/index';
+} from '../../../src/gpu-spatial-analysis/polygon-overlay/index';
+import {GPUBufferSurface} from '../../../src/gpu-spatial-analysis/polygon-buffer/index';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {
   createInputBuffer,
@@ -538,3 +538,67 @@ it('GPUPolygonOverlay publishes the unclamped ring requirement', async () => {
     buffer.destroy();
   }
 });
+
+for (const mode of ['overlay', 'buffer'] as const) {
+  it(`publishes a representative source feature and mixed boundary provenance for ${mode}`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const graph = new GPUCommandGraph(device);
+    const buffers = createGraphBuffers(device, graph);
+    const result = createOverlayOutput(buffers, 'feature-sources');
+    const sourceRows = buffers.output('feature-source-rows', 'uint32', 32);
+    const operandIds = buffers.output('feature-operand-ids', 'uint32', 32);
+    const mixed = buffers.output('feature-mixed', 'uint32', 32);
+    result.output.featureSources = {
+      sourceRows: sourceRows.view,
+      operandIds: operandIds.view,
+      mixed: mixed.view
+    };
+    if (mode === 'overlay') {
+      graph.add(
+        new GPUPolygonOverlay({
+          left: createPolygonInput(buffers, 'left', [0, 0, 2, 0, 2, 2, 0, 2]),
+          right: createPolygonInput(buffers, 'right', [1, 0, 3, 0, 3, 2, 1, 2]),
+          operation: 'union',
+          vertexTolerance: 1e-5,
+          capacity: {intersections: 128, nodedSegments: 128},
+          output: result.output
+        })
+      );
+    } else {
+      graph.add(
+        new GPUBufferSurface({
+          geometry: {
+            kind: 'lines',
+            positions: buffers.input(
+              'lines',
+              new Float32Array([0, 0, 2, 0, 1, 0, 3, 0]),
+              'float32x2',
+              4
+            ),
+            lineOffsets: buffers.input('offsets', new Uint32Array([0, 2, 4]), 'uint32', 3)
+          },
+          parameters: buffers.input('parameters', new Float32Array([0.5, 5, 0, 0]), 'float32', 4),
+          joinStyle: 'bevel',
+          capStyle: 'flat',
+          vertexTolerance: 1e-5,
+          capacity: {intersections: 128, nodedSegments: 128},
+          output: result.output
+        })
+      );
+    }
+    const compiled = graph.compile();
+    try {
+      submitGraph(device, compiled, undefined);
+      expect((await readUint32(result.count, 1))[0]).toBe(1);
+      expect((await readUint32(result.overflow, 1))[0]).toBe(0);
+      expect((await readUint32(sourceRows.buffer, 2))[0]).toBe(0);
+      expect((await readUint32(operandIds.buffer, 2))[0]).toBe(0);
+      expect(Array.from(await readUint32(mixed.buffer, 2))).toEqual([1, 0]);
+      expect((await readUint32(sourceRows.buffer, 2))[1]).toBe(0xffffffff);
+    } finally {
+      compiled.destroy();
+      for (const buffer of buffers.buffers) buffer.destroy();
+    }
+  });
+}

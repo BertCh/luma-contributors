@@ -21,10 +21,18 @@ const BOUNDS_BYTES = 16;
 const FEATURE_RING_BYTES = 8;
 /** Bytes per robust point/polygon pair row: point, geometry offset and classification (two rows per candidate). */
 const ROBUST_PAIR_BYTES = 16;
-/** Bytes of the join's state words (candidate, uncertain, match, unmatched and truncated-row totals). */
-const STATE_BYTES = 20;
-/** Bytes per left feature of the candidate probe's per-feature counts and offsets. */
-const LEFT_PROBE_BYTES = 8;
+/** Candidate, uncertain, match, unmatched, truncated-row totals and the live page row count. */
+const STATE_BYTES = 24;
+/** Counts/offsets and the four word arrays of the shared saturated uint64 count scan. */
+const LEFT_PROBE_BYTES = 24;
+/** First query, query length and the indirect triple appended to the page offsets. */
+const PAGE_QUERY_BYTES = 20;
+/** The extra flag word carries the running match offset between candidate pages. */
+const PAGE_FLAG_BYTES = 4;
+/** Published GPUScan uses 256 rows per block with a uint32 sum and offset per nonterminal block. */
+const SCAN_BLOCK_ROWS = 256;
+/** One uint32 block sum and one uint32 block offset per scan hierarchy row. */
+const SCAN_HIERARCHY_ROW_BYTES = 8;
 /** Bytes of one live-count indirect dispatch (three `uint32` workgroup counts). */
 const DISPATCH_BYTES = 12;
 /** Fixed bytes of the robust point/polygon pair rows: the padded point, offset and class rows. */
@@ -48,6 +56,8 @@ export type GPUSpatialJoinCapacityPlanningOptions = {
   leafCapacity?: number;
   /** Candidate capacity to report on; defaults to the estimated requirement. */
   candidateCapacity?: number;
+  /** Device-resolved scratch tile capacity. Defaults to candidate capacity; clipped to the planned capacity. */
+  candidateTileCapacity?: number;
   /** Pair capacity to report on; defaults to the estimated requirement. */
   pairCapacity?: number;
   /** Candidates per left feature before a run supplied `observedCandidateCount`. Defaults to `min(rightCount, 8)`. */
@@ -73,9 +83,10 @@ export type GPUSpatialJoinCapacityPlan = GPUContributorCapacityPlan & {
  *
  * The transient bytes are computed from the same sizes the join allocates: per-side bounds, polygon
  * ring ranges, the right-hand BVH (`getSpatialJoinBVHByteLength`), the candidate table and, when
- * used, the relate matrices and the robust point/polygon pair rows. Scratch inside the GPU Core
- * primitives the join composes (the BVH build sort and the scans) is not included, and neither is a
- * `spatialSort` reorder. A capacity grow loop reads `candidateCount` and `pairs.requiredCount`
+ * used, the relate matrices and the robust point/polygon pair rows. Candidate scratch is allocated
+ * once at `candidateTileCapacity`, independent of page count. The shared saturated scan's word
+ * arrays and scan hierarchy are included. The BVH build sort and a `spatialSort` reorder are not.
+ * A capacity grow loop reads `candidateCount` and `pairs.requiredCount`
  * after a frame, passes them as `observed...Count`, and rebuilds with the planned capacities (see
  * {@link getGPUCapacityRecovery} for the stage-by-stage decision).
  */
@@ -111,20 +122,38 @@ export function getGPUSpatialJoinCapacityPlan(
     0,
     candidateBytes
   );
+  let tileCapacity = candidates.capacity;
+  if (options.candidateTileCapacity !== undefined) {
+    const requestedTileCapacity = validateCount(
+      options.candidateTileCapacity,
+      'candidateTileCapacity'
+    );
+    if (requestedTileCapacity === 0) {
+      throw new Error('candidateTileCapacity must be a positive safe integer');
+    }
+    tileCapacity = Math.min(candidates.capacity, requestedTileCapacity);
+    candidates.estimatedPeakTransientBytes = saturate(tileCapacity * candidateBytes);
+  }
+  const pageCount = Math.max(1, Math.ceil(candidates.capacity / Math.max(tileCapacity, 1)));
   const pairs = getStagePlan(pairRequirement, options.pairCapacity, PAIR_BYTES, 0);
   const leafCapacity = options.leafCapacity ?? getNextPowerOfTwo(Math.max(rightCount, 1));
   const ringBytes =
     (leftKind === 'polygons' ? leftCount : 0) * FEATURE_RING_BYTES +
     (rightKind === 'polygons' ? rightCount : 0) * FEATURE_RING_BYTES;
-  const robustBytes = usesRobustPointPolygon ? ROBUST_FIXED_BYTES + DISPATCH_BYTES : 0;
+  const robustBytes = usesRobustPointPolygon ? ROBUST_FIXED_BYTES : 0;
   const fixedBytes =
     (leftCount + rightCount) * BOUNDS_BYTES +
     leftCount * LEFT_PROBE_BYTES +
     ringBytes +
     getSpatialJoinBVHByteLength(leafCapacity) +
     STATE_BYTES +
-    DISPATCH_BYTES +
-    (options.relate ? DISPATCH_BYTES : 0) +
+    PAGE_QUERY_BYTES +
+    PAGE_FLAG_BYTES +
+    pageCount *
+      DISPATCH_BYTES *
+      (1 + Number(Boolean(options.relate)) + Number(usesRobustPointPolygon)) +
+    2 * getScanHierarchyByteLength(leftCount) +
+    pageCount * getScanHierarchyByteLength(tileCapacity) +
     robustBytes;
   return {
     candidates,
@@ -133,6 +162,16 @@ export function getGPUSpatialJoinCapacityPlan(
     estimatedOutputBytes: pairs.estimatedOutputBytes,
     estimatedPeakTransientBytes: saturate(fixedBytes + candidates.estimatedPeakTransientBytes)
   };
+}
+
+/** Accounts for the published scans' allocations; does not implement a scan or declare a graph. */
+function getScanHierarchyByteLength(rowCount: number): number {
+  let byteLength = 0;
+  for (let rows = rowCount; rows > SCAN_BLOCK_ROWS; ) {
+    rows = Math.ceil(rows / SCAN_BLOCK_ROWS);
+    byteLength += rows * SCAN_HIERARCHY_ROW_BYTES;
+  }
+  return byteLength;
 }
 
 /** Candidate capacity a {@link GPUSpatialPredicateJoin} allocates when `candidateCapacity` is omitted. @internal */

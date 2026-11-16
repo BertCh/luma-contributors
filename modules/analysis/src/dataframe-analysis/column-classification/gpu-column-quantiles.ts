@@ -9,8 +9,9 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
+  getGraphViewChunks,
+  validateCommandNodeBudget,
   validateCapacity,
-  validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
   validateSinglePackedView,
   validateRequirement
@@ -22,6 +23,14 @@ import {
   GPU_COLUMN_QUANTILES_MAXIMUM_QUANTILE_COUNT
 } from './column-quantiles-parameters';
 
+import {
+  type ClassificationRows,
+  validateClassificationBindings,
+  validateClassificationRows,
+  validateQuantileWritableViews,
+  validateClassificationOutput
+} from './column-classification-rows';
+
 export type {GPUColumnQuantilesOutput} from './column-quantiles-nodes';
 
 const OPERATION = 'GPUColumnQuantiles';
@@ -32,8 +41,8 @@ const OPERATION = 'GPUColumnQuantiles';
 const MAXIMUM_ROW_COUNT = 2 ** 24;
 /**
  * Largest column with `rationalProbabilities`: counts and ranks are `u32` there, and the runtime
- * zero that blocks multiply-add fusion (`validCount >> 31`) needs a count below 2^31. The device's
- * storage binding size is the practical limit (2^25 rows at the default 128 MiB).
+ * zero that blocks multiply-add fusion (`validCount >> 31`) needs a count below 2^31.
+ * Chunks individually fit the device storage binding size; no full-column binding is needed.
  */
 const MAXIMUM_RATIONAL_ROW_COUNT = 2 ** 31 - 1;
 
@@ -42,19 +51,21 @@ const MAXIMUM_RATIONAL_ROW_COUNT = 2 ** 31 - 1;
  *
  * Per-frame (no recompile): the contents of `parameters` (probabilities, interpolation, filter
  * range), of `rationalProbabilities` and of `values` and `mask`. Topology (needs a new graph):
- * `quantileCount`, view lengths, whether `mask` and `rationalProbabilities` are present, and which
- * optional outputs are present.
+ * `quantileCount`, view lengths and ordered chunk lengths, whether `mask` and
+ * `rationalProbabilities` are present, and which optional outputs are present.
  */
-export type GPUColumnQuantilesProps = {
+export type GPUColumnQuantilesProps<
+  Rows extends ClassificationRows<'float32'> = GraphDataView<'float32'>
+> = {
   /** Prefix for generated node and transient IDs. Defaults to `'column-quantiles'`. */
   id?: string;
   /**
-   * Packed float32 column. NaN and +-Infinity rows are missing and skipped. At most 2^24 rows;
-   * with `rationalProbabilities` and no filter output, as many rows as one storage binding holds.
+   * Packed or chunked float32 column. NaN and +-Infinity rows are missing and skipped. At most 2^24 rows;
+   * with `rationalProbabilities` and no filter output, up to 2^31 - 1 rows across chunks.
    */
-  values: GraphDataView<'float32'>;
-  /** Optional packed `uint32` row mask; zero skips the row. */
-  mask?: GraphDataView<'uint32'>;
+  values: Rows;
+  /** Optional row-aligned packed or chunked `uint32` mask; zero skips the row. */
+  mask?: ClassificationRows<'uint32'>;
   /**
    * Float32 parameters written with `getGPUColumnQuantilesParameterValues`:
    * `[interpolationCode, filterLower, filterUpper, 0, p_0 ... p_{quantileCount-1}]`.
@@ -74,7 +85,7 @@ export type GPUColumnQuantilesProps = {
   /** Number of probability slots, compile-time, 1 to 64. */
   quantileCount: number;
   /** Caller-owned outputs. */
-  output: GPUColumnQuantilesOutput;
+  output: GPUColumnQuantilesOutput<Rows>;
 };
 
 /**
@@ -134,19 +145,27 @@ export type GPUColumnQuantilesProps = {
  *   count of 2^32 - 1 (`test/oracles/dataframe-quantile-rational-rank.py`).
  *
  * Limits: 64 probabilities. At most 2^24 rows on the default path (row counts and ranks use f32
- * arithmetic). With `rationalProbabilities` the column may be longer, up to one storage binding
- * of the device (2^25 rows at the default 128 MiB; never more than 2^31 - 1), provided no filter
- * output (`outputMask`, `filterBounds`) is requested: the percentile filter ranks are float32 on
+ * arithmetic). With `rationalProbabilities` the column may be longer, up to 2^31 - 1 rows across
+ * chunks (each chunk must fit one storage binding), provided no filter output (`outputMask`, `filterBounds`) is requested: the percentile filter ranks are float32 on
  * both paths.
- * Inputs must be single packed views (chunked vectors are rejected).
+ * Values accept GraphVectorView. Mask and outputMask must follow the same chunk boundaries;
+ * scalar controls and reduction outputs remain packed. Each histogram pass accumulates every
+ * nonempty chunk before rank selection. Integer atomics make every result bitwise equal to
+ * packed input, with no row-proportional scratch or source repacking. Writable output ranges must be disjoint.
+ * Finish outputs must also have disjoint aligned bindings; mask chunks are separate dispatches.
  */
-export class GPUColumnQuantiles implements GPUCommandNodeProducer {
+export class GPUColumnQuantiles<
+  Rows extends ClassificationRows<'float32'> = GraphDataView<'float32'>
+> implements GPUCommandNodeProducer
+{
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
-  readonly props: GPUColumnQuantilesProps;
+  readonly props: GPUColumnQuantilesProps<Rows>;
+  /** One histogram per nonempty chunk per pass, plus shared init/select/finish. */
+  readonly estimatedCommandNodeCount: number;
 
-  constructor(props: GPUColumnQuantilesProps) {
+  constructor(props: GPUColumnQuantilesProps<Rows>) {
     this.id = props.id ?? 'column-quantiles';
     this.props = props;
     const id = this.id;
@@ -191,9 +210,9 @@ export class GPUColumnQuantiles implements GPUCommandNodeProducer {
         `values length must be at most ${MAXIMUM_ROW_COUNT} (2^24): row counts and ranks are held in float32 and are exact only up to 2^24`
       );
     }
-    validateSinglePackedView(props.values, ['float32'], `${id} values`);
+    validateClassificationRows(id, 'values', props.values, ['float32']);
     if (props.mask) {
-      validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
+      validateClassificationRows(id, 'mask', props.mask, ['uint32'], props.values);
       if (props.mask.length !== rows) {
         throw new Error(`${id} mask length must equal values length`);
       }
@@ -212,7 +231,13 @@ export class GPUColumnQuantiles implements GPUCommandNodeProducer {
       throw new Error(`${id} output.validCount must hold one row`);
     }
     if (output.outputMask) {
-      validateSinglePackedView(output.outputMask, ['uint32'], `${id} output.outputMask`);
+      validateClassificationOutput(
+        id,
+        'output.outputMask',
+        output.outputMask,
+        'uint32',
+        props.values
+      );
       if (output.outputMask.length < rows) {
         throw new Error(`${id} output.outputMask must hold values.length rows`);
       }
@@ -223,11 +248,15 @@ export class GPUColumnQuantiles implements GPUCommandNodeProducer {
         throw new Error(`${id} output.filterBounds must hold two rows`);
       }
     }
+    validateQuantileWritableViews(id, output);
     validateGraphOutputsDisjointFromInputs(
       id,
       [output.quantiles, output.validCount, output.outputMask, output.filterBounds],
       [props.values, props.mask, props.parameters, props.rationalProbabilities]
     );
+    const chunkCount = getGraphViewChunks(props.values).filter(chunk => chunk.length > 0).length;
+    this.estimatedCommandNodeCount = 6 + chunkCount * (4 + Number(Boolean(output.outputMask)));
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
   }
 
   /**
@@ -239,16 +268,16 @@ export class GPUColumnQuantiles implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
-    if (props.values.length > MAXIMUM_ROW_COUNT) {
-      // Only reachable with rationalProbabilities; shorter columns fit the core binding limit.
-      validateGPUStorageBindingByteLength(
-        graph.device,
-        id,
-        'values',
-        props.values.length * Float32Array.BYTES_PER_ELEMENT,
-        'use a shorter column or a device with a larger maxStorageBufferBindingSize'
-      );
-    }
+    validateClassificationBindings(id, graph, {
+      values: props.values,
+      mask: props.mask,
+      parameters: props.parameters,
+      rationalProbabilities: props.rationalProbabilities,
+      'output.quantiles': props.output.quantiles,
+      'output.validCount': props.output.validCount,
+      'output.outputMask': props.output.outputMask,
+      'output.filterBounds': props.output.filterBounds
+    });
     return getColumnQuantileNodes(graph, {
       id,
       operation: OPERATION,

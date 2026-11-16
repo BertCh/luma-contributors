@@ -47,7 +47,7 @@ it('the CPU operation defines empty input while the GPU contributor rejects it',
       operations: [new GPUInequalityOperation(props)],
       outputs: Object.values(output)
     })
-  ).rejects.toThrow(/empty-inequality needs at least one row/);
+  ).rejects.toThrow(/^empty-inequality values length must be an integer in \[1, 2147483648\]$/);
   const result = await runOperationGraph(device, {
     inputs,
     operations: [new CPUInequalityOperation(props)],

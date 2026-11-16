@@ -3,7 +3,9 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {expect, it} from 'vitest';
+import {expect, it, vi} from 'vitest';
+import {getStorageTopKNodeRecord} from '../../../src/analysis-core/kernels/storage-backed-top-k';
+import {getReservedWGSLWords} from '../spatial-join/wgsl-reserved-words';
 import {WgslReflect} from 'wgsl_reflect';
 import {
   getGPUFocalStatisticsParameterValues,
@@ -148,7 +150,10 @@ it('GPUInverseDistanceWeighting validates its props', () => {
     [() => ({indexGridSize: [2, 1.5]}), /indexGridSize/],
     [() => ({indexBounds: [0, 0, -1, 1]}), /indexBounds/],
     [() => ({indexBounds: [0, 0, Infinity, 1]}), /indexBounds/],
-    [() => ({maximumNeighborCount: 65}), /maximumNeighborCount/],
+    [() => ({maximumNeighborCount: -1}), /maximumNeighborCount/],
+    [() => ({maximumNeighborCount: 1.5}), /maximumNeighborCount/],
+    [() => ({maximumNeighborCount: Infinity}), /maximumNeighborCount/],
+    [() => ({maximumNeighborCount: 0x1000001}), /maximumNeighborCount/],
     [graph => ({positions: view(graph, 'float32x2', 9)}), /positions length/],
     [graph => ({mask: view(graph, 'uint32', 9)}), /mask length/],
     [graph => ({parameters: view(graph, 'float32', 7)}), /parameters/],
@@ -193,22 +198,104 @@ it('GPUInverseDistanceWeighting validates its props', () => {
   });
 });
 
-it('GPUInverseDistanceWeighting returns deterministic node IDs', () => {
-  for (const maximumNeighborCount of [0, 8]) {
-    const ids: string[][] = [];
-    for (let run = 0; run < 2; run++) {
-      withGraph(graph => {
-        const contributor = new GPUInverseDistanceWeighting(
-          createInterpolationProps(graph, {id: 'idw', maximumNeighborCount})
-        );
-        ids.push(contributor.getCommandNodes(graph).map(node => node.id));
-      });
-    }
-    expect(ids[0]).toEqual(ids[1]);
-    expect(ids[0].every(id => id.startsWith('idw-'))).toBe(true);
-    expect(ids[0].some(id => id.startsWith('idw-cell-row-order'))).toBe(true);
-    expect(ids[0].at(-1)).toBe('idw-gather');
+it('GPUInverseDistanceWeighting accepts storage capacities through the float32 integer limit', () => {
+  for (const maximumNeighborCount of [64, 65, 256, 1024, 0x1000000]) {
+    withGraph(graph => {
+      const contributor = new GPUInverseDistanceWeighting(
+        createInterpolationProps(graph, {maximumNeighborCount})
+      );
+      expect(contributor.maximumNeighborCount).toBe(maximumNeighborCount);
+    });
   }
+});
+
+it('GPUInverseDistanceWeighting enforces the actual storage capacity before graph mutation', () => {
+  withGraph(graph => {
+    const bindingLimit = graph.device.limits.maxStorageBufferBindingSize;
+    // One scratch row holds two result words and two words per neighbor, plus a cursor word.
+    const maximumNeighborCount = Math.min(0x1000000, Math.floor((bindingLimit / 4 - 3) / 2));
+    const contributor = new GPUInverseDistanceWeighting(
+      createInterpolationProps(graph, {maximumNeighborCount})
+    );
+    const nodes = contributor.getCommandNodes(graph);
+    const scratch = nodes
+      .flatMap(node => getStorageTopKNodeRecord(node)?.bindings ?? [])
+      .find(binding => binding.name === 'topk')!.view;
+    expect(scratch.buffer.byteLength).toBe((2 * maximumNeighborCount + 3) * 4);
+    expect(scratch.buffer.byteLength).toBeLessThanOrEqual(bindingLimit);
+    expect(scratch.buffer.byteLength).toBeLessThanOrEqual(graph.device.limits.maxBufferSize);
+    for (const node of nodes) {
+      const record = getStorageTopKNodeRecord(node);
+      if (record) expect(getReservedWGSLWords(record.source)).toEqual([]);
+    }
+    const tooLarge = new GPUInverseDistanceWeighting(
+      createInterpolationProps(graph, {maximumNeighborCount: maximumNeighborCount + 1})
+    );
+    const declare = vi.spyOn(graph, 'createTransientBuffer');
+    expect(() => tooLarge.getCommandNodes(graph)).toThrow(
+      /inverse-distance-weighting top-k scratch.*binding/
+    );
+    expect(declare).not.toHaveBeenCalled();
+    declare.mockRestore();
+  });
+});
+
+it.each([
+  [0, undefined],
+  [8, undefined],
+  [65, undefined],
+  [65, 5]
+] as const)('GPUInverseDistanceWeighting returns deterministic node IDs (capacity=%s, tile=%s)', (maximumNeighborCount, invocationTileSize) => {
+  const ids: string[][] = [];
+  for (let run = 0; run < 2; run++) {
+    withGraph(graph => {
+      const contributor = new GPUInverseDistanceWeighting(
+        createInterpolationProps(graph, {id: 'idw', maximumNeighborCount, invocationTileSize})
+      );
+      const nodes = contributor.getCommandNodes(graph);
+      expect(nodes.length).toBeLessThanOrEqual(contributor.estimatedCommandNodeCount);
+      ids.push(nodes.map(node => node.id));
+    });
+  }
+  expect(ids[0]).toEqual(ids[1]);
+  expect(ids[0].every(id => id.startsWith('idw-'))).toBe(true);
+  expect(ids[0].some(id => id.startsWith('idw-cell-row-order'))).toBe(true);
+  expect(new Set(ids[0]).size).toBe(ids[0].length);
+  const storageBacked = maximumNeighborCount > 64;
+  const tileCount = Math.ceil(12 / (invocationTileSize ?? 12));
+  const expected = storageBacked ? ['idw-reset-cursor'] : [];
+  for (let tile = 0; tile < tileCount; tile++) {
+    expected.push(`idw-gather-${tile}`);
+    if (storageBacked) expected.push(`idw-publish-${tile}`);
+    if (storageBacked && tile + 1 < tileCount) expected.push(`idw-advance-${tile}`);
+  }
+  expect(ids[0].slice(-expected.length)).toEqual(expected);
+});
+
+it('GPUInverseDistanceWeighting storage contributors coexist in one graph', () => {
+  withGraph(graph => {
+    const scratchBuffers = new Set<object>();
+    const nodes = ['first-idw', 'second-idw'].flatMap(id => {
+      const contributor = new GPUInverseDistanceWeighting(
+        createInterpolationProps(graph, {id, maximumNeighborCount: 65, invocationTileSize: 5})
+      );
+      const commands = contributor.getCommandNodes(graph);
+      expect(commands.every(node => node.id.startsWith(`${id}-`))).toBe(true);
+      for (const node of commands) {
+        const scratch = getStorageTopKNodeRecord(node)?.bindings.find(
+          binding => binding.name === 'topk'
+        );
+        if (scratch) {
+          expect(scratch.view.buffer.id.startsWith(`${id}-`)).toBe(true);
+          scratchBuffers.add(scratch.view.buffer);
+        }
+      }
+      return commands;
+    });
+    expect(new Set(nodes.map(node => node.id)).size).toBe(nodes.length);
+    expect(scratchBuffers.size).toBe(2);
+    expect(() => graph.add({getCommandNodes: () => nodes})).not.toThrow();
+  });
 });
 
 it('interpolation packers read the corners from the grid in grid order', () => {
@@ -469,7 +556,7 @@ it('GPUFocalStatistics validates its props and schedules only requested kernels'
     const shared = view(graph, 'float32', 12);
     expect(
       () => new GPUFocalStatistics(createFocalProps(graph, {output: {mean: shared, sum: shared}}))
-    ).toThrow(/share buffers/);
+    ).toThrow(/must not overlap/);
   });
   withGraph(graph => {
     const moments = new GPUFocalStatistics(createFocalProps(graph, {id: 'focal'}));

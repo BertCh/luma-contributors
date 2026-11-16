@@ -2,8 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateSpatialOutputViews} from './spatial-output-validation';
 import {
   createTransientView,
+  doGraphDataViewsOverlap,
   GPUFlagOffsets,
   GPUScan,
   GPUSort,
@@ -17,6 +20,7 @@ import {
   createWGSLDispatchGate,
   createWGSLKernelNode
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {getBoundedMergeTreeSpliceRoundCount} from '../../analysis-core/kernels/parallel-merge-tree';
 import {getSortedSegmentSumNodes} from '../../analysis-core/kernels/sorted-segment-sums';
 import {
   getNextPowerOfTwo,
@@ -40,37 +44,41 @@ import {
 import {GPU_HIERARCHICAL_DENSITY_CLUSTERING_PARAMETER_LENGTH} from './hierarchical-density-clustering-parameters';
 import type {GPUCardinalityPort} from '../../analysis-core/contracts/index';
 import {GPUNeighborSearch} from '../neighbor-search/gpu-neighbor-search';
+import {GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH} from '../neighbor-search/neighbor-search-parameters';
 import {createNeighborSearchDerivedParameterNodes} from '../neighbor-search/neighbor-search-derived-parameters';
 import {getSortedFeatureBVHNodes} from '../spatial-join/spatial-join-passes';
 import {
   createHierarchicalDensityAddNode,
-  createHierarchicalDensityCoreNode,
-  createHierarchicalDensityClusterInfoNode,
-  createHierarchicalDensityContributionsNode,
   createHierarchicalDensityEdgeKeysNode,
   createHierarchicalDensityGateNode,
   createHierarchicalDensityInitNode,
   createHierarchicalDensityLabelsNode,
-  createHierarchicalDensityLeafFlagsNode,
-  createHierarchicalDensityNodeDataNode,
-  createHierarchicalDensityPointerInitNode,
   createHierarchicalDensityResolveNode,
-  createHierarchicalDensitySearchNode,
   createHierarchicalDensityTieNode,
   HIERARCHICAL_DENSITY_CLUSTER_WORDS,
-  HIERARCHICAL_DENSITY_DENDROGRAM_WORDS,
   HIERARCHICAL_DENSITY_EDGE_WORDS,
-  HIERARCHICAL_DENSITY_NODE_WORDS,
   HIERARCHICAL_DENSITY_SELECTION_WORDS,
   HIERARCHICAL_DENSITY_STATE_WORDS,
   type HierarchicalDensityShape
 } from './hierarchical-density-clustering-kernels';
 
 import {
-  getHierarchicalDensityDendrogramNodes,
   getHierarchicalDensityCondensingNodes,
   getHierarchicalDensitySelectionNodes
 } from './hierarchical-density-tree';
+
+import {
+  createHierarchicalDensityCoreNode,
+  createHierarchicalDensityClusterInfoNode,
+  createHierarchicalDensityContributionsNode,
+  createHierarchicalDensityLeafFlagsNode,
+  createHierarchicalDensityNodeDataNode,
+  createHierarchicalDensityPointerInitNode,
+  createHierarchicalDensitySearchNode,
+  HDBSCAN_NODE_WORDS,
+  HDBSCAN_DENDROGRAM_WORDS
+} from './hdbscan-kernels';
+import {getHDBSCANDendrogramNodes} from './hdbscan-tree';
 
 /** Planar contexts suitable for distance measurements. */
 const HIERARCHICAL_DENSITY_SPATIAL_CONTEXT_SUPPORT = Object.freeze({
@@ -88,9 +96,13 @@ export const GPU_HIERARCHICAL_DENSITY_CLUSTERING_MAXIMUM_SAMPLES = 32;
 
 /**
  * Largest `positions` row count of {@link GPUHierarchicalDensityClustering}, bounding the
- * transient storage used by the MST, parallel dendrogram and condensed-tree contraction.
+ * compact BVH binding to 128 MiB. Tree planes and MST records are smaller than that binding;
+ * all integer counts (including the four-tour-events-per-row scan) stay below uint32.
  */
-export const GPU_HIERARCHICAL_DENSITY_CLUSTERING_MAXIMUM_ROW_COUNT = 2 ** 20;
+export const GPU_HIERARCHICAL_DENSITY_CLUSTERING_MAXIMUM_ROW_COUNT = 2 ** 22;
+
+/** Packed neighbour-search reference route retains the old cap because its CSR scratch scales as rows × samples. */
+export const GPU_HIERARCHICAL_DENSITY_CLUSTERING_REFERENCE_MAXIMUM_ROW_COUNT = 2 ** 20;
 
 /** Caller-owned outputs of {@link GPUHierarchicalDensityClustering}. */
 export type GPUHierarchicalDensityClusteringOutput = {
@@ -101,7 +113,7 @@ export type GPUHierarchicalDensityClusteringOutput = {
    * the point itself included (+infinity for non-finite points or fewer neighbors).
    */
   coreDistances?: GraphDataView<'float32'>;
-  /** Optional one-row status; `count` receives the number of selected clusters. */
+  /** Optional scalar status; both `count` and `requiredCount` receive the selected cluster count. */
   status?: Partial<GPUCardinalityPort>;
 };
 
@@ -109,7 +121,7 @@ export type GPUHierarchicalDensityClusteringOutput = {
  * Properties for {@link GPUHierarchicalDensityClustering}.
  *
  * Per-frame (no recompile): the contents of `positions`. Compile-time: `positions.length`,
- * `minimumSamples`, `minimumClusterSize`, temporal/spatial contexts and which optional views are present.
+ * `minimumSamples`, `minimumClusterSize`, `coreDistanceSearch`, temporal/spatial contexts and which optional views are present.
  * With `times`, their contents and `parameters` are also per-frame.
  */
 export type GPUHierarchicalDensityClusteringProps = {
@@ -138,6 +150,12 @@ export type GPUHierarchicalDensityClusteringProps = {
    * `min(minimumClusterSize, 32)`, scikit-learn's default when that is at most 32. Compile-time.
    */
   minimumSamples?: number;
+  /**
+   * Compile-time exact core-distance route. Default 'bvh' keeps only a private top-k list per
+   * point and reuses the MST's spatial BVH. 'neighbor-search' retains the packed CSR reference
+   * route, limited to REFERENCE_MAXIMUM_ROW_COUNT and planar points without times.
+   */
+  coreDistanceSearch?: 'bvh' | 'neighbor-search';
   /** Caller-owned outputs. */
   output: GPUHierarchicalDensityClusteringOutput;
 };
@@ -148,9 +166,9 @@ export type GPUHierarchicalDensityClusteringProps = {
  * `cluster_selection_epsilon=0`, Euclidean metric) up to a relabeling of the clusters.
  *
  * Composition:
- * 1. Core distances from a `GPUNeighborSearch` k-nearest self join of the `minimumSamples - 1`
- *    other points over the extent of the finite points, the point itself counted as the first
- *    sample.
+ * 1. Exact core distances from a bounded-private-memory top-k walk of the spatial BVH, with
+ *    the point itself counted as the first sample. No rows × neighbours table is allocated.
+ *    `coreDistanceSearch: 'neighbor-search'` retains the former packed CSR reference route.
  * 2. The exact minimum spanning tree over the mutual reachability distance
  *    `max(core a, core b, |a - b|)` by Boruvka: at most `ceil(log2 rows) + 1` unrolled rounds of
  *    the same kernels (rule 12), gated on the GPU component count (rule 13). Each point walks a
@@ -159,9 +177,11 @@ export type GPUHierarchicalDensityClusteringProps = {
  *    of leaf component changes per round). Edges are totally ordered by `(weight, low row, high
  *    row)`, three integer atomic-min passes pick each component's minimum, and lock-free
  *    union-find hooks the components.
- * 3. A stable sort of the spanning tree by `(weight, low, high)` and the single-linkage dendrogram
- *    by concurrent atomic parent splicing, one invocation per edge. Euler-tour pointer doubling
+ * 3. Compact four-word BVH records omit duplicate leaf maxima. A stable sort of the spanning tree by `(weight, low, high)` and the single-linkage dendrogram
+ *    by bounded, GPU-gated atomic parent splicing, one invocation per edge. Euler-tour pointer doubling
  *    computes subtree sizes in logarithmic dispatch depth, including chain-shaped dendrograms.
+ *    Parent/size/weight, children, tour successors and tour totals use separate storage planes;
+ *    no tree binding exceeds the compact BVH binding at the maximum row count.
  * 4. Condensing by pointer jumping (`ceil(log2(2 rows)) + 1` rounds of one kernel): each big node's
  *    cluster start and each point's lowest node of at least `minimumClusterSize` points, where it
  *    falls out of its cluster; compact cluster IDs with `GPUFlagOffsets`.
@@ -243,6 +263,27 @@ export class GPUHierarchicalDensityClustering implements GPUCommandNodeProducer 
       1,
       GPU_HIERARCHICAL_DENSITY_CLUSTERING_MAXIMUM_ROW_COUNT
     );
+    validateRequirement(
+      id,
+      props.coreDistanceSearch === undefined ||
+        props.coreDistanceSearch === 'bvh' ||
+        props.coreDistanceSearch === 'neighbor-search',
+      "coreDistanceSearch must be 'bvh' or 'neighbor-search'"
+    );
+    if (props.coreDistanceSearch === 'neighbor-search') {
+      validateCapacity(
+        id,
+        'positions rows for coreDistanceSearch neighbor-search',
+        rows,
+        1,
+        GPU_HIERARCHICAL_DENSITY_CLUSTERING_REFERENCE_MAXIMUM_ROW_COUNT
+      );
+      validateRequirement(
+        id,
+        !props.times,
+        'coreDistanceSearch neighbor-search requires positions without times'
+      );
+    }
     validateCapacity(id, 'minimumClusterSize', props.minimumClusterSize, 2);
     this.minimumSamples =
       props.minimumSamples ??
@@ -265,26 +306,57 @@ export class GPUHierarchicalDensityClustering implements GPUCommandNodeProducer 
         throw new Error(`${id} output.coreDistances length must equal positions length`);
       }
     }
-    if (output.status?.count) {
-      validateSinglePackedView(output.status.count, ['uint32'], `${id} output.status.count`);
-      if (output.status.count.length < 1) {
-        throw new Error(`${id} output.status.count must hold one row`);
+    for (const [name, view] of [
+      ['output.status.count', output.status?.count],
+      ['output.status.requiredCount', output.status?.requiredCount]
+    ] as const) {
+      if (view) {
+        validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
+        validateCapacity(id, `${name} length`, view.length, 1);
+      }
+    }
+    validateSpatialOutputViews(
+      id,
+      {
+        labels: output.labels,
+        coreDistances: output.coreDistances,
+        count: output.status?.count,
+        requiredCount: output.status?.requiredCount
+      },
+      [{read: [output.status?.count], write: [output.status?.requiredCount]}]
+    );
+    const writableViews = [
+      output.labels,
+      output.coreDistances,
+      output.status?.count,
+      output.status?.requiredCount
+    ].filter((view): view is GraphDataView<'uint32'> | GraphDataView<'float32'> => Boolean(view));
+    for (let first = 0; first < writableViews.length; first++) {
+      for (let second = first + 1; second < writableViews.length; second++) {
+        validateRequirement(
+          id,
+          !doGraphDataViewsOverlap(writableViews[first], writableViews[second]),
+          'output fields must have disjoint writable byte ranges'
+        );
       }
     }
     this.roundCount = Math.ceil(Math.log2(Math.max(rows, 2))) + 1;
     // Each light level has at most ceil(log2(2 rows)) + 1 three-node chain rounds.
-    // The linear allowance covers Boruvka and the other pointer-jump passes.
+    // The linear allowance covers Boruvka and the other pointer-jump passes. Each bounded
+    // splice round adds a gate and a work node; the final scalar publisher adds at most one node.
     const treeRounds = Math.ceil(Math.log2(2 * Math.max(rows, 2))) + 1;
     this.estimatedCommandNodeCount =
       GPU_HIERARCHICAL_DENSITY_CLUSTERING_COMMAND_NODE_ALLOWANCE +
       64 * treeRounds +
-      4 * treeRounds * treeRounds;
+      4 * treeRounds * treeRounds +
+      2 * getBoundedMergeTreeSpliceRoundCount(2 * rows) +
+      1;
     validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
-    validateGraphOutputsDisjointFromInputs(
-      id,
-      [output.labels, output.coreDistances, output.status?.count],
-      [props.positions, props.times, props.parameters]
-    );
+    validateGraphOutputsDisjointFromInputs(id, writableViews, [
+      props.positions,
+      props.times,
+      props.parameters
+    ]);
   }
 
   /** Returns the k-nearest, Boruvka, dendrogram, condensing, stability, selection and label nodes. */
@@ -299,33 +371,62 @@ export class GPUHierarchicalDensityClustering implements GPUCommandNodeProducer 
       props.parameters,
       output.labels,
       output.coreDistances,
-      output.status?.count
+      output.status?.count,
+      output.status?.requiredCount
     ]);
     const rows = props.positions.length;
-    // The k-nearest distances are one storage binding of `rows * minimumSamples` floats.
-    validateGPUStorageBindingByteLength(
-      graph.device,
-      id,
-      'neighbor distances',
-      props.times ? (rows + 1) * 4 : rows * minimumSamples * 4,
-      'lower minimumSamples or the row count'
-    );
+    // Complete preflight before declaring any resource or node. Caller views can have a
+    // nonzero aligned-binding prefix even when their logical lengths fit the device limit.
+    validateGraphChunkBindingRanges(graph, id, {
+      positions: props.positions,
+      times: props.times,
+      parameters: props.parameters,
+      labels: output.labels,
+      coreDistances: output.coreDistances,
+      count: output.status?.count,
+      requiredCount: output.status?.requiredCount
+    });
     const leafCapacity = getNextPowerOfTwo(rows);
-    // Largest row-proportional tables: packed BVH nodes and the Euler tour (16 words/row).
-    validateGPUStorageBindingByteLength(
-      graph.device,
-      id,
-      'tree scratch',
-      rows * 16 * 4,
-      'lower positions rows'
-    );
-    validateGPUStorageBindingByteLength(
-      graph.device,
-      id,
-      'BVH node data',
-      (2 * leafCapacity - 1) * HIERARCHICAL_DENSITY_NODE_WORDS * 4,
-      'lower positions rows'
-    );
+    const clusterCapacity = Math.floor((2 * rows) / props.minimumClusterSize) + 1;
+    // These envelopes include every derived binding of the BVH, MST, merge-tree builder,
+    // pointer doubling, EOM selection, scans, sorts and fixed-order segmented reduction.
+    // Each buffer starts at byte zero, so its aligned binding range equals its byte length.
+    for (const [name, byteLength] of [
+      ['BVH node data', (2 * leafCapacity - 1) * HDBSCAN_NODE_WORDS * 4],
+      ['BVH boxes and children', (2 * leafCapacity - 1) * 8],
+      ['bounded reconstruction endpoint task planes', rows * 2 * 4],
+      ['MST edges and candidates', rows * HIERARCHICAL_DENSITY_EDGE_WORDS * 4],
+      ['dendrogram parent/size/weight', 2 * rows * HDBSCAN_DENDROGRAM_WORDS * 4],
+      ['tree children, pointers and Euler-tour planes', rows * 4 * 4],
+      ['condensed-tree selection and pointer scratch', clusterCapacity * 4 * 4],
+      ['row scans, sorts and segment sums', Math.max(2 * rows + 1, leafCapacity) * 4],
+      ['time data', (rows + 1) * 4],
+      ['dispatch and state', 24]
+    ] as const) {
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        name,
+        byteLength,
+        'lower positions rows'
+      );
+    }
+    if (props.coreDistanceSearch === 'neighbor-search' && minimumSamples > 1) {
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        'neighbor parameter data',
+        GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH * 4,
+        'use a device with a larger storage binding limit'
+      );
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        'neighbor distances, IDs and weights',
+        rows * (minimumSamples - 1) * 4,
+        'lower minimumSamples or positions rows'
+      );
+    }
     const u32 = (name: string, length: number) =>
       createTransientView(graph, `${id}-${name}`, 'uint32', Math.max(length, 1));
     const f32 = (name: string, length: number) =>
@@ -337,7 +438,7 @@ export class GPUHierarchicalDensityClustering implements GPUCommandNodeProducer 
     const otherSamples = minimumSamples - 1;
     let neighborOffsets: GraphDataView<'uint32'> | undefined;
     let neighborDistances: GraphDataView<'float32'> | undefined;
-    if (otherSamples > 0 && !props.times) {
+    if (otherSamples > 0 && props.coreDistanceSearch === 'neighbor-search') {
       const search = createNeighborSearchDerivedParameterNodes<Parameters>(graph, {
         id: `${id}-neighbors-setup`,
         operation: OPERATION,
@@ -419,7 +520,7 @@ export class GPUHierarchicalDensityClustering implements GPUCommandNodeProducer 
       rows >= 2
     );
     const shape = this.getShape(leafCapacity, bvh.internalNodeCount, bvh.levelCount);
-    const nodeData = u32('node-data', bvh.nodeCount * HIERARCHICAL_DENSITY_NODE_WORDS);
+    const nodeData = u32('node-data', bvh.nodeCount * HDBSCAN_NODE_WORDS);
     nodes.push(
       ...bvhNodes,
       createHierarchicalDensityNodeDataNode<Parameters>(graph, {
@@ -432,10 +533,10 @@ export class GPUHierarchicalDensityClustering implements GPUCommandNodeProducer 
       })
     );
 
-    if (timeData && otherSamples > 0) {
+    if (otherSamples > 0 && props.coreDistanceSearch !== 'neighbor-search') {
       nodes.push(
         createHierarchicalDensityCoreNode(graph, {
-          id: `${id}-space-time-core`,
+          id: `${id}-${timeData ? 'space-time' : 'bvh'}-core`,
           shape,
           nodeData,
           positions: props.positions,
@@ -567,17 +668,16 @@ export class GPUHierarchicalDensityClustering implements GPUCommandNodeProducer 
     }
     const sortedEdgeOrder = edgeOrder as GraphDataView<'uint32'>;
     const nodeCount = 2 * rows;
-    const dendrogram = u32('dendrogram', nodeCount * HIERARCHICAL_DENSITY_DENDROGRAM_WORDS);
-    nodes.push(
-      ...getHierarchicalDensityDendrogramNodes(graph, {
-        id: `${id}-dendrogram`,
-        shape,
-        state,
-        edges,
-        edgeOrder: sortedEdgeOrder,
-        dendrogram
-      })
-    );
+    const dendrogram = u32('dendrogram', nodeCount * HDBSCAN_DENDROGRAM_WORDS);
+    const dendrogramTree = getHDBSCANDendrogramNodes(graph, {
+      id: `${id}-dendrogram`,
+      shape,
+      state,
+      edges,
+      edgeOrder: sortedEdgeOrder,
+      dendrogram
+    });
+    nodes.push(...dendrogramTree.nodes);
 
     // 4. Condensing by pointer jumping and compact cluster IDs.
     const pointers = u32('pointers', nodeCount * 2);
@@ -589,6 +689,7 @@ export class GPUHierarchicalDensityClustering implements GPUCommandNodeProducer 
         id: `${id}-pointer-init`,
         shape,
         dendrogram,
+        dendrogramChildren: dendrogramTree.children,
         pointers,
         startFlags
       })
@@ -610,7 +711,6 @@ export class GPUHierarchicalDensityClustering implements GPUCommandNodeProducer 
     );
 
     // 5. Stability, excess-of-mass selection and labels.
-    const {clusterCapacity} = shape;
     const clusterInfo = u32('cluster-info', clusterCapacity * HIERARCHICAL_DENSITY_CLUSTER_WORDS);
     const contributionKeys = u32('contribution-keys', nodeCount);
     const contributions = f32('contributions', nodeCount);
@@ -664,6 +764,26 @@ export class GPUHierarchicalDensityClustering implements GPUCommandNodeProducer 
         labels: output.labels
       })
     );
+    if (output.status?.requiredCount) {
+      nodes.push(
+        createWGSLKernelNode(graph, {
+          id: `${id}-required-count`,
+          operation: OPERATION,
+          variant: 'required-count',
+          invocationCount: 1,
+          bindings: [
+            {name: 'selectedCount', view: selectedCount, type: 'u32', access: 'read'},
+            {
+              name: 'requiredCount',
+              view: output.status.requiredCount,
+              type: 'u32',
+              access: 'read_write'
+            }
+          ],
+          body: 'requiredCount[requiredCountOffset] = selectedCount[selectedCountOffset];'
+        })
+      );
+    }
     return nodes;
   }
 

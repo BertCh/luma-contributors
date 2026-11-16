@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  validateTrajectoryBindings,
+  validateTrajectoryWritableDispatches,
+  validateTrajectoryOutputRanges
+} from '../trajectory-analysis/trajectory-binding-validation';
 import {PHILOX_PURPOSES} from '../../analysis-core/kernels/philox-random';
 import {
   createTransientView,
@@ -200,6 +205,10 @@ export class GPUJacquezTest implements GPUCommandNodeProducer {
     if (props.output.summary.length < GPU_SPACE_TIME_SUMMARY_LENGTH) {
       throw new Error(`${id} output.summary needs ${GPU_SPACE_TIME_SUMMARY_LENGTH} rows`);
     }
+    validateTrajectoryOutputRanges(this.id, this.props.output);
+    validateTrajectoryWritableDispatches(this.id, [
+      {summary: props.output.summary, permutationCount: props.output.permutationCount}
+    ]);
     validateGraphOutputsDisjointFromInputs(
       id,
       [props.output.statistics, props.output.summary, props.output.permutationCount],
@@ -241,6 +250,7 @@ export class GPUJacquezTest implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateTrajectoryBindings(graph, this.id, this.props);
     const {id, props, rows} = this;
     const {neighbors, times, parameters, maximumPermutations, k} = props;
     const {statistics, summary} = props.output;

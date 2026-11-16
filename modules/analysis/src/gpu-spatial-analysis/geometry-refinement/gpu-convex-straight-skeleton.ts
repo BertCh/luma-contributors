@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateOutlineOutputPasses} from '../outline-geometry/validate-outline-output-passes';
+import {validateRefinementShaderNumber} from './refinement-storage-validation';
 import type {
   GPUCommandGraph,
   GPUCommandNode,
@@ -15,8 +18,7 @@ import {
 import {
   validateCapacity,
   validateSinglePackedView,
-  validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createWGSLKernelNode,
@@ -67,6 +69,8 @@ export class GPUConvexStraightSkeleton implements GPUCommandNodeProducer {
   constructor(props: GPUConvexStraightSkeletonProps) {
     this.id = props.id ?? 'convex-straight-skeleton';
     this.props = props;
+    validateRefinementShaderNumber(this.id, 'offsetDistance', props.offsetDistance);
+    validateRefinementShaderNumber(this.id, 'eventTolerance', props.eventTolerance ?? 1e-5, true);
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     this.maximumVertices = props.maximumVertices ?? 32;
     this.maximumIterations = props.maximumIterations ?? this.maximumVertices;
@@ -99,6 +103,7 @@ export class GPUConvexStraightSkeleton implements GPUCommandNodeProducer {
     ) {
       throw new Error('Skeleton output capacity mismatch');
     }
+    validateOutlineOutputPasses(this.id, props.output, [Object.keys(props.output)]);
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
       props.positions,
       props.ringOffsets
@@ -108,11 +113,16 @@ export class GPUConvexStraightSkeleton implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id, maximumVertices, segmentCapacity, maximumIterations} = this;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.positions,
-      props.ringOffsets,
-      ...Object.values(props.output)
-    ]);
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(
+        [props.positions, props.ringOffsets, ...Object.values(props.output)].map((view, index) => [
+          `binding.${index}`,
+          view
+        ])
+      )
+    );
     return [
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-events`,

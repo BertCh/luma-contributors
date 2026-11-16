@@ -9,38 +9,37 @@ import {
   type GPUCommandNode
 } from '@luma.gl/graph/gpu-core';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateSinglePackedView} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
-  validateGraphViewsBelongToGraph,
-  validateRequirement
-} from '../../analysis-core/kernels/gpu-contributor-utils';
+  validateTerrainOutputDispatches,
+  validateTerrainReadWriteRanges,
+  type TerrainViewDispatch
+} from './terrain-view-validation';
 import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
   getRasterGridGeoreference,
   getRasterGroundScaleWGSL,
   type GPURasterCellSizeMode
 } from '../../analysis-core/raster-grid';
-import {
-  rasterBinding,
-  validateRasterViews
-} from '../../raster-analysis/remote-sensing/raster-kernel-utils';
+import {rasterBinding} from '../../raster-analysis/remote-sensing/raster-kernel-utils';
 import {
   createWGSLKernelNode,
   getWGSLFloatLiteral,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 
-/** Shares the raster validator: packed views, distinct output buffers, outputs disjoint from inputs and each other. @internal */
+/** Packed metadata, physical input/output separation and dispatch-aware output checks. @internal */
 export function checkTerrainViews(
   id: string,
   inputs: GraphDataView[],
-  outputs: GraphDataView[]
+  outputs: GraphDataView[],
+  dispatches: readonly TerrainViewDispatch[] = [{reads: inputs, writes: outputs}]
 ): void {
-  validateRasterViews(id, inputs, outputs);
-  validateRequirement(
-    id,
-    new Set(outputs.map(view => view.buffer)).size === outputs.length,
-    'outputs must use distinct buffers'
-  );
+  for (const view of [...inputs, ...outputs]) validateSinglePackedView(view, [view.format], id);
+  validateTerrainReadWriteRanges(id, inputs, outputs, false);
+  validateTerrainOutputDispatches(id, outputs, dispatches);
 }
 /** @internal */
 export function checkTerrainGraph<Parameters>(
@@ -48,7 +47,11 @@ export function checkTerrainGraph<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   views: GraphDataView[]
 ): void {
-  validateGraphViewsBelongToGraph(id, graph, views);
+  validateGraphChunkBindingRanges(
+    graph,
+    id,
+    Object.fromEntries(views.map((view, index) => [`view[${index}]`, view]))
+  );
 }
 /** Maps uint32 to u32, sint32 to i32 and float32 to f32. @internal */
 export function terrainBinding(
@@ -80,21 +83,34 @@ fn infinity() -> f32 { var bits = 0x7f800000u; return bitcast<f32>(bits); }`;
  */
 export function getTerrainGroundMeasureWGSL(
   grid: GPURasterMetadata,
-  cellSizeMode: GPURasterCellSizeMode = 'uniform'
+  cellSizeMode: GPURasterCellSizeMode = 'uniform',
+  includeArea = true
 ): string {
+  // Subtract integer coordinates before conversion: neighbouring cells beyond 2^24 must not
+  // collapse onto the same float32 coordinate. Both selected differences fit uint32.
+  const coordinateDifference = `fn getTerrainCoordinateDifference(first: u32, second: u32) -> f32 {
+ return select(-f32(second - first), f32(first - second), first >= second);
+}`;
   if (cellSizeMode === 'uniform') {
-    const [a, b, , d, e] = grid.affine.map(getWGSLFloatLiteral);
-    const area = getWGSLFloatLiteral(
-      Math.abs(grid.affine[0] * grid.affine[4] - grid.affine[1] * grid.affine[3])
+    // A uniform edge/area never uses the world origin, which can exceed float32's range.
+    const [a, b, d, e] = [grid.affine[0], grid.affine[1], grid.affine[3], grid.affine[4]].map(
+      getWGSLFloatLiteral
     );
-    return `fn getGroundEdgeLength(cell: u32, other: u32) -> f32 {
- let delta = vec2<f32>(f32(other % GRID_WIDTH) - f32(cell % GRID_WIDTH), f32(other / GRID_WIDTH) - f32(cell / GRID_WIDTH));
+    const area = includeArea
+      ? getWGSLFloatLiteral(
+          Math.abs(grid.affine[0] * grid.affine[4] - grid.affine[1] * grid.affine[3])
+        )
+      : '';
+    return `${coordinateDifference}
+fn getGroundEdgeLength(cell: u32, other: u32) -> f32 {
+ let delta = vec2<f32>(getTerrainCoordinateDifference(other % GRID_WIDTH, cell % GRID_WIDTH), getTerrainCoordinateDifference(other / GRID_WIDTH, cell / GRID_WIDTH));
  return length(vec2<f32>(${a} * delta.x + ${b} * delta.y, ${d} * delta.x + ${e} * delta.y));
 }
-fn getGroundCellArea(cell: u32) -> f32 { return ${area}; }`;
+${includeArea ? `fn getGroundCellArea(cell: u32) -> f32 { return ${area}; }` : ''}`;
   }
   const georeference = getRasterGridGeoreference(grid);
-  return `fn getGroundCellSizeAtRow(rowCoordinate: f32) -> vec2<f32> {
+  return `${coordinateDifference}
+fn getGroundCellSizeAtRow(rowCoordinate: f32) -> vec2<f32> {
  let edge = mix(${getWGSLFloatLiteral(georeference.northEdge)}, ${getWGSLFloatLiteral(georeference.southEdge)}, rowCoordinate / f32(GRID_HEIGHT));
  ${getRasterGroundScaleWGSL(cellSizeMode)}
  return vec2<f32>(${getWGSLFloatLiteral(georeference.cellSize[0])}, ${getWGSLFloatLiteral(georeference.cellSize[1])}) * groundScale;
@@ -102,12 +118,17 @@ fn getGroundCellArea(cell: u32) -> f32 { return ${area}; }`;
 fn getGroundEdgeLength(cell: u32, other: u32) -> f32 {
  let cellRow = f32(cell / GRID_WIDTH); let otherRow = f32(other / GRID_WIDTH);
  let ground = getGroundCellSizeAtRow((cellRow + otherRow + 1.0) * 0.5);
- let columns = abs(f32(other % GRID_WIDTH) - f32(cell % GRID_WIDTH));
- return length(vec2<f32>(ground.x * columns, ground.y * abs(otherRow - cellRow)));
+ let columns = abs(getTerrainCoordinateDifference(other % GRID_WIDTH, cell % GRID_WIDTH));
+ let rows = abs(getTerrainCoordinateDifference(other / GRID_WIDTH, cell / GRID_WIDTH));
+ return length(vec2<f32>(ground.x * columns, ground.y * rows));
 }
-fn getGroundCellArea(cell: u32) -> f32 {
+${
+  includeArea
+    ? `fn getGroundCellArea(cell: u32) -> f32 {
  let ground = getGroundCellSizeAtRow(f32(cell / GRID_WIDTH) + 0.5);
  return ground.x * ground.y;
+}`
+    : ''
 }`;
 }
 

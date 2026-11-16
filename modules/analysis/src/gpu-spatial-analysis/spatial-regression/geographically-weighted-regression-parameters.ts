@@ -73,12 +73,16 @@ export const GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_NEIGHBOR_COUNT = 128
 export const GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_ROW_COUNT = 65536;
 
 /**
- * Largest row count with a grid index. Bisquare fits (fixed or adaptive bandwidth) then visit only
- * nearby cells, so the cost grows with `rows * neighbours`; the limit is the per-candidate scratch
- * (`rows * ladder * 8` bytes must fit one 128 MiB storage binding) and `rows^2` cost remains for
- * Gaussian kernels.
+ * Indexed rows are bounded by exact float32 counts. Actual packed inputs, outputs and scratch
+ * must also fit the device storage binding limit; focus scratch is reused between batches.
  */
-export const GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_INDEXED_ROW_COUNT = 1048576;
+export const GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_INDEXED_ROW_COUNT = 16777216;
+
+/** Exact untruncated Gaussian fits retain the dense reference route's original indexed cap. */
+export const GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_DENSE_INDEXED_ROW_COUNT = 1048576;
+
+/** Large-data Gaussian support: every omitted weight is below exp(-32), about 1.27e-14. */
+export const GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_DEFAULT_GAUSSIAN_CUTOFF = 8;
 
 /** Smallest row count for which the grid index is built by default. */
 export const GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MINIMUM_INDEXED_ROW_COUNT = 1024;

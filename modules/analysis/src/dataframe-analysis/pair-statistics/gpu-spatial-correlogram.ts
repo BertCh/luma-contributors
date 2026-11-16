@@ -2,13 +2,15 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {ERFC_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
   createTransientView,
   validatePackedUint32View,
   type GPUCommandGraph,
   type GPUCommandNode,
-  type GraphDataView
+  GraphDataView,
+  GraphVectorView
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
@@ -19,7 +21,8 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validateSinglePackedView
+  validateSinglePackedView,
+  getGraphViewChunks
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getPairHistogramNodes,
@@ -28,6 +31,7 @@ import {
   validatePairHistogramShape
 } from './pair-histogram';
 import {getPairStatisticsUnitVarianceNodes} from './pair-statistics-fixed-point-unit';
+import {validatePairStatisticsBindings} from './pair-statistics-preflight';
 import {
   getPairStatisticsInputNodes,
   getPairStatisticsWindowParameterNodes,
@@ -295,6 +299,70 @@ export class GPUSpatialCorrelogram implements GPUCommandNodeProducer {
         );
       }
     }
+    {
+      const writableOutputs: Readonly<Record<string, GraphDataView | GraphVectorView | undefined>> =
+        {
+          moransI: output.moransI,
+          zScores: output.zScores,
+          pValues: output.pValues,
+          expectedI: output.expectedI,
+          varianceI: output.varianceI,
+          pairCounts: output.pairCounts,
+          peakBands: output.peakBands,
+          statistics: output.statistics,
+          overflow: output.status?.overflow
+        };
+      const publicationPasses: readonly (readonly (
+        | GraphDataView
+        | GraphVectorView
+        | undefined
+      )[])[] = [
+        [
+          output.moransI,
+          output.zScores,
+          output.pValues,
+          output.expectedI,
+          output.varianceI,
+          output.pairCounts
+        ]
+      ];
+      // Model all logical writes as separate chunks; only the explicit publication groups coexist.
+      const writableWordChunks = Object.values(writableOutputs)
+        .flatMap(view => (view ? getGraphViewChunks(view) : []))
+        .map(
+          view =>
+            new GraphDataView(view.buffer, {
+              format: 'uint32',
+              length: (view.length * view.rowByteLength) / 4,
+              byteOffset: view.byteOffset,
+              byteStride: 4,
+              rowByteLength: 4
+            })
+        );
+      const writableWordCount = writableWordChunks.reduce(
+        (total, chunk) => total + chunk.length,
+        0
+      );
+      validateDisjointWritableViews(id, {
+        outputs: new GraphVectorView({
+          id: `${id}-writable-ranges`,
+          name: 'outputs',
+          format: 'uint32',
+          length: writableWordCount,
+          valueLength: writableWordCount,
+          stride: 1,
+          byteStride: 4,
+          rowByteLength: 4,
+          data: writableWordChunks
+        })
+      });
+      for (const fields of publicationPasses) {
+        validateDisjointWritableViews(
+          id,
+          Object.fromEntries(fields.map((view, index) => [String(index), view]))
+        );
+      }
+    }
     validateGraphOutputsDisjointFromInputs(
       id,
       [
@@ -353,6 +421,31 @@ export class GPUSpatialCorrelogram implements GPUCommandNodeProducer {
         studyWindow.packed
       ]);
     }
+    validatePairStatisticsBindings(graph, id, {
+      views: {
+        positions,
+        values: props.values,
+        mask: props.mask,
+        parameters: callerParameters,
+        moransI: output.moransI,
+        zScores: output.zScores,
+        pValues: output.pValues,
+        expectedI: output.expectedI,
+        varianceI: output.varianceI,
+        pairCounts: output.pairCounts,
+        peakBands: output.peakBands,
+        statistics: output.statistics,
+        overflow: output.status?.overflow,
+        studyWindow: studyWindow?.packed
+      },
+      rows,
+      gridSize,
+      slots: bandCount,
+      channels: CHANNEL_COUNT,
+      moments: true,
+      unitVariance: true,
+      additionalScratch: {bandResults: bandCount * BAND_RESULT_LENGTH}
+    });
     const windowParameters = studyWindow
       ? getPairStatisticsWindowParameterNodes(graph, {
           id,

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRasterStorageBindings} from '../raster-grid/raster-storage-preflight';
 import {
   GPU_LINEAR_EDGE_MODELS,
   resolveGPUSpatialContext,
@@ -25,7 +26,8 @@ import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validateSinglePackedView
+  validateSinglePackedView,
+  getGraphOutputViews as getRasterPreflightOutputViews
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {validateRasterGrid, validateRasterParameters} from '../raster-band-utils';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
@@ -243,6 +245,28 @@ export class GPUPolygonRasterization implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    const storageProps = this.props;
+    validateRasterStorageBindings(
+      graph,
+      this.id,
+      [
+        storageProps.parameters,
+        storageProps.positions,
+        storageProps.featureOffsets,
+        storageProps.polygonOffsets,
+        storageProps.ringOffsets,
+        ...getRasterPreflightOutputViews(storageProps.output)
+      ],
+      {
+        'crossing and sort planes': storageProps.crossingCapacity * 4,
+        'edge planes':
+          storageProps.positions.length *
+          (this.spatialContext.coordinateSpace === 'longitude-latitude' ? 3 : 1) *
+          4,
+        'crossing total': 4
+      }
+    );
+
     const {id, props, polygonCount, ringCount, featureCount, singleSort} = this;
     const {parameters: extent, positions: polygonPositions, output} = props;
     const {zones, boundary} = output;

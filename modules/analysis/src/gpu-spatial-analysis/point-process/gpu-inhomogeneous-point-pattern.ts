@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateSpatialOutputViews} from '../spatial-clustering/spatial-output-validation';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -19,7 +21,8 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validateRequirement
+  validateRequirement,
+  validateGPUStorageBindingByteLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {EXACT_ORIENTATION_WGSL} from '../../analysis-core/kernels/exact-orientation-wgsl';
 import {EXACT_GEOMETRY_WGSL} from '../../analysis-core/kernels/exact-geometry-wgsl';
@@ -177,6 +180,14 @@ export class GPUInhomogeneousPointPattern implements GPUCommandNodeProducer {
     validatePointProcessView(props.output.k, 'float32', radiusCount, id);
     validatePointProcessView(props.output.pairCorrelation, 'float32', radiusCount, id);
     validatePointProcessView(props.output.status, 'uint32', radiusCount, id);
+    validateSpatialOutputViews(this.id, props.output, [
+      ...(props.edgeCorrection === 'translation'
+        ? [[props.output.k, props.output.pairCorrelation, props.output.status]]
+        : [
+            {read: [props.output.intensity], write: [props.output.k, props.output.status]},
+            {read: [props.output.k], write: [props.output.pairCorrelation]}
+          ])
+    ]);
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
       props.positions,
       props.radii,
@@ -197,6 +208,34 @@ export class GPUInhomogeneousPointPattern implements GPUCommandNodeProducer {
       ...Object.values(props.output)
     ]);
     validateGraphOutputsDisjointFromInputs(id, Object.values(props.output), [windowViews.packed]);
+    validateGraphChunkBindingRanges(graph, id, {
+      positions: props.positions,
+      radii: props.radii,
+      suppliedIntensity: props.suppliedIntensity,
+      window: windowViews.packed,
+      ...Object.fromEntries(
+        Object.entries(props.output).map(([name, view]) => [`output.${name}`, view])
+      )
+    });
+    for (const [name, byteLength] of [
+      ['boundary distances', rows * 4],
+      ['border terms', props.edgeCorrection !== 'translation' ? rows * props.radii.length * 4 : 0],
+      [
+        'translation pairs',
+        props.edgeCorrection === 'translation' ? Math.max(2, rows * (rows - 1)) * 4 : 0
+      ],
+      [
+        'translation partials',
+        props.edgeCorrection === 'translation' ? rows * props.radii.length * 3 * 4 : 0
+      ]
+    ] as const)
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        name,
+        byteLength,
+        'reduce positions or radii rows'
+      );
     const boundary = createTransientView(graph, `${id}-boundary`, 'float32', rows);
     const windowDeclarations = `${EXACT_ORIENTATION_WGSL}\n${EXACT_GEOMETRY_WGSL}\n${getStudyWindowWGSL(getStudyWindowWGSLOptions(windowViews, 'epanechnikov'))}`;
     const pointDeclaration = `fn point(row: u32) -> vec2<f32> {

@@ -32,3 +32,5 @@ export type {
   GPUOffsetCurveSettings,
   GPUOffsetCurveProps
 } from './gpu-offset-curve';
+export type {GPUOffsetCurveCompactOutput} from './gpu-offset-curve';
+export type {GPUOutlineGeometryCompactOutput} from './gpu-outline-geometry';

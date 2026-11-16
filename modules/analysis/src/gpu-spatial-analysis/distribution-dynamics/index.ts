@@ -60,3 +60,11 @@ export {
 export type {CPURankMarkovOptions, CPURankMarkovResult} from './cpu-rank-markov-operation';
 export {GPURankMarkovOperation} from './gpu-rank-markov-operation';
 export type {RankMarkovOperationProps} from './gpu-rank-markov-operation';
+
+export {
+  GPU_RANK_MARKOV_PAIRWISE_MAXIMUM_ROWS,
+  GPU_RANK_MARKOV_MAXIMUM_PERIOD_COUNT
+} from './gpu-rank-markov';
+export {GPU_TRANSITION_MATRIX_MAXIMUM_CLASS_COUNT} from './gpu-transition-matrix';
+export {GPU_TRANSITION_DIAGNOSTICS_MAXIMUM_CLASS_COUNT} from './gpu-transition-diagnostics';
+export {GPU_RANK_MARKOV_MAXIMUM_PANEL_VALUES} from './gpu-rank-markov';

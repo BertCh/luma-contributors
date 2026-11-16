@@ -4,7 +4,10 @@
 
 import {Buffer} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {GPUNetworkLouvain} from '../../../src/gpu-network/network-optimization/gpu-network-louvain';
+import {
+  GPUNetworkLouvain,
+  getNetworkLouvainStatusNodes
+} from '../../../src/gpu-network/network-optimization/gpu-network-louvain';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
@@ -18,6 +21,13 @@ import {
   type OperationGraphInput,
   type OperationGraphRows
 } from '../../utils/mixed-execution-test-utils';
+import {GPUContributorOperation} from '../../../src/analysis-core/operations/gpu-contributor-operation';
+import {getSparseNetworkLouvainNodes} from '../../../src/gpu-network/network-optimization/network-louvain-sparse';
+import {
+  createNetworkLouvainQuotientFixture,
+  createNetworkLouvainMixedDuplicateFixture,
+  type NetworkLouvainScalabilityFixture
+} from './network-louvain-scalability-fixtures';
 import {requireTestDevice} from '../../utils/require-test-device';
 import fixture from '../../oracles/fixtures/network-louvain-sparse.json';
 
@@ -359,4 +369,229 @@ it('rejects aliased partition, summary and status buffers on the two-edge GPU fi
     ])
       buffer.destroy();
   }
+});
+
+for (const nodeCount of [16, 131072]) {
+  it(`two-word sparse Louvain preserves planted pairs and deterministic output (${nodeCount} nodes)`, async () => {
+    // Cross-half pairs exercise high source/destination words. At 131,072 nodes the old
+    // source * nodeCount key wrapped every 32,768 sources and merged unrelated pairs.
+    const halfCount = nodeCount / 2;
+    const offsets = Uint32Array.from({length: nodeCount + 1}, (_, row) => row);
+    const neighbors = Uint32Array.from({length: nodeCount}, (_, row) =>
+      row < halfCount ? row + halfCount : row - halfCount
+    );
+    const weights = new Float32Array(nodeCount).fill(1);
+    const props: NetworkLouvainOperationProps = {
+      id: 'two-word-louvain',
+      nodeCount,
+      maximumLevels: 2,
+      maximumIterations: 3,
+      topology: {offsets: 'offsets', neighbors: 'neighbors', weights: 'weights'},
+      parameters: 'parameters',
+      output: {
+        communities: 'communities',
+        objectiveTrace: 'trace',
+        summary: 'summary',
+        status: STATUS
+      }
+    };
+    const inputs: Record<string, OperationGraphInput> = {
+      offsets: {format: 'uint32', values: offsets},
+      neighbors: {format: 'uint32', values: neighbors},
+      weights: {format: 'float32', values: weights},
+      parameters: {format: 'float32', values: Float32Array.of(1, 0)}
+    };
+    const result = await compareTwins(props, inputs);
+    const expected = Uint32Array.from({length: nodeCount}, (_, row) =>
+      row < halfCount ? row + halfCount : row
+    );
+    expect(result['communities']).toEqual(expected);
+    expect(Array.from(result['summary'])).toEqual([1, 1, 2, 3]);
+    expect(result['trace'][0]).toBeCloseTo(-1 / nodeCount, 7);
+    expect(result['trace'][3]).toBeCloseTo(1 - 2 / nodeCount, 7);
+
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const repeated = await runOperationGraph(device, {
+      id: 'two-word-louvain-repeat',
+      inputs,
+      operations: [new GPUNetworkLouvainOperation(props)],
+      outputs: OUTPUTS
+    });
+    for (const output of OUTPUTS) expect(repeated[output], output).toEqual(result[output]);
+
+    if (nodeCount === 16) {
+      const denseWeights = new Float32Array(nodeCount * nodeCount);
+      for (let source = 0; source < nodeCount; source++) {
+        denseWeights[source * nodeCount + neighbors[source]] = 1;
+      }
+      const {topology: unusedTopology, ...sharedProps} = props;
+      const dense = await runOperationGraph(device, {
+        id: 'two-word-louvain-dense-reference',
+        inputs: {
+          weights: {format: 'float32', values: denseWeights},
+          parameters: inputs['parameters']
+        },
+        operations: [new GPUNetworkLouvainOperation({...sharedProps, weights: 'weights'})],
+        outputs: OUTPUTS
+      });
+      expect(dense['communities']).toEqual(expected);
+      expect(dense['trace'][dense['rounds'][0]]).toBeCloseTo(result['trace'][3], 7);
+    }
+  });
+}
+
+/** The old one-word pair representation and 32-bit radix sort, with the unchanged moving schedule. */
+function createPackedReferenceOperation(
+  props: NetworkLouvainOperationProps
+): GPUContributorOperation {
+  const metadata = new GPUNetworkLouvainOperation(props);
+  return new GPUContributorOperation({
+    id: `${metadata.id}-packed-reference`,
+    inputs: metadata.inputs,
+    outputs: metadata.outputs,
+    createContributor: getView => {
+      const contributor = new GPUNetworkLouvain({
+        ...props,
+        weights: undefined,
+        topology: {
+          offsets: getView<'uint32'>('offsets'),
+          neighbors: getView<'uint32'>('neighbors'),
+          weights: getView<'float32'>('weights')
+        },
+        parameters: getView<'float32'>('parameters'),
+        output: {
+          communities: getView<'uint32'>('communities'),
+          objectiveTrace: getView<'float32'>('objectiveTrace'),
+          summary: getView<'uint32'>('summary'),
+          status: Object.fromEntries(
+            Object.keys(STATUS).map(name => [name, getView<'uint32'>(name)])
+          )
+        }
+      });
+      const sparseProps = contributor.props;
+      if (!sparseProps.topology) throw new Error('packed reference requires CSR');
+      return {
+        getCommandNodes: graph => [
+          ...getSparseNetworkLouvainNodes(graph, contributor.id, sparseProps, 'packed-reference'),
+          ...getNetworkLouvainStatusNodes(graph, contributor.id, sparseProps.output)
+        ]
+      };
+    }
+  });
+}
+
+function getScalabilityProps(
+  fixture: NetworkLouvainScalabilityFixture,
+  directed = false
+): NetworkLouvainOperationProps {
+  return {
+    id: 'weighted-scalability-louvain',
+    nodeCount: fixture.nodeCount,
+    directed,
+    maximumLevels: 3,
+    maximumIterations: 4,
+    topology: {offsets: 'offsets', neighbors: 'neighbors', weights: 'weights'},
+    parameters: 'parameters',
+    output: {
+      communities: 'communities',
+      objectiveTrace: 'trace',
+      summary: 'summary',
+      status: STATUS
+    }
+  };
+}
+
+function getScalabilityInputs(
+  fixture: NetworkLouvainScalabilityFixture,
+  minimumGain = 1e-8
+): Record<string, OperationGraphInput> {
+  return {
+    offsets: {format: 'uint32', values: fixture.offsets},
+    neighbors: {format: 'uint32', values: fixture.neighbors},
+    weights: {format: 'float32', values: fixture.weights},
+    parameters: {format: 'float32', values: Float32Array.of(fixture.resolution, minimumGain)}
+  };
+}
+
+for (const directed of [false, true]) {
+  it(`matches packed baseline output bits with mixed duplicate weights at gain thresholds (directed=${directed})`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const fixture = createNetworkLouvainMixedDuplicateFixture();
+    const props = getScalabilityProps(fixture, directed);
+    // Strong-pair gain at singleton labels: 4/18 - 1/8 = 7/72. Test either side
+    // of this boundary by eight f32 spacings, plus the rounded boundary itself.
+    const center = new Uint32Array(Float32Array.of(7 / 72).buffer)[0];
+    const observedMoves = new Set<boolean>();
+    for (const spacingOffset of [-8, 0, 8]) {
+      const minimumGain = new Float32Array(Uint32Array.of(center + spacingOffset).buffer)[0];
+      const inputs = getScalabilityInputs(fixture, minimumGain);
+      const baseline = await runOperationGraph(device, {
+        id: 'packed-baseline-bits',
+        inputs,
+        operations: [createPackedReferenceOperation(props)],
+        outputs: OUTPUTS
+      });
+      const staged = await runOperationGraph(device, {
+        id: 'two-word-stage-bits',
+        inputs,
+        operations: [new GPUNetworkLouvainOperation(props)],
+        outputs: OUTPUTS
+      });
+      for (const output of OUTPUTS) {
+        const expected = baseline[output];
+        const actual = staged[output];
+        // Include the exact float32 trace payloads, signed zero and unused NaN words.
+        expect(new Uint32Array(actual.buffer, actual.byteOffset, actual.length), output).toEqual(
+          new Uint32Array(expected.buffer, expected.byteOffset, expected.length)
+        );
+      }
+      expect(staged['invalid'][0]).toBe(0);
+      observedMoves.add(staged['communities'][0] !== 0);
+    }
+    expect(observedMoves).toEqual(new Set([false, true]));
+  });
+}
+
+for (const nodeCount of [65535, 65536, 65537]) {
+  for (const directed of [false, true]) {
+    it(`matches the CPU route across the sort transition with duplicates and loops (${nodeCount}, directed=${directed})`, async () => {
+      const fixture = createNetworkLouvainQuotientFixture(nodeCount, {
+        duplicateArcs: true,
+        selfLoops: true,
+        directed
+      });
+      const result = await compareTwins(
+        getScalabilityProps(fixture, directed),
+        getScalabilityInputs(fixture)
+      );
+      expect(result['invalid'][0]).toBe(0);
+      expect(result['converged'][0]).toBe(1);
+      const isolateCount = nodeCount % 4;
+      for (let isolate = 0; isolate < isolateCount; isolate++) {
+        expect(result['communities'][isolate]).toBe(isolate);
+      }
+      expect(result['communities'][nodeCount - 1]).toBeLessThan(nodeCount);
+      expect(result['trace'][result['rounds'][0]]).toBeGreaterThan(result['trace'][0]);
+    });
+  }
+}
+
+it('moves weighted high-ID planted communities after quotient aggregation at 131,072 nodes', async () => {
+  const fixture = createNetworkLouvainQuotientFixture(131072);
+  const result = await compareTwins(getScalabilityProps(fixture), getScalabilityInputs(fixture));
+  expect(Array.from(result['summary'])).toEqual([1, 1, 3, 5]);
+  expect(result['trace'][0]).toBeCloseTo(-0.25, 6);
+  // Rounds 1–2 stabilize strong pairs. Round 3 moves a quotient vertex and merges
+  // two pairs in every component, improving modularity from -1/18 to zero.
+  expect(result['trace'][2]).toBeCloseTo(-1 / 18, 6);
+  expect(result['trace'][3]).toBeGreaterThan(result['trace'][2] + 0.01);
+  expect(result['trace'][5]).toBeCloseTo(0, 6);
+  const componentCount = fixture.nodeCount / 4;
+  const expected = Uint32Array.from(
+    {length: fixture.nodeCount},
+    (_, source) => 3 * componentCount + (source % componentCount)
+  );
+  expect(result['communities']).toEqual(expected);
 });

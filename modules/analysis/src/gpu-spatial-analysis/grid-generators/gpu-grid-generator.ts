@@ -12,7 +12,6 @@ import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -33,6 +32,9 @@ import {
   GET_ORDERED_KEY_WGSL,
   IS_FINITE_BITS_WGSL
 } from '../../analysis-core/kernels/wgsl-common';
+
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateGPUStorageBindingByteLength} from '../../analysis-core/kernels/gpu-contributor-utils';
 
 const OPERATION = 'GPUGridGenerator';
 
@@ -90,11 +92,11 @@ export function getGPUGridGeneratorParameterValues(
   }
   const {minX, minY, cellWidth, cellHeight} = settings;
   for (const value of [minX, minY, cellWidth, cellHeight]) {
-    if (!Number.isFinite(value)) {
+    if (!Number.isFinite(Math.fround(value))) {
       throw new Error('Grid generator settings must be finite');
     }
   }
-  if (cellWidth <= 0 || cellHeight <= 0) {
+  if (Math.fround(cellWidth) <= 0 || Math.fround(cellHeight) <= 0) {
     throw new Error('Grid generator cellWidth and cellHeight must be positive');
   }
   target.set([minX, minY, cellWidth, cellHeight]);
@@ -373,18 +375,24 @@ export class GPUGridGenerator implements GPUCommandNodeProducer {
     const {positions, centers, corners, cornerIntersects} = props.output;
     const {intersects} = props.output;
     const {extent} = props;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.parameters,
+    validateGraphChunkBindingRanges(graph, id, {
+      parameters: props.parameters,
       positions,
       centers,
       corners,
       cornerIntersects,
       intersects,
-      extent?.positions,
-      extent?.featureOffsets,
-      extent?.polygonOffsets,
-      extent?.ringOffsets
-    ]);
+      extentPositions: intersects || cornerIntersects ? extent?.positions : undefined,
+      extentRingOffsets: intersects || cornerIntersects ? extent?.ringOffsets : undefined
+    });
+    if (extent && (intersects || cornerIntersects))
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        'extent bounds scratch',
+        16,
+        'use a device supporting four storage words'
+      );
     const isFlatHex = props.gridType === 'hex' && props.hexOrientation === 'flat';
     const bindings: WGSLKernelBinding[] = [
       {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'}

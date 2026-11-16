@@ -2,15 +2,16 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {createClassificationKernelNode as createWGSLKernelNode} from './classification-kernel-node';
 import {Buffer} from '@luma.gl/core';
 import {
   createTransientView,
+  getBoundedDispatchLayout,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {
-  createWGSLKernelNode,
   getAutomaticWGSLKernelWorkgroupSize,
   getWGSLFloatLiteral,
   type WGSLKernelBinding
@@ -32,6 +33,8 @@ import {
 } from './class-breaks-kernels';
 import {GPU_CLASS_BREAKS_METHOD_CODES} from './class-breaks-parameters';
 import {COLUMN_ORDERED_KEY_WGSL} from './column-classification-shared';
+import {getGraphViewChunks} from '../../analysis-core/kernels/gpu-contributor-utils';
+import type {ClassificationRows} from './column-classification-rows';
 
 /*
  * Histogram approximation to Fisher-Jenks on the GPU, without readback or a B x B table.
@@ -136,13 +139,30 @@ function getAtomicAddWideWGSL(
   }`;
 }
 
+/** The original refinement has three row gates and three shared non-row gates. */
+const REFINEMENT_SHARED_DISPATCH_SLOT_COUNT = 6;
+/** Each additional chunk needs an extents, accumulation and bulk-extents gate. */
+const REFINEMENT_CHUNK_DISPATCH_SLOT_COUNT = 3;
+/** WebGPU indirect compute dispatch records hold x, y and z workgroup counts. */
+const INDIRECT_DISPATCH_WORD_COUNT = 3;
+
+/** Words of shared and per-chunk refinement dispatch scratch. @internal */
+export function getNaturalBreaksDispatchWordCount(chunkCount: number): number {
+  return (
+    (REFINEMENT_SHARED_DISPATCH_SLOT_COUNT +
+      REFINEMENT_CHUNK_DISPATCH_SLOT_COUNT * Math.max(chunkCount - 1, 0)) *
+      INDIRECT_DISPATCH_WORD_COUNT +
+    REFINEMENT_CHUNK_DISPATCH_SLOT_COUNT
+  );
+}
+
 /** Views and ids shared with the rest of `GPUClassBreaks`. */
 export type NaturalBreaksNodesProps = {
   id: string;
   operation: string;
   /** The float32 view of the values (converted when the column is integer). */
-  values: GraphDataView<'float32'>;
-  mask?: GraphDataView<'uint32'>;
+  values: ClassificationRows<'float32'>;
+  mask?: ClassificationRows<'uint32'>;
   state: GraphDataView<'uint32'>;
   extremes: GraphDataView<'uint32'>;
   edges: GraphDataView<'float32'>;
@@ -164,7 +184,6 @@ export function getNaturalBreaksNodes<Parameters>(
 ): GPUCommandNode<Parameters>[] {
   const {operation, values, mask, maximumClassCount, binCount} = props;
   const prefix = `${props.id}-natural-breaks`;
-  const rowCount = values.length;
   const u32 = (name: string, length: number) =>
     createTransientView(graph, `${prefix}-${name}`, 'uint32', Math.max(length, 1));
   const f32 = (name: string, length: number) =>
@@ -174,10 +193,8 @@ export function getNaturalBreaksNodes<Parameters>(
   const totals = f32('totals', maximumClassCount * binCount);
   const starts = u32('starts', maximumClassCount * binCount);
   const stateRead = {name: 'state', view: props.state, type: 'u32', access: 'read'} as const;
-  const maskBinding = mask
-    ? ([{name: 'rowMask', view: mask, type: 'u32', access: 'read'}] as const)
-    : [];
-  const maskTest = mask ? 'rowMask[rowMaskOffset + index] != 0u' : 'true';
+  const valueChunks = getGraphViewChunks(values);
+  const maskChunks = mask ? getGraphViewChunks(mask) : undefined;
   const gate = `state[stateOffset + ${CLASS_BREAKS_STATE.method}u] != ${CODES['natural-breaks']}u`;
   const binDeclarations = `${COLUMN_ORDERED_KEY_WGSL}
 const BIN_COUNT: u32 = ${binCount}u;
@@ -214,22 +231,32 @@ ${CLASS_BREAKS_BIN_WGSL}`;
     histogram[histogramOffset + index] = 0u;`
       })
     );
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${stagePrefix}-histogram`,
-        operation,
-        variant: 'natural-breaks-histogram',
-        bindings: [
-          {name: 'values', view: values, type: 'f32', access: 'read'},
-          ...maskBinding,
-          stateRead,
-          {name: 'extremes', view: props.extremes, type: 'u32', access: 'read'},
-          {name: 'histogram', view: histogram, type: 'atomic<u32>', access: 'read_write'}
-        ],
-        invocationCount: rowCount,
-        declarations: `${binDeclarations}
+    for (const [chunkIndex, values] of valueChunks.entries()) {
+      if (values.length === 0) continue;
+      const mask = maskChunks?.[chunkIndex];
+      const maskBinding: WGSLKernelBinding[] = mask
+        ? [{name: 'rowMask', view: mask, type: 'u32', access: 'read'}]
+        : [];
+      const rowCount = values.length;
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id:
+            valueChunks.length === 1
+              ? `${stagePrefix}-histogram`
+              : `${stagePrefix}-histogram-chunk-${chunkIndex}`,
+          operation,
+          variant: 'natural-breaks-histogram',
+          bindings: [
+            {name: 'values', view: values, type: 'f32', access: 'read'},
+            ...maskBinding,
+            stateRead,
+            {name: 'extremes', view: props.extremes, type: 'u32', access: 'read'},
+            {name: 'histogram', view: histogram, type: 'atomic<u32>', access: 'read_write'}
+          ],
+          invocationCount: rowCount,
+          declarations: `${binDeclarations}
   ${CLASS_BREAKS_WIDE_WGSL}`,
-        body: `if (${gate}) {
+          body: `if (${gate}) {
       return;
     }
     let value = values[valuesOffset + index];
@@ -256,8 +283,9 @@ ${CLASS_BREAKS_BIN_WGSL}`;
     atomicAdd(&histogram[histogramOffset + bin], 1u);
     ${getAtomicAddWideWGSL('histogram', `histogramOffset + ${binCount}u + bin`, `histogramOffset + ${2 * binCount}u + bin`, 'position', '0u')}
     ${getAtomicAddWideWGSL('histogram', `histogramOffset + ${3 * binCount}u + bin`, `histogramOffset + ${4 * binCount}u + bin`, 'square.x', 'square.y')}`
-      })
-    );
+        })
+      );
+    }
 
     // Exact 64-bit prefix sums, one thread: B steps of a few integer operations are far cheaper
     // than the launch of a scan, and the sums must be exact, so there is no float reduction tree.
@@ -377,10 +405,10 @@ ${CLASS_BREAKS_BIN_WGSL}`;
           id: layerId,
           operation,
           variant: 'natural-breaks-layer',
+          workgroupCollective: true,
           bindings: [stateRead, prefixRead, totalsWrite, startsWrite],
           invocationCount: WORKGROUP_SIZE,
           workgroupSize: WORKGROUP_SIZE,
-          guardIndex: false,
           ...getClassBreaksIndirectGate<Parameters>(layerId, layerDispatch, 0),
           declarations: `${rangeCostWGSL}
   const WORKGROUP_SIZE: u32 = ${WORKGROUP_SIZE}u;
@@ -511,9 +539,7 @@ ${CLASS_BREAKS_BIN_WGSL}`;
       getCoarseNodes,
       gate,
       binDeclarations,
-      extremesRead,
-      maskBinding,
-      maskTest
+      extremesRead
     })
   );
   return nodes;
@@ -529,8 +555,6 @@ type RefinementContext<Parameters> = {
   gate: string;
   binDeclarations: string;
   extremesRead: string;
-  maskBinding: readonly WGSLKernelBinding[];
-  maskTest: string;
 };
 
 /**
@@ -541,8 +565,10 @@ function getRefinementNodes<Parameters>(
   props: NaturalBreaksNodesProps,
   context: RefinementContext<Parameters>
 ): GPUCommandNode<Parameters>[] {
-  const {operation, values, maximumClassCount, binCount, edges, edgeState} = props;
-  const {prefix, gate, binDeclarations, extremesRead, maskBinding, maskTest} = context;
+  const {operation, values, mask, maximumClassCount, binCount, edges, edgeState} = props;
+  const valueChunks = getGraphViewChunks(values);
+  const maskChunks = mask ? getGraphViewChunks(mask) : undefined;
+  const {prefix, gate, binDeclarations, extremesRead} = context;
   // A class count above the bin count cannot be produced; every kernel clamps it the same way.
   const classCountRead = `min(state[stateOffset + ${CLASS_BREAKS_STATE.classCount}u], BIN_COUNT)`;
   const binCountConstant = `const BIN_COUNT: u32 = ${binCount}u;`;
@@ -573,11 +599,53 @@ function getRefinementNodes<Parameters>(
     graph,
     `${prefix}-refinement-dispatch`,
     'uint32',
-    18,
+    getNaturalBreaksDispatchWordCount(valueChunks.length),
     Buffer.STORAGE | Buffer.INDIRECT
   );
   const cellWordCount = breakCount * elementCount * elementStride;
-  const rowWorkgroupSize = getAutomaticWGSLKernelWorkgroupSize(rowCount);
+  const rowWorkgroupSize = WORKGROUP_SIZE;
+  // Preserve the existing six slots for chunk zero; each later chunk adds extents,
+  // accumulation and bulk-extents triples. Each triple uses that chunk's bounded layout.
+  const getChunkSlot = (slot: number, chunkIndex: number) =>
+    chunkIndex === 0
+      ? slot
+      : REFINEMENT_SHARED_DISPATCH_SLOT_COUNT +
+        REFINEMENT_CHUNK_DISPATCH_SLOT_COUNT * (chunkIndex - 1) +
+        (slot === 0 ? 0 : slot === 3 ? 1 : 2);
+  const getRowFlagIndex = (slot: number) => (slot === 0 ? 0 : slot === 3 ? 1 : 2);
+  const getRowDispatchWGSL = (slot: number, activeExpression: string) =>
+    `dispatch[arrayLength(&dispatch) - 3u + ${getRowFlagIndex(slot)}u] = select(0u, 1u, ${activeExpression});`;
+  const getRowArmNodes = (baseId: string, slot: number) =>
+    valueChunks.flatMap((chunk, chunkIndex) => {
+      if (chunk.length === 0) return [];
+      const layout = getBoundedDispatchLayout(
+        operation,
+        chunk.length,
+        rowWorkgroupSize,
+        graph.device.limits.maxComputeWorkgroupsPerDimension
+      );
+      return [
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${baseId}-chunk-${chunkIndex}`,
+          operation,
+          variant: 'natural-breaks-arm-rows',
+          invocationCount: 1,
+          parameterValues: [
+            getChunkSlot(slot, chunkIndex) * 3,
+            getRowFlagIndex(slot),
+            layout.x,
+            layout.y,
+            layout.z
+          ],
+          bindings: [{name: 'dispatch', view: dispatch, type: 'u32', access: 'read_write'}],
+          body: `let first = dispatchOffset + getChunkParameter(36u);
+  let isEnabled = dispatch[arrayLength(&dispatch) - 3u + getChunkParameter(37u)] != 0u;
+  dispatch[first] = select(0u, getChunkParameter(38u), isEnabled);
+  dispatch[first + 1u] = getChunkParameter(39u);
+  dispatch[first + 2u] = getChunkParameter(40u);`
+        })
+      ];
+    });
   const breakWorkgroupSize = getAutomaticWGSLKernelWorkgroupSize(breakCount);
   const cellWorkgroupSize = getAutomaticWGSLKernelWorkgroupSize(cellWordCount);
   const maximumClassCountConstant = `const MAXIMUM_CLASS_COUNT: u32 = ${maximumClassCount}u;
@@ -613,13 +681,7 @@ const NO_MINIMUM: u32 = ${NO_MINIMUM_KEY};`;
 const MAXIMUM_CLASS_COUNT: u32 = ${maximumClassCount}u;`,
       body: `let classCount = ${classCountRead};
   let isActive = !(${gate}) && classCount >= 2u && extremes[extremesOffset + ${CLASS_BREAKS_EXTREMES.minimumKey}u] < extremes[extremesOffset + ${CLASS_BREAKS_EXTREMES.maximumKey}u];
-  ${getClassBreaksDispatchWGSL(graph, {
-    operation,
-    slot: 0,
-    invocationCount: rowCount,
-    workgroupSize: rowWorkgroupSize,
-    activeExpression: 'isActive'
-  })}
+  ${getRowDispatchWGSL(0, 'isActive')}
   if (${gate}) {
     return;
   }
@@ -645,24 +707,33 @@ const MAXIMUM_CLASS_COUNT: u32 = ${maximumClassCount}u;`,
   }
 
   // Extents pass: the smallest and largest value and the row count of every class of a partition.
-  const createExtentsNode = (id: string, slot: number) =>
-    createWGSLKernelNode<Parameters>(graph, {
-      id,
-      operation,
-      variant: 'natural-breaks-extents',
-      bindings: [
-        {name: 'values', view: values, type: 'f32', access: 'read'},
-        ...maskBinding,
-        stateRead,
-        {name: 'edges', view: edges, type: 'f32', access: 'read'},
-        {name: 'extents', view: extents, type: 'atomic<u32>', access: 'read_write'}
-      ],
-      invocationCount: rowCount,
-      workgroupSize: rowWorkgroupSize,
-      ...getClassBreaksIndirectGate<Parameters>(id, dispatch, slot),
-      declarations: `${COLUMN_ORDERED_KEY_WGSL}
+  const createExtentsNodes = (baseId: string, slot: number) =>
+    valueChunks.flatMap((values, chunkIndex) => {
+      if (values.length === 0) return [];
+      const id = valueChunks.length === 1 ? baseId : `${baseId}-chunk-${chunkIndex}`;
+      const mask = maskChunks?.[chunkIndex];
+      const maskBinding: WGSLKernelBinding[] = mask
+        ? [{name: 'rowMask', view: mask, type: 'u32', access: 'read'}]
+        : [];
+      const maskTest = mask ? 'rowMask[rowMaskOffset + index] != 0u' : 'true';
+      return [
+        createWGSLKernelNode<Parameters>(graph, {
+          id,
+          operation,
+          variant: 'natural-breaks-extents',
+          bindings: [
+            {name: 'values', view: values, type: 'f32', access: 'read'},
+            ...maskBinding,
+            stateRead,
+            {name: 'edges', view: edges, type: 'f32', access: 'read'},
+            {name: 'extents', view: extents, type: 'atomic<u32>', access: 'read_write'}
+          ],
+          invocationCount: values.length,
+          workgroupSize: rowWorkgroupSize,
+          ...getClassBreaksIndirectGate<Parameters>(id, dispatch, getChunkSlot(slot, chunkIndex)),
+          declarations: `${COLUMN_ORDERED_KEY_WGSL}
 ${maximumClassCountConstant}`,
-      body: `let value = values[valuesOffset + index];
+          body: `let value = values[valuesOffset + index];
   if ((bitcast<u32>(value) & 0x7f800000u) == 0x7f800000u || !(${maskTest})) {
     return;
   }
@@ -682,6 +753,8 @@ ${maximumClassCountConstant}`,
   atomicMin(&extents[extentsOffset + low - 1u], key);
   atomicMax(&extents[extentsOffset + MAXIMUM_CLASS_COUNT + low - 1u], key);
   atomicAdd(&extents[extentsOffset + 2u * MAXIMUM_CLASS_COUNT + low - 1u], 1u);`
+        })
+      ];
     });
 
   // Every non-empty class starts at its smallest value (cuts become data values), and the window
@@ -720,7 +793,8 @@ ${breakStateLayout}`,
   breakState[breakStateOffset + MOVEMENT_BASE] = 0u;
   breakState[breakStateOffset + MOVEMENT_BASE + classCount] = 0u;`
     });
-  nodes.push(createExtentsNode(`${prefix}-extents`, 0));
+  nodes.push(...getRowArmNodes(`${prefix}-extents-arm`, 0));
+  nodes.push(...createExtentsNodes(`${prefix}-extents`, 0));
   nodes.push(createSnapNode(`${prefix}-snap`));
 
   // Empty classes after the first coarse stage mean the bins collapsed structure inside the most
@@ -836,13 +910,7 @@ const NO_MINIMUM: u32 = ${NO_MINIMUM_KEY};`,
 ${maximumClassCountConstant}
 const NO_MINIMUM: u32 = ${NO_MINIMUM_KEY};`,
       body: `let isActive = backup[backupOffset + 5u] == 1u;
-  ${getClassBreaksDispatchWGSL(graph, {
-    operation,
-    slot: 5,
-    invocationCount: rowCount,
-    workgroupSize: rowWorkgroupSize,
-    activeExpression: 'isActive'
-  })}
+  ${getRowDispatchWGSL(5, 'isActive')}
   ${methodRead} = backup[backupOffset];
   state[stateOffset + ${CLASS_BREAKS_STATE.classCount}u] = backup[backupOffset + 1u];
   extremes[extremesOffset + ${CLASS_BREAKS_EXTREMES.minimumKey}u] = backup[backupOffset + 2u];
@@ -880,7 +948,8 @@ const NO_MINIMUM: u32 = ${NO_MINIMUM_KEY};`,
   }`
     })
   );
-  nodes.push(createExtentsNode(`${prefix}-extents-bulk`, 5));
+  nodes.push(...getRowArmNodes(`${prefix}-extents-bulk-arm`, 5));
+  nodes.push(...createExtentsNodes(`${prefix}-extents-bulk`, 5));
   nodes.push(createSnapNode(`${prefix}-snap-bulk`));
 
   const refinementCursor = `state[stateOffset + ${CLASS_BREAKS_STATE.refinementCursor}u]`;
@@ -935,11 +1004,15 @@ ${breakStateLayout}`,
     {slot: 4, invocationCount: breakCount, workgroupSize: breakWorkgroupSize}
   ]
     .map(shape =>
-      getClassBreaksDispatchWGSL(graph, {operation, ...shape, activeExpression: 'isActive'})
+      shape.slot === 3
+        ? getRowDispatchWGSL(3, 'isActive')
+        : getClassBreaksDispatchWGSL(graph, {operation, ...shape, activeExpression: 'isActive'})
     )
     .join('\n  ')}`
       })
     );
+
+    nodes.push(...getRowArmNodes(`${halfId}-rows-arm`, 3));
 
     // Plan: the window of every active break of this half-round.
     nodes.push(
@@ -1017,28 +1090,43 @@ ${breakStateLayout}`,
       })
     );
 
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${halfId}-accumulate`,
-        operation,
-        variant: 'natural-breaks-refine-accumulate',
-        bindings: [
-          {name: 'values', view: values, type: 'f32', access: 'read'},
-          ...maskBinding,
-          stateRead,
-          {name: 'edges', view: edges, type: 'f32', access: 'read'},
-          {name: 'plan', view: plan, type: 'f32', access: 'read'},
-          {name: 'cells', view: cells, type: 'atomic<u32>', access: 'read_write'}
-        ],
-        invocationCount: rowCount,
-        workgroupSize: rowWorkgroupSize,
-        ...getClassBreaksIndirectGate<Parameters>(`${halfId}-accumulate`, dispatch, 3),
-        declarations: `${COLUMN_ORDERED_KEY_WGSL}
+    for (const [chunkIndex, values] of valueChunks.entries()) {
+      if (values.length === 0) continue;
+      const mask = maskChunks?.[chunkIndex];
+      const maskBinding: WGSLKernelBinding[] = mask
+        ? [{name: 'rowMask', view: mask, type: 'u32', access: 'read'}]
+        : [];
+      const rowCount = values.length;
+      const maskTest = mask ? 'rowMask[rowMaskOffset + index] != 0u' : 'true';
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id:
+            valueChunks.length === 1
+              ? `${halfId}-accumulate`
+              : `${halfId}-accumulate-chunk-${chunkIndex}`,
+          operation,
+          variant: 'natural-breaks-refine-accumulate',
+          bindings: [
+            {name: 'values', view: values, type: 'f32', access: 'read'},
+            ...maskBinding,
+            stateRead,
+            {name: 'edges', view: edges, type: 'f32', access: 'read'},
+            {name: 'plan', view: plan, type: 'f32', access: 'read'},
+            {name: 'cells', view: cells, type: 'atomic<u32>', access: 'read_write'}
+          ],
+          invocationCount: rowCount,
+          workgroupSize: rowWorkgroupSize,
+          ...getClassBreaksIndirectGate<Parameters>(
+            `${halfId}-accumulate-chunk-${chunkIndex}`,
+            dispatch,
+            getChunkSlot(3, chunkIndex)
+          ),
+          declarations: `${COLUMN_ORDERED_KEY_WGSL}
 ${CLASS_BREAKS_WIDE_WGSL}
 ${binCountConstant}
 ${cellLayout}
 const QUANTIZATION: f32 = ${getWGSLFloatLiteral(quantization)};`,
-        body: `let value = values[valuesOffset + index];
+          body: `let value = values[valuesOffset + index];
   if ((bitcast<u32>(value) & 0x7f800000u) == 0x7f800000u || !(${maskTest})) {
     return;
   }
@@ -1096,8 +1184,9 @@ const QUANTIZATION: f32 = ${getWGSLFloatLiteral(quantization)};`,
   ${getAtomicAddWideWGSL('cells', 'base + 3u', 'base + 4u', 'square.x', 'square.y')}
   atomicMin(&cells[base + 5u], key);
   atomicMax(&cells[base + 6u], key);`
-      })
-    );
+        })
+      );
+    }
 
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {

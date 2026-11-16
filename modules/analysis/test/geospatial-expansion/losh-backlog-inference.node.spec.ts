@@ -100,7 +100,7 @@ it('standalone LOSH rejects normalized residual aliases with either descriptive 
           ...props,
           output: {...props.output, normalizedResiduals}
         })
-    ).toThrow('outputs must not share buffers');
+    ).toThrow(/logical byte ranges must not overlap/);
   }
   const status = graph.createDataView(props.output.statistic.buffer, {format: 'uint32', length: 5});
   expect(
@@ -109,5 +109,5 @@ it('standalone LOSH rejects normalized residual aliases with either descriptive 
         ...props,
         output: {...props.output, status, normalizedResiduals: undefined}
       })
-  ).toThrow('outputs must not share buffers');
+  ).toThrow(/statistic chunk 0 and status chunk 0 aligned binding byte ranges must not overlap/);
 });

@@ -10,14 +10,34 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {getPanelDiagnosticNodes} from './panel-diagnostics';
+import {validateRegressionOutputDispatches} from './regression-output-dispatches';
+import {validateExactLogDeterminant} from './spatial-exact-log-determinant';
+import {validateGPUSpatialWeightsTracesParameters} from './gpu-spatial-weights-traces';
+import {
+  GPU_SPATIAL_WEIGHTS_TRACES_EXACT_ROW_LIMIT,
+  GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_POWER
+} from './spatial-weights-traces-parameters';
+import {SPATIAL_SERIES_TAIL_MINIMUM_POWER} from './spatial-series-tail';
+import {GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_LENGTH} from './spatial-maximum-likelihood-parameters';
+import {getOrdinaryLeastSquaresAllocationLengths} from './gpu-ordinary-least-squares';
+import {REGRESSION_TILE_MAXIMUM_ROW_COUNT} from './regression-row-tiles';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
+  validateCommandNodeBudget,
+  validateRequirement,
+  validateGPUStorageBindingByteLength,
   validateSinglePackedView,
-  validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {getPanelWithinNodes, getPanelWithinScratchLengths} from './panel-within-nodes';
 import {GET_NAN_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {
+  getSpatialErrorLikelihoodAllocationLengths,
+  getSpatialErrorLikelihoodNodeCount,
+  validateRegressionAllocations
+} from './spatial-likelihood-allocations';
 import {
   validateGPUSpatialWeights,
   type GPUSpatialWeights
@@ -26,6 +46,13 @@ import {
   GPUSpatialErrorMaximumLikelihood,
   type GPUSpatialErrorMaximumLikelihoodProps
 } from './gpu-spatial-error-maximum-likelihood';
+
+/** Expanded CSR indices and float32 regression counts remain exact through 2^24 panel rows. */
+export const GPU_PANEL_ERROR_MAXIMUM_ROW_COUNT = REGRESSION_TILE_MAXIMUM_ROW_COUNT;
+/** Tiled period means need only bounded tile sums; the total panel row budget bounds periods. */
+export const GPU_PANEL_ERROR_MAXIMUM_PERIOD_COUNT = GPU_PANEL_ERROR_MAXIMUM_ROW_COUNT;
+/** The nested likelihood uses the existing sixteen-column Cholesky, including the intercept. */
+const MAXIMUM_PREDICTOR_COUNT = 15;
 
 export type GPUSpatialPanelErrorMaximumLikelihoodProps = Omit<
   GPUSpatialErrorMaximumLikelihoodProps,
@@ -55,11 +82,24 @@ export type GPUSpatialPanelErrorMaximumLikelihoodProps = Omit<
  */
 export class GPUSpatialPanelErrorMaximumLikelihood implements GPUCommandNodeProducer {
   readonly id: string;
+  readonly estimatedCommandNodeCount: number;
   constructor(readonly props: GPUSpatialPanelErrorMaximumLikelihoodProps) {
     this.id = props.id ?? 'spatial-panel-error-maximum-likelihood';
     const entities = validateGPUSpatialWeights(this.id, props.weights);
-    validateCapacity(this.id, 'periodCount', props.periodCount, 2, 1024);
-    validateCapacity(this.id, 'rows', entities * props.periodCount, 1, 65536);
+    validateCapacity(
+      this.id,
+      'periodCount',
+      props.periodCount,
+      2,
+      GPU_PANEL_ERROR_MAXIMUM_PERIOD_COUNT
+    );
+    validateCapacity(
+      this.id,
+      'rows',
+      entities * props.periodCount,
+      1,
+      GPU_PANEL_ERROR_MAXIMUM_ROW_COUNT
+    );
     validateCapacity(
       this.id,
       'edge capacity',
@@ -67,7 +107,52 @@ export class GPUSpatialPanelErrorMaximumLikelihood implements GPUCommandNodeProd
       1,
       0xffffffff
     );
-    validateCapacity(this.id, 'predictorCount', props.predictorCount, 1, 15);
+    const maximumPower = props.maximumPower ?? 128;
+    validateCapacity(
+      this.id,
+      'maximumPower',
+      maximumPower,
+      2,
+      GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_POWER
+    );
+    validateCapacity(this.id, 'traceProbeCount', props.traceProbeCount ?? 64);
+    validateRequirement(
+      this.id,
+      props.traceMode === undefined ||
+        props.traceMode === 'exact' ||
+        props.traceMode === 'stochastic',
+      "traceMode must be 'exact' or 'stochastic'"
+    );
+    const rows = entities * props.periodCount;
+    if (props.traceMode === 'exact')
+      validateCapacity(
+        this.id,
+        'exact trace rows',
+        rows,
+        1,
+        GPU_SPATIAL_WEIGHTS_TRACES_EXACT_ROW_LIMIT
+      );
+    if (props.tailExtrapolation)
+      validateCapacity(
+        this.id,
+        'maximumPower',
+        maximumPower,
+        SPATIAL_SERIES_TAIL_MINIMUM_POWER,
+        GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_POWER
+      );
+    if (props.tileRowCount !== undefined)
+      validateCapacity(this.id, 'tileRowCount', props.tileRowCount);
+    validateExactLogDeterminant(this.id, props, rows);
+    validateGPUSpatialWeightsTracesParameters(this.id, 'traceParameters', props.traceParameters);
+    this.estimatedCommandNodeCount =
+      getSpatialErrorLikelihoodNodeCount(
+        entities * props.periodCount,
+        maximumPower,
+        props.traceMode,
+        props.traceProbeCount
+      ) + 6;
+    validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
+    validateCapacity(this.id, 'predictorCount', props.predictorCount, 1, MAXIMUM_PREDICTOR_COUNT);
     validateSinglePackedView(props.predictors, ['float32'], this.id);
     validateSinglePackedView(props.response, ['float32'], this.id);
     if (
@@ -81,6 +166,49 @@ export class GPUSpatialPanelErrorMaximumLikelihood implements GPUCommandNodeProd
       if (props.diagnostics.tests.length !== 6 || props.diagnostics.status.length !== 1)
         throw new Error(`${this.id}: diagnostic shape mismatch`);
     }
+    for (const [name, view, format, minimum] of [
+      ['output.table', props.output.table, 'float32', (props.predictorCount + 2) * 4],
+      [
+        'output.summary',
+        props.output.summary,
+        'float32',
+        GPU_SPATIAL_MAXIMUM_LIKELIHOOD_SUMMARY_LENGTH
+      ],
+      ['output.residuals', props.output.residuals, 'float32', rows],
+      ['output.status.code', props.output.status.code, 'uint32', 1],
+      ['output.status.converged', props.output.status.converged, 'uint32', 1],
+      [
+        'output.powerTraceStandardErrors',
+        props.output.powerTraceStandardErrors,
+        'float32',
+        maximumPower
+      ]
+    ] as const) {
+      if (!view) continue;
+      validateSinglePackedView(view, [format], `${this.id} ${name}`);
+      validateRequirement(
+        this.id,
+        view.length >= minimum,
+        `${name} must hold at least ${minimum} rows`
+      );
+    }
+    validateRegressionOutputDispatches(
+      this.id,
+      {
+        table: props.output.table,
+        summary: props.output.summary,
+        residuals: props.output.residuals,
+        code: props.output.status.code,
+        converged: props.output.status.converged,
+        powerTraceStandardErrors: props.output.powerTraceStandardErrors,
+        diagnosticTests: props.diagnostics?.tests,
+        diagnosticStatus: props.diagnostics?.status
+      },
+      [
+        ['table', 'summary', 'code', 'converged'],
+        ['diagnosticTests', 'diagnosticStatus']
+      ]
+    );
     validateGraphOutputsDisjointFromInputs(
       this.id,
       [
@@ -89,11 +217,14 @@ export class GPUSpatialPanelErrorMaximumLikelihood implements GPUCommandNodeProd
         props.output.residuals,
         props.output.status.code,
         props.output.status.converged,
+        props.output.powerTraceStandardErrors,
         ...Object.values(props.diagnostics ?? {})
       ],
       [
         props.predictors,
         props.response,
+        props.eigenvalues,
+        props.traceParameters,
         props.weights.offsets,
         props.weights.neighbors,
         props.weights.weights,
@@ -108,6 +239,62 @@ export class GPUSpatialPanelErrorMaximumLikelihood implements GPUCommandNodeProd
     const entities = props.weights.offsets.length - 1;
     const rows = props.response.length;
     const capacity = props.weights.neighbors.length;
+    validateGraphChunkBindingRanges(graph, id, {
+      predictors: props.predictors,
+      response: props.response,
+      offsets: props.weights.offsets,
+      neighbors: props.weights.neighbors,
+      weights: props.weights.weights,
+      overflow: props.weights.status?.overflow,
+      eigenvalues: props.eigenvalues,
+      traceParameters: props.traceParameters,
+      table: props.output.table,
+      summary: props.output.summary,
+      residuals: props.output.residuals,
+      code: props.output.status.code,
+      converged: props.output.status.converged,
+      powerTraceStandardErrors: props.output.powerTraceStandardErrors,
+      diagnosticTests: props.diagnostics?.tests,
+      diagnosticStatus: props.diagnostics?.status
+    });
+    const meanScratch = getPanelWithinScratchLengths(
+      entities,
+      props.periodCount,
+      props.predictorCount
+    );
+    for (const [name, length] of [
+      ['expanded offsets', rows + 1],
+      ['expanded neighbors/weights', capacity * props.periodCount],
+      ['within predictors', props.predictors.length],
+      ['within response', rows],
+      ['panel mean partials', meanScratch.partialLength],
+      ['panel means', meanScratch.meanLength],
+      ...(props.diagnostics ? [['diagnostic lags', rows * 4] as const] : [])
+    ] as const) {
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        name,
+        length * 4,
+        'reduce panel dimensions or edge capacity'
+      );
+    }
+    validateRegressionAllocations(
+      graph.device,
+      id,
+      getSpatialErrorLikelihoodAllocationLengths({
+        ...props,
+        rowCount: rows,
+        edgeCount: capacity * props.periodCount
+      })
+    );
+    if (props.diagnostics) {
+      validateRegressionAllocations(
+        graph.device,
+        id,
+        getOrdinaryLeastSquaresAllocationLengths(rows, props.predictorCount)
+      );
+    }
     const offsets = createTransientView(graph, `${id}-offsets`, 'uint32', rows + 1);
     const neighbors = createTransientView(
       graph,
@@ -128,14 +315,6 @@ export class GPUSpatialPanelErrorMaximumLikelihood implements GPUCommandNodeProd
       props.predictors.length
     );
     const response = createTransientView(graph, `${id}-within-response`, 'float32', rows);
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.predictors,
-      props.response,
-      props.weights.offsets,
-      props.weights.neighbors,
-      props.weights.weights,
-      props.weights.status?.overflow
-    ]);
     return [
       ...(props.diagnostics ? getPanelDiagnosticNodes(graph, this) : []),
       createWGSLKernelNode<Parameters>(graph, {
@@ -157,35 +336,15 @@ let period = index / ${entities}u; let entity = index % ${entities}u; let begin 
 offsets[offsetsOffset + index] = period * edges + begin;
 for (var slot = begin; slot < end; slot++) { let destination = period * edges + slot; let neighbor = sourceNeighbors[sourceNeighborsOffset + slot]; neighbors[neighborsOffset + destination] = select(${rows}u, period * ${entities}u + neighbor, neighbor < ${entities}u); weights[weightsOffset + destination] = sourceWeights[sourceWeightsOffset + slot]; }`
       }),
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-within`,
-        operation: 'GPUSpatialPanelErrorMaximumLikelihood',
-        variant: 'unit-demean',
-        invocationCount: rows,
-        bindings: [
-          {name: 'sourcePredictors', view: props.predictors, type: 'f32', access: 'read'},
-          {name: 'sourceResponse', view: props.response, type: 'f32', access: 'read'},
-          {name: 'predictors', view: predictors, type: 'f32', access: 'read_write'},
-          {name: 'response', view: response, type: 'f32', access: 'read_write'},
-          ...(props.weights.status?.overflow
-            ? [
-                {
-                  name: 'overflow',
-                  view: props.weights.status.overflow,
-                  type: 'u32' as const,
-                  access: 'read' as const
-                }
-              ]
-            : [])
-        ],
-        declarations: GET_NAN_WGSL,
-        body: `let entity = index % ${entities}u; var mean = 0.0;
-for (var period = 0u; period < ${props.periodCount}u; period++) { mean += sourceResponse[sourceResponseOffset + period * ${entities}u + entity] / ${props.periodCount}.0; }
-response[responseOffset + index] = sourceResponse[sourceResponseOffset + index] - mean;
-${props.weights.status?.overflow ? 'if (overflow[overflowOffset] != 0u) { response[responseOffset + index] = getNaN(); }' : ''}
-for (var column = 0u; column < ${props.predictorCount}u; column++) { var predictorMean = 0.0;
-for (var period = 0u; period < ${props.periodCount}u; period++) { predictorMean += sourcePredictors[sourcePredictorsOffset + (period * ${entities}u + entity) * ${props.predictorCount}u + column] / ${props.periodCount}.0; }
-predictors[predictorsOffset + index * ${props.predictorCount}u + column] = sourcePredictors[sourcePredictorsOffset + index * ${props.predictorCount}u + column] - predictorMean; }`
+      ...getPanelWithinNodes(graph, {
+        id,
+        entityCount: entities,
+        periodCount: props.periodCount,
+        predictorCount: props.predictorCount,
+        predictors: props.predictors,
+        response: props.response,
+        overflow: props.weights.status?.overflow,
+        output: {predictors, response}
       }),
       ...new GPUSpatialErrorMaximumLikelihood({
         ...props,

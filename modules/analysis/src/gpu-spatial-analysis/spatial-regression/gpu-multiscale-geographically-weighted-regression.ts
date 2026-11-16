@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRegressionOutputDispatches} from './regression-output-dispatches';
+
+import {validateRegressionAllocations} from './spatial-likelihood-allocations';
+
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -9,6 +15,7 @@ import {
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import {getGWRGridScratchSizes} from './gwr-scalability-utils';
 import {createMultiscaleInference} from './multiscale-inference';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
@@ -16,8 +23,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView,
-  validateCommandNodeBudget,
-  validateGPUStorageBindingByteLength
+  validateCommandNodeBudget
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
@@ -36,6 +42,7 @@ import {
 import {GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_DEFAULT_MAXIMUM_SEARCH_ITERATIONS} from './geographically-weighted-regression-parameters';
 import {getDefaultGWRGridSize} from './gwr-grid-index';
 import {
+  getMultiscaleBandwidthAllocationLengths,
   createMultiscaleBandwidthSelection,
   createMultiscaleBandwidthWorkspace,
   validateMultiscaleBandwidthSelection
@@ -252,6 +259,27 @@ export class GPUMultiscaleGeographicallyWeightedRegression implements GPUCommand
         if (view.length !== length) throw new Error(`${this.id}: inference shape mismatch`);
       }
     }
+    validateRegressionOutputDispatches(
+      this.id,
+      {
+        ...getOutputColumns(props.output),
+        ...Object.fromEntries(
+          Object.entries(props.inference?.output ?? {}).map(([name, view]) => [
+            `inference ${name}`,
+            view
+          ])
+        )
+      },
+      [
+        ['coefficients', 'fitted', 'status', 'iterations'],
+        ['inference summary', 'inference status'],
+        {read: ['fitted', 'status'], write: ['inference summary', 'inference status']},
+        {
+          read: ['inference summary', 'inference status', 'status'],
+          write: ['inference standardErrors', 'inference effectiveParameters']
+        }
+      ]
+    );
     validateGraphOutputsDisjointFromInputs(
       this.id,
       [
@@ -261,7 +289,7 @@ export class GPUMultiscaleGeographicallyWeightedRegression implements GPUCommand
       [
         ...getRegressionBindings(this.props).map(binding => binding.view),
         props.bandwidthCandidates,
-        props.noiseVariance
+        props.output.conditionalStandardErrors ? props.noiseVariance : undefined
       ]
     );
   }
@@ -269,15 +297,55 @@ export class GPUMultiscaleGeographicallyWeightedRegression implements GPUCommand
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    if (!props.inference) {
-      validateGPUStorageBindingByteLength(
-        graph.device,
-        id,
-        'globalFitPartial',
-        getMultiscaleGlobalFitPartialLength(props.response.length, props.predictorCount) * 4,
-        'reduce rowCount or predictorCount'
-      );
-    }
+    const inputBindings = getRegressionBindings(props);
+    validateGraphChunkBindingRanges(graph, id, {
+      ...Object.fromEntries(inputBindings.map(binding => [binding.name, binding.view])),
+      bandwidthCandidates: props.bandwidthCandidates,
+      noiseVariance: props.output.conditionalStandardErrors ? props.noiseVariance : undefined,
+      ...getOutputColumns(props.output),
+      ...Object.fromEntries(
+        Object.entries(props.inference?.output ?? {}).map(([name, view]) => [
+          `inference ${name}`,
+          view
+        ])
+      )
+    });
+    const rowCount = props.response.length;
+    const columnCount = props.predictorCount + 1;
+    validateRegressionAllocations(graph.device, id, {
+      'coefficient surfaces': rowCount * columnCount,
+      'working parameters': columnCount + 1,
+      'iteration state': 2,
+      'convergence partials':
+        3 *
+        Math.min(
+          CONVERGENCE_MAXIMUM_GROUP_COUNT,
+          Math.max(1, Math.ceil((rowCount * columnCount) / CONVERGENCE_ELEMENTS_PER_GROUP))
+        ),
+      'row pairs': 2 * rowCount,
+      ...Object.fromEntries(
+        getGWRGridScratchSizes(rowCount, props.indexGridSize ?? null).map(([name, bytes]) => [
+          name,
+          bytes / 4
+        ])
+      ),
+      ...(props.inference
+        ? {'response smoother': rowCount * rowCount * columnCount}
+        : {
+            'global fit': columnCount,
+            'global fit partials': getMultiscaleGlobalFitPartialLength(
+              rowCount,
+              props.predictorCount
+            )
+          }),
+      ...(props.bandwidthCandidates
+        ? getMultiscaleBandwidthAllocationLengths(
+            rowCount,
+            props.bandwidthCandidateCount!,
+            props.bandwidthSelection
+          )
+        : {})
+    });
     const selectionWorkspace = props.bandwidthCandidates
       ? createMultiscaleBandwidthWorkspace(
           graph,
@@ -355,7 +423,7 @@ fn isActive(row: u32) -> bool { return isFiniteBits(pairs[pairsOffset + 2u * row
       ...Object.values(getOutputColumns(props.output)),
       props.parameters,
       props.bandwidthCandidates,
-      props.noiseVariance
+      props.output.conditionalStandardErrors ? props.noiseVariance : undefined
     ]);
     // Full-inference propagation starts from zero surfaces, so only fits without it start every
     // surface at the global ordinary least squares coefficients. This is this kernel's starting

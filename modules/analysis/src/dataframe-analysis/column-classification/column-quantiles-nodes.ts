@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {createClassificationKernelNode as createWGSLKernelNode} from './classification-kernel-node';
 import {clamp} from '@math.gl/core';
 import {
   createTransientView,
@@ -9,24 +10,30 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {
-  createWGSLKernelNode,
-  type WGSLKernelBinding
-} from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {validateGraphViewsBelongToGraph} from '../../analysis-core/kernels/gpu-contributor-utils';
+import type {WGSLKernelBinding} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {getGraphViewChunks} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {UINT64_WGSL} from '../../analysis-core/kernels/uint64-wgsl';
 import {COLUMN_ORDERED_KEY_WGSL} from './column-classification-shared';
 import {GPU_COLUMN_QUANTILES_PARAMETER_HEADER_LENGTH} from './column-quantiles-parameters';
 import {ORDER_STATISTIC_WGSL, RATIONAL_ORDER_STATISTIC_RANK_WGSL} from './order-statistic-wgsl';
 
+import {
+  type ClassificationRows,
+  type ClassificationRowView,
+  validateClassificationScratch,
+  validateClassificationBindings
+} from './column-classification-rows';
+
 /** Caller-owned outputs of the column quantile nodes. */
-export type GPUColumnQuantilesOutput = {
+export type GPUColumnQuantilesOutput<
+  Rows extends ClassificationRows<'float32'> = GraphDataView<'float32'>
+> = {
   /** `quantileCount` rows; NaN when no valid rows exist or the probability is NaN or outside `[0, 1]`. */
   quantiles: GraphDataView<'float32'>;
   /** One row: rows that are unmasked and finite (NaN and +-Infinity are missing). */
   validCount: GraphDataView<'uint32'>;
   /** `values.length` rows: 1 when the row is valid (finite, unmasked) and inside the filter bounds, else 0. */
-  outputMask?: GraphDataView<'uint32'>;
+  outputMask?: ClassificationRowView<'uint32', Rows>;
   /** Two rows: `[filterLowerValue, filterUpperValue]`; NaN when no valid rows exist. */
   filterBounds?: GraphDataView<'float32'>;
 };
@@ -38,9 +45,9 @@ export type ColumnQuantileNodesProps = {
   /** Operation name reported in workload estimates. */
   operation: string;
   /** Packed float32 column. */
-  values: GraphDataView<'float32'>;
+  values: ClassificationRows<'float32'>;
   /** Optional row mask; zero skips the row. */
-  mask?: GraphDataView<'uint32'>;
+  mask?: ClassificationRows<'uint32'>;
   /** Float32 parameters in the `getGPUColumnQuantilesParameterValues` layout. */
   parameters: GraphDataView<'float32'>;
   /** Compile-time probability count, 1 to 64. */
@@ -53,7 +60,7 @@ export type ColumnQuantileNodesProps = {
    */
   rationalProbabilities?: GraphDataView<'uint32'>;
   /** Caller-owned outputs. */
-  output: GPUColumnQuantilesOutput;
+  output: GPUColumnQuantilesOutput<ClassificationRows<'float32'>>;
   /**
    * Optional per-frame gate: every kernel does nothing unless `gate.view[0] == gate.value`.
    * Outputs of a gated-off frame are left untouched.
@@ -87,7 +94,8 @@ const MAXIMUM_HISTOGRAM_WORKGROUPS = 256;
  * search. Counts are integer atomics (workgroup-local for the first 8 slots, global above), so
  * the result is independent of thread order. After the fourth pass each target holds the exact
  * ordered key of its order statistic. A finish kernel decodes keys, interpolates, and writes the
- * outputs; an optional mask kernel writes the percentile filter mask.
+ * outputs; an optional mask kernel writes the percentile filter mask. Histogram row counts come
+ * from each aligned binding range, allowing uneven chunks to share shader modules.
  *
  * Returns init, `histogram-p` and `select-p` for p in 0..3, `finish`, and optionally `filter-mask`.
  *
@@ -99,20 +107,25 @@ export function getColumnQuantileNodes<Parameters>(
 ): GPUCommandNode<Parameters>[] {
   const {id, operation, values, mask, parameters, quantileCount, output, gate} = props;
   const {rationalProbabilities} = props;
-  validateGraphViewsBelongToGraph(id, graph, [
+  validateClassificationBindings(id, graph, {
     values,
     mask,
     parameters,
     rationalProbabilities,
-    gate?.view,
-    output.quantiles,
-    output.validCount,
-    output.outputMask,
-    output.filterBounds
-  ]);
-  const rows = values.length;
+    gate: gate?.view,
+    'output.quantiles': output.quantiles,
+    'output.validCount': output.validCount,
+    'output.outputMask': output.outputMask,
+    'output.filterBounds': output.filterBounds
+  });
+  const valueChunks = getGraphViewChunks(values);
+  const maskChunks = mask ? getGraphViewChunks(mask) : undefined;
   const hasFilter = Boolean(output.outputMask || output.filterBounds);
   const targetCount = 2 * quantileCount + (hasFilter ? 2 : 0);
+  validateClassificationScratch(graph, id, {
+    histogram: targetCount * BIN_COUNT,
+    state: 4 * targetCount + 2
+  });
   const histogram = createTransientView(
     graph,
     `${id}-histogram`,
@@ -121,11 +134,6 @@ export function getColumnQuantileNodes<Parameters>(
   );
   const stateLength = 4 * targetCount + 2;
   const state = createTransientView(graph, `${id}-state`, 'uint32', stateLength);
-  const histogramWorkgroups = clamp(
-    Math.ceil(rows / (WORKGROUP_SIZE * ROWS_PER_THREAD)),
-    1,
-    MAXIMUM_HISTOGRAM_WORKGROUPS
-  );
 
   const read = (name: string, view: GraphDataView, type: 'u32' | 'f32'): WGSLKernelBinding => ({
     name,
@@ -275,54 +283,64 @@ fn getTargetRank(targetIndex: u32, validCount: u32) -> u32 {
   );
 
   for (let pass = 0; pass < PASS_COUNT; pass++) {
-    const shift = 24 - 8 * pass;
     const localBinCount = LOCAL_SLOT_COUNT * BIN_COUNT;
-    const slotSource =
-      pass === 0
-        ? 'let slot = 0u;'
-        : `let prefixValue = key >> ${shift + 8}u;
-      var low = 0u;
-      var high = activeCount;
-      while (low < high) {
-        let middle = (low + high) / 2u;
-        if (state[stateOffset + STATE_ACTIVE_PREFIX + middle] < prefixValue) {
-          low = middle + 1u;
-        } else {
-          high = middle;
+    const slotSource = `var slot = 0u;
+      if (phase > 0u) {
+        let prefixValue = key >> (shift + 8u);
+        var low = 0u;
+        var high = activeCount;
+        while (low < high) {
+          let middle = (low + high) / 2u;
+          if (state[stateOffset + STATE_ACTIVE_PREFIX + middle] < prefixValue) { low = middle + 1u; }
+          else { high = middle; }
         }
-      }
-      if (low >= activeCount || state[stateOffset + STATE_ACTIVE_PREFIX + low] != prefixValue) {
-        continue;
-      }
-      let slot = low;`;
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-histogram-${pass}`,
-        operation,
-        variant: `quantile-histogram-${pass}`,
-        bindings: [
-          read('values', values, 'f32'),
-          ...(mask ? [read('rowMask', mask, 'u32')] : []),
-          read('state', state, 'u32'),
-          write('histogram', histogram, 'atomic<u32>'),
-          ...gateBindings
-        ],
-        invocationCount: histogramWorkgroups * WORKGROUP_SIZE,
-        workgroupSize: WORKGROUP_SIZE,
-        guardIndex: false,
-        declarations: `${declarations}
-const ROW_COUNT: u32 = ${rows}u;
+        if (low >= activeCount || state[stateOffset + STATE_ACTIVE_PREFIX + low] != prefixValue) { continue; }
+        slot = low;
+      }`;
+    for (let chunkIndex = 0; chunkIndex < valueChunks.length; chunkIndex++) {
+      const values = valueChunks[chunkIndex];
+      const mask = maskChunks?.[chunkIndex];
+      const rows = values.length;
+      if (rows === 0) continue;
+      const histogramWorkgroups = clamp(
+        Math.ceil(rows / (WORKGROUP_SIZE * ROWS_PER_THREAD)),
+        1,
+        MAXIMUM_HISTOGRAM_WORKGROUPS
+      );
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id:
+            valueChunks.length === 1
+              ? `${id}-histogram-${pass}`
+              : `${id}-histogram-${pass}-chunk-${chunkIndex}`,
+          operation,
+          variant: `quantile-histogram-${pass}`,
+          parameterValues: [pass],
+          bindings: [
+            read('values', values, 'f32'),
+            ...(mask ? [read('rowMask', mask, 'u32')] : []),
+            read('state', state, 'u32'),
+            write('histogram', histogram, 'atomic<u32>'),
+            ...gateBindings
+          ],
+          invocationCount: histogramWorkgroups * WORKGROUP_SIZE,
+          workgroupSize: WORKGROUP_SIZE,
+          workgroupCollective: true,
+          declarations: `${declarations}
 const LOCAL_SLOT_COUNT: u32 = ${LOCAL_SLOT_COUNT}u;
 const LOCAL_BIN_COUNT: u32 = ${localBinCount}u;
 var<workgroup> localHistogram: array<atomic<u32>, ${localBinCount}>;`,
-        body: `for (var bin = localInvocationIndex; bin < LOCAL_BIN_COUNT; bin = bin + ${WORKGROUP_SIZE}u) {
+          body: `for (var bin = localInvocationIndex; bin < LOCAL_BIN_COUNT; bin = bin + ${WORKGROUP_SIZE}u) {
     atomicStore(&localHistogram[bin], 0u);
   }
   workgroupBarrier();
   let isEnabled = ${enabledExpression};
   if (isEnabled) {
-    let activeCount = ${pass === 0 ? '1u' : 'state[stateOffset + STATE_ACTIVE_COUNT]'};
-    for (var row = index; row < ROW_COUNT; row = row + INVOCATION_COUNT) {
+    let phase = getChunkParameter(36u);
+    let shift = 24u - 8u * phase;
+    let activeCount = select(1u, state[stateOffset + STATE_ACTIVE_COUNT], phase > 0u);
+    let rowCount = arrayLength(&values) - valuesOffset;
+    for (var row = index; row < rowCount; row = row + getChunkParameter(1u)) {
       let value = values[valuesOffset + row];
       if (isMissingValue(value)) {
         continue;
@@ -330,7 +348,7 @@ var<workgroup> localHistogram: array<atomic<u32>, ${localBinCount}>;`,
       ${mask ? 'if (rowMask[rowMaskOffset + row] == 0u) {\n        continue;\n      }' : ''}
       let key = getOrderStatisticKey(value);
       ${slotSource}
-      let digit = (key >> ${shift}u) & 255u;
+      let digit = (key >> shift) & 255u;
       if (slot < LOCAL_SLOT_COUNT) {
         atomicAdd(&localHistogram[slot * 256u + digit], 1u);
       } else {
@@ -347,16 +365,16 @@ var<workgroup> localHistogram: array<atomic<u32>, ${localBinCount}>;`,
       }
     }
   }`
-      })
-    );
+        })
+      );
+    }
 
-    const isFirstPass = pass === 0;
-    const isLastPass = pass === PASS_COUNT - 1;
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-select-${pass}`,
         operation,
         variant: `quantile-select-${pass}${rationalProbabilities ? '-rational' : ''}`,
+        parameterValues: [pass],
         bindings: [
           write('histogram', histogram),
           write('state', state),
@@ -366,89 +384,72 @@ var<workgroup> localHistogram: array<atomic<u32>, ${localBinCount}>;`,
         ],
         invocationCount: WORKGROUP_SIZE,
         workgroupSize: WORKGROUP_SIZE,
-        guardIndex: false,
+        workgroupCollective: true,
         declarations: `${declarations}
 ${rankDeclarations}
 var<workgroup> sharedPrefix: array<u32, ${targetCount}>;
 var<workgroup> sharedFirst: array<u32, ${targetCount}>;
 var<workgroup> sharedValidCount: u32;`,
         body: `let isEnabled = ${enabledExpression};
+  let phase = getChunkParameter(36u);
   let targetIndex = localInvocationIndex;
-  ${
-    isFirstPass
-      ? `if (targetIndex == 0u) {
+  if (phase == 0u && targetIndex == 0u) {
     var total = 0u;
     if (isEnabled) {
-      for (var bin = 0u; bin < 256u; bin = bin + 1u) {
-        total = total + histogram[histogramOffset + bin];
-      }
+      for (var bin = 0u; bin < 256u; bin++) { total += histogram[histogramOffset + bin]; }
       state[stateOffset + STATE_VALID_COUNT] = total;
     }
     sharedValidCount = total;
   }
   workgroupBarrier();
-  let validCount = sharedValidCount;`
-      : ''
-  }
   if (isEnabled && targetIndex < TARGET_COUNT) {
-    var prefix = ${isFirstPass ? '0u' : 'state[stateOffset + STATE_PREFIX + targetIndex]'};
-    var remaining = ${isFirstPass ? 'getTargetRank(targetIndex, validCount)' : 'state[stateOffset + STATE_RANK + targetIndex]'};
-    let slot = ${isFirstPass ? '0u' : 'state[stateOffset + STATE_SLOT + targetIndex]'};
+    var prefix = 0u;
+    var remaining = 0u;
+    var slot = 0u;
+    if (phase == 0u) { remaining = getTargetRank(targetIndex, sharedValidCount); }
+    else {
+      prefix = state[stateOffset + STATE_PREFIX + targetIndex];
+      remaining = state[stateOffset + STATE_RANK + targetIndex];
+      slot = state[stateOffset + STATE_SLOT + targetIndex];
+    }
     var digit = 255u;
-    for (var bin = 0u; bin < 256u; bin = bin + 1u) {
+    for (var bin = 0u; bin < 256u; bin++) {
       let count = histogram[histogramOffset + slot * 256u + bin];
-      if (remaining < count) {
-        digit = bin;
-        break;
-      }
-      remaining = remaining - count;
+      if (remaining < count) { digit = bin; break; }
+      remaining -= count;
     }
     prefix = (prefix << 8u) | digit;
     sharedPrefix[targetIndex] = prefix;
     state[stateOffset + STATE_PREFIX + targetIndex] = prefix;
     state[stateOffset + STATE_RANK + targetIndex] = remaining;
   }
-  // The histogram of this pass is consumed: clear it for the next pass.
   workgroupBarrier();
   if (isEnabled) {
-    for (var cell = targetIndex; cell < ${targetCount * BIN_COUNT}u; cell = cell + ${WORKGROUP_SIZE}u) {
+    for (var cell = targetIndex; cell < ${targetCount * BIN_COUNT}u; cell += ${WORKGROUP_SIZE}u) {
       histogram[histogramOffset + cell] = 0u;
     }
   }
-  ${
-    isLastPass
-      ? ''
-      : `if (isEnabled && targetIndex < TARGET_COUNT) {
+  if (phase < 3u && isEnabled && targetIndex < TARGET_COUNT) {
     var first = 1u;
-    for (var other = 0u; other < targetIndex; other = other + 1u) {
-      if (sharedPrefix[other] == sharedPrefix[targetIndex]) {
-        first = 0u;
-        break;
-      }
+    for (var other = 0u; other < targetIndex; other++) {
+      if (sharedPrefix[other] == sharedPrefix[targetIndex]) { first = 0u; break; }
     }
     sharedFirst[targetIndex] = first;
   }
   workgroupBarrier();
-  if (isEnabled && targetIndex < TARGET_COUNT) {
+  if (phase < 3u && isEnabled && targetIndex < TARGET_COUNT) {
     let prefix = sharedPrefix[targetIndex];
     var slot = 0u;
-    for (var other = 0u; other < TARGET_COUNT; other = other + 1u) {
-      if (sharedFirst[other] == 1u && sharedPrefix[other] < prefix) {
-        slot = slot + 1u;
-      }
+    for (var other = 0u; other < TARGET_COUNT; other++) {
+      if (sharedFirst[other] == 1u && sharedPrefix[other] < prefix) { slot++; }
     }
     state[stateOffset + STATE_SLOT + targetIndex] = slot;
-    if (sharedFirst[targetIndex] == 1u) {
-      state[stateOffset + STATE_ACTIVE_PREFIX + slot] = prefix;
-    }
+    if (sharedFirst[targetIndex] == 1u) { state[stateOffset + STATE_ACTIVE_PREFIX + slot] = prefix; }
     if (targetIndex == 0u) {
       var distinct = 0u;
-      for (var other = 0u; other < TARGET_COUNT; other = other + 1u) {
-        distinct = distinct + sharedFirst[other];
-      }
+      for (var other = 0u; other < TARGET_COUNT; other++) { distinct += sharedFirst[other]; }
       state[stateOffset + STATE_ACTIVE_COUNT] = distinct;
     }
-  }`
   }`
       })
     );
@@ -521,21 +522,30 @@ ${rankDeclarations}`,
   );
 
   if (output.outputMask) {
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-filter-mask`,
-        operation,
-        variant: 'quantile-filter-mask',
-        bindings: [
-          read('values', values, 'f32'),
-          ...(mask ? [read('rowMask', mask, 'u32')] : []),
-          read('state', state, 'u32'),
-          write('filterMaskOut', output.outputMask, 'u32'),
-          ...gateBindings
-        ],
-        invocationCount: rows,
-        declarations,
-        body: `if (!(${enabledExpression})) {
+    const outputChunks = getGraphViewChunks(output.outputMask);
+    for (let chunkIndex = 0; chunkIndex < valueChunks.length; chunkIndex++) {
+      const values = valueChunks[chunkIndex];
+      const mask = maskChunks?.[chunkIndex];
+      const rows = values.length;
+      if (rows === 0) continue;
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id:
+            valueChunks.length === 1
+              ? `${id}-filter-mask`
+              : `${id}-filter-mask-chunk-${chunkIndex}`,
+          operation,
+          variant: 'quantile-filter-mask',
+          bindings: [
+            read('values', values, 'f32'),
+            ...(mask ? [read('rowMask', mask, 'u32')] : []),
+            read('state', state, 'u32'),
+            write('filterMaskOut', outputChunks[chunkIndex], 'u32'),
+            ...gateBindings
+          ],
+          invocationCount: rows,
+          declarations,
+          body: `if (!(${enabledExpression})) {
     return;
   }
   var inside = 0u;
@@ -549,8 +559,9 @@ ${rankDeclarations}`,
     }
   }
   filterMaskOut[filterMaskOutOffset + index] = inside;`
-      })
-    );
+        })
+      );
+    }
   }
   return nodes;
 }

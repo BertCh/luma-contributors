@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {GPU_ANALYSIS_OPERATOR_KIND_RECORDS} from './analysis-experience/analysis-operator-kind-records';
 import {GPU_SPATIAL_ANALYSIS_CAPABILITIES} from './spatial-analysis-catalog';
 import {KEPLER_ANALYSIS_OPERATOR_OVERRIDES} from './kepler-analysis-catalog';
 import {COVERAGE_EXPANSION_OPERATOR_OVERRIDES} from './coverage-expansion-catalog';
@@ -888,6 +889,9 @@ function makeOperator(
   exportName: string
 ): GPUSpatialAnalysisOperator {
   const override = OPERATOR_OVERRIDES[exportName] ?? {};
+  const kindRecord = Object.hasOwn(GPU_ANALYSIS_OPERATOR_KIND_RECORDS, exportName)
+    ? GPU_ANALYSIS_OPERATOR_KIND_RECORDS[exportName]
+    : undefined;
   const annotation = OPERATOR_ANNOTATIONS[exportName] ?? {};
   const capabilityEvidence = capability.evidence;
   if (!capabilityEvidence) {
@@ -898,8 +902,12 @@ function makeOperator(
     primaryCapability: capability.id,
     tags: override.tags ?? [],
     package: override.package ?? '@luma-contributors/analysis/gpu-spatial-analysis',
-    inputs: override.inputs ?? [],
-    outputs: override.outputs ?? [],
+    inputs: override.inputs?.length
+      ? override.inputs
+      : (kindRecord?.inputs ?? override.inputs ?? []),
+    outputs: override.outputs?.length
+      ? override.outputs
+      : (kindRecord?.outputs ?? override.outputs ?? []),
     dimensionality: SPATIOTEMPORAL_OPERATOR_NAMES.has(exportName)
       ? '2d+time'
       : (override.dimensionality ?? 'unspecified'),

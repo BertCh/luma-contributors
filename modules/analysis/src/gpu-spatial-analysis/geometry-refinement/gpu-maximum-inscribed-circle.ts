@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateOutlineOutputPasses} from '../outline-geometry/validate-outline-output-passes';
+import {validateRefinementScratchByteLengths} from './refinement-storage-validation';
+import {validateRefinementShaderNumber} from './refinement-storage-validation';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -17,8 +21,7 @@ import {
 import {
   validateCapacity,
   validateSinglePackedView,
-  validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createWGSLKernelNode,
@@ -71,6 +74,7 @@ export class GPUMaximumInscribedCircle implements GPUCommandNodeProducer {
   constructor(props: GPUMaximumInscribedCircleProps) {
     this.id = props.id ?? 'maximum-inscribed-circle';
     this.props = props;
+    validateRefinementShaderNumber(this.id, 'tolerance', props.tolerance, true);
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     this.cellCapacity = props.cellCapacity ?? 256;
     this.maximumIterations = props.maximumIterations ?? 1024;
@@ -94,6 +98,7 @@ export class GPUMaximumInscribedCircle implements GPUCommandNodeProducer {
         throw new Error('Circle output length mismatch');
       }
     }
+    validateOutlineOutputPasses(this.id, props.output, [Object.keys(props.output)]);
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
       props.positions,
       props.ringOffsets,
@@ -106,13 +111,22 @@ export class GPUMaximumInscribedCircle implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.positions,
-      props.ringOffsets,
-      props.polygonOffsets,
-      props.featureOffsets,
-      ...Object.values(props.output)
-    ]);
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(
+        [
+          props.positions,
+          props.ringOffsets,
+          props.polygonOffsets,
+          props.featureOffsets,
+          ...Object.values(props.output)
+        ].map((view, index) => [`binding.${index}`, view])
+      )
+    );
+    validateRefinementScratchByteLengths(graph, id, {
+      cells: (props.featureOffsets.length - 1) * this.cellCapacity * 16
+    });
     const cells = createTransientView(
       graph,
       `${id}-cells`,

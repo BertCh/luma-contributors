@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  validateNetworkViewBindings,
+  validateNetworkOutputsDisjointFromInputs,
+  validateNetworkWritableViews
+} from '../network-view-utils';
 import type {
   GPUCommandGraph,
   GPUCommandNode,
@@ -16,8 +21,6 @@ import {
 } from '../../analysis-core/contracts/spatial-context';
 import {
   validateCapacity,
-  validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
   validateMaximumCount,
   validateSinglePackedView,
   validateRequirement,
@@ -134,7 +137,8 @@ export class GPURadiationFlowModel implements GPUCommandNodeProducer {
     );
     validateSinglePackedView(props.output.flows, ['float32'], `${id} output.flows`);
     validateViewLength(id, 'output.flows', props.output.flows, this.zoneCount * this.zoneCount);
-    validateGraphOutputsDisjointFromInputs(
+    validateNetworkWritableViews(id, props.output);
+    validateNetworkOutputsDisjointFromInputs(
       id,
       [props.output.flows],
       [props.positions, props.populations, props.outflows]
@@ -147,12 +151,12 @@ export class GPURadiationFlowModel implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, zoneCount} = this;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.positions,
-      props.populations,
-      props.outflows,
-      props.output.flows
-    ]);
+    validateNetworkViewBindings(
+      id,
+      graph,
+      [props.positions, props.populations, props.outflows, props.output.flows],
+      {}
+    );
     const finiteSize = props.normalization === 'finite-size';
     return [
       createWGSLKernelNode<Parameters>(graph, {

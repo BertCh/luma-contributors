@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {Buffer} from '@luma.gl/core';
 import {
   addGPUCommandNodes,
   type GPUCommandGraph,
@@ -126,7 +127,7 @@ function makeView<Format extends 'float32' | 'uint32' | 'float32x2'>(
   const rowByteLength = format === 'float32x2' ? 8 : 4;
   const buffer = new GraphBufferHandle(
     graph,
-    {id, byteLength: Math.max(length, 1) * rowByteLength, usage: 0},
+    {id, byteLength: Math.max(length, 1) * rowByteLength, usage: Buffer.STORAGE},
     false
   );
   return new GraphDataView(buffer, {

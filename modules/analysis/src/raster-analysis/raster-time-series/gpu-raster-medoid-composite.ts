@@ -8,18 +8,21 @@ import type {
   GPUCommandNode,
   GPUCommandNodeProducer
 } from '@luma.gl/graph/gpu-core';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  createRasterTimeSeriesNodes,
+  planRasterTimeSeriesChunks,
+  rasterTimeSeriesBinding as rasterBinding,
+  validateRasterTimeSeriesViews as validateRasterViews,
+  validateRasterTimeSeriesGraph as validateRasterGraph,
+  type RasterTimeSeriesScalarView as RasterScalarView,
+  type RasterTimeSeriesView,
+  type RasterTimeSeriesChunkPlan
+} from './raster-time-series-chunks-b';
 import {
   validateCapacity,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {
-  RASTER_FINITE_WGSL,
-  rasterBinding,
-  validateRasterGraph,
-  validateRasterViews,
-  type RasterScalarView
-} from '../remote-sensing/raster-kernel-utils';
+import {RASTER_FINITE_WGSL} from '../remote-sensing/raster-kernel-utils';
 
 /**
  * Slices per cell: one invocation compares every pair of valid observations, `O(slices^2 * bands)`,
@@ -32,7 +35,7 @@ export const MAXIMUM_MEDOID_COMPOSITE_BAND_COUNT = 16;
 export const GPU_RASTER_MEDOID_NO_SLICE = 0xffffffff;
 
 /** Properties of {@link GPURasterMedoidComposite}. */
-export type GPURasterMedoidCompositeProps = {
+export type GPURasterMedoidCompositeProps<Rows extends RasterScalarView = GraphDataView> = {
   id?: string;
   cellCount: number;
   /** Slices in `[1, 64]`. */
@@ -43,16 +46,16 @@ export type GPURasterMedoidCompositeProps = {
    * Observations laid out `(cell * sliceCount + slice) * bandCount + band`. An observation with any
    * non-finite band is missing as a whole (hdmedians `nanmedoid`).
    */
-  values: GraphDataView<'float32'>;
+  values: RasterTimeSeriesView<'float32', Rows>;
   /** Per-observation QA `cell * sliceCount + slice`; zero rejects the observation. */
-  mask?: GraphDataView<'uint32'>;
+  mask?: RasterTimeSeriesView<'uint32', Rows>;
   output: {
     /** The medoid observation `cell * bandCount + band`; NaN when status is nonzero. */
-    composite: GraphDataView<'float32'>;
+    composite: RasterTimeSeriesView<'float32', Rows>;
     /** Slice the medoid came from (provenance), `0xffffffff` when status is nonzero. */
-    sliceIndex: GraphDataView<'uint32'>;
+    sliceIndex: RasterTimeSeriesView<'uint32', Rows>;
     /** Per cell: 0 composite, 1 no valid observation. */
-    status: GraphDataView<'uint32'>;
+    status: RasterTimeSeriesView<'uint32', Rows>;
   };
 };
 
@@ -66,10 +69,18 @@ export type GPURasterMedoidCompositeProps = {
  *
  * Per-frame: the contents of the views. Compile-time: `cellCount`, `sliceCount`, `bandCount` and
  * whether `mask` exists.
+ *
+ * Cell-major views accept matching chunks of complete cell records; shared tables stay packed.
  */
-export class GPURasterMedoidComposite implements GPUCommandNodeProducer {
+export class GPURasterMedoidComposite<Rows extends RasterScalarView = GraphDataView>
+  implements GPUCommandNodeProducer
+{
   readonly id: string;
-  constructor(readonly props: GPURasterMedoidCompositeProps) {
+  readonly props: GPURasterMedoidCompositeProps<Rows>;
+  readonly chunkPlan: RasterTimeSeriesChunkPlan;
+  readonly estimatedCommandNodeCount: number;
+  constructor(props: GPURasterMedoidCompositeProps<Rows> & {values: Rows}) {
+    this.props = props;
     const id = props.id ?? 'raster-medoid-composite';
     this.id = id;
     validateCapacity(id, 'cellCount', props.cellCount);
@@ -90,7 +101,15 @@ export class GPURasterMedoidComposite implements GPUCommandNodeProducer {
         props.output.status.length >= props.cellCount,
       'output.composite must hold cellCount times bandCount entries; sliceIndex and status one per cell'
     );
-    validateRasterViews(id, this.getInputs(), this.getOutputs());
+    this.chunkPlan = planRasterTimeSeriesChunks(this.id, props.cellCount, {
+      values: {view: props.values, entriesPerCell: props.sliceCount * props.bandCount},
+      mask: {view: props.mask, entriesPerCell: props.sliceCount},
+      'output.composite': {view: props.output.composite, entriesPerCell: props.bandCount},
+      'output.sliceIndex': {view: props.output.sliceIndex, entriesPerCell: 1},
+      'output.status': {view: props.output.status, entriesPerCell: 1}
+    });
+    this.estimatedCommandNodeCount = this.chunkPlan.estimatedCommandNodeCount;
+    validateRasterViews(this.id, this.getInputs(), this.getOutputs(), this.chunkPlan);
   }
 
   private getInputs(): RasterScalarView[] {
@@ -108,20 +127,19 @@ export class GPURasterMedoidComposite implements GPUCommandNodeProducer {
     const {props, id} = this;
     const {sliceCount: slices, bandCount: bands, values, mask, output} = props;
     validateRasterGraph(id, graph, this.getInputs(), this.getOutputs());
-    return [
-      createWGSLKernelNode<Parameters>(graph, {
-        id,
-        operation: 'GPURasterMedoidComposite',
-        invocationCount: props.cellCount,
-        workgroupSize: 64,
-        bindings: [
-          rasterBinding('values', values),
-          ...(mask ? [rasterBinding('mask', mask)] : []),
-          rasterBinding('composite', output.composite, true),
-          rasterBinding('sliceIndex', output.sliceIndex, true),
-          rasterBinding('status', output.status, true)
-        ],
-        declarations: `${RASTER_FINITE_WGSL}
+    return createRasterTimeSeriesNodes<Parameters>(graph, this.chunkPlan, {
+      id,
+      operation: 'GPURasterMedoidComposite',
+      invocationCount: props.cellCount,
+      workgroupSize: 64,
+      bindings: [
+        rasterBinding('values', values),
+        ...(mask ? [rasterBinding('mask', mask)] : []),
+        rasterBinding('composite', output.composite, true),
+        rasterBinding('sliceIndex', output.sliceIndex, true),
+        rasterBinding('status', output.status, true)
+      ],
+      declarations: `${RASTER_FINITE_WGSL}
 fn isObservationValid(cell: u32, slice: u32) -> bool {
   let source = cell * ${slices}u + slice;
   ${mask ? `if (mask[maskOffset + source] == 0u) { return false; }` : ''}
@@ -130,7 +148,7 @@ fn isObservationValid(cell: u32, slice: u32) -> bool {
   }
   return true;
 }`,
-        body: `var validMask = array<u32, 2>(0u, 0u);
+      body: `var validMask = array<u32, 2>(0u, 0u);
 for (var slice = 0u; slice < ${slices}u; slice++) {
   if (isObservationValid(index, slice)) { validMask[slice / 32u] |= 1u << (slice % 32u); }
 }
@@ -158,7 +176,6 @@ for (var band = 0u; band < ${bands}u; band++) {
   if (bestSlice != 0xffffffffu) { component = values[valuesOffset + (index * ${slices}u + bestSlice) * ${bands}u + band]; }
   composite[compositeOffset + index * ${bands}u + band] = component;
 }`
-      })
-    ];
+    });
   }
 }

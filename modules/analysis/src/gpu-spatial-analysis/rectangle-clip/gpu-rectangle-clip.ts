@@ -3,6 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  resolveGeometryUint32StatusView,
+  validateGeometryRetainedViews
+} from '../geometry-edit/geometry-storage-validation';
+import {
   createTransientView,
   GPUScan,
   type GPUCommandGraph,
@@ -12,10 +16,17 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
+  validateCapacity,
+  validateMaximumCount,
+  validateRequirement,
+  validateGPUStorageBindingByteLength,
+  validateCommandNodeBudget,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {
+  GPUGeneratedGeometryPort,
+  GPUPackedGeometryPort,
+  GPUPolygonGeometryPort,
   GPULineGeometryFields,
   GPUPolygonGeometryFields
 } from '../../analysis-core/contracts/index';
@@ -43,7 +54,18 @@ import {
   type GPUSpatialContextSupport
 } from '../../analysis-core/contracts/spatial-context';
 
+import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {getCoreDefaultBuffer} from '../../analysis-core/network-topology';
+import {
+  validateDisjointWritableViews,
+  validateGraphChunkBindingRanges
+} from '../../analysis-core/kernels/graph-chunk-dispatch';
+
 const OPERATION = 'GPURectangleClip';
+/** Each clip input vertex emits at most two vertices in a uint32 count scan. */
+const MAXIMUM_VERTEX_COUNT = 0x7fffffff;
+/** Four stages with at most seven upstream scan nodes each, plus publication and feature IDs. */
+const MAXIMUM_COMMAND_NODE_COUNT = 43;
 
 // The clip is the usual straight-edge clip in the plane of the coordinates, which for degrees
 // means edges are straight in longitude and latitude (the linear edge model).
@@ -95,6 +117,43 @@ export function getGPURectangleClipParameterValues(
   return target;
 }
 
+/** Feature cardinality of polygon clipping, separate from the existing ring status. */
+export type GPURectangleClipPolygonFeatureStatus = {
+  count: GraphDataView<'uint32'>;
+  requiredCount?: GraphDataView<'uint32'>;
+};
+
+/** Canonical feature status, with the original fields retained as deprecated aliases. */
+export type GPURectangleClipPolygonFeatures = {
+  sourceRows: GraphDataView<'uint32'>;
+} & (
+  | {
+      status: GPURectangleClipPolygonFeatureStatus;
+      /** @deprecated Use status.count. If both are provided they must identify the same view. */
+      count?: GPURectangleClipPolygonFeatureStatus['count'];
+      /** @deprecated Use status.requiredCount. */
+      requiredCount?: GPURectangleClipPolygonFeatureStatus['requiredCount'];
+    }
+  | {
+      status?: undefined;
+      /** @deprecated Use status.count. */
+      count: GPURectangleClipPolygonFeatureStatus['count'];
+      /** @deprecated Use status.requiredCount. */
+      requiredCount?: GPURectangleClipPolygonFeatureStatus['requiredCount'];
+    }
+);
+
+/** Existing ring/line layout, with optional feature-level polygon publication. */
+export type GPURectangleClipOutput = GPULineGeometryOutput & {
+  /**
+   * Polygons only. One source row per input feature, including empty clipped features. Counts
+   * here count features; the existing top-level status continues to count rings. The hierarchy
+   * is unchanged, so getPolygonOutput() reuses input featureOffsets and polygonOffsets and the
+   * clipped positions/ringOffsets without copies or readback.
+   */
+  polygonFeatures?: GPURectangleClipPolygonFeatures;
+};
+
 /**
  * Properties for {@link GPURectangleClip}.
  *
@@ -138,7 +197,7 @@ export type GPURectangleClipProps = (
    * `'lines'`, `lineOffsets.length - 1` is the output line capacity; `sourceLineIndices` gives each
    * output line's input line.
    */
-  output: GPULineGeometryOutput;
+  output: GPURectangleClipOutput;
 };
 
 /**
@@ -179,6 +238,13 @@ export class GPURectangleClip implements GPUCommandNodeProducer {
   readonly spatialContext: GPUSpatialContext;
   /** Line offsets, or the polygon ring offsets, as read by the kernels. */
   readonly boundaryOffsets: GraphDataView<'uint32'>;
+  readonly estimatedCommandNodeCount = MAXIMUM_COMMAND_NODE_COUNT;
+  /** Flat kernel bindings resolved once from canonical status and compatibility aliases. */
+  private readonly polygonFeatures?: {
+    sourceRows: GraphDataView<'uint32'>;
+    count: GraphDataView<'uint32'>;
+    requiredCount?: GraphDataView<'uint32'>;
+  };
 
   constructor(props: GPURectangleClipProps) {
     this.id = props.id ?? 'rectangle-clip';
@@ -189,6 +255,7 @@ export class GPURectangleClip implements GPUCommandNodeProducer {
     );
     this.props = props;
     const {id} = this;
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     this.boundaryOffsets =
       props.geometryType === 'polygons' ? props.ringOffsets : props.lineOffsets;
     if (props.geometryType !== 'lines' && props.geometryType !== 'polygons') {
@@ -214,6 +281,53 @@ export class GPURectangleClip implements GPUCommandNodeProducer {
       );
     }
     validateLineGeometryOutput(id, props.output, props.output.lineOffsets.length - 1);
+    validateMaximumCount(id, 'positions.length', props.positions.length, MAXIMUM_VERTEX_COUNT);
+    validateMaximumCount(
+      id,
+      'output.positions.length',
+      props.output.positions.length,
+      MAXIMUM_VERTEX_COUNT
+    );
+    const featureOutput = props.output.polygonFeatures;
+    validateRequirement(
+      id,
+      !featureOutput || props.geometryType === 'polygons',
+      'output.polygonFeatures requires geometryType polygons'
+    );
+    if (featureOutput && props.geometryType === 'polygons') {
+      const count = resolveGeometryUint32StatusView(
+        id,
+        'output.polygonFeatures.status.count',
+        featureOutput.status?.count,
+        featureOutput.count
+      );
+      const requiredCount = resolveGeometryUint32StatusView(
+        id,
+        'output.polygonFeatures.status.requiredCount',
+        featureOutput.status?.requiredCount,
+        featureOutput.requiredCount
+      );
+      validateRequirement(
+        id,
+        count !== undefined,
+        'output.polygonFeatures.status.count is required'
+      );
+      this.polygonFeatures = {sourceRows: featureOutput.sourceRows, count, requiredCount};
+      const features = this.polygonFeatures;
+      validateCapacity(id, 'featureOffsets.length', props.featureOffsets.length, 1);
+      validateCapacity(id, 'polygonOffsets.length', props.polygonOffsets.length, 1);
+      for (const [name, view] of Object.entries(features)) {
+        if (!view) continue;
+        const field = name === 'sourceRows' ? name : `status.${name}`;
+        validateSinglePackedView(view, ['uint32'], `${id} output.polygonFeatures.${field}`);
+        validateRequirement(
+          id,
+          view.length === (name === 'sourceRows' ? props.featureOffsets.length - 1 : 1),
+          `output.polygonFeatures.${field} length must match ${name === 'sourceRows' ? 'feature count' : 'one scalar'}`
+        );
+      }
+    }
+    this.validateWritableOutputs();
     if (props.geometryType === 'polygons') {
       if (props.output.lineOffsets.length !== this.boundaryOffsets.length) {
         throw new Error(`${id} output.lineOffsets must hold ${this.boundaryOffsets.length} rows`);
@@ -230,11 +344,119 @@ export class GPURectangleClip implements GPUCommandNodeProducer {
         }
       }
     }
-    validateGraphOutputsDisjointFromInputs(id, getLineGeometryOutputViews(props.output), [
-      props.positions,
-      this.boundaryOffsets,
-      props.parameters
-    ]);
+    const inputs = [props.positions, this.boundaryOffsets, props.parameters];
+    // Line emission reads the original geometry. Polygon emission's last stage reads private
+    // intermediate geometry and caller parameters; status publication reads only private scratch.
+    validateGraphOutputsDisjointFromInputs(
+      id,
+      props.geometryType === 'lines'
+        ? [props.output.positions, props.output.lineOffsets, props.output.sourceLineIndices]
+        : [props.output.positions],
+      props.geometryType === 'lines' ? inputs : [props.parameters]
+    );
+    validateGeometryRetainedViews(
+      id,
+      [
+        ...inputs,
+        ...(props.geometryType === 'polygons' ? [props.featureOffsets, props.polygonOffsets] : [])
+      ],
+      this.getOutputViews()
+    );
+  }
+
+  /** Standard generated-polygon port, preserving empty features and the input hierarchy. */
+  getPolygonOutput(): GPUGeneratedGeometryPort<GPUPackedGeometryPort<GPUPolygonGeometryPort>> {
+    const {props, id} = this;
+    const features = this.polygonFeatures;
+    if (props.geometryType !== 'polygons' || !features)
+      throw new Error(`${id} getPolygonOutput requires output.polygonFeatures`);
+    return {
+      geometry: {
+        kind: 'polygons',
+        positions: props.output.positions,
+        ringOffsets: props.output.lineOffsets,
+        featureOffsets: props.featureOffsets,
+        polygonOffsets: props.polygonOffsets
+      },
+      sourceIds: features.sourceRows,
+      status: {
+        ...props.output.status,
+        count: features.count,
+        requiredCount: features.requiredCount,
+        ringCount: props.output.status.count,
+        requiredRingCount: props.output.status.requiredCount
+      }
+    };
+  }
+
+  private getOutputViews(): (GraphDataView | undefined)[] {
+    return [
+      ...getLineGeometryOutputViews(this.props.output),
+      ...Object.values(this.polygonFeatures ?? {}).filter(view => view && view.length > 0)
+    ];
+  }
+
+  private validateWritableOutputs(): void {
+    const {props, id} = this;
+    const fields = this.getOutputViews().filter((view): view is GraphDataView =>
+      Boolean(view?.length)
+    );
+    // A bounded number of fields: compare logical ranges across passes, aligned ranges within each pass.
+    for (let first = 0; first < fields.length; first++) {
+      const firstView = fields[first];
+      const firstBuffer = firstView.buffer.defaultBuffer
+        ? getCoreDefaultBuffer(firstView.buffer.defaultBuffer)
+        : firstView.buffer;
+      for (let second = first + 1; second < fields.length; second++) {
+        const secondView = fields[second];
+        const secondBuffer = secondView.buffer.defaultBuffer
+          ? getCoreDefaultBuffer(secondView.buffer.defaultBuffer)
+          : secondView.buffer;
+        validateRequirement(
+          id,
+          firstBuffer !== secondBuffer ||
+            firstView.byteOffset + firstView.length * firstView.rowByteLength <=
+              secondView.byteOffset ||
+            secondView.byteOffset + secondView.length * secondView.rowByteLength <=
+              firstView.byteOffset,
+          'output logical byte ranges must not overlap'
+        );
+      }
+    }
+    const {output} = props;
+    if (props.geometryType === 'polygons') {
+      validateDisjointWritableViews(id, {
+        overflow: output.status.overflow,
+        vertexCount: output.status.vertexCount,
+        requiredVertexCount: output.status.requiredVertexCount
+      });
+      validateDisjointWritableViews(id, {
+        count: output.status.count,
+        requiredCount: output.status.requiredCount
+      });
+    } else {
+      validateDisjointWritableViews(id, {
+        positions: output.positions,
+        lineOffsets: output.lineOffsets,
+        sourceLineIndices: output.sourceLineIndices
+      });
+      validateDisjointWritableViews(id, {
+        lineOffsets: output.lineOffsets,
+        sourceLineIndices: output.sourceLineIndices,
+        count: output.status.count,
+        requiredCount: output.status.requiredCount,
+        vertexCount: output.status.vertexCount,
+        requiredVertexCount: output.status.requiredVertexCount
+      });
+    }
+    if (this.polygonFeatures)
+      validateDisjointWritableViews(id, {
+        count: this.polygonFeatures.count,
+        requiredCount: this.polygonFeatures.requiredCount,
+        sourceRows: this.polygonFeatures.sourceRows.length
+          ? this.polygonFeatures.sourceRows
+          : undefined
+      });
   }
 
   /** Returns the line nodes or the four polygon stages followed by the publish node. */
@@ -242,15 +464,72 @@ export class GPURectangleClip implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.positions,
-      this.boundaryOffsets,
-      props.parameters,
-      ...getLineGeometryOutputViews(props.output)
-    ]);
-    return props.geometryType === 'lines'
-      ? this._getLineNodes(graph)
-      : this._getPolygonNodes(graph);
+    validateGraphChunkBindingRanges(graph, id, {
+      positions: props.positions,
+      offsets: this.boundaryOffsets,
+      parameters: props.parameters,
+      ...Object.fromEntries(this.getOutputViews().map((view, index) => [`output.${index}`, view]))
+    });
+    const capacity = props.output.positions.length;
+    const scratch =
+      props.geometryType === 'polygons'
+        ? {
+            stageFlags: 16,
+            stagePositions: capacity * 8,
+            stageOffsets: this.boundaryOffsets.length * 4,
+            countsAndScan: Math.max(capacity, props.positions.length) * 4
+          }
+        : {totals: 16, countsAndScans: props.positions.length * 4};
+    for (const [name, byteLength] of Object.entries(scratch)) {
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        name,
+        byteLength,
+        'reduce geometry or output capacity'
+      );
+      validateCapacity(id, `${name} byteLength`, byteLength, 0, graph.device.limits.maxBufferSize);
+    }
+    const nodes =
+      props.geometryType === 'lines' ? this._getLineNodes(graph) : this._getPolygonNodes(graph);
+    const features = this.polygonFeatures;
+    if (features) {
+      nodes.push(
+        createWGSLKernelNode(graph, {
+          id: `${id}-polygon-features`,
+          operation: OPERATION,
+          invocationCount: Math.max(features.sourceRows.length, 1),
+          bindings: [
+            {name: 'count', view: features.count, type: 'u32', access: 'read_write'},
+            ...(features.sourceRows.length
+              ? [
+                  {
+                    name: 'sourceRows',
+                    view: features.sourceRows,
+                    type: 'u32' as const,
+                    access: 'read_write' as const
+                  }
+                ]
+              : []),
+            ...(features.requiredCount
+              ? [
+                  {
+                    name: 'requiredCount',
+                    view: features.requiredCount,
+                    type: 'u32' as const,
+                    access: 'read_write' as const
+                  }
+                ]
+              : [])
+          ],
+          body: `${features.sourceRows.length ? 'sourceRows[sourceRowsOffset + index] = index;' : ''}
+if (index == 0u) { count[countOffset] = ${features.sourceRows.length}u;
+${features.requiredCount ? `requiredCount[requiredCountOffset] = ${features.sourceRows.length}u;` : ''}
+}`
+        })
+      );
+    }
+    return nodes;
   }
 
   private _getLineNodes<Parameters>(

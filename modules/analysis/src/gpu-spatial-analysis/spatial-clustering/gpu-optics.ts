@@ -4,6 +4,7 @@
 
 import {
   createTransientView,
+  GPUReduction,
   GPUScan,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -18,6 +19,7 @@ import {
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
 import {
+  createWGSLDispatchGate,
   createWGSLKernelNode,
   getWGSLFloatLiteral
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
@@ -57,11 +59,14 @@ const OPTICS_TIME_BUCKET_COUNT = 8;
 export const GPU_OPTICS_BRUTE_FORCE_MAXIMUM_ROWS = 4096;
 
 /**
- * Largest row count of the grid reachability step (`neighborIndex: 'grid'`), including xi.
- * Bounds row scratch, serial xi scans and the unrolled parallel graph. Parallel selection
- * uses at most 256 workgroups; the sequential reference scans at most rows / 256 seeds per lane.
+ * Largest row count of the grid reachability step (`neighborIndex: 'grid'`). At this size
+ * the packed frontier points occupy 16 MiB. Neighbor lists and core-distance scratch have
+ * separate device binding checks; frontierBatchSize bounds the batched command graph.
  */
-export const GPU_OPTICS_GRID_MAXIMUM_ROWS = 65536;
+export const GPU_OPTICS_GRID_MAXIMUM_ROWS = 2 ** 20;
+
+/** Serial xi active-area and predecessor scans retain their reference-tier row bound. */
+export const GPU_OPTICS_XI_MAXIMUM_ROWS = 65536;
 
 /**
  * Command nodes besides the frontier visits/batches and xi batches: the two GPUNeighborSearch
@@ -76,6 +81,12 @@ export const GPU_OPTICS_XI_BATCH_SIZE = 64;
 /** One gated xi extraction dispatch and one ungated scalar dispatch to update its gate. */
 export const GPU_OPTICS_XI_NODES_PER_BATCH = 2;
 
+/** Each indexed batch has a gated frontier dispatch and an ungated scalar gate update. */
+export const GPU_OPTICS_FRONTIER_NODES_PER_BATCH = 2;
+
+/** Amortizes dispatches while keeping a full million-row indexed graph below the shared budget. */
+export const GPU_OPTICS_DEFAULT_FRONTIER_BATCH_SIZE = 256;
+
 /**
  * Two published uint32 reductions (at most two levels plus finalize each), tie marking,
  * commit and relaxation: nine nodes per parallel visit through 65,536 rows. Full-size
@@ -83,11 +94,29 @@ export const GPU_OPTICS_XI_NODES_PER_BATCH = 2;
  * both reduction boundaries; scratch and reduction templates are reused between visits.
  */
 export const GPU_OPTICS_PARALLEL_NODES_PER_VISIT = 9;
+// Preserve the measured legacy parallel-graph budget when increasing the grid row capacity.
+// Larger reductions add levels and therefore permit fewer visits within the same budget.
 export const GPU_OPTICS_MAXIMUM_COMMAND_NODE_COUNT =
-  GPU_OPTICS_PARALLEL_NODES_PER_VISIT * GPU_OPTICS_GRID_MAXIMUM_ROWS +
-  GPU_OPTICS_XI_NODES_PER_BATCH *
-    Math.ceil(GPU_OPTICS_GRID_MAXIMUM_ROWS / GPU_OPTICS_XI_BATCH_SIZE) +
+  GPU_OPTICS_PARALLEL_NODES_PER_VISIT * GPU_OPTICS_XI_MAXIMUM_ROWS +
+  GPU_OPTICS_XI_NODES_PER_BATCH * Math.ceil(GPU_OPTICS_XI_MAXIMUM_ROWS / GPU_OPTICS_XI_BATCH_SIZE) +
   GPU_OPTICS_FIXED_COMMAND_NODE_ALLOWANCE;
+
+/** Published integer reduction levels each reduce at most 256 inputs to one value. */
+const OPTICS_REDUCTION_WORKGROUP_SIZE = 256;
+
+/** Includes both reduction finalizers, tie marking, commit and relaxation. */
+const OPTICS_PARALLEL_FIXED_NODES_PER_VISIT = 5;
+
+/** Exact visit-node count for the published reduction hierarchy, including its finalizers. */
+function getOPTICSParallelNodesPerVisit(rows: number): number {
+  let remaining = rows;
+  let levels = 0;
+  do {
+    remaining = Math.ceil(remaining / OPTICS_REDUCTION_WORKGROUP_SIZE);
+    levels++;
+  } while (remaining > 1);
+  return 2 * levels + OPTICS_PARALLEL_FIXED_NODES_PER_VISIT;
+}
 
 /** Self-inclusive k-nearest search stores at most 255 other samples per query. */
 const OPTICS_MAXIMUM_MINIMUM_SAMPLES = 256;
@@ -201,8 +230,8 @@ export type GPUOPTICSProps = {
   minimumClusterSize?: number;
   predecessorCorrection?: boolean;
   /**
-   * Sequential visits per dispatch, default 64. Ignored by parallel ordering.
-   * Every remaining sequential batch is declared.
+   * Sequential visits per dispatch, default 256. Ignored by parallel ordering.
+   * Every remaining sequential batch is declared; indexed batches are GPU-gated after completion.
    */
   frontierBatchSize?: number;
   /** Maximum visited rows, default input length. Incomplete extraction labels stay noise. */
@@ -212,21 +241,25 @@ export type GPUOPTICSProps = {
    * `'auto'`; see {@link GPUOPTICSNeighborIndex}. Both paths produce the same ordering,
    * reachability and predecessors. `'brute-force'` accepts at most
    * {@link GPU_OPTICS_BRUTE_FORCE_MAXIMUM_ROWS} rows; `'grid'` at most
-   * {@link GPU_OPTICS_GRID_MAXIMUM_ROWS}, including xi extraction.
+   * {@link GPU_OPTICS_GRID_MAXIMUM_ROWS}. Xi extraction retains its separate
+   * {@link GPU_OPTICS_XI_MAXIMUM_ROWS} reference limit.
    */
   neighborIndex?: GPUOPTICSNeighborIndex;
   /**
    * Compile-time, default 'sequential' for compatibility and its smaller graph.
    * 'parallel' requires the grid index: published hierarchical reductions select the
    * exact (reachability, row) minimum, then separate dispatches commit and relax it.
-   * Visits remain dependent; frontier work spans workgroups. Costs up to nine nodes
-   * per visit, so graph construction/encoding may outweigh GPU parallelism.
+   * Visits remain dependent; frontier work spans workgroups. Costs up to eleven nodes
+   * per visit at the grid row limit and retains the legacy command-node budget. Use the
+   * default batched sequential ordering for a complete million-row ordering.
    */
   orderingMethod?: 'sequential' | 'parallel';
   /**
    * Grid path only: radius-neighbor slots in total (pairs within `maximumDistance`, both
    * directions). Compile-time, default `rows * min(rows - 1, 64)`. Too small sets
    * `output.ports.status.candidateOverflow` and leaves the ordering incomplete.
+   * The default can exceed the device's storage binding limit for large inputs; choose
+   * a capacity matching the expected neighborhood density and the device's binding size.
    */
   neighborCapacity?: number;
   output: GPUOPTICSOutput;
@@ -241,7 +274,7 @@ export type GPUOPTICSProps = {
  * - `neighborIndex: 'brute-force'` (the default up to 4096 rows): every visit scans every row to
  *   select the next row and to relax reachability, O(n²) work. Graph scratch is
  *   O(n * minimumSamples).
- * - `neighborIndex: 'grid'` (the default above 4096 rows, at most 65,536): a `GPUNeighborSearch`
+ * - `neighborIndex: 'grid'` (the default above 4096 rows, at most 1,048,576): a `GPUNeighborSearch`
  *   radius self join lists the rows within `maximumDistance` once; each visit relaxes only those
  *   rows and selects the next row from a seed list of the rows with finite reachability, falling
  *   back to the lowest unvisited row when the list is empty. Work per visit is the seed count plus
@@ -270,7 +303,8 @@ export class GPUOPTICS implements GPUCommandNodeProducer {
   /** Radius-neighbor slots of the grid path; 0 on the exhaustive path. */
   readonly neighborCapacity: number;
   /**
-   * Upper bound: one per sequential frontier batch, or at most nine per parallel visit,
+   * Upper bound: two per indexed sequential batch, one per exhaustive batch, or at most
+   * eleven per parallel visit,
    * plus two per xi batch and GPU_OPTICS_FIXED_COMMAND_NODE_ALLOWANCE for other stages.
    */
   readonly estimatedCommandNodeCount: number;
@@ -384,9 +418,10 @@ export class GPUOPTICS implements GPUCommandNodeProducer {
     validateRequirement(this.id, Number.isFinite(xi) && xi > 0 && xi < 1, 'xi must be in (0, 1)');
     const clusterSize = props.minimumClusterSize ?? props.minimumSamples;
     if (props.extractionMethod === 'xi') {
+      validateCapacity(this.id, 'xi positions rows', rows, 1, GPU_OPTICS_XI_MAXIMUM_ROWS);
       validateCapacity(this.id, 'minimumClusterSize', clusterSize, 2, rows);
     }
-    const batchSize = props.frontierBatchSize ?? 64;
+    const batchSize = props.frontierBatchSize ?? GPU_OPTICS_DEFAULT_FRONTIER_BATCH_SIZE;
     validateCapacity(
       this.id,
       'frontierBatchSize',
@@ -396,8 +431,9 @@ export class GPUOPTICS implements GPUCommandNodeProducer {
     );
     this.estimatedCommandNodeCount =
       (props.orderingMethod === 'parallel'
-        ? GPU_OPTICS_PARALLEL_NODES_PER_VISIT * iterations
-        : Math.ceil(iterations / batchSize)) +
+        ? getOPTICSParallelNodesPerVisit(rows) * iterations
+        : Math.ceil(iterations / batchSize) *
+          (this.neighborIndex === 'grid' ? GPU_OPTICS_FRONTIER_NODES_PER_BATCH : 1)) +
       (props.extractionMethod === 'xi'
         ? GPU_OPTICS_XI_NODES_PER_BATCH * Math.ceil(rows / GPU_OPTICS_XI_BATCH_SIZE)
         : 0) +
@@ -456,8 +492,12 @@ export class GPUOPTICS implements GPUCommandNodeProducer {
     const {times} = props;
     validateGraphViewsBelongToGraph(id, graph, [positions, times, ...getOPTICSOutputViews(output)]);
     for (const [name, byteLength] of [
-      ['row scratch', rows * 16 + 24],
-      ['core neighbor scratch', rows * Math.max(1, minimumSamples - 1) * 4],
+      ['row scratch', rows * 4],
+      ['neighbor offsets', (rows + 1) * 4],
+      ['frontier points', this.neighborIndex === 'grid' ? rows * 16 : 0],
+      ['frontier scratch', this.neighborIndex === 'grid' ? (rows * 2 + 4) * 4 : 0],
+      ['xi areas', props.extractionMethod === 'xi' ? rows * 16 + 24 : 0],
+      ['core neighbor scratch', rows * Math.max(0, minimumSamples - 1) * 4],
       ['neighborCapacity', this.neighborCapacity * 4]
     ] as const) {
       validateGPUStorageBindingByteLength(
@@ -473,6 +513,7 @@ export class GPUOPTICS implements GPUCommandNodeProducer {
       ? [{name: 'times', view: times, type: 'f32' as const, access: 'read' as const}]
       : [];
     const processed = createTransientView(graph, `${id}-processed`, 'uint32', rows);
+    const invalidRows = createTransientView(graph, `${id}-invalid-rows`, 'uint32', rows);
     const geographic = this.spatialContext.coordinateSpace === 'longitude-latitude';
     const distanceSource = geographic
       ? `${GEODESIC_WGSL}
@@ -605,10 +646,8 @@ fn isRelated(first: u32, second: u32) -> bool {
       createWGSLKernelNode(graph, {
         id: `${id}-initialize`,
         operation: 'GPUOPTICS',
-        variant: 'frontier',
-        invocationCount: 256,
-        workgroupSize: 256,
-        guardIndex: false,
+        variant: 'frontier-initialize',
+        invocationCount: rows,
         bindings: [
           {name: 'positions', view: positions, type: 'f32', access: 'read'},
           ...timeBindings,
@@ -616,34 +655,38 @@ fn isRelated(first: u32, second: u32) -> bool {
           {name: 'reachability', view: output.reachability, type: 'f32', access: 'read_write'},
           {name: 'predecessors', view: output.predecessors, type: 'u32', access: 'read_write'},
           {name: 'processed', view: processed, type: 'u32', access: 'read_write'},
-          {name: 'status', view: output.status, type: 'u32', access: 'read_write'},
+          {name: 'invalidRows', view: invalidRows, type: 'u32', access: 'read_write'},
           {name: 'labels', view: output.labels, type: 'u32', access: 'read_write'}
         ],
-        declarations: `${declarations}
-var<workgroup> invalidCounts: array<u32, 256>;`,
+        declarations,
         body: `let infinity = bitcast<f32>(0x7f800000u | (index & 0u));
-  var invalidCount = 0u;
-  for (var row = index; row < ROWS; row += 256u) {
-    let invalid = !validPoint(row);
-    invalidCount += u32(invalid);
-    processed[processedOffset + row] = u32(invalid);
-    ordering[orderingOffset + row] = 0xffffffffu;
-    predecessors[predecessorsOffset + row] = 0xffffffffu;
-    reachability[reachabilityOffset + row] = infinity;
-    labels[labelsOffset + row] = 0xffffffffu;
-  }
-  invalidCounts[index] = invalidCount;
-  workgroupBarrier();
-  for (var stride = 128u; stride > 0u; stride /= 2u) {
-    if (index < stride) { invalidCounts[index] += invalidCounts[index + stride]; }
-    workgroupBarrier();
-  }
-  if (index == 0u) {
-    status[statusOffset] = 0u;
-    status[statusOffset + 1u] = 0u;
-    status[statusOffset + 2u] = invalidCounts[0];
-  }`
-      })
+  let invalid = u32(!validPoint(index));
+  invalidRows[invalidRowsOffset + index] = invalid;
+  processed[processedOffset + index] = invalid;
+  ordering[orderingOffset + index] = 0xffffffffu;
+  predecessors[predecessorsOffset + index] = 0xffffffffu;
+  reachability[reachabilityOffset + index] = infinity;
+  labels[labelsOffset + index] = 0xffffffffu;`
+      }),
+      createWGSLKernelNode(graph, {
+        id: `${id}-initialize-status`,
+        operation: 'GPUOPTICS',
+        variant: 'frontier-initialize-status',
+        invocationCount: 1,
+        bindings: [{name: 'status', view: output.status, type: 'u32', access: 'read_write'}],
+        body: `status[statusOffset] = 0u;
+  status[statusOffset + 1u] = 0u;`
+      }),
+      ...new GPUReduction({
+        id: `${id}-invalid-count`,
+        input: invalidRows,
+        output: graph.createDataView(output.status.buffer, {
+          format: 'uint32',
+          byteOffset: output.status.byteOffset + 2 * Uint32Array.BYTES_PER_ELEMENT,
+          length: 1
+        }),
+        operation: 'sum'
+      }).getCommandNodes(graph)
     ];
     if (this.neighborIndex === 'grid') {
       nodes.push(...this.getGridFrontierNodes(graph, distanceSource, timeBindings, processed));
@@ -651,7 +694,11 @@ var<workgroup> invalidCounts: array<u32, 256>;`,
     for (
       let batch = 0;
       this.neighborIndex === 'brute-force' &&
-      batch < Math.ceil((props.maximumIterations ?? rows) / (props.frontierBatchSize ?? 64));
+      batch <
+        Math.ceil(
+          (props.maximumIterations ?? rows) /
+            (props.frontierBatchSize ?? GPU_OPTICS_DEFAULT_FRONTIER_BATCH_SIZE)
+        );
       batch++
     ) {
       nodes.push(
@@ -679,7 +726,7 @@ var<workgroup> visited: u32;`,
           body: `let infinity = bitcast<f32>(0x7f800000u | (index & 0u));
   if (index == 0u) { visited = status[statusOffset]; }
   workgroupBarrier();
-  for (var iteration = 0u; iteration < ${Math.min(props.frontierBatchSize ?? 64, (props.maximumIterations ?? rows) - batch * (props.frontierBatchSize ?? 64))}u; iteration++) {
+  for (var iteration = 0u; iteration < ${Math.min(props.frontierBatchSize ?? GPU_OPTICS_DEFAULT_FRONTIER_BATCH_SIZE, (props.maximumIterations ?? rows) - batch * (props.frontierBatchSize ?? GPU_OPTICS_DEFAULT_FRONTIER_BATCH_SIZE))}u; iteration++) {
     var selected = 0xffffffffu; var best = infinity;
     for (var row = index; row < ROWS; row += 256u) {
       let candidate = reachability[reachabilityOffset + row];
@@ -843,13 +890,6 @@ var<workgroup> visited: u32;`,
     const {id, props, neighborCapacity} = this;
     const {positions, output, times} = props;
     const rows = positions.length;
-    validateGPUStorageBindingByteLength(
-      graph.device,
-      id,
-      'neighborCapacity',
-      neighborCapacity * 4,
-      'lower neighborCapacity or maximumDistance'
-    );
     const geographic = this.spatialContext.coordinateSpace === 'longitude-latitude';
     const search = createNeighborSearchDerivedParameterNodes<Parameters>(graph, {
       id: `${id}-reach-neighbors-setup`,
@@ -876,6 +916,14 @@ var<workgroup> visited: u32;`,
     const points = createTransientView(graph, `${id}-frontier-points`, 'float32', rows * 4);
     // [seed rows (rows) | row states (rows) | seedCount, cursor, visited, overflow].
     const scratch = createTransientView(graph, `${id}-frontier-scratch`, 'uint32', rows * 2 + 4);
+    const gate =
+      props.orderingMethod === 'parallel'
+        ? undefined
+        : createWGSLDispatchGate(graph, {
+            id: `${id}-frontier-dispatch`,
+            operation: 'GPUOPTICS',
+            shapes: [[256, 256]]
+          });
     const declarations = `${IS_FINITE_FLOAT_WGSL}
 ${distanceSource}
 const ROWS = ${rows}u;
@@ -935,7 +983,8 @@ fn isRelated(first: u32, second: u32) -> bool {
           {name: 'processed', view: processed, type: 'u32', access: 'read'},
           {name: 'overflow', view: overflow, type: 'u32', access: 'read'},
           {name: 'points', view: points, type: 'f32', access: 'read_write'},
-          {name: 'scratch', view: scratch, type: 'u32', access: 'read_write'}
+          {name: 'scratch', view: scratch, type: 'u32', access: 'read_write'},
+          ...(gate ? [gate.binding] : [])
         ],
         body: `points[pointsOffset + 4u * index] = positions[positionsOffset + 2u * index];
   points[pointsOffset + 4u * index + 1u] = positions[positionsOffset + 2u * index + 1u];
@@ -948,6 +997,7 @@ fn isRelated(first: u32, second: u32) -> bool {
     scratch[scratchOffset + ${rows * 2 + 1}u] = 0u;
     scratch[scratchOffset + ${rows * 2 + 2}u] = 0u;
     scratch[scratchOffset + ${rows * 2 + 3}u] = overflow[overflowOffset];
+    ${gate ? `${gate.armWGSL}\n    if (overflow[overflowOffset] != 0u) { ${gate.disarmWGSL} }` : ''}
   }`
       })
     ];
@@ -964,7 +1014,7 @@ fn isRelated(first: u32, second: u32) -> bool {
       );
       return nodes;
     }
-    const batchSize = props.frontierBatchSize ?? 64;
+    const batchSize = props.frontierBatchSize ?? GPU_OPTICS_DEFAULT_FRONTIER_BATCH_SIZE;
     const iterations = props.maximumIterations ?? rows;
     const bindings = [
       {name: 'points', view: points, type: 'f32' as const, access: 'read' as const},
@@ -999,6 +1049,7 @@ fn isRelated(first: u32, second: u32) -> bool {
           invocationCount: 256,
           workgroupSize: 256,
           guardIndex: false,
+          ...gate!.getGate(0),
           bindings,
           declarations: `${declarations}
 var<workgroup> candidateRows: array<u32, 256>;
@@ -1101,6 +1152,22 @@ var<workgroup> overflowed: u32;`,
     scratch[scratchOffset + SEED_COUNT] = seedCount;
     scratch[scratchOffset + CURSOR] = cursor;
     scratch[scratchOffset + VISITED] = visited;
+  }`
+        }),
+        createWGSLKernelNode(graph, {
+          id: `${id}-frontier-gate-${batch}`,
+          operation: 'GPUOPTICS',
+          variant: 'grid-frontier-gate',
+          invocationCount: 1,
+          bindings: [
+            {name: 'scratch', view: scratch, type: 'u32', access: 'read'},
+            {name: 'status', view: output.status, type: 'u32', access: 'read'},
+            gate!.binding
+          ],
+          body: `if (scratch[scratchOffset + ${rows * 2}u] == 0u &&
+      (scratch[scratchOffset + ${rows * 2 + 1}u] >= ${rows}u ||
+       scratch[scratchOffset + ${rows * 2 + 2}u] + status[statusOffset + 2u] == ${rows}u)) {
+    ${gate!.disarmWGSL}
   }`
         })
       );

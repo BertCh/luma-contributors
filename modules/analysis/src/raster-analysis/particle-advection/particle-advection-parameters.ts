@@ -19,8 +19,9 @@ export const PARTICLE_ADVECTION_DROP_PURPOSE = PHILOX_PURPOSES.particleAdvection
 /** Per-frame float settings of {@link GPUParticleAdvection}. */
 export type GPUParticleAdvectionSettings = {
   /**
-   * Field raster placement `[originX, originY, cellWidth, cellHeight]`. Row 0 is the row with the
-   * smallest y; cell `(i, j)` is centred at `origin + (i + 0.5, j + 0.5) * cellSize`. A cell size
+   * Field raster placement `[originX, originY, cellWidth, cellHeight]`, not min/max bounds.
+   * Positive cellHeight puts row zero on the smallest-y side; signed sizes set index direction.
+   * Cell `(i, j)` is centered at `origin + (i + 0.5, j + 0.5) * cellSize`. A cell size
    * that is zero or not finite throws.
    */
   fieldExtent: readonly [number, number, number, number];

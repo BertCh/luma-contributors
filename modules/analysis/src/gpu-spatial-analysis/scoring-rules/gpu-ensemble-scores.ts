@@ -11,17 +11,52 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {IS_NAN_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {SCALED_QUOTIENT_WGSL} from '../../analysis-core/kernels/scaled-quotient-wgsl';
+import {
+  IS_NAN_VALUE_WGSL,
+  GET_NAN_WGSL,
+  IS_FINITE_BITS_WGSL
+} from '../../analysis-core/kernels/wgsl-common';
 import {
   validateCapacity,
+  validateCommandNodeBudget,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
+  validateFiniteNumber,
+  validateRequirement,
+  validateGPUStorageBindingByteLength,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateRegressionOutputDispatches} from '../spatial-regression/regression-output-dispatches';
+
 const OPERATION = 'GPUEnsembleScores';
+/** The reference scores enumerate member pairs; the member index remains a bounded uint16 count. */
+const ENSEMBLE_MAXIMUM_MEMBER_COUNT = 0xffff;
+/** CRPS runs 64 invocations per site and keeps the invocation index inside uint32. */
+const ENSEMBLE_MAXIMUM_DIMENSION = Math.floor(0xffffffff / 64);
+/** Member-major scalar indices reserve the final uint32 value. */
+const ENSEMBLE_MAXIMUM_VALUE_COUNT = 0xfffffffe;
+/** Pair addresses contain two uint32 words, so multiplication by two cannot wrap. */
+const ENSEMBLE_MAXIMUM_VARIOGRAM_PAIR_COUNT = 0x7fffffff;
+/** Covers all score kernels and at most four two-pass published reduction levels. */
+const ENSEMBLE_COMMAND_NODE_ALLOWANCE = 32;
 /** Lanes of the per-site CRPS workgroup. */
 const CRPS_LANES = 64;
+
+/** Normalize before overflow, retaining the direct difference when it is representable. */
+const ENSEMBLE_DISTANCE_WGSL = `${IS_FINITE_BITS_WGSL}
+${SCALED_QUOTIENT_WGSL}
+fn getEnsembleWeightedDifference(first: f32, second: f32, weight: f32) -> f32 {
+  let difference = first - second;
+  if (!isFiniteBits(first) || !isFiniteBits(second)) { return abs(difference); }
+  if (isFiniteBits(difference)) { return abs(difference) * weight; }
+  // Keep scaling ahead of subtraction even under reassociation. All score weights are in
+  // (0, 1], and a finite overflowing difference needs weight <= 0.5 for a finite score.
+  let divisor = 1.0 / weight;
+  return abs(getScaledQuotient(first, divisor, 1.0, 0)
+    - getScaledQuotient(second, divisor, 1.0, 0));
+}`;
 
 /** Properties for {@link GPUEnsembleScores}. */
 export type GPUEnsembleScoresProps = {
@@ -100,17 +135,31 @@ export class GPUEnsembleScores implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUEnsembleScoresProps;
+  readonly estimatedCommandNodeCount = ENSEMBLE_COMMAND_NODE_ALLOWANCE;
 
   constructor(props: GPUEnsembleScoresProps) {
     this.id = props.id ?? 'ensemble-scores';
     this.props = props;
     const {id} = this;
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     const {output, memberCount, dimension} = props;
-    validateCapacity(id, 'memberCount', memberCount, props.fair ? 2 : 1, 0xffff);
+    validateCapacity(
+      id,
+      'memberCount',
+      memberCount,
+      props.fair ? 2 : 1,
+      ENSEMBLE_MAXIMUM_MEMBER_COUNT
+    );
     // One 64-lane workgroup per site must stay below 2^32 invocations.
-    validateCapacity(id, 'dimension', dimension, 1, Math.floor(0xffffffff / CRPS_LANES));
+    validateCapacity(id, 'dimension', dimension, 1, ENSEMBLE_MAXIMUM_DIMENSION);
     // The invocation count of the per-member kernels is memberCount * dimension.
-    validateCapacity(id, 'memberCount * dimension', memberCount * dimension, 1, 0xfffffffe);
+    validateCapacity(
+      id,
+      'memberCount * dimension',
+      memberCount * dimension,
+      1,
+      ENSEMBLE_MAXIMUM_VALUE_COUNT
+    );
     validateSinglePackedView(props.ensemble, ['float32'], `${id} ensemble`);
     validateSinglePackedView(props.observations, ['float32'], `${id} observations`);
     if (props.ensemble.length < memberCount * dimension) {
@@ -140,6 +189,13 @@ export class GPUEnsembleScores implements GPUCommandNodeProducer {
     if (output.variogramScore && props.variogramPairs) {
       validateSinglePackedView(output.variogramScore, ['float32'], `${id} output.variogramScore`);
       validateSinglePackedView(props.variogramPairs, ['uint32x2'], `${id} variogramPairs`);
+      validateCapacity(
+        id,
+        'variogramPairs.length',
+        props.variogramPairs.length,
+        1,
+        ENSEMBLE_MAXIMUM_VARIOGRAM_PAIR_COUNT
+      );
       if (output.variogramScore.length !== 1 || props.variogramPairs.length < 1) {
         throw new Error(
           `${id} output.variogramScore must have one row and variogramPairs one pair`
@@ -154,10 +210,14 @@ export class GPUEnsembleScores implements GPUCommandNodeProducer {
     } else if (props.variogramWeights) {
       throw new Error(`${id} variogramWeights needs variogramPairs`);
     }
-    const order = props.variogramOrder ?? 0.5;
-    if (!(order > 0 && Number.isFinite(Math.fround(order)))) {
-      throw new Error(`${id} variogramOrder must be positive and finite`);
-    }
+    const order = Math.fround(props.variogramOrder ?? 0.5);
+    validateFiniteNumber(id, 'variogramOrder', props.variogramOrder ?? 0.5, 0);
+    validateRequirement(
+      id,
+      Math.fround(order) > 0,
+      'variogramOrder must be positive when represented as float32'
+    );
+    validateRegressionOutputDispatches(id, output, []);
     validateGraphOutputsDisjointFromInputs(
       id,
       [output.crps, output.energyScore, output.variogramScore],
@@ -171,15 +231,38 @@ export class GPUEnsembleScores implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
     const {output, memberCount, dimension} = props;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.ensemble,
-      props.observations,
-      props.variogramPairs,
-      props.variogramWeights,
-      output.crps,
-      output.energyScore,
-      output.variogramScore
-    ]);
+    validateGraphChunkBindingRanges(graph, id, {
+      ensemble: props.ensemble,
+      observations: props.observations,
+      variogramPairs: props.variogramPairs,
+      variogramWeights: props.variogramWeights,
+      ...output
+    });
+    for (const [name, length] of [
+      ['energy terms', output.energyScore ? memberCount : 0],
+      ['variogram terms', output.variogramScore ? props.variogramPairs!.length : 0]
+    ] as const) {
+      if (!length) continue;
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        name,
+        length * 4,
+        'reduce members or variogram pairs'
+      );
+      // Published GPUReduction has one scalar partial per 256 input rows at every level.
+      let reductionLength = length;
+      while (reductionLength > 256) {
+        reductionLength = Math.ceil(reductionLength / 256);
+        validateGPUStorageBindingByteLength(
+          graph.device,
+          id,
+          `${name} reduction partials`,
+          reductionLength * 4,
+          'reduce members or variogram pairs'
+        );
+      }
+    }
     const nodes: GPUCommandNode<Parameters>[] = [];
     const memberCountText = `${memberCount}u`;
     const dimensionText = `${dimension}u`;
@@ -217,7 +300,7 @@ export class GPUEnsembleScores implements GPUCommandNodeProducer {
           workgroupSize: CRPS_LANES,
           invocationCount: dimension * CRPS_LANES,
           guardIndex: false,
-          declarations: `var<workgroup> partials: array<f32, ${CRPS_LANES}>;`,
+          declarations: `${ENSEMBLE_DISTANCE_WGSL}\nvar<workgroup> partials: array<f32, ${CRPS_LANES}>;`,
           body: `let site = index / ${CRPS_LANES}u;
   let lane = localInvocationIndex;
   var laneSum = 0.0;
@@ -227,9 +310,9 @@ export class GPUEnsembleScores implements GPUCommandNodeProducer {
       let value = ensemble[ensembleOffset + member * ${dimensionText} + site];
       var pairSum = 0.0;
       for (var other = 0u; other < ${memberCountText}; other++) {
-        pairSum += abs(value - ensemble[ensembleOffset + other * ${dimensionText} + site]);
+        pairSum += getEnsembleWeightedDifference(value, ensemble[ensembleOffset + other * ${dimensionText} + site], f32(${pairFactor}));
       }
-      laneSum += abs(value - observed) / f32(${memberCount}) - pairSum * f32(${pairFactor});
+      laneSum += getEnsembleWeightedDifference(value, observed, 1.0 / f32(${memberCount})) - pairSum;
     }
   }
   partials[lane] = laneSum;
@@ -256,21 +339,30 @@ export class GPUEnsembleScores implements GPUCommandNodeProducer {
             {name: 'terms', view: terms, type: 'f32', access: 'read_write'}
           ],
           invocationCount: memberCount,
-          body: `var observedSquares = 0.0;
+          declarations: `${ENSEMBLE_DISTANCE_WGSL}\n${IS_NAN_VALUE_WGSL}\n${GET_NAN_WGSL}
+// A raw ratio of near-maximum magnitudes can become multiply-by-zero when Metal
+// lowers division to a flushed subnormal reciprocal. Divide bounded mantissas instead.
+fn accumulateEnsembleMagnitude(state: vec2<f32>, magnitude: f32) -> vec2<f32> {
+  if (isNanValue(magnitude)) { return vec2<f32>(getNaN()); }
+  if (magnitude == 0.0) { return state; }
+  if (state.x < magnitude) { let ratio = getScaledQuotient(state.x, magnitude, 1.0, 0); return vec2<f32>(magnitude, 1.0 + state.y * ratio * ratio); }
+  let ratio = getScaledQuotient(magnitude, state.x, 1.0, 0); return vec2<f32>(state.x, state.y + ratio * ratio);
+}`,
+          body: `var observedNorm = vec2<f32>(0.0);
   for (var site = 0u; site < ${dimensionText}; site++) {
-    let difference = ensemble[ensembleOffset + index * ${dimensionText} + site] - observations[observationsOffset + site];
-    observedSquares += difference * difference;
+    let magnitude = getEnsembleWeightedDifference(ensemble[ensembleOffset + index * ${dimensionText} + site], observations[observationsOffset + site], 1.0 / f32(${memberCount}));
+    observedNorm = accumulateEnsembleMagnitude(observedNorm, magnitude);
   }
   var pairSum = 0.0;
   for (var other = 0u; other < ${memberCountText}; other++) {
-    var squares = 0.0;
+    var pairNorm = vec2<f32>(0.0);
     for (var site = 0u; site < ${dimensionText}; site++) {
-      let difference = ensemble[ensembleOffset + index * ${dimensionText} + site] - ensemble[ensembleOffset + other * ${dimensionText} + site];
-      squares += difference * difference;
+      let magnitude = getEnsembleWeightedDifference(ensemble[ensembleOffset + index * ${dimensionText} + site], ensemble[ensembleOffset + other * ${dimensionText} + site], f32(${pairFactor}));
+      pairNorm = accumulateEnsembleMagnitude(pairNorm, magnitude);
     }
-    pairSum += sqrt(squares);
+    pairSum += pairNorm.x * sqrt(pairNorm.y);
   }
-  terms[termsOffset + index] = sqrt(observedSquares) / f32(${memberCount}) - pairSum * f32(${pairFactor});`
+  terms[termsOffset + index] = observedNorm.x * sqrt(observedNorm.y) - pairSum;`
         })
       );
       sumAll('energy', terms, output.energyScore);
@@ -278,7 +370,7 @@ export class GPUEnsembleScores implements GPUCommandNodeProducer {
 
     if (output.variogramScore && props.variogramPairs) {
       const pairCount = props.variogramPairs.length;
-      const order = props.variogramOrder ?? 0.5;
+      const order = Math.fround(props.variogramOrder ?? 0.5);
       const terms = createTransientView(graph, `${id}-variogram-terms`, 'float32', pairCount);
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {

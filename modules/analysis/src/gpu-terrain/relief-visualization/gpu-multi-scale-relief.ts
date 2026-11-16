@@ -3,6 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 // SPDX-FileCopyrightText: Copyright (c) Relief Visualization Toolbox (RVT) contributors
 
+import {usesReliefSummedArea} from './relief-visualization-utils';
+import {validateTerrainBindings} from '../terrain-processing/terrain-binding-preflight';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -285,6 +287,14 @@ export class GPUMultiScaleRelief implements GPUCommandNodeProducer, GPURasterHal
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateTerrainBindings(graph, this.id, this.props, {
+      'mean filter scratch': usesReliefSummedArea(
+        graph.device,
+        this.props.grid.width * this.props.grid.height
+      )
+        ? 2 * 4 * this.props.grid.width * this.props.grid.height
+        : 4 * this.props.grid.width * this.props.grid.height
+    });
     const {id, props, radii} = this;
     const {output} = props;
     const {width, height} = props.grid;

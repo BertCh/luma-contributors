@@ -16,7 +16,10 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {
-  validateGraphViewsBelongToGraph,
+  validateGPUStorageBindingByteLength,
+  validateCapacity,
+  validateRequirement,
+  validateGraphOutputsDisjointFromInputs,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {createStableLexicographicIndexSortNodes} from '../../analysis-core/kernels/stable-lexicographic-index-sort';
@@ -26,6 +29,28 @@ import {
   type GPUBoundedResultStatusPort
 } from '../../analysis-core/contracts/status';
 import {EXACT_ORIENTATION_WGSL} from '../../analysis-core/kernels/exact-orientation-wgsl';
+
+import {
+  validateDisjointWritableViews,
+  validateGraphChunkBindingRanges
+} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateDelaunayLogicalOutputs} from './gpu-delaunay-tessellation';
+
+/** Four endpoint words per candidate, with three candidate edges per input triangle. */
+const VORONOI_MAXIMUM_TRIANGLE_COUNT = Math.floor(0xffffffff / 12);
+/** Four float32 endpoint words per output segment use uint32 word addresses. */
+const VORONOI_MAXIMUM_SEGMENT_COUNT = Math.floor(0xffffffff / 4);
+
+function getVoronoiOutputViews(output: GPUVoronoiDiagramOutput) {
+  return {
+    segments: output.segments,
+    siteIds: output.siteIds,
+    count: output.status.count,
+    requiredCount: output.status.requiredCount,
+    overflow: output.status.overflow,
+    invalidCount: output.status.invalidCount
+  };
+}
 
 /** Compact Voronoi edge segments, clipped to `clipBounds`, derived from Delaunay triangle adjacency. */
 export type GPUVoronoiDiagramOutput = {
@@ -111,6 +136,43 @@ export class GPUVoronoiDiagram implements GPUCommandNodeProducer {
       throw new Error(`${id} output segment and site capacities must match`);
     }
     validateGPUStatusPort(`${id} output.status`, props.output.status);
+    validateRequirement(
+      id,
+      Boolean(props.output.status.requiredCount),
+      'output.status.requiredCount is required'
+    );
+    validateCapacity(
+      id,
+      'triangles rows',
+      props.triangles.length,
+      0,
+      VORONOI_MAXIMUM_TRIANGLE_COUNT
+    );
+    validateCapacity(
+      id,
+      'output.segments rows',
+      props.output.segments.length,
+      0,
+      VORONOI_MAXIMUM_SEGMENT_COUNT
+    );
+    const views = getVoronoiOutputViews(props.output);
+    validateDelaunayLogicalOutputs(id, views);
+    validateDisjointWritableViews(id, {
+      requiredCount: views.requiredCount,
+      count: views.count,
+      overflow: views.overflow
+    });
+    validateDisjointWritableViews(id, {
+      requiredCount: views.requiredCount,
+      segments: views.segments
+    });
+    validateDisjointWritableViews(id, {requiredCount: views.requiredCount, siteIds: views.siteIds});
+    validateGraphOutputsDisjointFromInputs(id, Object.values(views), [
+      props.positions,
+      props.triangles,
+      props.triangleCount,
+      props.clipBounds
+    ]);
   }
 
   getCommandNodes<Parameters>(
@@ -118,18 +180,22 @@ export class GPUVoronoiDiagram implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
     const {output} = props;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.positions,
-      props.triangles,
-      props.triangleCount,
-      props.clipBounds,
-      output.segments,
-      output.siteIds,
-      output.status.count,
-      output.status.requiredCount,
-      output.status.overflow,
-      output.status.invalidCount
-    ]);
+    validateGraphChunkBindingRanges(graph, id, {
+      positions: props.positions,
+      triangles: props.triangles,
+      triangleCount: props.triangleCount,
+      clipBounds: props.clipBounds,
+      ...getVoronoiOutputViews(output)
+    });
+    // Endpoint candidates are the largest derived binding. Centers, three edge-key columns,
+    // adjacency, compaction, sort padding and scan summaries are all smaller.
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'candidate segment scratch',
+      Math.max(props.triangles.length * 48, 4),
+      'reduce triangles rows'
+    );
     const triangleCapacity = props.triangles.length;
     const candidateCapacity = 3 * triangleCapacity;
     const centers = createTransientView(graph, `${id}-centers`, 'float32', 3 * triangleCapacity);

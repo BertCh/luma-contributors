@@ -361,3 +361,57 @@ for (const withAssignments of [false, true]) {
     });
   }
 }
+
+it('GPUNetworkIsochrones validates additional snapped-source path inputs', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device, {id: 'source-path-validation'});
+  const props = createProps(graph);
+  const sourcePaths = {topology: props.topology, costs: props.costs};
+  try {
+    expect(
+      () =>
+        new GPUNetworkIsochrones({...props, raster: {...props.raster!, sourcePaths, mode: 'max'}})
+    ).toThrow(/sourcePaths.*min/);
+    expect(
+      () =>
+        new GPUNetworkIsochrones({
+          ...props,
+          raster: {
+            ...props.raster!,
+            sourcePaths: {
+              ...sourcePaths,
+              costs: createTransientView(graph, 'short-source-path-costs', 'float32', 3)
+            }
+          }
+        })
+    ).toThrow(/sourcePaths.costs.*one row/);
+    expect(
+      () =>
+        new GPUNetworkIsochrones({
+          ...props,
+          assignments: createTransientView(graph, 'source-labels', 'uint32', 4),
+          raster: {
+            ...props.raster!,
+            sourcePaths,
+            output: {
+              ...props.raster!.output,
+              pixelFacilities: createTransientView(graph, 'source-pixel-labels', 'uint32', 64)
+            }
+          }
+        })
+    ).toThrow(/sourcePaths.assignments.*required/);
+    expect(
+      () =>
+        new GPUNetworkIsochrones({
+          ...props,
+          raster: {
+            ...props.raster!,
+            sourcePaths,
+            output: {...props.raster!.output, values: props.costs}
+          }
+        })
+    ).toThrow(/values.*width/);
+  } finally {
+    device.destroy();
+  }
+});

@@ -11,7 +11,6 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {
@@ -23,6 +22,9 @@ import {
   resolveGPUSpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
+
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateGeometryScratchByteLengths} from '../geometry-edit/geometry-storage-validation';
 
 const OPERATION = 'GPUGeometryOrientation';
 
@@ -198,14 +200,21 @@ export class GPUGeometryOrientation implements GPUCommandNodeProducer {
     const {props, id} = this;
     const {output} = props;
     const {ringOffsets, polygonOffsets} = getOrientationLayout(props);
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.positions,
-      ringOffsets,
-      polygonOffsets,
-      props.parameters,
-      output.positions,
-      output.reversedRings
-    ]);
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(
+        [
+          props.positions,
+          ringOffsets,
+          props.mode === 'orient-polygons' ? polygonOffsets : undefined,
+          props.parameters,
+          output.positions,
+          output.reversedRings
+        ].map((view, index) => [String(index), view])
+      )
+    );
+    validateGeometryScratchByteLengths(graph, id, {ringFlags: (ringOffsets.length - 1) * 4});
     const ringFlags =
       output.reversedRings ??
       createTransientView(graph, `${id}-ring-flags`, 'uint32', ringOffsets.length - 1);

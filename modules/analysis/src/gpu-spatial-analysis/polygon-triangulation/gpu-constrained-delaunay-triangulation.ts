@@ -12,7 +12,8 @@ import {
 import {
   GPUPolygonTriangulation,
   type GPUPolygonTriangulationProps,
-  type GPUPolygonTriangulationOutput
+  type GPUPolygonTriangulationOutput,
+  validatePolygonTriangulationScratch
 } from './gpu-polygon-triangulation';
 import {ADAPTIVE_INCIRCLE_WGSL} from '../delaunay-tessellation/gpu-delaunay-tessellation';
 import {EXACT_ORIENTATION_WGSL} from '../../analysis-core/kernels/exact-orientation-wgsl';
@@ -21,14 +22,44 @@ import {
   getGraphOutputViews,
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateRequirement
+  validateRequirement,
+  validateGPUStorageBindingByteLength,
+  validateSinglePackedView,
+  validateCommandNodeBudget,
+  GPU_MAXIMUM_COMMAND_NODE_COUNT
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+
+import {
+  getGPUPolygonTriangulationMonotoneMaximumVertexCount,
+  validatePolygonTriangulationMonotoneCapacity
+} from '../../analysis-core/polygon-triangulation/polygon-triangulation-monotone';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {
+  CONSTRAINED_DELAUNAY_FIXED_NODE_ALLOWANCE,
+  CONSTRAINED_DELAUNAY_NODES_PER_ROUND,
+  CONSTRAINED_DELAUNAY_PARALLEL_MINIMUM_TRIANGLE_COUNT,
+  getConstrainedDelaunayParallelNodes,
+  validateConstrainedDelaunayParallelScratch
+} from './constrained-delaunay-parallel';
+
+/** A final verification iteration must increment without wrapping the uint32 loop counter. */
+const CONSTRAINED_DELAUNAY_MAXIMUM_REFERENCE_FLIPS = 0xfffffffe;
+/** Parallel flip records use eight uint32 words per polygon. */
+const CONSTRAINED_DELAUNAY_MAXIMUM_PARALLEL_POLYGON_COUNT = Math.floor(0xffffffff / 8);
+/** Indexed half-edges and candidate records use three uint32 words per triangle. */
+const CONSTRAINED_DELAUNAY_MAXIMUM_PARALLEL_TRIANGLE_COUNT = Math.floor(0xffffffff / 3);
 
 export type GPUConstrainedDelaunayTriangulationProps = Omit<
   GPUPolygonTriangulationProps,
   'output'
 > & {
   maximumFlips?: number;
+  /** Auto parallelizes polygons averaging at least 256 vertices, or when the caller declares
+   * a largest polygon of that size, when the node budget fits.
+   * Serial retains the original first-illegal-pair reference. Parallel preserves that same order. */
+  flipMethod?: 'auto' | 'serial' | 'parallel';
+  /** Optional compile-time bound used to select the parallel route for a skewed polygon set. */
+  maximumVerticesPerPolygon?: number;
   output: GPUPolygonTriangulationOutput & {
     /** Per-polygon convergence. Triangulation validity alone does not certify Delaunay completion. */
     status: {converged: GraphDataView<'uint32'>};
@@ -45,6 +76,8 @@ export type GPUConstrainedDelaunayTriangulationProps = Omit<
 export class GPUConstrainedDelaunayTriangulation implements GPUCommandNodeProducer {
   readonly id: string;
   readonly props: GPUConstrainedDelaunayTriangulationProps;
+  readonly useParallelFlips: boolean;
+  readonly estimatedCommandNodeCount: number;
   constructor(props: GPUConstrainedDelaunayTriangulationProps) {
     this.id = props.id ?? 'constrained-delaunay';
     this.props = props;
@@ -54,8 +87,60 @@ export class GPUConstrainedDelaunayTriangulation implements GPUCommandNodeProduc
       props.output.status.converged.length >= polygonCount,
       `output.status.converged must have at least ${polygonCount} rows (one per polygon)`
     );
-    validateCapacity(this.id, 'maximumFlips', props.maximumFlips ?? 4096);
-    new GPUPolygonTriangulation(props);
+    validateCapacity(
+      this.id,
+      'maximumFlips',
+      props.maximumFlips ?? 4096,
+      1,
+      CONSTRAINED_DELAUNAY_MAXIMUM_REFERENCE_FLIPS
+    );
+    validateSinglePackedView(
+      props.output.status.converged,
+      ['uint32'],
+      `${this.id} output.status.converged`
+    );
+    if (props.maximumVerticesPerPolygon !== undefined)
+      validateCapacity(this.id, 'maximumVerticesPerPolygon', props.maximumVerticesPerPolygon);
+    const method = props.flipMethod ?? 'auto';
+    validateRequirement(
+      this.id,
+      ['auto', 'serial', 'parallel'].includes(method),
+      "flipMethod must be 'auto', 'serial' or 'parallel'"
+    );
+    const parallelNodes =
+      CONSTRAINED_DELAUNAY_FIXED_NODE_ALLOWANCE +
+      CONSTRAINED_DELAUNAY_NODES_PER_ROUND * ((props.maximumFlips ?? 4096) + 1);
+    this.useParallelFlips =
+      method === 'parallel' ||
+      (method === 'auto' &&
+        (props.positions.length >=
+          CONSTRAINED_DELAUNAY_PARALLEL_MINIMUM_TRIANGLE_COUNT * Math.max(polygonCount, 1) ||
+          (props.maximumVerticesPerPolygon ?? 0) >=
+            CONSTRAINED_DELAUNAY_PARALLEL_MINIMUM_TRIANGLE_COUNT) &&
+        parallelNodes <= GPU_MAXIMUM_COMMAND_NODE_COUNT);
+    this.estimatedCommandNodeCount = this.useParallelFlips
+      ? parallelNodes
+      : CONSTRAINED_DELAUNAY_FIXED_NODE_ALLOWANCE;
+    validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
+    if (this.useParallelFlips) {
+      validateCapacity(
+        this.id,
+        'polygon count',
+        polygonCount,
+        0,
+        CONSTRAINED_DELAUNAY_MAXIMUM_PARALLEL_POLYGON_COUNT
+      );
+      validateCapacity(
+        this.id,
+        'triangle capacity',
+        Math.floor(props.output.indices.length / 3),
+        0,
+        CONSTRAINED_DELAUNAY_MAXIMUM_PARALLEL_TRIANGLE_COUNT
+      );
+    }
+    const {status: ignoredStatus, ...triangulationOutput} = props.output;
+    void ignoredStatus;
+    new GPUPolygonTriangulation({...props, output: triangulationOutput});
     const outputs = getGraphOutputViews(props.output).filter(view => view !== undefined);
     validateRequirement(
       this.id,
@@ -75,15 +160,70 @@ export class GPUConstrainedDelaunayTriangulation implements GPUCommandNodeProduc
     const {id, props} = this;
     const {output} = props;
     const polygonCount = props.polygonOffsets.length - 1;
+    validateGraphChunkBindingRanges(graph, id, {
+      positions: props.positions,
+      featureOffsets: props.featureOffsets,
+      polygonOffsets: props.polygonOffsets,
+      ringOffsets: props.ringOffsets,
+      ...Object.fromEntries(
+        getGraphOutputViews(output).map((view, index) => [`output ${index}`, view])
+      )
+    });
+    validatePolygonTriangulationScratch(
+      graph.device,
+      id,
+      props.positions.length,
+      props.ringOffsets.length - 1,
+      polygonCount,
+      props.useZOrderHash ?? true
+    );
+    for (const [name, words] of [
+      ['triangle offsets', polygonCount + 1],
+      ['polygon layout', 4 * polygonCount + 2],
+      ['ring layout', 2 * (props.ringOffsets.length - 1) + 1]
+    ] as const)
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        name,
+        Math.max(words, 1) * 4,
+        'reduce the geometry count'
+      );
+    if (this.useParallelFlips)
+      validateConstrainedDelaunayParallelScratch(
+        graph,
+        id,
+        Math.floor(output.indices.length / 3),
+        polygonCount
+      );
+    if (
+      (props.largePolygonMethod ?? 'monotone') === 'monotone' &&
+      props.positions.length <=
+        getGPUPolygonTriangulationMonotoneMaximumVertexCount(graph.device) &&
+      props.monotoneMaximumVertices !== undefined
+    ) {
+      validatePolygonTriangulationMonotoneCapacity(graph.device, id, props.monotoneMaximumVertices);
+    }
     const triangleOffsets =
       output.triangleOffsets ??
       createTransientView(graph, `${id}-triangle-offsets`, 'uint32', polygonCount + 1);
+    const initialNodes = new GPUPolygonTriangulation({
+      ...props,
+      id: `${id}-initial`,
+      output: {
+        indices: output.indices,
+        valid: output.valid,
+        triangleCount: output.triangleCount,
+        triangleOffsets
+      }
+    }).getCommandNodes(graph);
+    if (this.useParallelFlips)
+      return [
+        ...initialNodes,
+        ...getConstrainedDelaunayParallelNodes(graph, {...props, id}, triangleOffsets)
+      ];
     return [
-      ...new GPUPolygonTriangulation({
-        ...props,
-        id: `${id}-initial`,
-        output: {...output, triangleOffsets}
-      }).getCommandNodes(graph),
+      ...initialNodes,
       createWGSLKernelNode(graph, {
         id: `${id}-lawson`,
         operation: 'GPUConstrainedDelaunayTriangulation',

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRasterStorageBindings} from '../raster-grid/raster-storage-preflight';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -14,7 +15,8 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validateSinglePackedView
+  validateSinglePackedView,
+  getGraphOutputViews as getRasterPreflightOutputViews
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createPatchKeysNode,
@@ -158,6 +160,24 @@ export class GPURasterSieve implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    const storageProps = this.props;
+    const storageCellCount = storageProps.grid.width * storageProps.grid.height;
+    validateRasterStorageBindings(
+      graph,
+      this.id,
+      [
+        ...getPatchLabelViews(storageProps),
+        storageProps.parameters,
+        ...getRasterPreflightOutputViews(storageProps.output)
+      ],
+      {
+        'patch keys': storageCellCount * 4,
+        'patch scalar planes': storageProps.patchCapacity * 4,
+        'patch guard state':
+          storageProps.status?.converged || storageProps.status?.overflow ? 16 : 0
+      }
+    );
+
     const {id, props, mode, connectivity} = this;
     const {output, patchCapacity, parameters} = props;
     const {width, height} = props.grid;

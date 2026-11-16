@@ -99,14 +99,6 @@ const OFFICIAL_WGSL_COPIES: OfficialWGSLCopy[] = [
       'Grid zones of a flow must be the cells GPUGridBinning gives the same points; the kernel also needs a per-frame grid size.'
   },
   {
-    functionName: 'safeNormal',
-    localFile: 'modules/analysis/src/pointcloud-analysis/pointcloud-kernel-nodes.ts',
-    officialFiles: ['node_modules/@luma.gl/graph/dist/utils/gpu-spatial-operation.js'],
-    pinSpec: THIS_SPEC,
-    reason:
-      'Carried with the local stand-in for the non-public getSpatialOperationNodes; no shared state, pinned so a luma.gl upgrade shows the drift.'
-  },
-  {
     functionName: 'encodeOrderedFloat',
     localFile:
       'modules/analysis/src/raster-analysis/raster-zonal-statistics/gpu-raster-zonal-statistics.ts',
@@ -218,6 +210,35 @@ describe('private copies of official WGSL', () => {
   it('lists each copy once', () => {
     const keys = OFFICIAL_WGSL_COPIES.map(copy => getCopyKey(copy.localFile, copy.functionName));
     expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  it('pins point-cloud normals to exponent-scaled division instead of the former official copy', () => {
+    // Metal fast math turns value / scale into value * (1 / scale), whose reciprocal can
+    // flush to zero for a large finite scale. The local function now delegates that quotient
+    // to the shared exponent-scaled helper, so equality with the official text is incorrect.
+    // Numeric oracles for large/small scales live in gpu-pointcloud/pointcloud-runtime-chunks.spec.ts.
+    const localFile = 'modules/analysis/src/pointcloud-analysis/pointcloud-kernel-nodes.ts';
+    const local = getFunctionText(localFile, 'safeNormal');
+    expect(local).toBe(
+      `fn safeNormal(value: vec3f) -> vec3f {
+        let scale = max(max(abs(value.x), abs(value.y)), abs(value.z));
+        if (!(scale > 0.0) || scale > 3.402823e38) { return vec3f(0.0); }
+        let scaled = getPointCloudQuotient3(value, scale);
+        let magnitude = length(scaled);
+        if (!(magnitude > 0.0)) { return vec3f(0.0); }
+        return scaled / magnitude;
+      }`.replace(/\s+/g, '')
+    );
+    const quotient = getFunctionText(localFile, 'getPointCloudQuotient3');
+    for (const axis of ['x', 'y', 'z']) {
+      expect(quotient).toContain(`getScaledQuotient(value.${axis},divisor,1.0,0)`);
+    }
+    expect(local).not.toBe(
+      getFunctionText(
+        'node_modules/@luma.gl/graph/dist/utils/gpu-spatial-operation.js',
+        'safeNormal'
+      )
+    );
   });
 
   it.each(OFFICIAL_WGSL_COPIES)('$functionName in $localFile still exists and has a pin', copy => {

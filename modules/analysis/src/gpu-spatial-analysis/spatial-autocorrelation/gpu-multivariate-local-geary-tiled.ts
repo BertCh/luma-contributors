@@ -9,10 +9,9 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {
-  createWGSLKernelNode,
-  type WGSLKernelBinding
-} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {type WGSLKernelBinding} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {createSpatialStatisticsCollectiveNode} from '../spatial-weights/spatial-statistics-collective-node';
+import {SPATIAL_STATISTICS_COUNTS_WGSL} from '../spatial-weights/spatial-statistics-counts-wgsl';
 import {IS_FINITE_BITS_WGSL, GET_NAN_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {PHILOX_PURPOSES} from '../../analysis-core/kernels/philox-random';
 import {PERMUTATION_RANDOM_WGSL} from '../../analysis-core/kernels/permutation-random';
@@ -108,23 +107,36 @@ export function getTiledMultivariateLocalGearyNodes<Parameters>(
     declarations = '',
     constants?: Record<string, number>
   ) =>
-    createWGSLKernelNode<Parameters>(graph, {
+    createSpatialStatisticsCollectiveNode<Parameters>(graph, {
       id: `${id}-${name}`,
       operation,
       variant: name,
       invocationCount,
       bindings,
-      declarations: `${GET_NAN_WGSL}\n${IS_FINITE_BITS_WGSL}\n${declarations}`,
-      ...(constants ? {constants} : {}),
-      body
+      declarations: `${GET_NAN_WGSL}\n${IS_FINITE_BITS_WGSL}
+var<private> TILE_ROW_BASE: u32;
+var<private> REPLICATE_BASE: u32;
+var<private> REPLICATE_COUNT: u32;
+var<private> WEIGHTS_ROW_START: u32;
+var<private> CAPACITY: u32;
+${declarations}`,
+      parameterValues: [
+        constants?.['TILE_ROW_BASE'] ?? 0,
+        constants?.['REPLICATE_BASE'] ?? 0,
+        constants?.['REPLICATE_COUNT'] ?? 0,
+        constants?.['WEIGHTS_ROW_START'] ?? 0
+      ],
+      body: `if (index >= INVOCATION_COUNT) { return; }
+TILE_ROW_BASE = getChunkParameter(36u); REPLICATE_BASE = getChunkParameter(37u); REPLICATE_COUNT = getChunkParameter(38u); WEIGHTS_ROW_START = getChunkParameter(39u);
+${bindings.some(binding => binding.name === 'neighbors') ? 'CAPACITY = arrayLength(&neighbors) - neighborsOffset;' : ''}
+${body}`
     });
   const overflowBindings = props.weights.status?.overflow
     ? [binding('overflow', props.weights.status.overflow, 'read', 'u32')]
     : [];
 
   const dispatches = getGPUSpatialWeightsChunkDispatches(props.weights);
-  const localRow = (dispatch: {isWhole: boolean}) =>
-    dispatch.isWhole ? 'row' : '(row - WEIGHTS_ROW_START)';
+  const localRow = (dispatch: {isWhole: boolean}) => (void dispatch, '(row - WEIGHTS_ROW_START)');
   const nodes: GPUCommandNode<Parameters>[] = [
     node(
       'parameters',
@@ -180,20 +192,22 @@ partials[partialsOffset + base] = count; partials[partialsOffset + base + 1u] = 
       'moment-merge',
       columns,
       [binding('partials', partials), binding('moments', moments, 'read_write')],
-      `var count = 0.0; var mean = 0.0; var squares = 0.0;
+      `var count = 0u; var mean = 0.0; var squares = 0.0;
 for (var chunk = 0u; chunk < ${chunkCount}u; chunk++) {
  let base = (index * ${chunkCount}u + chunk) * 3u;
- let chunkCountValue = partials[partialsOffset + base];
- if (chunkCountValue > 0.0) {
+ let chunkCountValue = u32(partials[partialsOffset + base]);
+ if (chunkCountValue > 0u) {
   let chunkMean = partials[partialsOffset + base + 1u]; let chunkSquares = partials[partialsOffset + base + 2u];
+  if (count == 0u) { count = chunkCountValue; mean = chunkMean; squares = chunkSquares; continue; }
   let combined = count + chunkCountValue; let delta = chunkMean - mean;
-  squares += chunkSquares + delta * delta * count * chunkCountValue / combined;
-  mean += delta * chunkCountValue / combined; count = combined;
+  squares += chunkSquares + multiplyBySpatialCount(delta * delta * divideSpatialCounts(chunkCountValue, combined), count);
+  mean += delta * divideSpatialCounts(chunkCountValue, combined); count = combined;
  }
 }
 var scale = getNaN();
-if (count > 1.0 && squares > 0.0 && isFiniteBits(squares) && isFiniteBits(mean)) { scale = sqrt(count / squares); }
-moments[momentsOffset + index * 2u] = mean; moments[momentsOffset + index * 2u + 1u] = scale;`
+if (count > 1u && squares > 0.0 && isFiniteBits(squares) && isFiniteBits(mean)) { scale = sqrt(divideSpatialCountByValue(count, squares)); }
+moments[momentsOffset + index * 2u] = mean; moments[momentsOffset + index * 2u + 1u] = scale;`,
+      SPATIAL_STATISTICS_COUNTS_WGSL
     ),
     node(
       'standardize',
@@ -216,7 +230,7 @@ const ROWS: u32 = ${rows}u;
 const COLUMNS: u32 = ${columns}u;
 const MAXIMUM_NEIGHBORS: u32 = ${maximumNeighbors}u;
 const PAIR_CAPACITY: u32 = ${2 * maximumNeighbors}u;
-override TILE_ROW_BASE: u32;
+
 fn isRowValid(row: u32) -> bool { return isFiniteBits(standardized[standardizedOffset + row * COLUMNS]); }
 fn getVectorDistance(row: u32, candidate: u32) -> f32 {
  var distance = 0.0;
@@ -224,8 +238,9 @@ fn getVectorDistance(row: u32, candidate: u32) -> f32 {
  return distance;
 }`;
 
-  const getDispatchDeclarations = (dispatch: {isWhole: boolean; constantsWGSL: string}) =>
-    dispatch.isWhole ? sharedDeclarations : `${sharedDeclarations}\n${dispatch.constantsWGSL}`;
+  const getDispatchDeclarations = (dispatch: {isWhole: boolean; constantsWGSL: string}) => (
+    void dispatch, sharedDeclarations
+  );
   nodes.push(
     // Observed statistic (replicate 0) and accumulator reset, tiled over rows.
     ...dispatches.flatMap(dispatch =>
@@ -248,7 +263,7 @@ for (var slotField = 0u; slotField < 4u; slotField++) { accumulators[accumulator
 var value = getNaN();
 if (isRowValid(row) && validCount[validCountOffset] > 1u) {
  var total = 0.0; var weightSum = 0.0;
- for (var slot = offsets[offsetsOffset + ${localRow(dispatch)}]; slot < offsets[offsetsOffset + ${localRow(dispatch)} + 1u]; slot++) {
+ for (var slot = offsets[offsetsOffset + ${localRow(dispatch)}]; slot < min(offsets[offsetsOffset + ${localRow(dispatch)} + 1u], CAPACITY); slot++) {
   let neighbor = neighbors[neighborsOffset + slot]; let weight = weights[weightsOffset + slot];
   if (neighbor >= ROWS || neighbor == row || !(weight > 0.0)) { continue; }
   if (!isRowValid(neighbor)) { continue; }
@@ -258,15 +273,14 @@ if (isRowValid(row) && validCount[validCountOffset] > 1u) {
 }
 observed[observedOffset + row] = value; }`,
           getDispatchDeclarations(dispatch),
-          {TILE_ROW_BASE: tileBase}
+          {TILE_ROW_BASE: tileBase, WEIGHTS_ROW_START: dispatch.rowStart}
         );
       })
     )
   );
 
   const simulateDeclarations = `${sharedDeclarations}
-override REPLICATE_BASE: u32;
-override REPLICATE_COUNT: u32;
+
 var<private> pairPositions: array<u32, PAIR_CAPACITY>;
 var<private> pairValues: array<u32, PAIR_CAPACITY>;
 var<private> pairCount: u32;
@@ -310,7 +324,7 @@ if (isRowValid(row) && validCount[validCountOffset] > 1u) {
   var stream = createPhiloxStream(vec2<u32>(validCount[validCountOffset + 1u], validCount[validCountOffset + 2u]), row, replicate, ${PHILOX_PURPOSES.localPermutationTest.id}u);
   pairCount = 0u;
   var chosen = 0u; var total = 0.0; var weightSum = 0.0; var overflowed = false;
-  for (var slot = offsets[offsetsOffset + ${localRow(dispatch)}]; slot < offsets[offsetsOffset + ${localRow(dispatch)} + 1u]; slot++) {
+  for (var slot = offsets[offsetsOffset + ${localRow(dispatch)}]; slot < min(offsets[offsetsOffset + ${localRow(dispatch)} + 1u], CAPACITY); slot++) {
    let neighbor = neighbors[neighborsOffset + slot]; let weight = weights[weightsOffset + slot];
    if (neighbor >= ROWS || neighbor == row || !(weight > 0.0)) { continue; }
    if (!isRowValid(neighbor)) { continue; }
@@ -332,9 +346,10 @@ if (isRowValid(row) && validCount[validCountOffset] > 1u) {
  accumulators[accumulatorsOffset + 2u * ROWS + row] = invalid; accumulators[accumulatorsOffset + 3u * ROWS + row] = average;
 }
 }`,
-            `${simulateDeclarations}${dispatch.isWhole ? '' : `\n${dispatch.constantsWGSL}`}`,
+            simulateDeclarations,
             {
               TILE_ROW_BASE: tileBase,
+              WEIGHTS_ROW_START: dispatch.rowStart,
               REPLICATE_BASE: replicateBase,
               REPLICATE_COUNT: Math.min(props.permutationTileSize, permutations - replicateBase)
             }

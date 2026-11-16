@@ -11,3 +11,5 @@ export type {
   GPUPolygonOverlayOutput,
   GPUPolygonOverlayProps
 } from './gpu-polygon-overlay';
+
+export type {GPUPolygonOverlayFeatureSources} from './overlay-feature-sources';

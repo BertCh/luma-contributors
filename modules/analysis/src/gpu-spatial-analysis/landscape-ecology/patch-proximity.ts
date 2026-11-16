@@ -2,14 +2,34 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  getSpatialAnalysisPackedKernelNodes,
+  validateSpatialAnalysisPackedOutputAllocations
+} from '../geographic-distribution/spatial-analysis-packed-kernel';
+import {
+  addPatchProximityBoundaryRecipe,
+  type GPUPatchProximityBoundaryProps
+} from './patch-proximity-boundary';
 import {reconcileLandscapePatchLabels} from './reconcile-patches';
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
-import {createRecipeKernelNode, getRecipeView} from '../recipes/expansion-recipe-utils';
+import {getRecipeView} from '../recipes/expansion-recipe-utils';
 import {
-  validateGPUStorageBindingByteLength,
+  validateCapacity,
+  validateMaximumCount,
+  validateSinglePackedView,
+  validateViewLength,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {getWGSLFloatLiteral} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {validateLandscapeStorage, validateLandscapeViews} from './landscape-validation';
+import {PATCH_PROXIMITY_DISTANCE_WGSL} from './patch-proximity-distance';
 import type {GPULandscapeMetricsProps} from './landscape-metrics';
+
+/** Raster offsets add two signed coordinates, so each axis must fit half the positive i32 range. */
+const PATCH_PROXIMITY_MAXIMUM_AXIS_COUNT = 0x3fffffff;
+/** All flattened raster, pair and distance-field indices are uint32. */
+const PATCH_PROXIMITY_MAXIMUM_ELEMENT_COUNT = 0xffffffff;
 
 export type GPUPatchProximityOutput = {
   /** `uint32`, one row per cell: one when the cell is core area of its patch. */
@@ -37,6 +57,8 @@ export type GPUPatchProximityProps = Omit<
   | 'backgroundClass'
   | 'contagionWeighting'
 > & {
+  /** Retains the dense reference outputs, including patch-by-cell distance fields. */
+  mode?: 'reference';
   /** Core pixels have center-to-exterior distance strictly greater than this physical depth. */
   edgeDepth: number;
   searchRadius: number;
@@ -55,8 +77,26 @@ export type GPUPatchProximityProps = Omit<
   output?: Partial<GPUPatchProximityOutput>;
 };
 
-/** Exact rectangular-cell boundary distances on a complete raster; background is a core-area barrier. */
+/** Sparse boundary mode omits dense matrices/fields; calls without mode retain the reference layout. */
 export function addPatchProximityRecipe<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: GPUPatchProximityBoundaryProps
+): ReturnType<typeof addPatchProximityBoundaryRecipe>;
+export function addPatchProximityRecipe<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: GPUPatchProximityProps
+): ReturnType<typeof addPatchProximityReferenceRecipe>;
+export function addPatchProximityRecipe<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: GPUPatchProximityProps | GPUPatchProximityBoundaryProps
+) {
+  return props.mode === 'boundary'
+    ? addPatchProximityBoundaryRecipe(graph, props)
+    : addPatchProximityReferenceRecipe(graph, props);
+}
+
+/** Exact rectangular-cell boundary distances on a complete raster; background is a core-area barrier. */
+function addPatchProximityReferenceRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUPatchProximityProps
 ) {
@@ -64,39 +104,122 @@ export function addPatchProximityRecipe<Parameters>(
   const {width, height, cellSize, edgeDepth, searchRadius} = props;
   const cellCount = width * height;
   const patchCount = props.patchClasses.length;
-  validateRequirement(
+  validateCapacity(id, 'width', width, 1, PATCH_PROXIMITY_MAXIMUM_AXIS_COUNT);
+  validateCapacity(id, 'height', height, 1, PATCH_PROXIMITY_MAXIMUM_AXIS_COUNT);
+  validateCapacity(id, 'width * height', cellCount, 1, PATCH_PROXIMITY_MAXIMUM_ELEMENT_COUNT);
+  validateCapacity(id, 'patchClasses.length', patchCount, 1, PATCH_PROXIMITY_MAXIMUM_ELEMENT_COUNT);
+  validateMaximumCount(
     id,
-    Number.isSafeInteger(width) && width > 0 && Number.isSafeInteger(height) && height > 0,
-    'width and height must be positive integers'
+    'patchClasses.length * cells',
+    patchCount * cellCount,
+    PATCH_PROXIMITY_MAXIMUM_ELEMENT_COUNT
   );
+  validateMaximumCount(
+    id,
+    'patchClasses.length squared',
+    patchCount * patchCount,
+    PATCH_PROXIMITY_MAXIMUM_ELEMENT_COUNT
+  );
+  validateSinglePackedView(props.patches, ['uint32'], `${id} patches`);
+  validateSinglePackedView(props.patchClasses, ['uint32'], `${id} patchClasses`);
   validateRequirement(
     id,
     props.patches.length === cellCount,
     'patches must have width times height rows'
   );
-  validateRequirement(id, patchCount > 0, 'patchClasses must have at least 1 row');
   validateRequirement(
     id,
-    cellSize.every(value => Number.isFinite(Math.fround(value)) && value > 0),
+    cellSize.every(value => Number.isFinite(Math.fround(value)) && Math.fround(value) > 0),
     'cellSize entries must be positive finite float32 numbers'
   );
   validateRequirement(
     id,
-    Number.isFinite(edgeDepth) &&
+    Number.isFinite(Math.fround(edgeDepth)) &&
       edgeDepth >= 0 &&
-      Number.isFinite(searchRadius) &&
+      Number.isFinite(Math.fround(searchRadius)) &&
       searchRadius >= 0,
-    'edgeDepth and searchRadius must be finite numbers of at least 0'
+    'edgeDepth and searchRadius must be nonnegative finite float32 numbers'
   );
-  // Two float32 distance fields of one value per patch and cell; the binding limit caps patches times cells.
-  validateGPUStorageBindingByteLength(
-    graph.device,
+  validateRequirement(
     id,
-    'distance fields',
-    patchCount * cellCount * Float32Array.BYTES_PER_ELEMENT,
-    'reduce the patch count or the raster size'
+    Number.isFinite(Math.fround(width * cellSize[0])) &&
+      Number.isFinite(Math.fround(height * cellSize[1])) &&
+      Number.isFinite(Math.fround(cellSize[0] * cellSize[1])),
+    'cellSize extent and area must stay finite in float32'
+  );
+  const rasterCore = props.coreModel === 'raster-erosion';
+  validateRequirement(
+    id,
+    !rasterCore || Number.isSafeInteger(edgeDepth),
+    "edgeDepth must be an integer when coreModel is 'raster-erosion'"
   );
   const output = props.output;
+  const inputs = {patches: props.patches, patchClasses: props.patchClasses};
+  const outputs = {
+    core: output?.core,
+    distances: output?.distances,
+    horizontal: output?.horizontal,
+    fields: output?.fields,
+    metrics: output?.metrics,
+    ...(props.reconcilePatches
+      ? {parents: output?.patchParents, reconciled: output?.reconciledPatches}
+      : {})
+  };
+  const patchesInput = props.reconcilePatches ? output?.reconciledPatches : props.patches;
+  validateLandscapeViews(id, inputs, outputs, [
+    {reads: {patches: patchesInput}, writes: {core: output?.core}},
+    {reads: {patches: patchesInput}, writes: {horizontal: output?.horizontal}},
+    {reads: {horizontal: output?.horizontal}, writes: {fields: output?.fields}},
+    {
+      reads: {patches: patchesInput, fields: output?.fields},
+      writes: {distances: output?.distances}
+    },
+    {
+      reads: {
+        patches: patchesInput,
+        classes: props.patchClasses,
+        core: output?.core,
+        distances: output?.distances
+      },
+      writes: {metrics: output?.metrics}
+    },
+    ...(props.reconcilePatches
+      ? [
+          {reads: inputs, writes: {parents: output?.patchParents}},
+          {
+            reads: {patches: props.patches, parents: output?.patchParents},
+            writes: {reconciled: output?.reconciledPatches}
+          }
+        ]
+      : [])
+  ]);
+  validateSpatialAnalysisPackedOutputAllocations(graph, id, outputs);
+  validateGraphChunkBindingRanges(graph, id, {...inputs, ...outputs});
+  for (const [name, format, length, view] of [
+    ['core', 'uint32', cellCount, output?.core],
+    ['distances', 'float32', patchCount * patchCount, output?.distances],
+    ['horizontal', 'float32', patchCount * cellCount, output?.horizontal],
+    ['fields', 'float32', patchCount * cellCount, output?.fields],
+    ['metrics', 'float32x4', patchCount, output?.metrics],
+    ...(props.reconcilePatches
+      ? ([
+          ['parents', 'uint32', patchCount, output?.patchParents],
+          ['reconciled', 'uint32', cellCount, output?.reconciledPatches]
+        ] as const)
+      : [])
+  ] as const) {
+    if (view) {
+      validateSinglePackedView(view, [format], `${id} output.${name}`);
+      validateViewLength(id, `output.${name}`, view, length);
+    }
+  }
+  for (const [name, bytes] of [
+    ['distance fields', patchCount * cellCount * 4],
+    ['patch pair distances', patchCount * patchCount * 4],
+    ['patch metrics', patchCount * 16],
+    ['core cells', cellCount * 4]
+  ] as const)
+    validateLandscapeStorage(graph.device, id, name, bytes);
   const reconciled = props.reconcilePatches
     ? reconcileLandscapePatchLabels(graph, {
         ...props,
@@ -106,12 +229,6 @@ export function addPatchProximityRecipe<Parameters>(
       })
     : undefined;
   const patches = reconciled?.patches ?? props.patches;
-  const rasterCore = props.coreModel === 'raster-erosion';
-  validateRequirement(
-    id,
-    !rasterCore || Number.isSafeInteger(edgeDepth),
-    "edgeDepth must be an integer when coreModel is 'raster-erosion'"
-  );
   const separation = props.distanceModel === 'cell-center' ? 0 : 1;
   const core = getRecipeView(graph, `${id}-core`, 'uint32', cellCount, output?.core);
   const distances = getRecipeView(
@@ -137,8 +254,9 @@ export function addPatchProximityRecipe<Parameters>(
   );
   const metrics = getRecipeView(graph, `${id}-metrics`, 'float32x4', patchCount, output?.metrics);
   graph.add(
-    createRecipeKernelNode(graph, {
+    getSpatialAnalysisPackedKernelNodes(graph, {
       id: `${id}-core-distance`,
+      declarations: PATCH_PROXIMITY_DISTANCE_WGSL,
       operation: id,
       invocationCount: cellCount,
       bindings: [
@@ -148,26 +266,26 @@ export function addPatchProximityRecipe<Parameters>(
       body: rasterCore
         ? `let owner=patches[patchesOffset+index];let column=i32(index%${width}u);let row=i32(index/${width}u);var valid=owner<${patchCount}u;
 for(var offsetRow=-${Math.min(height, edgeDepth)};offsetRow<=${Math.min(height, edgeDepth)};offsetRow++){for(var offsetColumn=-${Math.min(width, edgeDepth)};offsetColumn<=${Math.min(width, edgeDepth)};offsetColumn++){
-if(abs(offsetRow)+abs(offsetColumn)>${edgeDepth}){continue;}let otherColumn=column+offsetColumn;let otherRow=row+offsetRow;
+if(f32(abs(offsetRow)+abs(offsetColumn))>${getWGSLFloatLiteral(edgeDepth)}){continue;}let otherColumn=column+offsetColumn;let otherRow=row+offsetRow;
 if(otherColumn<0||otherColumn>=${width}||otherRow<0||otherRow>=${height}){${props.coreBoundary === 'open' ? '' : 'valid=false;'}continue;}
 valid=valid&&patches[patchesOffset+u32(otherRow)*${width}u+u32(otherColumn)]==owner;}}
 output[outputOffset+index]=u32(valid);`
-        : `let owner=patches[patchesOffset+index];let position=vec2<f32>(f32(index%${width}u)+0.5,f32(index/${width}u)+0.5)*vec2<f32>(${cellSize[0]},${cellSize[1]});
-var distance=${props.coreBoundary === 'open' ? 'bitcast<f32>(0x7f800000u | (index & 0u))' : `min(min(position.x,${width * cellSize[0]}-position.x),min(position.y,${height * cellSize[1]}-position.y))`};
+        : `let owner=patches[patchesOffset+index];let position=vec2<f32>(f32(index%${width}u)+0.5,f32(index/${width}u)+0.5)*vec2<f32>(${getWGSLFloatLiteral(cellSize[0])},${getWGSLFloatLiteral(cellSize[1])});
+var distance=${props.coreBoundary === 'open' ? 'bitcast<f32>(0x7f800000u | (index & 0u))' : `min(min(position.x,${getWGSLFloatLiteral(width * cellSize[0])}-position.x),min(position.y,${getWGSLFloatLiteral(height * cellSize[1])}-position.y))`};
 let column=i32(index%${width}u);let row=i32(index/${width}u);
 for(var offsetRow=-${Math.min(height, Math.ceil(edgeDepth / cellSize[1] + 0.5))};offsetRow<=${Math.min(height, Math.ceil(edgeDepth / cellSize[1] + 0.5))};offsetRow++){
 for(var offsetColumn=-${Math.min(width, Math.ceil(edgeDepth / cellSize[0] + 0.5))};offsetColumn<=${Math.min(width, Math.ceil(edgeDepth / cellSize[0] + 0.5))};offsetColumn++){
  let otherColumn=column+offsetColumn;let otherRow=row+offsetRow;if(otherColumn<0||otherColumn>=${width}||otherRow<0||otherRow>=${height}){continue;}let cell=u32(otherRow)*${width}u+u32(otherColumn);
  if(patches[patchesOffset+cell]==owner){continue;}
- let other=vec2<f32>(f32(cell%${width}u)+0.5,f32(cell/${width}u)+0.5)*vec2<f32>(${cellSize[0]},${cellSize[1]});
- distance=min(distance,length(max(abs(position-other) - 0.5*vec2<f32>(${cellSize[0]},${cellSize[1]}),vec2<f32>(0.0))));
+ let other=vec2<f32>(f32(cell%${width}u)+0.5,f32(cell/${width}u)+0.5)*vec2<f32>(${getWGSLFloatLiteral(cellSize[0])},${getWGSLFloatLiteral(cellSize[1])});
+ distance=min(distance,getPatchProximityDistance(max(abs(position-other) - 0.5*vec2<f32>(${getWGSLFloatLiteral(cellSize[0])},${getWGSLFloatLiteral(cellSize[1])}),vec2<f32>(0.0))));
 }
 }
-output[outputOffset+index]=u32(owner<${patchCount}u&&distance>${edgeDepth});`
+output[outputOffset+index]=u32(owner<${patchCount}u&&distance>${getWGSLFloatLiteral(edgeDepth)});`
     })
   );
   graph.add(
-    createRecipeKernelNode(graph, {
+    getSpatialAnalysisPackedKernelNodes(graph, {
       id: `${id}-horizontal-transform`,
       operation: id,
       invocationCount: patchCount * cellCount,
@@ -176,12 +294,13 @@ output[outputOffset+index]=u32(owner<${patchCount}u&&distance>${edgeDepth});`
         {name: 'output', view: horizontal, type: 'f32', access: 'read_write'}
       ],
       body: `let owner=index/${cellCount}u;let cell=index%${cellCount}u;let row=cell/${width}u;let column=cell%${width}u;var best=bitcast<f32>(0x7f800000u | (index & 0u));
-for(var candidate=0u;candidate<${width}u;candidate++){if(patches[patchesOffset+row*${width}u+candidate]==owner){best=min(best,max(abs(f32(column)-f32(candidate))-${separation}.0,0.0)*${cellSize[0]});}}output[outputOffset+index]=best;`
+for(var candidate=0u;candidate<${width}u;candidate++){if(patches[patchesOffset+row*${width}u+candidate]==owner){best=min(best,max(abs(f32(column)-f32(candidate))-${separation}.0,0.0)*${getWGSLFloatLiteral(cellSize[0])});}}output[outputOffset+index]=best;`
     })
   );
   graph.add(
-    createRecipeKernelNode(graph, {
+    getSpatialAnalysisPackedKernelNodes(graph, {
       id: `${id}-vertical-transform`,
+      declarations: PATCH_PROXIMITY_DISTANCE_WGSL,
       operation: id,
       invocationCount: patchCount * cellCount,
       bindings: [
@@ -189,11 +308,11 @@ for(var candidate=0u;candidate<${width}u;candidate++){if(patches[patchesOffset+r
         {name: 'output', view: fields, type: 'f32', access: 'read_write'}
       ],
       body: `let owner=index/${cellCount}u;let cell=index%${cellCount}u;let row=cell/${width}u;let column=cell%${width}u;var best=bitcast<f32>(0x7f800000u | (index & 0u));
-for(var candidate=0u;candidate<${height}u;candidate++){let horizontalDistance=horizontal[horizontalOffset+owner*${cellCount}u+candidate*${width}u+column];let verticalDistance=max(abs(f32(row)-f32(candidate))-${separation}.0,0.0)*${cellSize[1]};best=min(best,length(vec2<f32>(horizontalDistance,verticalDistance)));}output[outputOffset+index]=best;`
+for(var candidate=0u;candidate<${height}u;candidate++){let horizontalDistance=horizontal[horizontalOffset+owner*${cellCount}u+candidate*${width}u+column];let verticalDistance=max(abs(f32(row)-f32(candidate))-${separation}.0,0.0)*${getWGSLFloatLiteral(cellSize[1])};best=min(best,getPatchProximityDistance(vec2<f32>(horizontalDistance,verticalDistance)));}output[outputOffset+index]=best;`
     })
   );
   graph.add(
-    createRecipeKernelNode(graph, {
+    getSpatialAnalysisPackedKernelNodes(graph, {
       id: `${id}-boundary-distances`,
       operation: id,
       invocationCount: patchCount * patchCount,
@@ -208,11 +327,11 @@ output[outputOffset+index]=distance;`
     })
   );
   graph.add(
-    createRecipeKernelNode(graph, {
+    getSpatialAnalysisPackedKernelNodes(graph, {
       id: `${id}-patch-summary`,
       operation: id,
       invocationCount: patchCount,
-      declarations: `
+      declarations: `${PATCH_PROXIMITY_DISTANCE_WGSL}
 fn readOutput(row:u32)->vec4<f32>{return vec4<f32>(output[outputOffset+row*4u+0u],output[outputOffset+row*4u+1u],output[outputOffset+row*4u+2u],output[outputOffset+row*4u+3u]);}
 fn writeOutput(row:u32,value:vec4<f32>){output[outputOffset+row*4u+0u]=value[0u];output[outputOffset+row*4u+1u]=value[1u];output[outputOffset+row*4u+2u]=value[2u];output[outputOffset+row*4u+3u]=value[3u];}
 `,
@@ -224,13 +343,13 @@ fn writeOutput(row:u32,value:vec4<f32>){output[outputOffset+row*4u+0u]=value[0u]
         {name: 'output', view: metrics, type: 'f32', access: 'read_write'}
       ],
       body: `var coreArea=0.0;var area=0.0;var nearest=bitcast<f32>(0x7f800000u | (index & 0u));var proximity=0.0;
-for(var cell=0u;cell<${cellCount}u;cell++){if(patches[patchesOffset+cell]==index){area+=${cellSize[0] * cellSize[1]};coreArea+=f32(core[coreOffset+cell])*${cellSize[0] * cellSize[1]};}}
+for(var cell=0u;cell<${cellCount}u;cell++){if(patches[patchesOffset+cell]==index){area+=${getWGSLFloatLiteral(cellSize[0] * cellSize[1])};coreArea+=f32(core[coreOffset+cell])*${getWGSLFloatLiteral(cellSize[0] * cellSize[1])};}}
 for(var other=0u;other<${patchCount}u;other++){
  if(other==index||classes[classesOffset+other]!=classes[classesOffset+index]){continue;}
  let distance=distances[distancesOffset+index*${patchCount}u+other];nearest=min(nearest,distance);
- if(distance<=${searchRadius}){
-  var otherArea=0.0;for(var cell=0u;cell<${cellCount}u;cell++){otherArea+=f32(patches[patchesOffset+cell]==other)*${cellSize[0] * cellSize[1]};}
-  proximity+=otherArea/(distance*distance);
+ if(distance<=${getWGSLFloatLiteral(searchRadius)}){
+  var otherArea=0.0;for(var cell=0u;cell<${cellCount}u;cell++){otherArea+=f32(patches[patchesOffset+cell]==other)*${getWGSLFloatLiteral(cellSize[0] * cellSize[1])};}
+  if(distance==0.0){proximity+=otherArea/(distance*distance);}else{proximity+=getScaledQuotient(otherArea,distance,distance,0);}
  }
 }
 ${props.distanceModel === 'cell-center' ? 'if(nearest==bitcast<f32>(0x7f800000u | (index & 0u))){nearest=bitcast<f32>(0x7fc00000u | (index & 0u));}' : ''}

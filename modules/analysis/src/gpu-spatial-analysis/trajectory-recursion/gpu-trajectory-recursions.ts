@@ -3,6 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  validateTrajectoryBindings,
+  validateTrajectoryWritableDispatches,
+  validateTrajectoryOutputRanges
+} from '../trajectory-analysis/trajectory-binding-validation';
+import {
   createTransientView,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -204,6 +209,14 @@ export class GPUTrajectoryRecursions implements GPUCommandNodeProducer {
     );
     this.id = id;
     this.props = props;
+    validateTrajectoryOutputRanges(this.id, this.props.output);
+    validateTrajectoryWritableDispatches(this.id, [
+      {revisits: output.revisits, residenceTimes: output.residenceTimes},
+      {
+        firstPassageTimes: output.firstPassageTimes,
+        firstPassageCensored: output.firstPassageCensored
+      }
+    ]);
     validateGraphOutputsDisjointFromInputs(id, this.getOutputViews(), [
       positions,
       timestamps,
@@ -226,6 +239,7 @@ export class GPUTrajectoryRecursions implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateTrajectoryBindings(graph, this.id, this.props);
     const {id, props, rowCount, radiusCount, maximumTrackSegments} = this;
     const {positions, timestamps, trackOffsets, radii, output} = props;
     validateGraphViewsBelongToGraph(id, graph, [

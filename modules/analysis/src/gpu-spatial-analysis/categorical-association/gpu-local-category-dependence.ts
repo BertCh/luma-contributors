@@ -25,6 +25,9 @@ import {
 } from '../spatial-weights/spatial-weights';
 import {GPU_CATEGORY_PAIR_COUNTS_MAXIMUM_CATEGORY_COUNT} from '../spatial-entropy/gpu-category-pair-counts';
 
+import {validateSpatialStatisticsBindings} from '../spatial-weights/spatial-statistics-bindings';
+import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
+
 const OPERATION = 'GPULocalCategoryDependence';
 
 /** Column of each statistic in `output.statistics` (row `i`, column `c` is at `i * length + c`). */
@@ -155,6 +158,7 @@ export class GPULocalCategoryDependence implements GPUCommandNodeProducer {
         'output.categoryRowCounts must hold categoryCount entries'
       );
     }
+    validateDisjointWritableViews(id, props.output);
     validateGraphOutputsDisjointFromInputs(
       id,
       [props.output.statistics, props.output.categoryRowCounts],
@@ -167,6 +171,9 @@ export class GPULocalCategoryDependence implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, rowCount} = this;
+    validateSpatialStatisticsBindings(graph, id, props, {
+      'category counters': props.categoryCount * 4
+    });
     const {weights, output, categoryCount} = props;
     const columns = GPU_LOCAL_CATEGORY_DEPENDENCE_COLUMNS;
     validateGraphViewsBelongToGraph(id, graph, [

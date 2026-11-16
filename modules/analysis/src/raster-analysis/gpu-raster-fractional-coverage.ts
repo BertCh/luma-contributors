@@ -3,10 +3,23 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  validateRasterFractionalBindingByteLength,
+  validateRasterFractionalWritableViews
+} from './fractional-coverage/raster-fractional-tile-kernel';
+import {getViewBindingRange} from '@luma.gl/graph/gpu-core';
+import {
+  getIndexedRasterFractionalCoverageNodes,
+  validateFractionalCoverageBindings,
+  RASTER_FRACTIONAL_CLIPPING_WGSL,
+  RASTER_FRACTIONAL_CANDIDATE_TILE_SIZE
+} from './fractional-coverage/raster-fractional-coverage-index';
+import {
   getGraphOutputViews,
   validateCapacity,
+  validateCommandNodeBudget,
   validateMaximumCount,
-  validateRequirement
+  validateRequirement,
+  validateSinglePackedView
 } from '../analysis-core/kernels/gpu-contributor-utils';
 import {
   createTransientView,
@@ -22,7 +35,10 @@ import {
   getPolygonTriangulationIndexCount
 } from '../analysis-core/polygon-triangulation/gpu-polygon-triangulation';
 import {GPUCompaction} from '@luma.gl/graph/gpu-core';
-import {createWGSLKernelNode} from '../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  createWGSLKernelNode,
+  getWGSLFloatLiteral
+} from '../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   getRasterBandViews,
   getRasterBufferBandNodes,
@@ -35,8 +51,30 @@ import {
   requireRasterLength
 } from './raster-expansion-utils';
 
-/** Largest dense zone x cell candidate grid per invocation; bounds the coverage and compaction scratch. */
+/** Integer no-data sentinels are emitted by the public raster canonicalizer as typed literals. */
+const MAXIMUM_UNSIGNED_RASTER_VALUE = 0xffffffff;
+/** Signed raster sentinel limits prevent invalid i32 literals in the canonicalizer. */
+const MINIMUM_SIGNED_RASTER_VALUE = -2147483648;
+/** Signed raster sentinel limits prevent invalid i32 literals in the canonicalizer. */
+const MAXIMUM_SIGNED_RASTER_VALUE = 2147483647;
+
+/** Zone indices are uint32 in the zonal consumer; device-sized summary scratch is checked at build. */
+const MAXIMUM_ZONE_COUNT = 0xffffffff;
+
+/** Explicit brute-force reference limit bounds its dense zone x cell scratch. */
 const MAXIMUM_CANDIDATE_PAIRS = 4194304;
+
+/** uint32 candidate offsets reserve the last word for a saturated count. */
+const MAXIMUM_INDEXED_CANDIDATES = 0xfffffffe;
+
+/** Default candidate workload budget starts at the historical pair count for sparse zones. */
+const DEFAULT_CANDIDATE_CAPACITY = 4194304;
+
+/** Conservative allowance for triangulation, bounds reductions and saturated scans. */
+const INDEX_COMMAND_NODE_ALLOWANCE = 4096;
+
+/** Upper bound on the published compaction nodes plus clipping and publication per tile. */
+const CANDIDATE_TILE_COMMAND_NODE_ALLOWANCE = 32;
 
 /** Number of float32 values read from {@link GPURasterFractionalCoverageProps.parameters}. */
 export const GPU_RASTER_FRACTIONAL_COVERAGE_PARAMETER_LENGTH = 8;
@@ -74,6 +112,15 @@ export type GPURasterFractionalCoverageProps = {
   id?: string;
   grid: GPURasterMetadata;
   zones: GPUPolygonGeometryFields;
+  /** Compile-time candidate lookup; bounds is the scalable default. Brute force retains its 4M pair cap. */
+  searchStructure?: 'bounds' | 'brute-force';
+  /**
+   * Compile-time budget for cells in the union of zone pixel bounding rectangles, before clipping.
+   * Defaults to min(zones * cells, max(4M, output capacity * 4)). Scratch is tiled, not budget-sized.
+   * Exhaustion sets candidateOverflow (when supplied) and requiredCount = 0xffffffff;
+   * zoneValidity is zero because the unvisited support is unknown. Increase this budget and rerun.
+   */
+  candidateCapacity?: number;
   /**
    * Per-frame georeference with at least {@link GPU_RASTER_FRACTIONAL_COVERAGE_PARAMETER_LENGTH}
    * float32 values, written with {@link getGPURasterFractionalCoverageParameterValues}. Only
@@ -88,6 +135,8 @@ export type GPURasterFractionalCoverageProps = {
       count: GraphDataView<'uint32'>;
       requiredCount: GraphDataView<'uint32'>;
       overflow: GraphDataView<'uint32'>;
+      /** Indexed candidate budget exhausted; requiredCount then saturates at 0xffffffff. */
+      candidateOverflow?: GraphDataView<'uint32'>;
     };
     /** Validity per source feature. Failed triangulation emits no tuples for that feature. */
     zoneValidity: GraphDataView<'uint32'>;
@@ -99,8 +148,9 @@ export type GPURasterFractionalCoverageProps = {
  * triangulation supplies disjoint shell-minus-hole triangles, so holes and overlapping features
  * retain their semantics. Coverage is in [0,1] for valid nonoverlapping multipart features.
  * Areas use abs(affine determinant); intensive means and extensive totals remain separate consumers.
- * The explicit dense candidate grid is capped at 4,194,304 zone/cell pairs per invocation; tile
- * larger domains explicitly without overlapping cores. No supersampling approximation is used.
+ * The default bounds index enumerates zone bounding rectangles in disjoint fixed-size candidate
+ * tiles, with stable zone/cell order and no global area normalisation. The explicit brute-force
+ * route retains its 4,194,304 pair cap. No supersampling approximation is used.
  * A vertex whose pixel coordinate is within four float32 steps of an integer is placed on that
  * cell boundary, so zone edges that follow cell boundaries leave no sliver in the neighbouring
  * cells, also when the cell size is not a float32 number (0.3, a third of a degree). Elsewhere
@@ -111,6 +161,8 @@ export type GPURasterFractionalCoverageProps = {
 export class GPURasterFractionalCoverage implements GPUCommandNodeProducer {
   readonly id: string;
   readonly props: GPURasterFractionalCoverageProps;
+  readonly candidateCapacity: number;
+  readonly estimatedCommandNodeCount: number;
   constructor(props: GPURasterFractionalCoverageProps) {
     this.id = props.id ?? 'raster-fractional-coverage';
     this.props = props;
@@ -120,19 +172,67 @@ export class GPURasterFractionalCoverage implements GPUCommandNodeProducer {
       [...Object.values(props.zones), props.parameters],
       getGraphOutputViews(props.output)
     );
+    validateRasterFractionalWritableViews(this.id, props.output, [
+      ...Object.values(props.zones),
+      props.parameters
+    ]);
     validateRasterParameters(
       this.id,
       props.parameters,
       GPU_RASTER_FRACTIONAL_COVERAGE_PARAMETER_LENGTH
     );
     const zones = props.zones.featureOffsets.length - 1;
-    validateMaximumCount(this.id, 'zones times grid cells', count * zones, MAXIMUM_CANDIDATE_PAIRS);
+    validateRequirement(
+      this.id,
+      props.searchStructure === undefined ||
+        ['bounds', 'brute-force'].includes(props.searchStructure),
+      "searchStructure must be 'bounds' or 'brute-force'"
+    );
+    validateSinglePackedView(props.zones.positions, ['float32x2'], `${this.id} zones.positions`);
+    for (const name of ['featureOffsets', 'polygonOffsets', 'ringOffsets'] as const) {
+      validateSinglePackedView(props.zones[name], ['uint32'], `${this.id} zones.${name}`);
+      validateCapacity(this.id, `zones.${name}.length`, props.zones[name].length);
+    }
+    this.candidateCapacity =
+      props.candidateCapacity ??
+      Math.min(
+        count * zones,
+        Math.max(DEFAULT_CANDIDATE_CAPACITY, props.output.zoneIds.length * 4)
+      );
+    validateCapacity(
+      this.id,
+      'candidateCapacity',
+      this.candidateCapacity,
+      0,
+      MAXIMUM_INDEXED_CANDIDATES
+    );
+    if (props.searchStructure === 'brute-force') {
+      validateMaximumCount(
+        this.id,
+        'zones times grid cells',
+        count * zones,
+        MAXIMUM_CANDIDATE_PAIRS
+      );
+    }
+    this.estimatedCommandNodeCount =
+      INDEX_COMMAND_NODE_ALLOWANCE +
+      CANDIDATE_TILE_COMMAND_NODE_ALLOWANCE *
+        Math.ceil(this.candidateCapacity / RASTER_FRACTIONAL_CANDIDATE_TILE_SIZE);
+    validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
     validateRequirement(
       this.id,
       props.grid.affine[0] * props.grid.affine[4] - props.grid.affine[1] * props.grid.affine[3] !==
         0,
       'grid.affine must be invertible (nonzero determinant)'
     );
+    for (const [name, view] of Object.entries({...props.output, ...props.output.status})) {
+      if (name === 'status' || !view) continue;
+      validateSinglePackedView(
+        view as GraphDataView,
+        [name === 'fractions' ? 'float32' : 'uint32'],
+        `${this.id} output.${name}`
+      );
+    }
     const capacity = props.output.zoneIds.length;
     requireRasterLength(props.output.cellIds, capacity, this.id, 'output.cellIds');
     requireRasterLength(props.output.fractions, capacity, this.id, 'output.fractions');
@@ -145,12 +245,22 @@ export class GPURasterFractionalCoverage implements GPUCommandNodeProducer {
       'output.status.requiredCount'
     );
     requireRasterLength(props.output.status.overflow, 1, this.id, 'output.status.overflow');
+    requireRasterLength(
+      props.output.status.candidateOverflow,
+      1,
+      this.id,
+      'output.status.candidateOverflow'
+    );
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
     const {grid, zones, output} = props;
+    validateFractionalCoverageBindings(graph, this);
+    if (props.searchStructure !== 'brute-force') {
+      return getIndexedRasterFractionalCoverageNodes(graph, this);
+    }
     const cellCount = grid.width * grid.height;
     const zoneCount = zones.featureOffsets.length - 1;
     const polygonCount = zones.polygonOffsets.length - 1;
@@ -213,25 +323,7 @@ export class GPURasterFractionalCoverage implements GPUCommandNodeProducer {
           {name: 'settings', view: settings, type: 'f32', access: 'read'}
         ],
         // settings = [originX, originY, a, b, d, e, determinant, 0]; inverts the affine per vertex.
-        declarations: `fn setting(slot:u32)->f32{return settings[settingsOffset+slot];}
-// A pixel coordinate within four float32 steps of an integer is that integer. A vertex meant to
-// lie on a cell boundary does not come out of the inverse affine as an integer: the vertex and
-// the cell size are each rounded to float32 (float32(0.9) / float32(0.3) is 2.9999998 in exact
-// arithmetic), the products and the quotient round again, and GPU division need not be correctly
-// rounded. Unsnapped, such a vertex leaves a sliver of coverage (of the order of 1e-7 of a cell)
-// in the neighbouring cell, which gives a zone support in a cell it does not touch. The snap moves no
-// vertex by more than the float32 resolution of its own pixel coordinate. It cannot absorb the
-// rounding of 'position - origin', which is relative to the origin: keep the origin near the
-// geometry (local coordinates).
-fn snapToLattice(pixel:vec2<f32>)->vec2<f32>{let nearest=round(pixel);let tolerance=4.76837158203125e-7*max(abs(nearest),vec2<f32>(1.0));return select(pixel,nearest,abs(pixel-nearest)<=tolerance);}
-// Pixel coordinates of a vertex. On an axis-aligned grid (b = d = 0) each axis is one division,
-// which rounds less than the general form (two products, a difference and a quotient).
-fn point(vertex:u32)->vec2<f32>{let x=positions[positionsOffset+vertex*2u]-setting(0u);let y=positions[positionsOffset+vertex*2u+1u]-setting(1u);if(setting(3u)==0.0&&setting(4u)==0.0){return snapToLattice(vec2<f32>(x/setting(2u),y/setting(5u)));}return snapToLattice(vec2<f32>((setting(5u)*x-setting(3u)*y)/setting(6u),(-setting(4u)*x+setting(2u)*y)/setting(6u)));}
-fn clip(vertices:ptr<function,array<vec2<f32>,8>>,count:u32,axis:u32,bound:f32,lower:bool)->u32{
- var result:array<vec2<f32>,8>;var size=0u;if(count==0u){return 0u;}var previous=(*vertices)[count-1u];var previousInside=select(previous[axis]<=bound,previous[axis]>=bound,lower);
- for(var cursor=0u;cursor<count;cursor++){let current=(*vertices)[cursor];let inside=select(current[axis]<=bound,current[axis]>=bound,lower);if(inside!=previousInside){let fraction=(bound-previous[axis])/(current[axis]-previous[axis]);var intersection=mix(previous,current,fraction);intersection[axis]=bound;result[size]=intersection;size++;}if(inside){result[size]=current;size++;}previous=current;previousInside=inside;}
- for(var cursor=0u;cursor<size;cursor++){(*vertices)[cursor]=result[cursor];}return size;
-}`,
+        declarations: RASTER_FRACTIONAL_CLIPPING_WGSL,
         body: `let zone=index/${cellCount}u;let cell=index%${cellCount}u;let column=f32(cell%${grid.width}u)${grid.pixelInterpretation === 'point' ? '-0.5' : ''};let row=f32(cell/${grid.width}u)${grid.pixelInterpretation === 'point' ? '-0.5' : ''};var area=0.0;var complete=true;
 for(var polygon=features[featuresOffset+zone];polygon<features[featuresOffset+zone+1u];polygon++){
  if(valid[validOffset+polygon]==0u){complete=false;break;}
@@ -309,12 +401,23 @@ for(var polygon=features[featuresOffset+zone];polygon<features[featuresOffset+zo
           {name: 'total', view: requiredCount, type: 'u32', access: 'read'},
           {name: 'count', view: output.status.count, type: 'u32', access: 'read_write'},
           {name: 'required', view: output.status.requiredCount, type: 'u32', access: 'read_write'},
-          {name: 'overflow', view: output.status.overflow, type: 'u32', access: 'read_write'}
+          {name: 'overflow', view: output.status.overflow, type: 'u32', access: 'read_write'},
+          ...(output.status.candidateOverflow
+            ? [
+                {
+                  name: 'candidateOverflow',
+                  view: output.status.candidateOverflow,
+                  type: 'u32' as const,
+                  access: 'read_write' as const
+                }
+              ]
+            : [])
         ],
         body: `let capacity = ${output.zoneIds.length}u;
   count[countOffset] = min(total[totalOffset], capacity);
   required[requiredOffset] = total[totalOffset];
-  overflow[overflowOffset] = u32(total[totalOffset] > capacity);`
+  overflow[overflowOffset] = u32(total[totalOffset] > capacity);
+  ${output.status.candidateOverflow ? 'candidateOverflow[candidateOverflowOffset] = 0u;' : ''}`
       })
     ];
   }
@@ -365,6 +468,11 @@ export class GPURasterFractionalZonalStatistics implements GPUCommandNodeProduce
       ],
       getGraphOutputViews(props.output)
     );
+    validateRasterFractionalWritableViews(this.id, props.output, [
+      ...getRasterBandViews(props.input),
+      ...getGraphOutputViews(props.coverage),
+      props.parameters
+    ]);
     if (props.parameters) {
       validateRasterParameters(
         this.id,
@@ -372,7 +480,36 @@ export class GPURasterFractionalZonalStatistics implements GPUCommandNodeProduce
         GPU_RASTER_FRACTIONAL_COVERAGE_PARAMETER_LENGTH
       );
     }
-    validateCapacity(this.id, 'zoneCount', props.zoneCount, 0);
+    // These scalars become f32 literals in this consumer or its public raster canonicalizer.
+    const cellArea = Math.abs(
+      props.grid.affine[0] * props.grid.affine[4] - props.grid.affine[1] * props.grid.affine[3]
+    );
+    validateRequirement(
+      this.id,
+      props.parameters !== undefined || Number.isFinite(Math.fround(cellArea)),
+      'grid.affine determinant must fit in finite float32'
+    );
+    for (const name of ['scale', 'offset'] as const) {
+      validateRequirement(
+        this.id,
+        props.input[name] === undefined || Number.isFinite(Math.fround(props.input[name]!)),
+        `input.${name} must fit in finite float32`
+      );
+    }
+    if (props.input.noDataValue !== undefined) {
+      const value = props.input.noDataValue;
+      validateRequirement(
+        this.id,
+        props.input.format === 'float32'
+          ? Number.isNaN(value) || Number.isFinite(Math.fround(value))
+          : Number.isInteger(value) &&
+              (props.input.format === 'uint32'
+                ? value >= 0 && value <= MAXIMUM_UNSIGNED_RASTER_VALUE
+                : value >= MINIMUM_SIGNED_RASTER_VALUE && value <= MAXIMUM_SIGNED_RASTER_VALUE),
+        `input.noDataValue must fit in ${props.input.format}`
+      );
+    }
+    validateCapacity(this.id, 'zoneCount', props.zoneCount, 0, MAXIMUM_ZONE_COUNT);
     for (const [name, view] of Object.entries(props.output)) {
       requireRasterLength(view, props.zoneCount, this.id, `output.${name}`);
     }
@@ -400,18 +537,48 @@ export class GPURasterFractionalZonalStatistics implements GPUCommandNodeProduce
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
     const {coverage, output} = props;
-    const band = getRasterBufferBandNodes(graph, id, props.input, props.grid, true);
+    for (const view of [
+      ...getRasterBandViews(props.input),
+      ...getGraphOutputViews(coverage),
+      props.parameters,
+      ...getGraphOutputViews(output)
+    ]) {
+      if (view)
+        validateRasterFractionalBindingByteLength(
+          graph.device,
+          id,
+          view.buffer.id,
+          getViewBindingRange(view).size,
+          'split the raster or coverage into disjoint cores',
+          view.buffer.byteLength
+        );
+    }
+    validateRasterFractionalBindingByteLength(
+      graph.device,
+      id,
+      'canonical raster bands',
+      props.grid.width * props.grid.height * 4,
+      'split the raster into disjoint cores'
+    );
+    validateRasterFractionalBindingByteLength(
+      graph.device,
+      id,
+      'zone summary',
+      Math.max(props.zoneCount, 1) * 16,
+      'reduce zoneCount'
+    );
     validateRasterExpansionGraph(id, graph, [
       ...getRasterBandViews(props.input),
       ...getGraphOutputViews(coverage),
       props.parameters,
       ...getGraphOutputViews(output)
     ]);
+    const band = getRasterBufferBandNodes(graph, id, props.input, props.grid, true);
     const summary = createTransientView(graph, `${id}-summary`, 'float32x4', props.zoneCount);
     // Slot 6 of the coverage georeference is the affine determinant; read per frame when supplied.
     const cellArea = props.parameters
       ? 'abs(georeference[georeferenceOffset+6u])'
-      : String(
+      : getWGSLFloatLiteral(
           Math.abs(
             props.grid.affine[0] * props.grid.affine[4] -
               props.grid.affine[1] * props.grid.affine[3]

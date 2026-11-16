@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {dggs} from '@luma.gl/shaders';
-import {createSaturatedScanTotalNodes} from '../../analysis-core/kernels/scan-total';
+import {createSaturatedCountScanNodes} from '../../analysis-core/kernels/scan-total';
 import {
   createTransientView,
   GPUScan,
@@ -15,20 +15,33 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {createFillNode, createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
+  validateCapacity,
+  validateGPUStorageBindingByteLength,
+  validateRequirement,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {CELL_KEY_WGSL, getCellKeyLayout, type CellKeyLayout} from '../cell-aggregation/cell-keys';
+import {getS2CompactionTableNodes} from './s2-cell-compaction-table';
+import {CELL_LEVEL_PARAMETER_WORD_COUNT} from '../cell-aggregation/cell-level-kernel';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateCellDispatchOutputs} from '../cell-indexing/cell-dispatch-validation';
 import {
-  CELL_KEY_WGSL,
-  getCellKeyLayout,
-  type CellKeyLayout,
+  validateCellIndexResolution,
   type GPUCellFamily
-} from '../cell-aggregation/cell-keys';
+} from '../cell-indexing/cell-index-families';
 import {getCellTableNodes, hasCellKeyHighWord} from '../cell-aggregation/cell-table';
 import type {GPUCellWordOrder} from '../cell-aggregation/gpu-cell-aggregation';
 
 const OPERATION = 'GPUCellCompaction';
+
+/** Cell rows address two scalar words with uint32 arithmetic, including the final high word. */
+const MAXIMUM_CELL_ROW_COUNT = 0x7fffffff;
+/** Four-way descendants must fit a uint32 count (4^16 cannot be represented). */
+const MAXIMUM_FOUR_WAY_UNCOMPACT_DEPTH = 15;
+
+type CompactionCellLayout = CellKeyLayout | (Omit<CellKeyLayout, 'family'> & {family: 's2'});
 
 /** Default deepest ancestor-to-descendant expansion of one `uncompact` input cell. */
 export const GPU_CELL_UNCOMPACT_DEFAULT_MAXIMUM_DEPTH = 8;
@@ -57,8 +70,8 @@ export type GPUCellUncompactOperation = {
   resolution: number;
   /**
    * Largest resolution gap `resolution - cellResolution` expanded per input cell; deeper cells are
-   * dropped and counted. Defaults to 8 (4^8 Quadbin or 7^8 H3 descendants), at most 15 for
-   * Quadbin and 11 for H3 so one cell's descendant count fits a `u32`.
+   * dropped and counted. Defaults to 8 (4^8 Quadbin/S2 or 7^8 H3 descendants), at most 15 for
+   * Quadbin/S2 and 11 for H3 so one cell's descendant count fits a `u32`.
    */
   maximumDepth?: number;
 };
@@ -123,33 +136,41 @@ function getFamilyWGSL(family: GPUCellFamily, wordOrder: GPUCellWordOrder): stri
   const toArray = (name: string, values: number[]) =>
     `const ${name} = array<u32, ${values.length}>(${values.map(value => `${value}u`).join(', ')});`;
   return /* wgsl */ `
-${family === 'h3' ? dggs.source : ''}
+${family !== 'quadbin' ? dggs.source : ''}
 ${CELL_KEY_WGSL}
-const BITS_PER_LEVEL: u32 = ${family === 'quadbin' ? 2 : 3}u;
-const HEADER_HIGH: u32 = ${getCellKeyLayout(family, 0).headerHigh}u;
+const BITS_PER_LEVEL: u32 = ${family === 'h3' ? 3 : 2}u;
+const HEADER_HIGH: u32 = ${family === 's2' ? 0 : getCellKeyLayout(family, 0).headerHigh}u;
 ${family === 'h3' ? toArray('H3_HEXAGON_SIZES', sizes.hexagon) : ''}
 ${family === 'h3' ? toArray('H3_PENTAGON_SIZES', sizes.pentagon) : ''}
 
 fn getLowBit(resolution: u32) -> u32 {
-  return ${family === 'quadbin' ? '52u - 2u * resolution' : '45u - 3u * resolution'};
+  return ${family === 's2' ? '61u - 2u * resolution' : family === 'quadbin' ? '52u - 2u * resolution' : '45u - 3u * resolution'};
 }
 
 fn getInputKey(words: vec2u) -> vec2u {
   return ${wordOrder === 'high-low' ? 'words' : 'words.yx'};
 }
 
+fn getCanonicalKey(compact: vec2u, resolution: u32) -> vec2u {
+  ${
+    family === 's2'
+      ? 'return cellShiftLeft(compact, getLowBit(resolution)) | cellShiftLeft(vec2u(0u, 1u), getLowBit(resolution) - 1u);'
+      : 'return cellGetKey(compact, HEADER_HIGH, resolution, getLowBit(resolution));'
+  }
+}
+
 fn getKeyResolution(key: vec2u) -> u32 {
-  return ${family === 'quadbin' ? '(key.x >> 20u) & 0x1fu' : 'dggs_h3_get_resolution(key)'};
+  return ${family === 's2' ? 'dggs_s2_get_level(key)' : family === 'quadbin' ? '(key.x >> 20u) & 0x1fu' : 'dggs_h3_get_resolution(key)'};
 }
 
 fn isValidKey(key: vec2u) -> bool {
-  return ${family === 'quadbin' ? 'cellIsValidQuadbin(key)' : 'dggs_h3_is_valid_cell_id(key)'};
+  return ${family === 's2' ? 'dggs_s2_is_valid_cell_id(key)' : family === 'quadbin' ? 'cellIsValidQuadbin(key)' : 'dggs_h3_is_valid_cell_id(key)'};
 }
 
 /** Number of descendants of a cell with this compact key, \`depth\` levels down; saturates. */
 fn getDescendantCount(compact: vec2u, resolution: u32, depth: u32) -> u32 {
   ${
-    family === 'quadbin'
+    family !== 'h3'
       ? 'return select(0xffffffffu, 1u << (2u * depth), depth < 16u);'
       : `if (depth > ${H3_SUBTREE_DEPTH_LIMIT}u) {
     return 0xffffffffu;
@@ -166,20 +187,21 @@ fn getDescendantCount(compact: vec2u, resolution: u32, depth: u32) -> u32 {
 
 /**
  * Compacts a cell set into its minimal mixed-resolution cover, or expands a mixed-resolution set
- * to one resolution (Quadbin and H3).
+ * to one resolution (Quadbin, H3 and S2).
  *
  * `compact`: input cells at one resolution are sorted (unless `operation.sorted`), deduplicated
  * (duplicates collapse to one cell), and every cell is replaced by its coarsest ancestor whose
- * complete descendant set (4 children per Quadbin cell, 7 per H3 hexagon, 6 per H3 pentagon whose
+ * complete descendant set (4 children per Quadbin/S2 cell, 7 per H3 hexagon, 6 per H3 pentagon whose
  * deleted K subtree has no cells) is present, down to `minimumResolution`. Completeness is
  * decided by counting each unique group of equal ancestors with a binary search over the sorted
  * keys, so every level is checked in one pass; the result equals iterated sibling merging. The
  * output is in ascending canonical key order, which is ascending resolution first (the
- * resolution sits above the cell path in the key), then ascending path. Rows of another
+ * resolution sits above the cell path in the key), then ascending path. S2 cells instead follow
+ * ascending S2CellId (face and Hilbert interval) order, at all levels 0–30. Rows of another
  * resolution, invalid keys and masked rows are dropped and counted in `output.status.droppedCount`.
  *
  * `uncompact`: every valid input cell at or above `operation.resolution` (and within
- * `maximumDepth`) produces all of its descendants there (4^d Quadbin, 7^d H3 hexagon,
+ * `maximumDepth`) produces all of its descendants there (4^d Quadbin/S2, 7^d H3 hexagon,
  * `1 + 5 (7^d - 1) / 6` H3 pentagon descendants, `d` the resolution gap) through a count, a
  * scan, and a per-output-slot binary search of the offsets. Descendants of one input cell come in
  * ascending key order and cells in input row order, so the output is globally ascending when the
@@ -199,38 +221,46 @@ export class GPUCellCompaction implements GPUCommandNodeProducer {
   /** Validated properties. */
   readonly props: GPUCellCompactionProps;
   /** Key layout of the input (`compact`) or output (`uncompact`) resolution. */
-  readonly layout: CellKeyLayout;
+  readonly layout: CompactionCellLayout;
 
   constructor(props: GPUCellCompactionProps) {
     this.id = props.id ?? 'cell-compaction';
     this.props = props;
     const {id} = this;
     const {operation, output} = props;
-    this.layout = getCellKeyLayout(props.family, operation.resolution);
+    validateRequirement(
+      id,
+      ['quadbin', 'h3', 's2'].includes(props.family),
+      "family must be 'quadbin', 'h3' or 's2'"
+    );
+    validateCellIndexResolution(id, props.family, operation.resolution);
+    this.layout =
+      props.family === 's2'
+        ? {
+            family: 's2',
+            resolution: operation.resolution,
+            lowBit: 61 - 2 * operation.resolution,
+            width: 3 + 2 * operation.resolution,
+            bitsPerLevel: 2,
+            headerHigh: 0
+          }
+        : getCellKeyLayout(props.family, operation.resolution);
     if (operation.type === 'compact') {
       const minimum = operation.minimumResolution ?? 0;
-      if (!Number.isInteger(minimum) || minimum < 0 || minimum > operation.resolution) {
-        throw new Error(`${id} minimumResolution must be an integer in [0, resolution]`);
-      }
+      validateCapacity(id, 'minimumResolution', minimum, 0, operation.resolution);
     } else if (operation.type === 'uncompact') {
-      const limit = props.family === 'quadbin' ? 15 : H3_SUBTREE_DEPTH_LIMIT;
+      const limit =
+        props.family === 'h3' ? H3_SUBTREE_DEPTH_LIMIT : MAXIMUM_FOUR_WAY_UNCOMPACT_DEPTH;
       const depth = operation.maximumDepth ?? GPU_CELL_UNCOMPACT_DEFAULT_MAXIMUM_DEPTH;
-      if (!Number.isInteger(depth) || depth < 0 || depth > limit) {
-        throw new Error(`${id} maximumDepth must be an integer in [0, ${limit}]`);
-      }
+      validateCapacity(id, 'maximumDepth', depth, 0, limit);
     } else {
       throw new Error(`${id} operation.type must be 'compact' or 'uncompact'`);
-    }
-    if (props.family !== 'quadbin' && props.family !== 'h3') {
-      throw new Error(`${id} family must be 'quadbin' or 'h3'`);
     }
     if (props.wordOrder && props.wordOrder !== 'little-endian' && props.wordOrder !== 'high-low') {
       throw new Error(`${id} wordOrder must be 'little-endian' or 'high-low'`);
     }
     validateSinglePackedView(props.cells, ['uint32x2'], `${id} cells`);
-    if (props.cells.length < 1) {
-      throw new Error(`${id} cells must hold at least one row`);
-    }
+    validateCapacity(id, 'cells.length', props.cells.length, 1, MAXIMUM_CELL_ROW_COUNT);
     if (props.mask) {
       validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length !== props.cells.length) {
@@ -253,9 +283,7 @@ export class GPUCellCompaction implements GPUCommandNodeProducer {
       }
     }
     validateSinglePackedView(output.cells, ['uint32x2'], `${id} output.cells`);
-    if (output.cells.length < 1) {
-      throw new Error(`${id} output.cells must hold at least one row`);
-    }
+    validateCapacity(id, 'output.cells.length', output.cells.length, 1, MAXIMUM_CELL_ROW_COUNT);
     validateGraphOutputsDisjointFromInputs(
       id,
       [
@@ -267,23 +295,70 @@ export class GPUCellCompaction implements GPUCommandNodeProducer {
       ],
       [props.cells, props.mask, props.count]
     );
-    const outputs = [
-      output.cells,
-      output.status.count,
-      output.status.overflow,
-      output.status.requiredCount,
-      output.status.droppedCount
-    ].filter(Boolean) as GraphDataView[];
-    if (new Set(outputs).size !== outputs.length) {
-      throw new Error(`${id} output views must be distinct`);
-    }
+    validateCellDispatchOutputs(
+      id,
+      {
+        cells: output.cells,
+        count: output.status.count,
+        overflow: output.status.overflow,
+        requiredCount: output.status.requiredCount,
+        droppedCount: output.status.droppedCount
+      },
+      [
+        {
+          cells: output.cells,
+          count: output.status.count,
+          overflow: output.status.overflow,
+          requiredCount: output.status.requiredCount
+        }
+      ]
+    );
   }
 
   /** Returns the key, table, analysis, ordering, and publish nodes of the selected operation. */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {props} = this;
+    const {props, id} = this;
+    validateGraphChunkBindingRanges(graph, id, {
+      cells: props.cells,
+      mask: props.mask,
+      inputCount: props.count,
+      outputCells: props.output.cells,
+      ...props.output.status
+    });
+    // Every row-sized plane is at most two words per row, including the uint64 scan
+    // and any padded bitonic indices used by the published sort. Scan block sums shrink.
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'cell scratch',
+      props.cells.length * 8,
+      'reduce cells.length or use a device with larger bindings'
+    );
+    validateCapacity(
+      id,
+      'cell scratch byteLength',
+      props.cells.length * 8,
+      0,
+      graph.device.limits.maxBufferSize
+    );
+    if (props.operation.type === 'compact' && props.family !== 's2') {
+      validateCapacity(
+        id,
+        'cell table parameter byteLength',
+        CELL_LEVEL_PARAMETER_WORD_COUNT * 4,
+        0,
+        graph.device.limits.maxBufferSize
+      );
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        'cell table parameters',
+        CELL_LEVEL_PARAMETER_WORD_COUNT * 4,
+        'use a device with larger bindings'
+      );
+    }
     validateGraphViewsBelongToGraph(this.id, graph, [
       props.cells,
       props.mask,
@@ -331,7 +406,7 @@ export class GPUCellCompaction implements GPUCommandNodeProducer {
     const minimumResolution = operation.minimumResolution ?? 0;
     const maximumDepth = operation.resolution - minimumResolution;
     const sorted = operation.sorted ?? false;
-    const twoWords = hasCellKeyHighWord(layout);
+    const twoWords = layout.family === 's2' || hasCellKeyHighWord(layout);
     const u32 = (name: string, length = rows) =>
       createTransientView(graph, `${id}-${name}`, 'uint32', length);
     const nodes: GPUCommandNode<Parameters>[] = [];
@@ -354,7 +429,7 @@ export class GPUCellCompaction implements GPUCommandNodeProducer {
     // 1. Compact keys of valid rows at the input resolution; every other row gets an invalid key.
     const keyLow = u32('key-low');
     const keyHigh = twoWords ? u32('key-high') : undefined;
-    const rowIds = sorted ? undefined : u32('row-ids');
+    const rowIds = sorted || props.family === 's2' ? undefined : u32('row-ids');
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-keys`,
@@ -402,22 +477,32 @@ ${familyWGSL}`,
     const uniqueView = createTransientView(graph, `${id}-unique-table`, 'uint32x2', rows);
     const uniqueCount = u32('unique-count', 1);
     nodes.push(
-      ...getCellTableNodes<Parameters>(graph, {
-        id: `${id}-table`,
-        operation: OPERATION,
-        layout,
-        keyLow,
-        keyHigh,
-        rowIds,
-        sorted,
-        source: {kind: 'rows'},
-        sumScale: 65536,
-        output: {
-          cells: uniqueView,
-          counts: u32('unique-counts'),
-          status: {count: uniqueCount, overflow: u32('unique-overflow', 1)}
-        }
-      })
+      ...(layout.family === 's2'
+        ? getS2CompactionTableNodes(graph, {
+            id: `${id}-table`,
+            layout,
+            keyLow,
+            keyHigh: keyHigh!,
+            sorted,
+            cells: uniqueView,
+            count: uniqueCount
+          })
+        : getCellTableNodes<Parameters>(graph, {
+            id: `${id}-table`,
+            operation: OPERATION,
+            layout,
+            keyLow,
+            keyHigh,
+            rowIds,
+            sorted,
+            source: {kind: 'rows'},
+            sumScale: 65536,
+            output: {
+              cells: uniqueView,
+              counts: u32('unique-counts'),
+              status: {count: uniqueCount, overflow: u32('unique-overflow', 1)}
+            }
+          }))
     );
 
     // 3. Per row: coarsest complete ancestor depth, and whether this row emits its group.
@@ -545,7 +630,7 @@ ${familyWGSL}`,
     let compact = cellGetCompactKey(
       vec2u(cells[cellsOffset + 2u * index + 1u], cells[cellsOffset + 2u * index]), ${layout.lowBit}u, ${layout.width}u);
     let resolution = RESOLUTION - depth;
-    let key = cellGetKey(cellShiftRight(compact, BITS_PER_LEVEL * depth), HEADER_HIGH, resolution, getLowBit(resolution));
+    let key = getCanonicalKey(cellShiftRight(compact, BITS_PER_LEVEL * depth), resolution);
     let slot = positions[positionsOffset + index];
     emitted[emittedOffset + 2u * slot] = key.y;
     emitted[emittedOffset + 2u * slot + 1u] = key.x;
@@ -555,19 +640,19 @@ ${familyWGSL}`,
       })
     );
 
-    // 6. Stable sort by resolution: within a resolution the emitted cells are already ascending.
-    const orderedKeys = u32('ordered-keys');
-    const orderedIds = u32('ordered-ids');
-    nodes.push(
-      ...new GPUSort({
-        id: `${id}-sort-resolution`,
-        keys: sortKeys,
-        values: sortIds,
-        outputKeys: orderedKeys,
-        outputValues: orderedIds,
-        keyBits: 5
-      }).getCommandNodes(graph)
-    );
+    // 6. H3/Quadbin sort by resolution; disjoint S2 Hilbert intervals already follow ID order.
+    const orderedIds = props.family === 's2' ? sortIds : u32('ordered-ids');
+    if (props.family !== 's2')
+      nodes.push(
+        ...new GPUSort({
+          id: `${id}-sort-resolution`,
+          keys: sortKeys,
+          values: sortIds,
+          outputKeys: u32('ordered-keys'),
+          outputValues: orderedIds,
+          keyBits: 5
+        }).getCommandNodes(graph)
+      );
 
     // 7. Gather into the bounded output and publish count, overflow, and totals.
     nodes.push(
@@ -620,7 +705,7 @@ ${familyWGSL}`,
     graph: GPUCommandGraph<Parameters>,
     operation: GPUCellUncompactOperation
   ): GPUCommandNode<Parameters>[] {
-    const {id, props, layout} = this;
+    const {id, props} = this;
     const {output} = props;
     const rows = props.cells.length;
     const maximumDepth = operation.maximumDepth ?? GPU_CELL_UNCOMPACT_DEFAULT_MAXIMUM_DEPTH;
@@ -635,7 +720,7 @@ ${familyWGSL}
 
 fn getCompact(key: vec2u, resolution: u32) -> vec2u {
   let lowBit = getLowBit(resolution);
-  return cellGetCompactKey(key, lowBit, 52u - lowBit);
+  return cellGetCompactKey(key, lowBit, ${props.family === 's2' ? 64 : 52}u - lowBit);
 }`;
 
     if (output.status.droppedCount) {
@@ -693,24 +778,15 @@ fn getCompact(key: vec2u, resolution: u32) -> vec2u {
       })
     );
 
-    // 2. Output offsets.
+    // 2. Monotone saturated offsets preserve the output prefix after uint32 overflow.
     const offsets = u32('offsets');
-    nodes.push(
-      ...new GPUScan({
-        id: `${id}-scan`,
-        input: counts,
-        output: offsets,
-        mode: 'exclusive'
-      }).getCommandNodes(graph)
-    );
-
     const scanTotal = u32('scan-total', 1);
     nodes.push(
-      ...createSaturatedScanTotalNodes<Parameters>(graph, {
-        id: id,
+      ...createSaturatedCountScanNodes(graph, {
+        id: `${id}-scan`,
         operation: OPERATION,
-        counts: counts,
-        offsets: offsets,
+        counts,
+        offsets,
         rowCount: rows,
         total: scanTotal
       })
@@ -748,7 +824,7 @@ ${declarations}
 /** The \`rank\`-th (ascending) descendant path \`depth\` levels below \`compact\`. */
 fn getDescendant(compact: vec2u, resolution: u32, depth: u32, rankIn: u32) -> vec2u {
   ${
-    props.family === 'quadbin'
+    props.family !== 'h3'
       ? 'return cellShiftLeft(compact, 2u * depth) | vec2u(0u, rankIn);'
       : `var rank = rankIn;
   var digits = vec2u(0u);
@@ -802,7 +878,7 @@ fn getDescendant(compact: vec2u, resolution: u32, depth: u32, rankIn: u32) -> ve
     let resolution = getKeyResolution(key);
     let depth = RESOLUTION - resolution;
     let compact = getDescendant(getCompact(key, resolution), resolution, depth, index - offsets[offsetsOffset + row]);
-    result = cellGetKey(compact, HEADER_HIGH, RESOLUTION, ${layout.lowBit}u);
+    result = getCanonicalKey(compact, RESOLUTION);
   }
   cellsOut[cellsOutOffset + 2u * index] = result.y;
   cellsOut[cellsOutOffset + 2u * index + 1u] = result.x;`

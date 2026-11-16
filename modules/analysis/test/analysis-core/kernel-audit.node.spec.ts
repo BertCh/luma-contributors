@@ -16,14 +16,16 @@ import {
 } from './kernel-audit/analysis-contributors';
 import {KERNEL_AUDIT_CASES} from './kernel-audit/kernel-audit-cases';
 import {KERNEL_AUDIT_REJECTIONS} from './kernel-audit/kernel-audit-rejections';
-import {auditWGSLModule} from './kernel-audit/kernel-audit-wgsl';
+import {auditWGSLModule, findUnusedBindings} from './kernel-audit/kernel-audit-wgsl';
+import {auditKernelCase} from './kernel-audit/kernel-audit-runner';
+import {createWGSLKernelNode} from '../../src/analysis-core/kernels/wgsl-kernel-nodes';
 
 // Library-wide kernel audit (quality rule 16 and the BRIEF rule 6 compile traps). Every public
 // contributor of the six analysis entries is built at maximal documented options on a fake 'core'
 // device; every generated WGSL module is checked for core limits (8 storage buffers per stage,
 // 8192 B private and per-function memory, 16384 B workgroup memory, workgroup size), binding and
 // buffer sizes, `capacity x lanes <= 2^32 - 1`, WGSL reserved words used as identifiers, NaN
-// self-compares, const-expression non-finite bitcasts and calls to undeclared functions. These
+// self-compares, const-expression non-finite bitcasts, undeclared calls and unused bindings. These
 // are exactly the shader-creation errors that `wgsl_reflect` accepts and Dawn rejects.
 
 /**
@@ -85,6 +87,15 @@ describe('kernel audit checks', () => {
   });
 
   it('rejects calls to undeclared functions', () => {
+    expect(checks('fn main() { let value = getSpatialAnalysisQuotient(1.0, 2.0); }')).toEqual([
+      'undeclared call'
+    ]);
+    expect(
+      checks(
+        'fn getSpatialAnalysisQuotient(a: f32, b: f32) -> f32 { return a / b; } fn main() { let value = getSpatialAnalysisQuotient(1.0, 2.0); }'
+      )
+    ).toEqual([]);
+
     expect(checks('fn f(a: f32) -> f32 { return orientExact(a); }')).toEqual(['undeclared call']);
     expect(
       checks('fn g() -> f32 { return 1.0; } fn f() -> f32 { return max(g(), f32(1)); }')
@@ -108,9 +119,145 @@ var<workgroup> table: array<Pair, GROUP * 32u>;`;
     ]);
     const storage = Array.from(
       {length: 9},
-      (_, index) => `@group(0) @binding(${index}) var<storage, read> b${index}: array<u32>;`
+      (_, index) =>
+        `@group(0) @binding(${index}) var<storage, ${index === 0 ? 'read_write' : 'read'}> b${index}: array<u32>;`
     ).join('\n');
-    expect(checks(storage)).toEqual(['storage buffers per stage']);
+    const references = Array.from({length: 9}, (_, index) => `b${index}[0]`).join(' + ');
+    expect(
+      checks(`${storage} @compute @workgroup_size(1) fn main() { b0[0] = ${references}; }`)
+    ).toEqual(['storage buffers per stage']);
+  });
+
+  it('rejects unused bindings through the common module audit', () => {
+    const source = '@group(0) @binding(3) var<storage, read> counts: array<u32>; fn main() {}';
+    expect(auditWGSLModule(source)).toEqual([
+      {check: 'unused binding', detail: 'counts (@group(0) @binding(3))'}
+    ]);
+    expect(
+      checks(source.replace('fn main() {}', 'fn main() { let length = arrayLength(&counts); }'))
+    ).toEqual([]);
+  });
+
+  it('reports the declared node and binding through the shared case runner', () => {
+    const result = auditKernelCase({
+      exportName: 'GPUFittingGradientSums',
+      name: 'unused-binding-audit-regression',
+      build: ({graph, view}) => {
+        const values = view('uint32', 1);
+        for (const declared of [true, false]) {
+          graph.add({
+            id: declared ? 'unused-binding-node' : 'omitted-binding-node',
+            type: 'compute',
+            resources: [{buffer: values, usage: 'storage-read'}],
+            compile: ({device}) => {
+              const shader = device.createShader({
+                stage: 'compute',
+                source:
+                  '@group(0) @binding(0) var<storage, read> unusedValues: array<u32>; @compute @workgroup_size(1) fn main() {}'
+              });
+              device.createComputePipeline({
+                shader,
+                shaderLayout: {
+                  bindings: declared
+                    ? [
+                        {
+                          name: 'hostAliasForValues',
+                          type: 'read-only-storage',
+                          group: 0,
+                          location: 0
+                        }
+                      ]
+                    : []
+                }
+              });
+              return {encode: () => {}, destroy: () => shader.destroy()};
+            }
+          });
+        }
+      }
+    });
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]).toEqual({
+      check: 'unused binding',
+      detail: 'unusedValues (@group(0) @binding(0))',
+      location: expect.stringMatching(/^unused-binding-node /)
+    });
+  });
+
+  it('accepts unused module uniforms that the node does not bind, while retaining application bindings', () => {
+    const result = auditKernelCase({
+      exportName: 'GPUFittingGradientSums',
+      name: 'unused-module-binding-audit-regression',
+      build: ({graph, view}) => {
+        graph.add(
+          createWGSLKernelNode(graph, {
+            id: 'unused-module-uniform-node',
+            operation: 'UnusedModuleBindingAudit',
+            invocationCount: 1,
+            bindings: [{name: 'values', view: view('uint32', 1), type: 'u32', access: 'read'}],
+            declarations: '@group(0) @binding(100) var<uniform> moduleParameters: vec4u;',
+            body: ''
+          })
+        );
+      }
+    });
+    // The core builder's address reference keeps the application binding in the auto layout.
+    expect(result.findings).toEqual([]);
+  });
+
+  it('ignores comments, offset names and member names when looking for binding uses', () => {
+    expect(
+      findUnusedBindings(`
+@binding(0) @group(1) var<storage, read> values: array<u32>;
+// values[0] is not a real use.
+/* values /* nested values */ values */
+struct Row { values: u32 }
+fn main() { let valuesOffset = 0u; let row = Row(1u); let result = row . values; }
+`)
+    ).toEqual([{check: 'unused binding', detail: 'values (@binding(0) @group(1))'}]);
+  });
+
+  it('checks uniforms, textures and samplers with multiline and reversed attributes', () => {
+    expect(
+      findUnusedBindings(`
+struct Parameters { scale: f32 }
+@binding(2)
+@group(0) var<uniform> parameters: Parameters;
+@group(0) @binding(3) var image: texture_2d<f32>;
+@group(0) @binding(4) var imageSampler: sampler;
+fn main() { let result = textureSampleLevel(image, imageSampler, vec2f(0.0), 0.0); }
+`)
+    ).toEqual([{check: 'unused binding', detail: 'parameters (@binding(2) @group(0))'}]);
+  });
+
+  it('recognizes Unicode identifiers, helper references and constant-expression attributes', () => {
+    expect(
+      findUnusedBindings(`
+@group(u32(0)) @binding(0) var<storage, read> réflexion: array<u32>;
+@group(0) @binding(1) var<storage, read> 朝焼け: array<u32>;
+fn getValue() -> u32 { return réflexion[0]; }
+fn main() { let result = getValue() + 朝焼け[0]; }
+`)
+    ).toEqual([]);
+    expect(
+      findUnusedBindings('@group(0) @binding(0) var<storage, read> réflexion: array<u32>;')
+    ).toHaveLength(1);
+    expect(findUnusedBindings('var<private> unused: u32;')).toEqual([]);
+  });
+
+  it('matches node binding slots through constants and overrides rather than relying on host names', () => {
+    const source = `const GROUP = 1u;
+override SLOT: u32 = 2u;
+@group(u32(GROUP)) @binding(SLOT) var<uniform> parameters: vec4u;`;
+    const declared = [{name: 'hostParameters', group: 1, location: 2}];
+    expect(findUnusedBindings(source, declared)).toEqual([
+      {check: 'unused binding', detail: 'parameters (@group(u32(GROUP)) @binding(SLOT))'}
+    ]);
+    expect(
+      findUnusedBindings(source, [{name: 'hostParameters', group: 1, location: 3}], {SLOT: 3})
+    ).toEqual([
+      {check: 'unused binding', detail: 'parameters (@group(u32(GROUP)) @binding(SLOT))'}
+    ]);
   });
 });
 

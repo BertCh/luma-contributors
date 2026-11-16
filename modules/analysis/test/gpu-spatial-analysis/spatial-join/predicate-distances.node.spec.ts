@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {expect, it} from 'vitest';
+import {expect, it, vi} from 'vitest';
 import {WgslReflect} from 'wgsl_reflect';
 import {
   GPUSpatialPredicateJoin,
@@ -134,12 +134,39 @@ it('distance outputs validate lengths, metric, graph ownership and disjointness'
 
 it('distance scratch checks the device binding limit before adding nodes', () => {
   const device = createNullWebGPUDevice();
-  Object.defineProperty(device, 'limits', {
-    value: {...device.limits, maxStorageBufferBindingSize: 16}
-  });
   const graph = new GPUCommandGraph(device);
-  const join = new GPUSpatialPredicateJoin(createProps(graph));
-  expect(() => join.getCommandNodes(graph)).toThrow(/predicate-distances distance pairs.*limit 16/);
+  const props = createProps(graph, 'points');
+  const view = <Format extends 'uint32' | 'float32'>(name: string, format: Format) =>
+    createTransientView(graph, `distance-limit-${name}`, format, 8);
+  // Every caller binding fits 32 bytes; only the private uint32x2 distance-pair table needs 64.
+  const join = new GPUSpatialPredicateJoin({
+    ...props,
+    output: {
+      ...props.output,
+      pairs: {
+        ...props.output.pairs,
+        leftIds: view('left', 'uint32'),
+        rightIds: view('right', 'uint32')
+      },
+      relate: view('relate', 'uint32'),
+      weights: {
+        ...props.output.weights,
+        neighbors: view('neighbors', 'uint32'),
+        weights: view('weights', 'float32'),
+        distances: view('distances', 'float32')
+      }
+    }
+  });
+  Object.defineProperty(device, 'limits', {
+    value: {...device.limits, maxStorageBufferBindingSize: 32}
+  });
+  const scratch = vi.spyOn(graph, 'createTransientBuffer');
+  const views = vi.spyOn(graph, 'createDataView');
+  const nodes = vi.spyOn(graph, 'add');
+  const resources = vi.spyOn(device, 'createBuffer');
+  expect(() => join.getCommandNodes(graph)).toThrow(/predicate-distances distance pairs.*limit 32/);
+  for (const declaration of [scratch, views, nodes, resources])
+    expect(declaration).not.toHaveBeenCalled();
   device.destroy();
 });
 

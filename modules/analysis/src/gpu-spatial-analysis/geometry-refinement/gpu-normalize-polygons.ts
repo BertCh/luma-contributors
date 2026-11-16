@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateOutlineOutputPasses} from '../outline-geometry/validate-outline-output-passes';
+import {validateRefinementScratchByteLengths} from './refinement-storage-validation';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -13,8 +16,7 @@ import type {GPUPolygonGeometryFields} from '../../analysis-core/contracts/index
 import {
   validateSinglePackedView,
   validateCapacity,
-  validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {GPUGeometryOrientation} from '../geometry-edit/gpu-geometry-orientation';
@@ -59,6 +61,7 @@ export class GPUNormalizePolygons implements GPUCommandNodeProducer {
         throw new Error('Canonical output length mismatch');
       }
     }
+    validateOutlineOutputPasses(this.id, props.output, [Object.keys(props.output)]);
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
       props.positions,
       props.ringOffsets,
@@ -70,13 +73,25 @@ export class GPUNormalizePolygons implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.positions,
-      props.ringOffsets,
-      props.polygonOffsets,
-      props.featureOffsets,
-      ...Object.values(props.output)
-    ]);
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(
+        [
+          props.positions,
+          props.ringOffsets,
+          props.polygonOffsets,
+          props.featureOffsets,
+          ...Object.values(props.output)
+        ].map((view, index) => [`binding.${index}`, view])
+      )
+    );
+    validateRefinementScratchByteLengths(graph, id, {
+      canonical: (props.ringOffsets.length - 1) * 16,
+      orientedPositions: props.positions.length * 8,
+      orientationFlags: (props.ringOffsets.length - 1) * 4,
+      parameters: 16
+    });
     const canonical = createTransientView(
       graph,
       `${id}-canonical-rings`,

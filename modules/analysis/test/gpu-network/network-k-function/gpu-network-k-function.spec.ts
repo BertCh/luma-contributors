@@ -59,6 +59,7 @@ type KFunctionResult = {
   envelope?: number[];
   snappedEventCount: number;
   converged: number;
+  iterationLimitReached: number;
 };
 
 async function runKFunction(device: Device, options: KFunctionOptions): Promise<KFunctionResult> {
@@ -142,7 +143,8 @@ async function runKFunction(device: Device, options: KFunctionOptions): Promise<
         envelope: simulationCount > 0 ? output('envelope', 'float32', 3 * bandCount) : undefined,
         snappedEventCount: output('snapped', 'uint32', 1),
         status: {
-          converged: output('converged', 'uint32', 1)
+          converged: output('converged', 'uint32', 1),
+          iterationLimitReached: output('iteration-limit', 'uint32', 1)
         }
       }
     })
@@ -156,8 +158,10 @@ async function runKFunction(device: Device, options: KFunctionOptions): Promise<
       ? await readFloat32(outputs['envelope'], 3 * bandCount)
       : undefined,
     snappedEventCount: (await readUint32(outputs['snapped'], 1))[0],
-    converged: (await readUint32(outputs['converged'], 1))[0]
+    converged: (await readUint32(outputs['converged'], 1))[0],
+    iterationLimitReached: (await readUint32(outputs['iteration-limit'], 1))[0]
   };
+  expect(result.iterationLimitReached).toBe(1 - result.converged);
   compiled.destroy();
   for (const buffer of parameterBuffers) {
     buffer.destroy();

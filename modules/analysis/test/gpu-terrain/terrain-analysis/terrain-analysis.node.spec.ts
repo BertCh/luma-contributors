@@ -294,10 +294,16 @@ it('terrain absolute-eye oracles match ground heights and allow no-data observer
   ).toBe(GPU_TERRAIN_VISIBILITY.noData);
 });
 
-/** Collapses the consecutive pyramid builder node ids into one '<pyramid>' marker. */
+/** Checks the fused upload ordering, then collapses the consecutive pyramid nodes. */
 function withoutPyramidNodes(ids: string[]): string[] {
+  const uploadIds = ids.filter(id => id.endsWith('-pyramid-fused-parameters-upload'));
+  expect(uploadIds).toHaveLength(1);
+  const uploadIndex = ids.indexOf(uploadIds[0]);
+  expect(ids[uploadIndex - 1]).toBe(uploadIds[0].replace('fused-parameters-upload', 'level-0'));
+  expect(ids[uploadIndex + 1]).toMatch(/-pyramid-levels-1-[0-9]+$/);
   return ids.reduce<string[]>((result, id) => {
-    const isPyramid = /-pyramid-level/.test(id);
+    const isPyramid =
+      /-pyramid-(?:level-[0-9]+|levels-[0-9]+-[0-9]+|fused-parameters-upload)$/.test(id);
     if (!isPyramid || result.at(-1) !== '<pyramid>') {
       result.push(isPyramid ? '<pyramid>' : id);
     }

@@ -8,19 +8,22 @@ import type {
   GPUCommandNode,
   GPUCommandNodeProducer
 } from '@luma.gl/graph/gpu-core';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  createRasterTimeSeriesNodes,
+  planRasterTimeSeriesChunks,
+  rasterTimeSeriesBinding as rasterBinding,
+  validateRasterTimeSeriesViews as validateRasterViews,
+  validateRasterTimeSeriesGraph as validateRasterGraph,
+  type RasterTimeSeriesScalarView as RasterScalarView,
+  type RasterTimeSeriesView,
+  type RasterTimeSeriesChunkPlan
+} from './raster-time-series-chunks-b';
 import {
   validateCapacity,
   validateFiniteNumber,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {
-  RASTER_FINITE_WGSL,
-  rasterBinding,
-  validateRasterGraph,
-  validateRasterViews,
-  type RasterScalarView
-} from '../remote-sensing/raster-kernel-utils';
+import {RASTER_FINITE_WGSL} from '../remote-sensing/raster-kernel-utils';
 import {
   getGPURasterDateAxisBinding,
   getGPURasterDateAxisDeclarations,
@@ -62,24 +65,24 @@ export function getGPURasterTemporalResampleParameterValues(
 }
 
 /** Properties of {@link GPURasterTemporalResample}. */
-export type GPURasterTemporalResampleProps = {
+export type GPURasterTemporalResampleProps<Rows extends RasterScalarView = GraphDataView> = {
   id?: string;
   cellCount: number;
   sliceCount: number;
   /** Output grid points per cell, in `[1, 4096]`. */
   gridCount: number;
   /** Cell-major `cell * sliceCount + slice`; nonfinite samples are missing. */
-  values: GraphDataView<'float32'>;
+  values: RasterTimeSeriesView<'float32', Rows>;
   /** Per-observation QA; zero rejects the sample. */
-  mask?: GraphDataView<'uint32'>;
+  mask?: RasterTimeSeriesView<'uint32', Rows>;
   /** Float32, see {@link getGPURasterTemporalResampleParameterValues}. */
   parameters: GraphDataView<'float32'>;
   dateAxis: GPURasterIrregularDateAxis;
   output: {
     /** `cell * gridCount + point`; NaN where status is nonzero. */
-    values: GraphDataView<'float32'>;
+    values: RasterTimeSeriesView<'float32', Rows>;
     /** Per grid point: 0 interpolated, 1 outside the observed range, 2 gap larger than `maximumGap`. */
-    status: GraphDataView<'uint32'>;
+    status: RasterTimeSeriesView<'uint32', Rows>;
   };
 };
 
@@ -91,12 +94,20 @@ export type GPURasterTemporalResampleProps = {
  * output feeds a regular-time grid directly; nothing is extrapolated.
  *
  * Per-frame: `parameters`. Compile-time: `cellCount`, `sliceCount`, `gridCount`, and which optional views exist.
+ *
+ * Cell-major views accept matching chunks of complete cell records; shared tables stay packed.
  */
-export class GPURasterTemporalResample implements GPUCommandNodeProducer {
+export class GPURasterTemporalResample<Rows extends RasterScalarView = GraphDataView>
+  implements GPUCommandNodeProducer
+{
   readonly id: string;
+  readonly props: GPURasterTemporalResampleProps<Rows>;
+  readonly chunkPlan: RasterTimeSeriesChunkPlan;
+  readonly estimatedCommandNodeCount: number;
   private readonly ticksPerYear: number;
 
-  constructor(readonly props: GPURasterTemporalResampleProps) {
+  constructor(props: GPURasterTemporalResampleProps<Rows> & {values: Rows}) {
+    this.props = props;
     const id = props.id ?? 'raster-temporal-resample';
     this.id = id;
     validateCapacity(id, 'cellCount', props.cellCount);
@@ -123,12 +134,24 @@ export class GPURasterTemporalResample implements GPUCommandNodeProducer {
       `parameters must hold ${GPU_RASTER_TEMPORAL_RESAMPLE_PARAMETER_LENGTH} entries`
     );
     this.ticksPerYear = resolveGPURasterIrregularDateAxis(id, props.dateAxis, props.sliceCount);
-    validateRasterViews(id, this.getInputs(), this.getOutputs());
+    this.chunkPlan = planRasterTimeSeriesChunks(this.id, props.cellCount, {
+      values: {view: props.values, entriesPerCell: props.sliceCount},
+      mask: {view: props.mask, entriesPerCell: props.sliceCount},
+      'output.values': {view: props.output.values, entriesPerCell: props.gridCount},
+      'output.status': {view: props.output.status, entriesPerCell: props.gridCount}
+    });
+    this.estimatedCommandNodeCount = this.chunkPlan.estimatedCommandNodeCount;
+    validateRasterViews(this.id, this.getInputs(), this.getOutputs(), this.chunkPlan);
   }
 
   private getInputs(): RasterScalarView[] {
     const {values, mask, parameters} = this.props;
-    return [values, parameters, ...(mask ? [mask] : [])];
+    return [
+      ...(this.props.dateAxis ? [this.props.dateAxis.acquisitionTimes] : []),
+      values,
+      parameters,
+      ...(mask ? [mask] : [])
+    ];
   }
 
   private getOutputs(): RasterScalarView[] {
@@ -142,21 +165,20 @@ export class GPURasterTemporalResample implements GPUCommandNodeProducer {
     const {sliceCount: slices, gridCount, values, mask, parameters, dateAxis, output} = props;
     validateRasterGraph(id, graph, this.getInputs(), this.getOutputs());
     validateGPURasterDateAxisGraph(id, graph, dateAxis);
-    return [
-      createWGSLKernelNode<Parameters>(graph, {
-        id,
-        operation: 'GPURasterTemporalResample',
-        invocationCount: props.cellCount,
-        workgroupSize: 16,
-        bindings: [
-          rasterBinding('values', values),
-          rasterBinding('parameters', parameters),
-          ...(mask ? [rasterBinding('mask', mask)] : []),
-          getGPURasterDateAxisBinding(dateAxis),
-          rasterBinding('resampled', output.values, true),
-          rasterBinding('resampleStatus', output.status, true)
-        ],
-        declarations: `${RASTER_FINITE_WGSL}
+    return createRasterTimeSeriesNodes<Parameters>(graph, this.chunkPlan, {
+      id,
+      operation: 'GPURasterTemporalResample',
+      invocationCount: props.cellCount,
+      workgroupSize: 16,
+      bindings: [
+        rasterBinding('values', values),
+        rasterBinding('parameters', parameters),
+        ...(mask ? [rasterBinding('mask', mask)] : []),
+        getGPURasterDateAxisBinding(dateAxis),
+        rasterBinding('resampled', output.values, true),
+        rasterBinding('resampleStatus', output.status, true)
+      ],
+      declarations: `${RASTER_FINITE_WGSL}
 ${getGPURasterDateAxisDeclarations(this.ticksPerYear, slices)}
 fn isObserved(cell: u32, slice: u32) -> bool {
   let source = cell * ${slices}u + slice;
@@ -167,7 +189,7 @@ fn advanceObserved(cell: u32, start: u32) -> u32 {
   while (slice < ${slices}u && !isObserved(cell, slice)) { slice++; }
   return slice;
 }`,
-        body: `let gridStart = parameters[parametersOffset];
+      body: `let gridStart = parameters[parametersOffset];
 let gridStep = parameters[parametersOffset + 1u];
 let maximumGap = parameters[parametersOffset + 2u];
 var left = ${slices}u;
@@ -197,7 +219,6 @@ for (var point = 0u; point < ${gridCount}u; point++) {
   resampled[resampledOffset + index * ${gridCount}u + point] = value;
   resampleStatus[resampleStatusOffset + index * ${gridCount}u + point] = code;
 }`
-      })
-    ];
+    });
   }
 }

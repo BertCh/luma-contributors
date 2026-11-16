@@ -13,7 +13,6 @@ import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
   validateSinglePackedView,
   validatePowerOfTwo,
   validateRequirement
@@ -54,6 +53,12 @@ import {
   type GeometryMeasureColumns,
   type GPUGeometryCoordinateSystem
 } from './geometry-measures-kernels';
+
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {
+  getGeometrySortScratchByteLengths,
+  validateGeometryScratchByteLengths
+} from '../geometry-edit/geometry-storage-validation';
 
 const OPERATION = 'GPUGeometryMeasures';
 
@@ -372,16 +377,32 @@ export class GPUGeometryMeasures implements GPUCommandNodeProducer {
     const {status, ...output} = props.output ?? {};
     const groupOutput = props.groupOutput ?? {};
     const layout = getMeasuredLayout(props);
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.positions,
-      layout.ringOffsets,
-      layout.featureOffsets,
-      layout.polygonOffsets,
-      props.groupIds,
-      status?.invalidCount,
-      ...Object.values(output),
-      ...Object.values(groupOutput)
-    ]);
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(
+        [
+          props.positions,
+          layout.ringOffsets,
+          layout.featureOffsets,
+          layout.polygonOffsets,
+          props.groupIds,
+          status?.invalidCount,
+          ...Object.values(output),
+          ...Object.values(groupOutput)
+        ].map((view, index) => [String(index), view])
+      )
+    );
+    validateGeometryScratchByteLengths(graph, id, {
+      featureStatistics: featureCount * GEOMETRY_STATS_STRIDE * 4,
+      ...(props.groupIds && props.groupCount
+        ? {
+            groupStatistics: props.groupCount * GEOMETRY_STATS_STRIDE * 4,
+            groupOffsets: (props.groupCount + 1) * 4,
+            ...getGeometrySortScratchByteLengths(featureCount)
+          }
+        : {})
+    });
     const isPolygon = props.geometryType === 'polygons';
     const featureStats = createTransientView(
       graph,

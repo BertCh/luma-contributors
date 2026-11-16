@@ -3,17 +3,24 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer, type Device} from '@luma.gl/core';
-import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {createTransientView, GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {getResourceBuffer} from '../network-resource-buffers';
 import type {GPUVectorFormat} from '@luma.gl/graph/gpu-data';
-import {expect, it} from 'vitest';
+import {expect, it, vi} from 'vitest';
+import {getForbiddenFlowWGSLIdentifiers} from '../flow-aggregation/flow-wgsl-review';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {
   decodeGPUNetworkCoarseningSummary,
   GPUNetworkCoarsening,
+  GPU_NETWORK_COARSENING_MAXIMUM_GROUP_CAPACITY,
+  getGPUNetworkCoarseningMaximumWeightedEdgeCapacity,
   type GPUNetworkCoarseningOutput,
   type GPUNetworkCoarseningProps
 } from '../../../src/gpu-network/network-coarsening/index';
+import {
+  findReservedIdentifiers,
+  stripWGSLComments
+} from '../../analysis-core/kernel-audit/kernel-audit-wgsl';
 import {
   createNullWebGPUDevice,
   getParsedKernelSources
@@ -138,7 +145,7 @@ it('GPUNetworkCoarsening validates props', () => {
     })
   ).toThrow(/topology\.weights length/);
   expect(() => create({groupCapacity: 0})).toThrow(/groupCapacity/);
-  expect(() => create({groupCapacity: 65536})).toThrow(/groupCapacity/);
+  expect(() => create({groupCapacity: 0xffffffff})).toThrow(/groupCapacity/);
   expect(() => create({fixedPointScale: 3})).toThrow(/fixedPointScale/);
   expect(() => create({labels: importView('l-short', 'uint32', 2)})).toThrow(/labels must contain/);
   expect(() => create({output: {groupNodeCount: importView('g-short', 'uint32', 2)}})).toThrow(
@@ -222,4 +229,289 @@ it('GPUNetworkCoarsening gives CSR tail slots the sentinel key and folds its cou
   // Rule 14: summary words take one atomic per workgroup.
   expect(slotsSource).toContain('workgroupCounters');
   expect(sources.get('tail-vertices')).toContain('workgroupCounters');
+});
+
+it('coarsening sorts separate uint32 columns above 65535 groups and uses valid WGSL identifiers', () => {
+  const device = createNullWebGPUDevice();
+  const {graph, importView, props} = createContext(device);
+  const contributor = new GPUNetworkCoarsening(
+    props({
+      groupCapacity: 100000,
+      topology: {
+        offsets: importView('offsets-large', 'uint32', NODE_COUNT + 1),
+        neighbors: importView('neighbors-large', 'uint32', SLOT_COUNT),
+        weights: importView('weights-large', 'float32', SLOT_COUNT),
+        nodePositions: importView('positions-large', 'float32x2', NODE_COUNT)
+      },
+      nodeMask: importView('node-mask-large', 'uint32', NODE_COUNT),
+      edgeMask: importView('edge-mask-large', 'uint32', SLOT_COUNT),
+      nodeValues: importView('values-large', 'float32', NODE_COUNT),
+      output: {
+        groupNodeCount: importView('counts-large', 'uint32', 100000),
+        groupIntraEdgeCount: importView('intra-large', 'uint32', 100000),
+        groupIntraWeight: importView('intra-weights-large', 'float32', 100000),
+        groupCentroid: importView('centroids-large', 'float32x2', 100000),
+        groupBounds: importView('bounds-large', 'float32x4', 100000),
+        groupValueSum: importView('sums-large', 'float32', 100000),
+        edgeWeights: importView('edge-weights-large', 'float32', EDGE_CAPACITY)
+      }
+    })
+  );
+  const nodes = contributor.getCommandNodes(graph);
+  const sources = getParsedKernelSources(nodes);
+  expect(sources.get('network-coarsening-slots')).not.toContain('sourceLabel * GROUP_CAPACITY');
+  expect(sources.get('network-coarsening-segments')).not.toContain('key / GROUP_CAPACITY');
+  for (const source of sources.values()) {
+    expect(findReservedIdentifiers(stripWGSLComments(source))).toEqual([]);
+    expect(getForbiddenFlowWGSLIdentifiers(source)).toEqual([]);
+  }
+  device.destroy();
+});
+
+it('coarsening rejects overlapping output fields', () => {
+  const device = createNullWebGPUDevice();
+  const {importView, props} = createContext(device);
+  const shared = importView('shared-output', 'uint32', EDGE_CAPACITY);
+  expect(
+    () =>
+      new GPUNetworkCoarsening(
+        props({
+          output: {edgeTargetGroups: shared, edgeCounts: shared}
+        })
+      )
+  ).toThrow(/writable byte ranges/);
+  device.destroy();
+});
+
+it('coarsening checks aligned views and derived accumulators before mutating the graph', () => {
+  for (const failure of ['aligned-input', 'group-accumulator', 'slot-columns'] as const) {
+    const device = createNullWebGPUDevice();
+    Object.defineProperty(device.limits, 'maxStorageBufferBindingSize', {value: 1024});
+    const {graph, importView, props} = createContext(device);
+    const backing = importView('unaligned', 'uint32', 257);
+    const overrides: PropsOverrides =
+      failure === 'aligned-input'
+        ? {
+            labels: graph.createDataView(backing.buffer, {
+              format: 'uint32',
+              byteOffset: 8,
+              length: 255
+            }),
+            topology: {
+              offsets: importView('wide-offsets', 'uint32', 256),
+              neighbors: importView('small-neighbors', 'uint32', 10)
+            }
+          }
+        : failure === 'group-accumulator'
+          ? {
+              groupCapacity: 26,
+              output: {groupNodeCount: importView('group-output', 'uint32', 26)}
+            }
+          : {
+              topology: {
+                offsets: importView('offsets-pairs', 'uint32', NODE_COUNT + 1),
+                neighbors: importView('many-slots', 'uint32', 257)
+              }
+            };
+    const contributor = new GPUNetworkCoarsening(props(overrides));
+    const allocate = vi.spyOn(graph, 'createTransientBuffer');
+    const declareView = vi.spyOn(graph, 'createDataView');
+    expect(() => contributor.getCommandNodes(graph)).toThrow(/network-coarsening.*binding/);
+    expect(allocate).not.toHaveBeenCalled();
+    expect(declareView).not.toHaveBeenCalled();
+    device.destroy();
+  }
+});
+
+it('coarsening keeps every slot scratch binding scalar-sized at 30 million slots', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const rows = (name: string, length: number) => createTransientView(graph, name, 'uint32', length);
+  const contributor = new GPUNetworkCoarsening({
+    topology: {offsets: rows('large-offsets', 7), neighbors: rows('large-neighbors', 30000000)},
+    labels: rows('large-labels', 6),
+    groupCapacity: 100000,
+    edgeMask: rows('large-slot-mask', 30000000),
+    output: {
+      groupNodeCount: rows('large-group-counts', 100000),
+      edges: {
+        ids: rows('large-edge-ids', 4),
+        status: {count: rows('large-count', 1), overflow: rows('large-overflow', 1)}
+      },
+      edgeTargetGroups: rows('large-targets', 4),
+      edgeCounts: rows('large-counts', 4)
+    }
+  });
+  expect(contributor.getCommandNodes(graph).length).toBeGreaterThan(0);
+  device.destroy();
+});
+
+it('coarsening rejects adjacent aligned-binding overlap and accepts separated shared-buffer outputs', () => {
+  for (const stride of [4, 256]) {
+    const device = createNullWebGPUDevice();
+    const {graph, importView, props} = createContext(device);
+    const backing = importView('shared-edge-columns', 'uint32', 129);
+    const sources = graph.createDataView(backing.buffer, {
+      format: 'uint32',
+      byteOffset: 0,
+      length: 1
+    });
+    const targets = graph.createDataView(backing.buffer, {
+      format: 'uint32',
+      byteOffset: stride,
+      length: 1
+    });
+    const counts = graph.createDataView(backing.buffer, {
+      format: 'uint32',
+      byteOffset: 512,
+      length: 1
+    });
+    const original = props();
+    const candidate = {
+      ...original,
+      output: {
+        ...original.output,
+        edges: {...original.output.edges, ids: sources},
+        edgeTargetGroups: targets,
+        edgeCounts: counts
+      }
+    };
+    if (stride === 4)
+      expect(() => new GPUNetworkCoarsening(candidate)).toThrow(/aligned binding byte ranges/);
+    else expect(() => graph.add(new GPUNetworkCoarsening(candidate))).not.toThrow();
+    device.destroy();
+  }
+});
+
+it('both coarsening fixed-point routes avoid every W3C reserved identifier', () => {
+  for (const fixedPointScale of [undefined, 65536]) {
+    const device = createNullWebGPUDevice();
+    const {graph, props} = createContext(device);
+    const nodes = new GPUNetworkCoarsening(props({fixedPointScale})).getCommandNodes(graph);
+    for (const source of getParsedKernelSources(nodes).values()) {
+      expect(getForbiddenFlowWGSLIdentifiers(source)).toEqual([]);
+      expect(findReservedIdentifiers(stripWGSLComments(source))).toEqual([]);
+    }
+    device.destroy();
+  }
+});
+
+it('coarsening refuses one group above the exported uint32-addressing maximum at construction', () => {
+  const device = createNullWebGPUDevice();
+  const {props} = createContext(device);
+  expect(
+    () =>
+      new GPUNetworkCoarsening(
+        props({groupCapacity: GPU_NETWORK_COARSENING_MAXIMUM_GROUP_CAPACITY + 1})
+      )
+  ).toThrow(
+    new RegExp(`network-coarsening groupCapacity.*${GPU_NETWORK_COARSENING_MAXIMUM_GROUP_CAPACITY}`)
+  );
+  device.destroy();
+});
+
+it('coarsening weighted edge capacity respects both buffer and storage binding limits', () => {
+  const device = createNullWebGPUDevice();
+  Object.defineProperty(device.limits, 'maxBufferSize', {value: 1024});
+  Object.defineProperty(device.limits, 'maxStorageBufferBindingSize', {value: 8192});
+  expect(getGPUNetworkCoarseningMaximumWeightedEdgeCapacity(device)).toBe(128);
+  for (const capacity of [128, 129]) {
+    const {graph, importView, props} = createContext(device);
+    const contributor = new GPUNetworkCoarsening(
+      props({
+        output: {
+          edges: {
+            ids: importView('buffer-bound-ids', 'uint32', capacity),
+            status: {
+              count: importView('buffer-bound-count', 'uint32', 1),
+              overflow: importView('buffer-bound-overflow', 'uint32', 1)
+            }
+          },
+          edgeTargetGroups: importView('buffer-bound-targets', 'uint32', capacity),
+          edgeCounts: importView('buffer-bound-counts', 'uint32', capacity),
+          edgeWeights: importView('buffer-bound-weights', 'float32', capacity)
+        }
+      })
+    );
+    const allocate = vi.spyOn(graph, 'createTransientBuffer');
+    if (capacity === 128) expect(() => contributor.getCommandNodes(graph)).not.toThrow();
+    else {
+      expect(() => contributor.getCommandNodes(graph)).toThrow(
+        /network-coarsening.*output.edgeWeights.*128/
+      );
+      expect(allocate).not.toHaveBeenCalled();
+    }
+  }
+  device.destroy();
+});
+
+it('coarsening checks maxBufferSize for derived group scratch before declaring resources', () => {
+  const device = createNullWebGPUDevice();
+  Object.defineProperty(device.limits, 'maxBufferSize', {value: 1024});
+  Object.defineProperty(device.limits, 'maxStorageBufferBindingSize', {value: 8192});
+  const {graph, importView, props} = createContext(device);
+  const contributor = new GPUNetworkCoarsening(
+    props({
+      groupCapacity: 30,
+      output: {groupNodeCount: importView('buffer-group-counts', 'uint32', 30)}
+    })
+  );
+  const allocate = vi.spyOn(graph, 'createTransientBuffer');
+  const declareView = vi.spyOn(graph, 'createDataView');
+  expect(() => contributor.getCommandNodes(graph)).toThrow(
+    /network-coarsening group accumulator byteLength.*1024/
+  );
+  expect(allocate).not.toHaveBeenCalled();
+  expect(declareView).not.toHaveBeenCalled();
+  device.destroy();
+});
+
+it('coarsening refuses physical output aliases hidden behind distinct imported handles', () => {
+  const device = createNullWebGPUDevice();
+  const {graph, props} = createContext(device);
+  const buffer = device.createBuffer({byteLength: 16, usage: Buffer.STORAGE});
+  const first = importGraphBuffer(graph, 'aliased-groups-first', buffer, 'uint32', 4);
+  const second = importGraphBuffer(graph, 'aliased-groups-second', buffer, 'uint32', 4);
+  expect(
+    () =>
+      new GPUNetworkCoarsening(
+        props({output: {groupNodeCount: first, groupIntraEdgeCount: second}})
+      )
+  ).toThrow(/physical storage.*one graph buffer handle/);
+  buffer.destroy();
+  device.destroy();
+});
+
+it('coarsening bounds node and output capacity literals before creating command nodes', () => {
+  const device = createNullWebGPUDevice();
+  const {graph, props} = createContext(device);
+  const original = props();
+  expect(
+    () =>
+      new GPUNetworkCoarsening({
+        ...original,
+        topology: {
+          ...original.topology,
+          offsets: createTransientView(graph, 'oversized-node-offsets', 'uint32', 0x100000000)
+        },
+        labels: createTransientView(graph, 'oversized-node-labels', 'uint32', 0xffffffff)
+      })
+  ).toThrow(/network-coarsening topology node count.*4294967294/);
+  expect(
+    () =>
+      new GPUNetworkCoarsening({
+        ...original,
+        output: {
+          ...original.output,
+          edges: {
+            ...original.output.edges,
+            ids: createTransientView(graph, 'oversized-edge-capacity', 'uint32', 0x100000000)
+          }
+        }
+      })
+  ).toThrow(/network-coarsening output.edges.ids rows.*4294967295/);
+  Object.defineProperty(device.limits, 'maxBufferSize', {value: 2 ** 36});
+  Object.defineProperty(device.limits, 'maxStorageBufferBindingSize', {value: 2 ** 36});
+  expect(getGPUNetworkCoarseningMaximumWeightedEdgeCapacity(device)).toBe(2147483647);
+  device.destroy();
 });

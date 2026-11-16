@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {Device} from '@luma.gl/core';
 import {clamp} from '@math.gl/core';
 import {
   resolveGPUSpatialContext,
@@ -17,7 +18,10 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {
   validateCommandNodeBudget,
-  validateGraphViewsBelongToGraph,
+  validateCapacity,
+  validateRequirement,
+  validateGPUStorageBindingByteLength,
+  validateGraphOutputsDisjointFromInputs,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {createStableLexicographicIndexSortNodes} from '../../analysis-core/kernels/stable-lexicographic-index-sort';
@@ -33,7 +37,95 @@ import {
 import {EXACT_ORIENTATION_WGSL} from '../../analysis-core/kernels/exact-orientation-wgsl';
 import {IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 
+import {getCoreDefaultBuffer} from '../../analysis-core/network-topology';
+import {
+  validateDisjointWritableViews,
+  validateGraphChunkBindingRanges
+} from '../../analysis-core/kernels/graph-chunk-dispatch';
+
+/** Logical writes in separate tessellation passes may share an aligned prefix, but may never alias. @internal */
+export function validateDelaunayLogicalOutputs(
+  id: string,
+  outputs: Readonly<Record<string, GraphDataView | undefined>>
+): void {
+  const fields = Object.entries(outputs).filter((entry): entry is [string, GraphDataView] =>
+    Boolean(entry[1])
+  );
+  for (let firstIndex = 0; firstIndex < fields.length; firstIndex++) {
+    const [firstName, first] = fields[firstIndex];
+    if (first.length === 0) continue;
+    const firstBuffer = first.buffer.defaultBuffer
+      ? getCoreDefaultBuffer(first.buffer.defaultBuffer)
+      : first.buffer;
+    for (let secondIndex = firstIndex + 1; secondIndex < fields.length; secondIndex++) {
+      const [secondName, second] = fields[secondIndex];
+      if (second.length === 0) continue;
+      const secondBuffer = second.buffer.defaultBuffer
+        ? getCoreDefaultBuffer(second.buffer.defaultBuffer)
+        : second.buffer;
+      validateRequirement(
+        id,
+        firstBuffer !== secondBuffer ||
+          first.byteOffset + first.length * first.rowByteLength <= second.byteOffset ||
+          second.byteOffset + second.length * second.rowByteLength <= first.byteOffset,
+        `${firstName} and ${secondName} logical byte ranges must not overlap`
+      );
+    }
+  }
+}
+
 const OPERATION = 'GPUDelaunayTessellation';
+/** Four-word triangle records use uint32 word addresses in every topology kernel. */
+const DELAUNAY_MAXIMUM_SCRATCH_TRIANGLE_COUNT = Math.floor(0xffffffff / 4);
+/** Three-word caller triangle records also use uint32 word addresses. */
+const DELAUNAY_MAXIMUM_OUTPUT_TRIANGLE_COUNT = Math.floor(0xffffffff / 3);
+
+/** Validates uint32 topology addresses without needing a graph. @internal */
+export function getDelaunayScratchTriangleCapacity(
+  id: string,
+  pointCount: number,
+  groupCount = 0
+): number {
+  const capacity = 2 * pointCount + Math.max(groupCount, 1) + 7;
+  validateCapacity(
+    id,
+    'scratch triangle count',
+    capacity,
+    8,
+    DELAUNAY_MAXIMUM_SCRATCH_TRIANGLE_COUNT
+  );
+  return capacity;
+}
+
+/** Preflight for tessellation and enclosing alpha-hull contributors. @internal */
+export function validateDelaunayScratch(
+  device: Device,
+  id: string,
+  pointCount: number,
+  groupCount = 0
+): number {
+  const capacity = getDelaunayScratchTriangleCapacity(id, pointCount, groupCount);
+  validateGPUStorageBindingByteLength(
+    device,
+    id,
+    'triangle topology scratch',
+    16 * capacity,
+    'reduce positions rows or groups.count'
+  );
+  return capacity;
+}
+
+function getDelaunayOutputViews(output: GPUDelaunayTessellationOutput, hasGroups: boolean) {
+  return {
+    'output.triangles': output.triangles,
+    ...Object.fromEntries(
+      Object.entries(output.status).map(([name, view]) => [`output.status.${name}`, view])
+    ),
+    'output.groups.triangleCounts': hasGroups ? output.groups?.triangleCounts : undefined,
+    'output.groups.triangleOffsets': hasGroups ? output.groups?.triangleOffsets : undefined,
+    'output.groups.status.converged': hasGroups ? output.groups?.status.converged : undefined
+  };
+}
 /** Command nodes per unrolled insertion-and-flip step: a gate, four insertion and four flip kernels. */
 const NODES_PER_STEP = 9;
 /** Largest step count of {@link getDelaunayStepCount}, which caps the unrolled steps. */
@@ -686,6 +778,64 @@ export class GPUDelaunayTessellation implements GPUCommandNodeProducer {
     validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     validateSinglePackedView(output.triangles, ['uint32x3'], `${id} output.triangles`);
     validateGPUStatusPort(`${id} output.status`, output.status);
+    validateCapacity(
+      id,
+      'output.triangles rows',
+      output.triangles.length,
+      0,
+      DELAUNAY_MAXIMUM_OUTPUT_TRIANGLE_COUNT
+    );
+    if (props.groups) {
+      validateCapacity(id, 'groups.count', props.groups.count);
+    }
+    getDelaunayScratchTriangleCapacity(id, props.positions.length, props.groups?.count ?? 0);
+    const outputViews = getDelaunayOutputViews(output, Boolean(props.groups));
+    validateDelaunayLogicalOutputs(id, outputViews);
+    const status = output.status;
+    validateDisjointWritableViews(id, {
+      invalidCount: status.invalidCount,
+      duplicateCount: status.duplicateCount,
+      requiredCount: status.requiredCount
+    });
+    validateDisjointWritableViews(id, {
+      invalidCount: status.invalidCount,
+      converged: status.converged,
+      iterationCount: status.iterationCount,
+      iterationLimitReached: status.iterationLimitReached
+    });
+    validateDisjointWritableViews(id, {
+      requiredCount: status.requiredCount,
+      count: status.count,
+      overflow: status.overflow
+    });
+    if (output.triangles.length > 0)
+      validateDisjointWritableViews(id, {
+        requiredCount: status.requiredCount,
+        triangles: output.triangles
+      });
+    if (props.groups) {
+      const groupOutput = output.groups;
+      validateDisjointWritableViews(id, {
+        counts: groupOutput?.triangleCounts,
+        converged: groupOutput?.status.converged
+      });
+      validateDisjointWritableViews(id, {
+        counts: groupOutput?.triangleCounts,
+        requiredCount: status.requiredCount
+      });
+      validateDisjointWritableViews(id, {
+        counts: groupOutput?.triangleCounts,
+        offsets: groupOutput?.triangleOffsets
+      });
+      validateDisjointWritableViews(id, {
+        converged: groupOutput?.status.converged,
+        invalidCount: status.invalidCount
+      });
+    }
+    validateGraphOutputsDisjointFromInputs(id, Object.values(outputViews), [
+      props.positions,
+      props.groups?.ids
+    ]);
     if (!output.status.requiredCount) {
       throw new Error(`${id} output.status.requiredCount is required`);
     }
@@ -737,27 +887,21 @@ export class GPUDelaunayTessellation implements GPUCommandNodeProducer {
     const {id, props} = this;
     const {output} = props;
     const {status} = output;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.positions,
-      output.triangles,
-      status.count,
-      status.requiredCount,
-      status.overflow,
-      status.invalidCount,
-      status.duplicateCount,
-      status.converged,
-      status.iterationCount,
-      status.iterationLimitReached,
-      props.groups?.ids,
-      output.groups?.triangleCounts,
-      output.groups?.triangleOffsets,
-      output.groups?.status.converged
-    ]);
+    validateGraphChunkBindingRanges(graph, id, {
+      positions: props.positions,
+      'groups.ids': props.groups?.ids,
+      ...getDelaunayOutputViews(output, Boolean(props.groups))
+    });
     const pointCount = props.positions.length;
     const groupCount = props.groups?.count ?? 0;
     // Sites plus one super triangle per group need 2n + groups triangles; the guard rows turn an
     // unexpected failure into explicit status.
-    const scratchTriangleCapacity = Math.max(2 * pointCount + Math.max(groupCount, 1) + 7, 8);
+    const scratchTriangleCapacity = validateDelaunayScratch(
+      graph.device,
+      id,
+      pointCount,
+      groupCount
+    );
     const view = (name: string, length: number) =>
       createTransientView(graph, `${id}-${name}`, 'uint32', Math.max(length, 1));
     const triangleVertices = view('triangle-vertices', 4 * scratchTriangleCapacity);

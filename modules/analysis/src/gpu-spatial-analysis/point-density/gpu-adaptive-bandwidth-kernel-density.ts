@@ -47,6 +47,15 @@ import {
 } from './kernel-density-math';
 import {getKernelValueWGSL} from './kernel-density-wgsl';
 
+import {
+  DENSITY_MAXIMUM_SORT_ROW_COUNT,
+  DENSITY_MAXIMUM_INDEX_DIMENSION,
+  stageDensityOutputViews,
+  validateDensityIndexedScratch,
+  validateDensityViewBindings,
+  validateDensityWritableViews
+} from './density-point-passes';
+
 const OPERATION = 'GPUAdaptiveBandwidthKernelDensity';
 
 /** Number of float32 elements in a {@link GPUAdaptiveBandwidthKernelDensity} parameter view. */
@@ -230,7 +239,10 @@ export class GPUAdaptiveBandwidthKernelDensity implements GPUCommandNodeProducer
       ['indexGridSize[0]', props.indexGridSize[0]],
       ['indexGridSize[1]', props.indexGridSize[1]]
     ] as const) {
-      validateCapacity(id, name, size, 1, Number.MAX_SAFE_INTEGER);
+      validateCapacity(id, name, size, 1, DENSITY_MAXIMUM_INDEX_DIMENSION);
+    }
+    for (const [index, value] of props.indexBounds.entries()) {
+      validateFiniteNumber(id, `indexBounds[${index}]`, value);
     }
     const [minX, minY, maxX, maxY] = props.indexBounds;
     validateRequirement(
@@ -242,7 +254,13 @@ export class GPUAdaptiveBandwidthKernelDensity implements GPUCommandNodeProducer
       'indexBounds must be finite and ordered'
     );
     validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
-    validateRequirement(id, props.positions.length >= 1, 'needs at least one point');
+    validateCapacity(
+      id,
+      'positions length',
+      props.positions.length,
+      1,
+      DENSITY_MAXIMUM_SORT_ROW_COUNT
+    );
     const pointCount = props.positions.length;
     if (props.weights) {
       validateSinglePackedView(props.weights, ['float32'], `${id} weights`);
@@ -283,6 +301,12 @@ export class GPUAdaptiveBandwidthKernelDensity implements GPUCommandNodeProducer
         );
       }
     }
+    validateDensityWritableViews(id, {
+      values: props.output.values,
+      weightSum: props.output.weightSum,
+      pointBandwidths: props.output.pointBandwidths,
+      pilotDensities: props.output.pilotDensities
+    });
     validateGraphOutputsDisjointFromInputs(
       id,
       [
@@ -300,7 +324,8 @@ export class GPUAdaptiveBandwidthKernelDensity implements GPUCommandNodeProducer
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, kernel, normalization, bandwidthFactorLimit, cellCount} = this;
-    const {output, grid, indexGridSize, indexBounds} = props;
+    const {output: callerOutput, grid, indexGridSize, indexBounds} = props;
+    let output = callerOutput;
     validateGraphViewsBelongToGraph(id, graph, [
       props.positions,
       props.weights,
@@ -316,6 +341,32 @@ export class GPUAdaptiveBandwidthKernelDensity implements GPUCommandNodeProducer
       indexGridSize[0] * indexGridSize[1],
       getGPUGridIndexMaximumCellCount(graph.device)
     );
+    validateDensityViewBindings(
+      graph,
+      id,
+      [
+        ['positions', props.positions],
+        ['weights', props.weights],
+        ['parameters', props.parameters],
+        ['output.values', output.values],
+        ['output.weightSum', output.weightSum],
+        ['output.pointBandwidths', output.pointBandwidths],
+        ['output.pilotDensities', output.pilotDensities]
+      ],
+      {dispatchMetadata: false}
+    );
+    validateDensityIndexedScratch(
+      graph,
+      id,
+      props.positions.length,
+      indexGridSize[0] * indexGridSize[1]
+    );
+    const staged = stageDensityOutputViews(graph, id, OPERATION, callerOutput, {
+      values: cellCount,
+      pointBandwidths: props.positions.length,
+      pilotDensities: props.positions.length
+    });
+    output = staged.views;
     const {width, height} = grid;
     const pointCount = props.positions.length;
     const index = createPointNeighborGridIndexNodes<Parameters>(graph, {
@@ -544,6 +595,6 @@ ${indexDeclarations}`,
   valuesOut[valuesOutOffset + index] = result;`
       })
     );
-    return nodes;
+    return [...nodes, ...staged.publishNodes];
   }
 }

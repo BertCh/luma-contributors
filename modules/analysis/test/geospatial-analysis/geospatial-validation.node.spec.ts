@@ -13,14 +13,14 @@ import {GPUPointCloudStatisticalFilter} from '../../src/pointcloud-analysis/gpu-
 import {GPUPointCloudSurfaces} from '../../src/pointcloud-analysis/gpu-pointcloud-surfaces';
 import {createNullWebGPUDevice} from '../utils/gpu-contributor-test-utils';
 
-function createPointBuffer(overrides: Record<string, unknown> = {}) {
+function createPointBuffer(overrides: Record<string, unknown> = {}, offsetCount = 8) {
   const graph = new GPUCommandGraph(createNullWebGPUDevice());
   const view = createTransientView;
   return () =>
     new GPUPointBuffer({
       points: view(graph, 'points', 'float32x2', 2),
       parameters: view(graph, 'parameters', 'float32', 2),
-      offsets: view(graph, 'offsets', 'float32x2', 8),
+      offsets: view(graph, 'offsets', 'float32x2', offsetCount),
       verticesPerRing: 4,
       coordinateSystem: 'planar',
       ...overrides
@@ -33,9 +33,15 @@ it('GPUPointBuffer refuses bad props with named-limit messages', () => {
     /^point-buffer verticesPerRing must be an integer in \[3, 4294967295\]$/
   );
   expect(createPointBuffer({verticesPerRing: 5})).toThrow(
-    /^point-buffer offsets must have 10 rows$/
+    /^point-buffer offsets must have verticesPerRing rows per point$/
   );
   const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  for (const offsetCount of [9, 10, 11]) {
+    const construct = createPointBuffer({verticesPerRing: 5}, offsetCount);
+    if (offsetCount === 10) expect(construct).not.toThrow();
+    else
+      expect(construct).toThrow(/^point-buffer offsets must have verticesPerRing rows per point$/);
+  }
   expect(
     () =>
       new GPUPointBuffer({

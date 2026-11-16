@@ -29,6 +29,7 @@ import {
   type GraphResourceUse,
   type GraphTextureView
 } from '@luma.gl/graph/gpu-core';
+import {validateWGSLIdentifier} from './wgsl-identifiers';
 import type {GPUCompactOutput} from './gpu-contributor-types';
 import {validateMaximumCount, validateRequirement} from './gpu-contributor-utils';
 
@@ -368,6 +369,13 @@ export function createWGSLKernelNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: WGSLKernelProps<Parameters>
 ): GPUCommandNode<Parameters> {
+  for (const binding of props.bindings) {
+    validateWGSLIdentifier(props.id, 'binding name', binding.name);
+    validateWGSLIdentifier(props.id, 'binding offset', `${binding.name}Offset`);
+  }
+  for (const texture of props.textures ?? []) {
+    validateWGSLIdentifier(props.id, 'texture name', texture.name);
+  }
   const workgroupSize =
     props.workgroupSize ??
     (props.guardIndex === false

@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateNetworkViewBindings, validateNetworkWritableViews} from '../network-view-utils';
+
 import type {Device} from '@luma.gl/core';
 import {
   resolveGPUSpatialContext,
@@ -21,14 +23,13 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   getStorageBindingElementLimit,
+  getNextPowerOfTwo,
   validateCapacity,
   validateMaximumCount,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
-  getGPUNetworkTopologyViews,
   validateGPUNetworkTopology,
   type GPUNetworkAdjacency
 } from '../../analysis-core/network-topology';
@@ -215,6 +216,7 @@ export class GPUNetworkSnapping implements GPUCommandNodeProducer {
   constructor(props: GPUNetworkSnappingProps) {
     this.id = props.id ?? 'network-snapping';
     this.props = props;
+    validateNetworkWritableViews(this.id, props.output);
     this.startDirection = props.startDirection ?? 'both';
     const {id} = this;
     this.spatialContext = resolveGPUSpatialContext(
@@ -339,7 +341,7 @@ export class GPUNetworkSnapping implements GPUCommandNodeProducer {
     const {offsets, neighbors: edgeTargets, weights: edgeCosts} = props.topology;
     const {nodePositions} = props.topology;
     const {output} = props;
-    validateGraphViewsBelongToGraph(id, graph, [...getInputs(props), ...getOutputs(props)]);
+    validateNetworkViewBindings(id, graph, [...getInputs(props), ...getOutputs(props)]);
     if (props.candidateCapacity !== undefined) {
       validateMaximumCount(
         id,
@@ -348,7 +350,24 @@ export class GPUNetworkSnapping implements GPUCommandNodeProducer {
         getGPUNetworkSnappingMaximumCandidateEdgeCount(graph.device)
       );
     }
+    const leafCapacity = getNextPowerOfTwo(Math.max(edgeCount, 1));
+    const usesGreatCircle = this.spatialContext.coordinateSpace === 'longitude-latitude';
     const nodes: GPUCommandNode<Parameters>[] = [];
+    validateNetworkViewBindings(id, graph, [], {
+      edgeSources: edgeCount * 4,
+      pointScratch: pointCount * 4,
+      ...(props.candidateCapacity !== undefined
+        ? {
+            segments: edgeCount * 8,
+            // candidateCapacity is the TOTAL pair capacity, not a capacity per query.
+            candidates: usesGreatCircle ? 0 : props.candidateCapacity * 8,
+            boundsAndChildren: (2 * leafCapacity - 1) * 8,
+            // The great-circle route uses the join's packed five-word BVH node table.
+            nodeTable: usesGreatCircle ? ((2 * leafCapacity - 1) * 5 + 2 * pointCount) * 4 : 0,
+            joinState: 16
+          }
+        : {})
+    });
     const nodeDeclarations = `const NODE_COUNT: u32 = ${nodeCount}u;
 const EDGE_COUNT: u32 = ${edgeCount}u;
 const NONE: u32 = ${ACCESSIBILITY_NONE}u;`;
@@ -791,7 +810,12 @@ ${metricWGSL}`,
 function getInputs(props: GPUNetworkSnappingProps): (GraphDataView | undefined)[] {
   return [
     props.positions,
-    ...getGPUNetworkTopologyViews(props.topology),
+    props.topology.offsets,
+    props.topology.neighbors,
+    props.topology.nodePositions,
+    props.output.sourceCosts || props.output.targetCosts || props.output.startCosts
+      ? props.topology.weights
+      : undefined,
     props.maximumSnapDistance
   ];
 }

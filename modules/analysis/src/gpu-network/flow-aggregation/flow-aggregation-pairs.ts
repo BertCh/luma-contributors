@@ -5,11 +5,14 @@
 /** Zone ID written for rejected or unused rows. */
 export const GPU_FLOW_AGGREGATION_NO_ZONE = 0xffffffff;
 
-/** Largest zone count whose pair keys `originZone * zoneCount + destinationZone` fit in a uint32. */
-export const GPU_FLOW_AGGREGATION_MAXIMUM_ZONE_COUNT = 65535;
+/** Largest legacy packed-key zone count; larger counts use two-column lexicographic keys. */
+export const GPU_FLOW_AGGREGATION_MAXIMUM_PACKED_ZONE_COUNT = 65535;
+
+/** Largest zone count with uint32 IDs and room for the zone-sum offsets sentinel. */
+export const GPU_FLOW_AGGREGATION_MAXIMUM_ZONE_COUNT = 0xfffffffe;
 
 /**
- * Pair key of a flow: `originZone * zoneCount + destinationZone`.
+ * Legacy packed pair key (zoneCount <= 65535): `originZone * zoneCount + destinationZone`.
  *
  * Keys are always below `0xffffffff`, which the hash table reserves as its empty marker.
  */

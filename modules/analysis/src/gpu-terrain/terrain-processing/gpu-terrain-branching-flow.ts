@@ -19,6 +19,10 @@ import {
 } from '../../raster-analysis/cost-distance/raster-relaxation';
 import {
   validateCapacity,
+  validateCommandNodeBudget,
+  validateGraphViewsBelongToGraph,
+  validateRequirement,
+  validateSinglePackedView,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -31,6 +35,10 @@ import {
   validateRasterGridAxisAligned
 } from '../../raster-analysis/raster-band-utils';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  getTerrainBranchingFlowCommandNodeCount,
+  validateTerrainBranchingFlowScratch
+} from './terrain-branching-flow-budget';
 import {getTerrainFlowTracingWGSL} from '../hydrology/terrain-flow-tracing';
 import {
   checkTerrainViews,
@@ -88,14 +96,33 @@ export type GPUTerrainBranchingFlowProps = {
 /** Deterministic DAG pulls with atomic value/readiness publication and GPU-gated successor walks. */
 export class GPUTerrainBranchingFlow implements GPUCommandNodeProducer {
   readonly id: string;
+  readonly estimatedCommandNodeCount: number;
+  private readonly distanceDeclarations: string;
   constructor(readonly props: GPUTerrainBranchingFlowProps) {
     this.id = props.id ?? 'terrain-branching-flow';
     const count = validateRasterGrid(this.id, props.grid);
     validateRasterCellSizeMode(this.id, props.cellSizeMode);
     validateRasterGridAxisAligned(this.id, props.grid, props.cellSizeMode);
+    const measureDistances = props.mode !== 'transport' && props.mode !== 'fractional-catchment';
+    let distanceDeclarations = '';
+    if (measureDistances && !props.edgeLengths) {
+      try {
+        distanceDeclarations = getTerrainGroundMeasureWGSL(props.grid, props.cellSizeMode, false);
+      } catch {
+        validateRequirement(
+          this.id,
+          false,
+          'grid distance parameters must be representable as finite float32 values'
+        );
+      }
+    }
+    this.distanceDeclarations = distanceDeclarations;
     validateViewLength(this.id, 'fractions', props.fractions, count * 8);
     validateViewLength(this.id, 'values', props.values, count);
-    if (props.edgeLengths) validateViewLength(this.id, 'edgeLengths', props.edgeLengths, count * 8);
+    if (props.edgeLengths) {
+      validateViewLength(this.id, 'edgeLengths', props.edgeLengths, count * 8);
+      validateSinglePackedView(props.edgeLengths, ['float32'], this.id);
+    }
     validateTerrainValidityView(this.id, props.validity, count);
     validateViewLength(this.id, 'output.values', props.output.values, count);
     validateViewLength(this.id, 'output.status', props.output.status, count);
@@ -112,15 +139,24 @@ export class GPUTerrainBranchingFlow implements GPUCommandNodeProducer {
       1,
       TERRAIN_BRANCHING_MAXIMUM_WALK_LENGTH
     );
+    this.estimatedCommandNodeCount = getTerrainBranchingFlowCommandNodeCount(
+      props.maximumIterations ?? clamp(props.grid.width + props.grid.height, 128, 1024),
+      Boolean(props.validity)
+    );
+    validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
     checkTerrainViews(
       this.id,
       [
         props.fractions,
         props.values,
-        ...(props.edgeLengths ? [props.edgeLengths] : []),
+        ...(measureDistances && props.edgeLengths ? [props.edgeLengths] : []),
         ...(props.validity ? [props.validity] : [])
       ],
-      Object.values(props.output)
+      Object.values(props.output),
+      [
+        {writes: [props.output.values, props.output.status]},
+        {reads: [props.output.status], writes: [props.output.unresolvedCount]}
+      ]
     );
   }
   getCommandNodes<Parameters>(
@@ -137,13 +173,24 @@ export class GPUTerrainBranchingFlow implements GPUCommandNodeProducer {
   } {
     const {props, id} = this;
     const count = props.values.length;
+    validateGraphViewsBelongToGraph(id, graph, [props.edgeLengths]);
     checkTerrainGraph(id, graph, [
       props.fractions,
       props.values,
-      ...(props.edgeLengths ? [props.edgeLengths] : []),
+      ...(this.props.mode !== 'transport' &&
+      this.props.mode !== 'fractional-catchment' &&
+      props.edgeLengths
+        ? [props.edgeLengths]
+        : []),
       ...(props.validity ? [props.validity] : []),
       ...Object.values(props.output)
     ]);
+    validateTerrainBranchingFlowScratch(
+      graph,
+      id,
+      count,
+      props.maximumIterations ?? clamp(props.grid.width + props.grid.height, 128, 1024)
+    );
     const masked = createTerrainValidityMask(graph, {
       id,
       operation: 'GPUTerrainBranchingFlow',
@@ -179,9 +226,11 @@ state[stateOffset + index] = select(0xfffffffeu, 0xffffffffu, valid);`
       })
     ];
     const transport = props.mode === 'transport';
-    const lengths = props.edgeLengths ? [terrainBinding('lengths', props.edgeLengths)] : [];
+    const measureDistances = !transport && props.mode !== 'fractional-catchment';
+    const lengths =
+      measureDistances && props.edgeLengths ? [terrainBinding('lengths', props.edgeLengths)] : [];
     const solveDeclarations = `${declarations}
-${props.edgeLengths ? '' : getTerrainGroundMeasureWGSL(props.grid, props.cellSizeMode)}
+${this.distanceDeclarations}
 const WAITING: u32 = 0xffffffffu;
 const INVALID: u32 = 0xfffffffeu;
 fn tryFinalize(cell: u32) -> bool {
@@ -201,9 +250,11 @@ for (var direction = 0u; direction < 8u; direction++) {
  ready = ready && bits != WAITING && bits != INVALID;
  let downstream = bitcast<f32>(bits);
  ${
-   props.edgeLengths
-     ? 'let edgeLength = lengths[lengthsOffset + cell * 8u + direction];'
-     : 'let edgeLength = getGroundEdgeLength(cell, neighbor);'
+   !measureDistances
+     ? ''
+     : props.edgeLengths
+       ? 'let edgeLength = lengths[lengthsOffset + cell * 8u + direction];'
+       : 'let edgeLength = getGroundEdgeLength(cell, neighbor);'
  }
  ${
    transport || props.mode === 'fractional-catchment'

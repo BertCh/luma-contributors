@@ -34,7 +34,18 @@ import {
   validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {S2_ANALYSIS_WGSL} from './s2-analysis-wgsl';
-import {getScanCommandNodeCount} from './s2-covering-support';
+import {
+  getScanCommandNodeCount,
+  createS2CoveringRoundParameters,
+  validateS2CoveringRoundParameters
+} from './s2-covering-support';
+import {
+  validateCellDispatchBindings,
+  validateCellDispatchOutputs
+} from '../cell-indexing/cell-dispatch-validation';
+
+/** Storage scalar indices, lengths and serialized count literals must fit uint32. */
+const MAXIMUM_S2_COVERING_COMPONENT_COUNT = 0xffffffff;
 
 /**
  * Largest `maximumLevel`. Level 15 cells are a few hundred meters across, already near the
@@ -160,6 +171,27 @@ export class GPUS2PolygonCovering implements GPUCommandNodeProducer {
     validateSinglePackedView(props.output.cells, ['uint32x2'], this.id);
     validateSinglePackedView(props.output.counts, ['uint32x2'], this.id);
     validateSinglePackedView(props.output.status, ['uint32'], this.id);
+    validateCapacity(
+      this.id,
+      'output.cells components',
+      props.output.cells.length * 2,
+      0,
+      MAXIMUM_S2_COVERING_COMPONENT_COUNT
+    );
+    validateCapacity(
+      this.id,
+      'positions components',
+      props.positions.length * 3,
+      0,
+      MAXIMUM_S2_COVERING_COMPONENT_COUNT
+    );
+    validateCapacity(
+      this.id,
+      'ringOffsets.length',
+      props.ringOffsets.length,
+      2,
+      MAXIMUM_S2_COVERING_COMPONENT_COUNT
+    );
     if (props.output.visitedCount) {
       validateSinglePackedView(props.output.visitedCount, ['uint32'], this.id);
       validateRequirement(
@@ -213,7 +245,7 @@ export class GPUS2PolygonCovering implements GPUCommandNodeProducer {
     // frontier rows and a write; then the cells and publish nodes.
     this.estimatedCommandNodeCount =
       props.refinement === 'level-synchronous'
-        ? 5 +
+        ? 6 +
           (props.maximumLevel + 1) *
             (2 +
               getScanCommandNodeCount(
@@ -221,6 +253,19 @@ export class GPUS2PolygonCovering implements GPUCommandNodeProducer {
               ))
         : 1;
     validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
+    validateCellDispatchOutputs(
+      this.id,
+      props.output,
+      props.refinement === 'level-synchronous'
+        ? [
+            {
+              counts: props.output.counts,
+              status: props.output.status,
+              visitedCount: props.output.visitedCount
+            }
+          ]
+        : [props.output]
+    );
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
       props.positions,
       props.ringOffsets
@@ -281,6 +326,24 @@ fn coverClassify(cell:vec2u)->vec2u {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
+    const refined = props.refinement === 'level-synchronous';
+    const frontierCapacity =
+      props.maximumVisitedCells ?? GPU_S2_POLYGON_COVERING_DEFAULT_VISITED_CELLS;
+    validateCellDispatchBindings(
+      graph,
+      id,
+      {positions: props.positions, ringOffsets: props.ringOffsets, ...props.output},
+      refined
+        ? [
+            ['frontier scratch', frontierCapacity * 8],
+            ['count and offset scratch', frontierCapacity * 4],
+            ['round totals scratch', (props.maximumLevel + 2) * 4],
+            ['control scratch', 8],
+            ['ring center scratch', (props.ringOffsets.length - 1) * 12]
+          ]
+        : []
+    );
+    if (refined) validateS2CoveringRoundParameters(graph, id, props.maximumLevel + 1);
     validateGraphViewsBelongToGraph(id, graph, [
       props.positions,
       props.ringOffsets,
@@ -372,6 +435,7 @@ ${props.output.visitedCount ? 'visited[visitedOffset]=visitedCount;' : ''}`
     const frontierCapacity =
       props.maximumVisitedCells ?? GPU_S2_POLYGON_COVERING_DEFAULT_VISITED_CELLS;
     const budget = frontierCapacity;
+    const roundParameters = createS2CoveringRoundParameters(graph, id, roundCount);
     const lists = [
       createTransientView(graph, `${id}-frontier-a`, 'uint32x2', frontierCapacity),
       createTransientView(graph, `${id}-frontier-b`, 'uint32x2', frontierCapacity)
@@ -397,6 +461,7 @@ ${props.output.visitedCount ? 'visited[visitedOffset]=visitedCount;' : ''}`
       access: 'read'
     } as const;
     const nodes: GPUCommandNode<Parameters>[] = [
+      ...roundParameters.nodes,
       createWGSLKernelNode(graph, {
         id: `${id}-start`,
         operation,
@@ -484,6 +549,12 @@ for (var other = vertex + 1u; other < end; other++) {
           variant,
           invocationCount: frontierCapacity,
           bindings: [
+            {
+              name: 'roundParameters',
+              view: roundParameters.slots[round],
+              type: 'u32',
+              access: 'read'
+            },
             positionBinding,
             offsetBinding,
             {name: 'list', view: input, type: 'u32', access: 'read'},
@@ -491,16 +562,15 @@ for (var other = vertex + 1u; other < end; other++) {
             {name: 'control', view: control, type: 'atomic<u32>', access: 'read_write'},
             {name: 'totals', view: totals, type: 'u32', access: 'read'}
           ],
-          declarations: `override ROUND: u32;\n${declarations}`,
-          constants: {ROUND: round},
-          body: `let listCount = totals[totalsOffset + ROUND];
+          declarations,
+          body: `let listCount = totals[totalsOffset + roundParameters[roundParametersOffset]];
 var count = 0u;
 if (index < listCount) {
   // A list longer than the frontier capacity cannot be written whole: that is exhaustion.
   if (listCount > ${frontierCapacity}u) { atomicOr(&control[controlOffset], 4u); }
   let cell = vec2u(list[listOffset + index * 2u + 1u], list[listOffset + index * 2u]);
   let level = dggs_s2_get_level(cell);
-  if (level < ROUND) { count = 1u; }
+  if (level < roundParameters[roundParametersOffset]) { count = 1u; }
   else if (atomicLoad(&control[controlOffset]) == 0u) {
     let visit = atomicAdd(&control[controlOffset + 1u], 1u);
     if (visit >= ${budget}u) { atomicOr(&control[controlOffset], 4u); }
@@ -527,18 +597,23 @@ counts[countsOffset + index] = count;`
           variant,
           invocationCount: frontierCapacity,
           bindings: [
+            {
+              name: 'roundParameters',
+              view: roundParameters.slots[round],
+              type: 'u32',
+              access: 'read'
+            },
             {name: 'source', view: input, type: 'u32', access: 'read'},
             {name: 'destination', view: output, type: 'u32', access: 'read_write'},
             {name: 'counts', view: counts, type: 'u32', access: 'read'},
             {name: 'offsets', view: offsets, type: 'u32', access: 'read'},
             {name: 'totals', view: totals, type: 'u32', access: 'read_write'}
           ],
-          declarations: `override ROUND: u32;\n${dggs.source}`,
-          constants: {ROUND: round},
+          declarations: dggs.source,
           body: `let count = counts[countsOffset + index]; let start = offsets[offsetsOffset + index];
 // The scan total is the next round's list length; it is unclamped so overflow stays visible.
-if (index == ${frontierCapacity - 1}u) { totals[totalsOffset + ROUND + 1u] = start + count; }
-if (index < min(totals[totalsOffset + ROUND], ${frontierCapacity}u) && count != 0u) {
+if (index == ${frontierCapacity - 1}u) { totals[totalsOffset + roundParameters[roundParametersOffset] + 1u] = start + count; }
+if (index < min(totals[totalsOffset + roundParameters[roundParametersOffset]], ${frontierCapacity}u) && count != 0u) {
   let cell = vec2u(source[sourceOffset + index * 2u + 1u], source[sourceOffset + index * 2u]);
   if (count == 1u) {
     if (start < ${frontierCapacity}u) { destination[destinationOffset + start * 2u] = cell.y; destination[destinationOffset + start * 2u + 1u] = cell.x; }

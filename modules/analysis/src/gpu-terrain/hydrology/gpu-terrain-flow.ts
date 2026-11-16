@@ -3,6 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  validateTerrainBindings,
+  getTerrainGateScratchByteLength
+} from '../terrain-processing/terrain-binding-preflight';
+import {
   createTransientView,
   doGraphDataViewsOverlap,
   getViewBindingRange,
@@ -605,6 +609,55 @@ export class GPUTerrainFlow implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    const cellCountForBindings = this.props.grid.width * this.props.grid.height;
+    const needsAccumulationForBindings = Boolean(
+      this.props.output.accumulation || this.props.output.streams
+    );
+    const needsRoutingForBindings = Boolean(
+      this.props.output.flowDirections ||
+        this.props.output.cellClasses ||
+        needsAccumulationForBindings
+    );
+    const needsFlatsForBindings = Boolean(this.props.resolveFlats && needsRoutingForBindings);
+    const usesSpillForBindings = Boolean(
+      this.props.fillDepressions &&
+        8 * (cellCountForBindings + 1) <= graph.device.limits.maxStorageBufferBindingSize
+    );
+    const usesTourForBindings =
+      needsAccumulationForBindings &&
+      (this.props.flowRouting ?? 'd8') === 'd8' &&
+      !this.props.runoff &&
+      (this.props.accumulationUnits ?? 'cells') === 'cells' &&
+      8 * cellCountForBindings <= graph.device.limits.maxStorageBufferBindingSize;
+    const gateIterationsForBindings = Math.max(
+      this.props.fillDepressions ? (this.props.maximumFillIterations ?? 512) : 0,
+      needsFlatsForBindings
+        ? (this.props.maximumFlatIterations ?? (this.props.flatContinuation ? 64 : 512))
+        : 0,
+      needsAccumulationForBindings ? (this.props.maximumAccumulationIterations ?? 64) : 0,
+      usesSpillForBindings || usesTourForBindings ? 4 : 0
+    );
+    validateTerrainBindings(
+      graph,
+      this.id,
+      {
+        ...this.props,
+        runoff: needsAccumulationForBindings ? this.props.runoff : undefined,
+        flatContinuation: needsFlatsForBindings ? this.props.flatContinuation : undefined
+      },
+      {
+        'canonical and relaxation planes': 4 * cellCountForBindings,
+        'spill tree': usesSpillForBindings ? 8 * (cellCountForBindings + 1) : 0,
+        'Euler tour': usesTourForBindings ? 8 * cellCountForBindings : 0,
+        'fractional routing records':
+          needsAccumulationForBindings && (this.props.flowRouting ?? 'd8') !== 'd8'
+            ? 8 * cellCountForBindings
+            : 0,
+        'gate table': gateIterationsForBindings
+          ? getTerrainGateScratchByteLength(gateIterationsForBindings)
+          : 0
+      }
+    );
     const {id, props} = this;
     const {output} = props;
     const {status} = output;

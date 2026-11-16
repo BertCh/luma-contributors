@@ -65,6 +65,22 @@ for (const fixture of ['affine', 'piecewise-wait', 'invalid-initial', 'no-transi
       );
     expect(results[0]['reached']).toEqual(results[1]['reached']);
     expect(results[0]['status']).toEqual(results[1]['status']);
+    if (fixture === 'affine') {
+      // t = 0, 2, 4 gives durations 2, 3, 4 through the first state at vertex one.
+      expect(Array.from(results[0]['times'])).toEqual([
+        0,
+        0,
+        0,
+        2,
+        3,
+        4,
+        Infinity,
+        Infinity,
+        Infinity
+      ]);
+      expect(Array.from(results[0]['reached'])).toEqual([3, 3, 0]);
+      expect(Array.from(results[0]['status'])).toEqual([1, 1, 1, 1, 1, 1]);
+    }
     // Relative/absolute float tolerance 1e-5; integer flags/counts and infinities are exact.
     for (let index = 0; index < 9; index++) {
       const expected = results[1]['times'][index];

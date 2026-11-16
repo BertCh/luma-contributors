@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateSpatialOutputViews} from '../spatial-clustering/spatial-output-validation';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -18,12 +19,48 @@ import {
   validateCapacity,
   validateSinglePackedView,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphViewsBelongToGraph,
+  validateRequirement,
+  validateFiniteNumber,
+  validateGPUStorageBindingByteLength,
+  validateCommandNodeBudget
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {getSortKeyBits} from '../../analysis-core/kernels/sorted-segment-sums';
+import {INTERACTION_BALANCING_WGSL} from './interaction-balancing-wgsl';
+import {createSparseInteractionNodes} from './spatial-interaction-sparse';
 import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
+
+/** Dense reference kernels scan every pair and retain private origin/destination arrays. */
+export const GPU_SPATIAL_INTERACTION_DENSE_MAXIMUM_PAIRS = 4096;
+/** Private reference marginal arrays are intentionally bounded at 128 groups. */
+export const GPU_SPATIAL_INTERACTION_DENSE_MAXIMUM_GROUPS = 128;
+/** Published stable sort supports at most 2^31 rows; every pair scratch must also fit a binding. */
+export const GPU_SPATIAL_INTERACTION_SPARSE_MAXIMUM_PAIRS = 0x80000000;
+/** Sorted marginal offsets contain groupCount + 1 uint32 entries. */
+export const GPU_SPATIAL_INTERACTION_SPARSE_MAXIMUM_GROUPS = 0x7fffffff;
+/** Candidate grid is a small shader constant array, processed in deterministic order. */
+const INTERACTION_MAXIMUM_COEFFICIENT_COUNT = 128;
+/** Retain the reference route's explicit per-fit IPF budget. */
+const INTERACTION_MAXIMUM_ITERATIONS = 4096;
+/** Bounded calibration retains its reference golden-section budget. */
+const INTERACTION_MAXIMUM_CALIBRATION_ITERATIONS = 64;
+/** Two radix sorts, offset searches, shared margins and final residual reductions. */
+const INTERACTION_SPARSE_FIXED_NODE_ALLOWANCE = 256;
+/** Ten marginal gather/reduce/scale nodes, error mapping/reduction, and a gate update. */
+const INTERACTION_SPARSE_NODES_PER_ROUND = 13;
+/** Per candidate setup, reductions (including hierarchical levels), selection and publishing. */
+const INTERACTION_SPARSE_CANDIDATE_NODE_ALLOWANCE = 64;
+/** Radix histograms use up to 16 buckets per 256-row workgroup. */
+const INTERACTION_SORT_WORKGROUP_SIZE = 256;
+const INTERACTION_SORT_BUCKET_COUNT = 16;
+/** Five indirect dispatch triples gate the pair, origin, destination, error and scalar passes. */
+const INTERACTION_BALANCING_DISPATCH_BYTE_LENGTH = 5 * 3 * 4;
 
 export type GPUSpatialInteractionProps = {
   id?: string;
+  /** auto selects sparse for large doubly constrained grid fits; dense retains the reference route. */
+  method?: 'auto' | 'dense' | 'sparse';
   origins: GraphDataView<'uint32'>;
   destinations: GraphDataView<'uint32'>;
   originCount: number;
@@ -69,19 +106,80 @@ export type GPUSpatialInteractionProps = {
  * structural zeros predict exactly zero and must have observed flow zero. Each supplied observed
  * pair is an independent count cell; callers must aggregate duplicate OD records explicitly.
  * Golden-section profile search exposes its final bracket and exhaustion; uncertainty is not
- * provided. Candidate exponent spans above 80 are rejected explicitly. Zero marginals remain zero. A failed candidate is never selected as a converged fit.
+ * provided. Large doubly constrained grid fits use sorted sparse marginals by default;
+ * explicit method dense retains the 4,096-pair / 128-group reference limits. Sparse fitting
+ * shares each stable sort across all rounds and candidates (5e-4 relative prediction tolerance
+ * against the dense/CPU routes). Bounded coefficient calibration retains the dense limits.
+ * Candidate exponent spans above 80 are rejected explicitly. Zero marginals remain zero. A failed candidate is never selected as a converged fit.
  */
 export class GPUSpatialInteraction implements GPUCommandNodeProducer {
   readonly id: string;
+  readonly method: 'dense' | 'sparse';
+  readonly estimatedCommandNodeCount: number;
   constructor(readonly props: GPUSpatialInteractionProps) {
     this.id = props.id ?? 'spatial-interaction';
     const pairs = props.flows.length;
+    validateRequirement(
+      this.id,
+      ['auto', 'dense', 'sparse'].includes(props.method ?? 'auto'),
+      'method must be auto, dense or sparse'
+    );
+    const large =
+      pairs > GPU_SPATIAL_INTERACTION_DENSE_MAXIMUM_PAIRS ||
+      props.originCount > GPU_SPATIAL_INTERACTION_DENSE_MAXIMUM_GROUPS ||
+      props.destinationCount > GPU_SPATIAL_INTERACTION_DENSE_MAXIMUM_GROUPS;
+    this.method =
+      props.method === 'sparse' ||
+      ((props.method ?? 'auto') === 'auto' &&
+        large &&
+        props.constraint === 'doubly' &&
+        props.calibration !== 'bounded')
+        ? 'sparse'
+        : 'dense';
+    validateRequirement(
+      this.id,
+      this.method !== 'sparse' ||
+        (props.constraint === 'doubly' && props.calibration !== 'bounded'),
+      'method sparse requires constraint doubly and calibration grid'
+    );
+    validateSpatialOutputViews(this.id, props.output, [
+      {
+        read: this.method === 'dense' ? [props.output.candidates] : [],
+        write: [props.output.predictions, props.output.summary, props.output.status]
+      },
+      ...(this.method === 'dense'
+        ? [{read: [props.output.candidates], write: [props.output.summary, props.output.status]}]
+        : [[props.output.summary, props.output.status, props.output.candidates]]),
+      [props.output.status, props.output.calibration],
+      ...(props.output.originResiduals
+        ? [
+            {
+              read: [
+                props.output.status,
+                ...(this.method === 'dense' ? [props.output.predictions] : [])
+              ],
+              write: [props.output.originResiduals]
+            }
+          ]
+        : []),
+      ...(props.output.destinationResiduals
+        ? [
+            {
+              read: [
+                props.output.status,
+                ...(this.method === 'dense' ? [props.output.predictions] : [])
+              ],
+              write: [props.output.destinationResiduals]
+            }
+          ]
+        : [])
+    ]);
     validateCapacity(
       this.id,
       'maximumCalibrationIterations',
       props.maximumCalibrationIterations ?? 32,
       1,
-      64
+      INTERACTION_MAXIMUM_CALIBRATION_ITERATIONS
     );
     if (props.output.calibration && props.calibration !== 'bounded')
       throw new Error(`${this.id}: calibration output requires bounded calibration`);
@@ -95,11 +193,47 @@ export class GPUSpatialInteraction implements GPUCommandNodeProducer {
         (props.coefficients.length !== 2 || !(props.coefficients[0] < props.coefficients[1])))
     )
       throw new Error(`${this.id}: invalid calibration settings`);
-    validateCapacity(this.id, 'pairs', pairs, 1, 4096);
-    validateCapacity(this.id, 'originCount', props.originCount, 1, 128);
-    validateCapacity(this.id, 'destinationCount', props.destinationCount, 1, 128);
-    validateCapacity(this.id, 'coefficient candidates', props.coefficients.length, 1, 128);
-    validateCapacity(this.id, 'maximumIterations', props.maximumIterations ?? 256, 1, 4096);
+    validateCapacity(
+      this.id,
+      'pairs',
+      pairs,
+      1,
+      this.method === 'dense'
+        ? GPU_SPATIAL_INTERACTION_DENSE_MAXIMUM_PAIRS
+        : GPU_SPATIAL_INTERACTION_SPARSE_MAXIMUM_PAIRS
+    );
+    validateCapacity(
+      this.id,
+      'originCount',
+      props.originCount,
+      1,
+      this.method === 'dense'
+        ? GPU_SPATIAL_INTERACTION_DENSE_MAXIMUM_GROUPS
+        : GPU_SPATIAL_INTERACTION_SPARSE_MAXIMUM_GROUPS
+    );
+    validateCapacity(
+      this.id,
+      'destinationCount',
+      props.destinationCount,
+      1,
+      this.method === 'dense'
+        ? GPU_SPATIAL_INTERACTION_DENSE_MAXIMUM_GROUPS
+        : GPU_SPATIAL_INTERACTION_SPARSE_MAXIMUM_GROUPS
+    );
+    validateCapacity(
+      this.id,
+      'coefficient candidates',
+      props.coefficients.length,
+      1,
+      INTERACTION_MAXIMUM_COEFFICIENT_COUNT
+    );
+    validateCapacity(
+      this.id,
+      'maximumIterations',
+      props.maximumIterations ?? 256,
+      1,
+      INTERACTION_MAXIMUM_ITERATIONS
+    );
     if (
       !props.coefficients.every(Number.isFinite) ||
       !['unconstrained', 'origin', 'destination', 'doubly'].includes(props.constraint) ||
@@ -107,6 +241,32 @@ export class GPUSpatialInteraction implements GPUCommandNodeProducer {
       (props.tolerance ?? 1e-5) <= 0
     )
       throw new Error(`${this.id}: invalid model settings`);
+    for (const [index, coefficient] of props.coefficients.entries())
+      validateFiniteNumber(this.id, `coefficients[${index}]`, coefficient);
+    validateFiniteNumber(this.id, 'tolerance', props.tolerance ?? 1e-5, Number.MIN_VALUE);
+    validateFiniteNumber(
+      this.id,
+      'coefficientTolerance',
+      props.coefficientTolerance ?? 1e-5,
+      Number.MIN_VALUE
+    );
+    if (props.calibration === 'bounded') {
+      validateFiniteNumber(
+        this.id,
+        'coefficient bracket width',
+        Math.fround(props.coefficients[1]) - Math.fround(props.coefficients[0]),
+        Number.MIN_VALUE
+      );
+    }
+    this.estimatedCommandNodeCount =
+      this.method === 'sparse'
+        ? INTERACTION_SPARSE_FIXED_NODE_ALLOWANCE +
+          props.coefficients.length *
+            (INTERACTION_SPARSE_CANDIDATE_NODE_ALLOWANCE +
+              INTERACTION_SPARSE_NODES_PER_ROUND * (props.maximumIterations ?? 256))
+        : 8 +
+          (props.calibration === 'bounded' ? 2 * (props.maximumCalibrationIterations ?? 32) : 0);
+    validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
     for (const [view, format, length] of [
       [props.origins, 'uint32', pairs],
       [props.destinations, 'uint32', pairs],
@@ -138,6 +298,45 @@ export class GPUSpatialInteraction implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
     const pairs = props.flows.length;
+    validateGraphChunkBindingRanges(graph, id, {
+      origins: props.origins,
+      destinations: props.destinations,
+      flows: props.flows,
+      covariate: props.covariate,
+      pairState: props.pairState,
+      ...Object.fromEntries(
+        Object.entries(props.output).map(([name, view]) => [`output.${name}`, view])
+      )
+    });
+    for (const [name, byteLength] of [
+      ['pair scratch', pairs * 4],
+      [
+        'balancing dispatch',
+        this.method === 'sparse' ? INTERACTION_BALANCING_DISPATCH_BYTE_LENGTH : 0
+      ],
+      ['origin offsets', this.method === 'sparse' ? (props.originCount + 1) * 4 : 0],
+      ['destination offsets', this.method === 'sparse' ? (props.destinationCount + 1) * 4 : 0],
+      [
+        'sort histogram',
+        this.method === 'sparse'
+          ? Math.ceil(pairs / INTERACTION_SORT_WORKGROUP_SIZE) *
+            Math.min(
+              INTERACTION_SORT_BUCKET_COUNT,
+              2 ** getSortKeyBits(Math.max(props.originCount, props.destinationCount))
+            ) *
+            4
+          : 0
+      ],
+      ['candidate predictions', this.method === 'dense' ? pairs * props.coefficients.length * 4 : 0]
+    ] as const)
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        name,
+        byteLength,
+        'reduce pair or group counts'
+      );
+    if (this.method === 'sparse') return createSparseInteractionNodes(graph, id, props);
     const candidates = props.coefficients.length;
     const bounded = props.calibration === 'bounded';
     const coefficientValues = bounded
@@ -163,7 +362,8 @@ export class GPUSpatialInteraction implements GPUCommandNodeProducer {
       binding('covariate', props.covariate),
       ...(props.pairState ? [binding('pairState', props.pairState, 'read', 'u32')] : [])
     ];
-    const constants = `${GET_NAN_WGSL}\n${IS_FINITE_BITS_WGSL}\nconst COEFFICIENTS = array<f32, ${candidates}>(${props.coefficients.map(getWGSLFloatLiteral).join(', ')});`;
+    const constants = `${INTERACTION_BALANCING_WGSL}
+${GET_NAN_WGSL}\n${IS_FINITE_BITS_WGSL}\nconst COEFFICIENTS = array<f32, ${candidates}>(${props.coefficients.map(getWGSLFloatLiteral).join(', ')});`;
     validateGraphViewsBelongToGraph(id, graph, [
       props.origins,
       props.destinations,
@@ -193,6 +393,7 @@ for (var pair = 0u; pair < ${pairs}u; pair++) {
  if (state == 0u) { continue; } let exponent = ${coefficientValues ? 'coefficientValues[coefficientValuesOffset + index]' : 'COEFFICIENTS[index]'} * covariate[covariateOffset + pair]; if (!isFiniteBits(exponent)) { invalid = true; continue; }
  largest = max(largest, exponent); smallest = min(smallest, exponent); observed += flow; originTotals[origin] += flow; destinationTotals[destination] += flow;
 }
+invalid = invalid || !isFiniteBits(observed);
 var code = select(0u, 2u, invalid); if (!(observed > 0.0)) { code = select(1u, 2u, invalid); }
 if (code != 0u) { diagnostics[diagnosticsOffset + index * 4u] = getNaN(); diagnostics[diagnosticsOffset + index * 4u + 1u] = getNaN(); diagnostics[diagnosticsOffset + index * 4u + 2u] = 0.0; diagnostics[diagnosticsOffset + index * 4u + 3u] = f32(code + 1u); return; }
 if (largest - smallest > 80.0) { diagnostics[diagnosticsOffset + index * 4u] = getNaN(); diagnostics[diagnosticsOffset + index * 4u + 1u] = getNaN(); diagnostics[diagnosticsOffset + index * 4u + 2u] = 0.0; diagnostics[diagnosticsOffset + index * 4u + 3u] = 4.0; return; }
@@ -209,13 +410,13 @@ ${
 ${
   props.constraint !== 'destination'
     ? `var sums: array<f32, ${props.originCount}>; for (var pair = 0u; pair < ${pairs}u; pair++) { if (${props.pairState ? 'pairState[pairStateOffset + pair]' : '1u'} == 1u) { sums[origins[originsOffset + pair]] += predictions[predictionsOffset + index * ${pairs}u + pair]; } }
-for (var pair = 0u; pair < ${pairs}u; pair++) { if (${props.pairState ? 'pairState[pairStateOffset + pair]' : '1u'} == 1u) { let origin = origins[originsOffset + pair]; predictions[predictionsOffset + index * ${pairs}u + pair] *= select(0.0, originTotals[origin] / sums[origin], sums[origin] > 0.0); } }`
+for (var pair = 0u; pair < ${pairs}u; pair++) { if (${props.pairState ? 'pairState[pairStateOffset + pair]' : '1u'} == 1u) { let origin = origins[originsOffset + pair]; predictions[predictionsOffset + index * ${pairs}u + pair] = getBalancedPrediction(predictions[predictionsOffset + index * ${pairs}u + pair], originTotals[origin], sums[origin]); } }`
     : ''
 }
 ${
   props.constraint !== 'origin'
     ? `var destinationSums: array<f32, ${props.destinationCount}>; for (var pair = 0u; pair < ${pairs}u; pair++) { if (${props.pairState ? 'pairState[pairStateOffset + pair]' : '1u'} == 1u) { destinationSums[destinations[destinationsOffset + pair]] += predictions[predictionsOffset + index * ${pairs}u + pair]; } }
-for (var pair = 0u; pair < ${pairs}u; pair++) { if (${props.pairState ? 'pairState[pairStateOffset + pair]' : '1u'} == 1u) { let destination = destinations[destinationsOffset + pair]; predictions[predictionsOffset + index * ${pairs}u + pair] *= select(0.0, destinationTotals[destination] / destinationSums[destination], destinationSums[destination] > 0.0); } }`
+for (var pair = 0u; pair < ${pairs}u; pair++) { if (${props.pairState ? 'pairState[pairStateOffset + pair]' : '1u'} == 1u) { let destination = destinations[destinationsOffset + pair]; predictions[predictionsOffset + index * ${pairs}u + pair] = getBalancedPrediction(predictions[predictionsOffset + index * ${pairs}u + pair], destinationTotals[destination], destinationSums[destination]); } }`
     : ''
 }
 var fittedOrigins: array<f32, ${props.originCount}>; var fittedDestinations: array<f32, ${props.destinationCount}>;

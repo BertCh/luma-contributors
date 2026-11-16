@@ -10,13 +10,27 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
-  validateGraphViewsBelongToGraph,
+  validateCapacity,
+  validateGraphOutputsDisjointFromInputs,
+  validateGPUStorageBindingByteLength,
+  validateRequirement,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {createCellLevelKernelNode} from './cell-level-kernel';
 import {getCellKeyLayout} from './cell-keys';
-import {getCellTableFirstRow, validateCellTable, type GPUCellTable} from './cell-table';
+import {
+  getCellTableFirstRow,
+  getCellTableViews,
+  validateCellTable,
+  type GPUCellTable
+} from './cell-table';
 import {GPUCellAggregation, type GPUCellAggregationProps} from './gpu-cell-aggregation';
+import {
+  validateCellPublishBindingCount,
+  validateCellViewBindingRanges,
+  validateCellTableScratchBindingSizes,
+  validateCellWritableViews
+} from './cell-validation';
 import {GPUCellRollup} from './gpu-cell-rollup';
 import type {GPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
 
@@ -55,7 +69,9 @@ export type GPUCellPyramidProps = Omit<
 
 /**
  * Builds a zoom pyramid of cell tables: aggregates rows once at the finest level, then rolls each
- * level up into the next coarser one without re-reading the rows.
+ * level up into the next coarser one without re-reading the rows. Accepts chunked input rows
+ * with matching chunk boundaries, as documented by {@link GPUCellAggregation}; level tables
+ * remain single packed outputs.
  *
  * Coarser levels that request sums or extremes need them on every finer level; missing
  * intermediate columns become graph transients. Every level is exact (see
@@ -93,6 +109,25 @@ export class GPUCellPyramid implements GPUCommandNodeProducer {
         throw new Error(`${id} output.levelCounts must hold one row per level`);
       }
     }
+    validateRequirement(
+      id,
+      Boolean(props.values) ||
+        !output.levels.some(
+          table => table.sums || table.sumValues || table.minimums || table.maximums
+        ),
+      'values is required for sums and extremes at every output level'
+    );
+    const outputViews = [...output.levels.flatMap(getCellTableViews), output.levelCounts];
+    validateCellWritableViews(
+      id,
+      outputViews.map((view, index) => [`output field ${index}`, view] as const)
+    );
+    validateGraphOutputsDisjointFromInputs(id, outputViews, [
+      props.positions,
+      props.cells,
+      props.values,
+      props.mask
+    ]);
     // Validate the finest level eagerly; roll-ups validate when nodes are built.
     this.spatialContext = this.createAggregation(output.levels[0], []).spatialContext;
   }
@@ -111,7 +146,43 @@ export class GPUCellPyramid implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
     const {levelCounts} = props.output;
-    validateGraphViewsBelongToGraph(id, graph, [levelCounts]);
+    // Every stage is checked before declaring even the level-count or intermediate-column scratch.
+    this.createAggregation(props.output.levels[0], []).validateBindings(graph);
+    validateCellViewBindingRanges(graph, id, [
+      ...props.output.levels.flatMap(getCellTableViews),
+      levelCounts
+    ]);
+    for (const [levelIndex, table] of props.output.levels.entries()) {
+      validateCellPublishBindingCount(
+        graph.device,
+        id,
+        Boolean(table.status.requiredCount),
+        Number(levelIndex > 0),
+        Number(Boolean(levelCounts))
+      );
+      const sourceRows =
+        levelIndex === 0
+          ? (props.positions ?? props.cells)!.length
+          : props.output.levels[levelIndex - 1].cells.length;
+      if (levelIndex > 0)
+        validateCellTableScratchBindingSizes(graph.device, id, sourceRows, table.cells.length);
+    }
+    if (levelCounts) {
+      validateCapacity(
+        id,
+        'level count slots scratch byteLength',
+        props.resolutions.length * LEVEL_COUNT_SLOT_STRIDE * 4,
+        0,
+        graph.device.limits.maxBufferSize
+      );
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        'level count slots scratch',
+        props.resolutions.length * LEVEL_COUNT_SLOT_STRIDE * 4,
+        'reduce resolutions length'
+      );
+    }
     // Rule 12: each level publishes its count into its own 256-byte slot of a scratch view, so the
     // slot binds at element offset 0 and every level shares one publish module (a slice of the
     // packed `levelCounts` would bake a different element offset per level). One copy node then
@@ -156,8 +227,9 @@ export class GPUCellPyramid implements GPUCommandNodeProducer {
       );
     }
     if (levelCounts && levelCountSlots) {
-      nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
+      const pack = createCellLevelKernelNode<Parameters>(
+        graph,
+        {
           id: `${id}-level-counts`,
           operation: 'GPUCellPyramid',
           variant: 'level-counts',
@@ -167,8 +239,10 @@ export class GPUCellPyramid implements GPUCommandNodeProducer {
           ],
           invocationCount: props.resolutions.length,
           body: `levelCounts[levelCountsOffset + index] = slots[slotsOffset + index * ${LEVEL_COUNT_SLOT_STRIDE}u];`
-        })
+        },
+        {}
       );
+      nodes.push(...pack.uploads, pack.node);
     }
     return nodes;
   }

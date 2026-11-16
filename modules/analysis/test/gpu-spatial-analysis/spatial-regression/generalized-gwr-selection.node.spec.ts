@@ -313,9 +313,10 @@ function runSearchControl(
       history: new Float32Array(2 * maximumIterations),
       bounds: Float32Array.from(bounds),
       state: new Float32Array(32),
-      dispatch: new Uint32Array(9),
+      dispatch: new Uint32Array(12),
+      focalDispatch: new Uint32Array(3),
       source: Float32Array.from([1, 1e-6]),
-      parameters: new Float32Array(2),
+      parameters: new Float32Array(3),
       bandwidth: new Float32Array(1),
       status: new Uint32Array(1),
       converged: new Uint32Array(1),
@@ -330,7 +331,9 @@ function runSearchControl(
       );
       // The interpreter does not implement WGSL phony assignments. These generated no-ops
       // only preserve binding layout; the actual control statements remain unchanged.
-      const interpretedSource = source.source.replace(/^\s*_\s*=.*;$/gm, '');
+      const interpretedSource = source.source
+        .replace(/^\s*_\s*=.*;$/gm, '')
+        .replace(/@workgroup_size\((\d+)\)/, '@workgroup_size($1, 1, 1)');
       const interpreter = new WgslExec(new WgslParser().parse(interpretedSource));
       interpreter.dispatchWorkgroups('main', 1, {0: bindings}, {constants: source.constants});
     };
@@ -341,6 +344,8 @@ function runSearchControl(
         const candidate = 2 * iteration + interior;
         execute(`-candidate-${candidate}-parameters`);
         buffers['scores'][candidate] = score(buffers['history'][candidate]);
+        // The score stage advances the shared cursor; independent scores replace that stage here.
+        buffers['parameters'][2] += 1;
       }
       execute(`-search-${iteration}-iterate`);
     }

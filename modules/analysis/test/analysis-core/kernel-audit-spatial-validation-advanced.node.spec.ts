@@ -39,7 +39,9 @@ it('rejects OLS fit status aliasing later metric status', () => {
             metricStatus: fitStatus
           }
         })
-    ).toThrow('distinct buffers');
+    ).toThrow(
+      /^spatial-cross-validated-ols fitStatus and metricStatus logical writable byte ranges must not overlap$/
+    );
   } finally {
     context.device.destroy();
   }
@@ -64,7 +66,9 @@ for (const design of [undefined, {mode: 'groups' as const}]) {
               status: context.view('uint32', 2)
             }
           })
-      ).toThrow('distinct buffers');
+      ).toThrow(
+        /^spatial-cross-validation training and testing logical writable byte ranges must not overlap$/
+      );
     } finally {
       context.device.destroy();
     }
@@ -89,7 +93,9 @@ it('rejects diagnostics aliasing a later counts output', () => {
           status: context.view('uint32', 2)
         }
       })
-  ).toThrow('distinct buffers');
+  ).toThrow(
+    /^spatial-cross-validation counts and diagnostics logical writable byte ranges must not overlap$/
+  );
   context.device.destroy();
 });
 
@@ -129,7 +135,11 @@ for (const alias of ['design-input', 'design-diagnostic'] as const) {
               metricStatus: context.view('uint32', 2)
             }
           })
-      ).toThrow(alias === 'design-input' ? 'share buffers with inputs' : 'distinct buffers');
+      ).toThrow(
+        alias === 'design-input'
+          ? 'share buffers with inputs'
+          : /^spatial-cross-validated-ols coefficients and diagnostics logical writable byte ranges must not overlap$/
+      );
     } finally {
       context.device.destroy();
     }

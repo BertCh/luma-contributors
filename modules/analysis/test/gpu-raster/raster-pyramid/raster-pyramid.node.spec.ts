@@ -137,7 +137,7 @@ it('GPURasterExtremaPyramid schedules level 0 plus one fused node per four level
   expect(() => create({firstBlockSize: 3})).toThrow(/firstBlockSize/);
   expect(() => create({levelCount: 0})).toThrow(/levelCount/);
   const shared = createTransientView(graph, 'shared', 'float32', layout.length);
-  expect(() => create({output: {maximum: shared, minimum: shared}})).toThrow(/share buffers/);
+  expect(() => create({output: {maximum: shared, minimum: shared}})).toThrow(/overlap/);
 
   // combined: one binding for both extrema; every variant is within the 8 binding limit.
   const values = createTransientView(graph, 'values', 'float32', 851);
@@ -150,7 +150,10 @@ it('GPURasterExtremaPyramid schedules level 0 plus one fused node per four level
     validity,
     combined
   });
-  expect(combinedNodes.map(node => node.id)).toEqual(['c-level-0', 'c-levels-1-4']);
+  expect(combinedNodes.filter(node => node.id.startsWith('c-level')).map(node => node.id)).toEqual([
+    'c-level-0',
+    'c-levels-1-4'
+  ]);
   expect(combinedNodes.every(node => (node.resources ?? []).length <= 3)).toBe(true);
   expect(() =>
     createRasterExtremaPyramidNodes(graph, {
@@ -242,7 +245,12 @@ it('GPURasterExtremaPyramid fuses levels in groups of four', () => {
     validity: createTransientView(graph, 'f-validity', 'uint32', 4096),
     combined: createTransientView(graph, 'f-combined', 'float32', 2 * layout.length)
   });
-  expect(nodes.map(node => node.id)).toEqual(['f-level-0', 'f-levels-1-4', 'f-levels-5-6']);
+  expect(nodes.map(node => node.id)).toEqual([
+    'f-level-0',
+    'f-fused-parameters-upload',
+    'f-levels-1-4',
+    'f-levels-5-6'
+  ]);
 });
 
 it('GPURasterExtremaPyramid skips the identity copy for canonical float32 buffer bands', () => {
@@ -272,7 +280,7 @@ it('GPURasterExtremaPyramid skips the identity copy for canonical float32 buffer
   const countCopies = (ids: string[]) => ids.filter(id => id.includes('-elevation')).length;
   const canonical = create('a', true);
   expect(countCopies(canonical)).toBe(0);
-  expect(canonical).toEqual(['a-level-0', 'a-levels-1-4']);
+  expect(canonical).toEqual(['a-level-0', 'a-fused-parameters-upload', 'a-levels-1-4']);
   expect(countCopies(create('b', false))).toBe(1);
   expect(countCopies(create('c', true, 2))).toBe(1);
   device.destroy();

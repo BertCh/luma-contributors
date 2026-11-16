@@ -8,6 +8,7 @@ import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {
   GPU_OPTICS_BRUTE_FORCE_MAXIMUM_ROWS,
+  GPU_OPTICS_GRID_MAXIMUM_ROWS,
   GPUOPTICS,
   type GPUOPTICSProps
 } from '../../../src/gpu-spatial-analysis/spatial-clustering/gpu-optics';
@@ -357,7 +358,13 @@ it('OPTICS neighborIndex resolves auto by row count and names its limits', async
   expect(() =>
     create(GPU_OPTICS_BRUTE_FORCE_MAXIMUM_ROWS + 2, {neighborIndex: 'brute-force'})
   ).toThrow(/^optics positions rows must be an integer in \[1, 4096\]/);
-  expect(() => create(65537)).toThrow(/^optics positions rows must be an integer in \[1, 65536\]/);
+  expect(() => create(65537)).not.toThrow();
+  expect(() => create(GPU_OPTICS_GRID_MAXIMUM_ROWS + 1)).toThrow(
+    /^optics positions rows must be an integer in \[1, 1048576\]/
+  );
+  expect(() => create(65537, {extractionMethod: 'xi'})).toThrow(
+    /^optics xi positions rows must be an integer in \[1, 65536\]/
+  );
   expect(() =>
     create(GPU_OPTICS_BRUTE_FORCE_MAXIMUM_ROWS + 3, {
       extractionMethod: 'xi',

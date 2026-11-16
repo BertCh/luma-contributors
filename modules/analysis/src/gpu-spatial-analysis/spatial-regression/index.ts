@@ -550,3 +550,29 @@ export {
 export type {GPUGTWRBandwidthSearch} from './gtwr-bandwidth-search';
 export {getGPUGTWRBandwidthSearchParameterValues} from './gpu-geographically-temporally-weighted-regression';
 export type {GPUGTWRBandwidthSearchSettings} from './gpu-geographically-temporally-weighted-regression';
+
+export {
+  GPU_GTWR_MAXIMUM_INDEXED_ROW_COUNT,
+  GPU_GTWR_INDEXED_COMMAND_NODE_ALLOWANCE
+} from './gpu-geographically-temporally-weighted-regression';
+export {
+  GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_DENSE_INDEXED_ROW_COUNT,
+  GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_DEFAULT_GAUSSIAN_CUTOFF
+} from './geographically-weighted-regression-parameters';
+export {
+  GPU_SUR_MAXIMUM_ROW_COUNT,
+  GPU_SPATIAL_SUR_MAXIMUM_ROW_COUNT
+} from './gpu-seemingly-unrelated-regression';
+export {
+  GPU_PANEL_ERROR_MAXIMUM_ROW_COUNT,
+  GPU_PANEL_ERROR_MAXIMUM_PERIOD_COUNT
+} from './gpu-spatial-panel-error-maximum-likelihood';
+export {
+  GPU_PANEL_LAG_MAXIMUM_ENTITY_COUNT,
+  GPU_PANEL_LAG_MAXIMUM_PERIOD_COUNT
+} from './gpu-spatial-panel-lag-maximum-likelihood';
+
+export {
+  GPU_PANEL_LAG_TILED_MAXIMUM_ENTITY_COUNT,
+  GPU_PANEL_LAG_TILED_MAXIMUM_ROW_COUNT
+} from './gpu-spatial-panel-lag-maximum-likelihood';

@@ -8,6 +8,7 @@ import type {
   GPUCommandNode,
   GPUCommandNodeProducer
 } from '@luma.gl/graph/gpu-core';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
@@ -16,7 +17,6 @@ import {
 import {
   RASTER_FINITE_WGSL,
   rasterBinding,
-  validateRasterGraph,
   validateRasterViews,
   type RasterScalarView
 } from '../remote-sensing/raster-kernel-utils';
@@ -190,7 +190,15 @@ export class GPURasterEmbeddingPyramidLevel implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, width, height, horizontalScale, verticalScale} = this;
     const {sourceWidth, sourceHeight, dimensions, output} = props;
-    validateRasterGraph(id, graph, this.getInputs(), this.getOutputs());
+    validateGraphChunkBindingRanges(graph, id, {
+      vectors: props.vectors,
+      quantized: props.quantized,
+      mask: props.mask,
+      'output.vectors': output.vectors,
+      'output.validity': output.validity,
+      'output.validCount': output.validCount,
+      'output.meanLength': output.meanLength
+    });
     const source = props.vectors ?? props.quantized!;
     const sourceName = props.vectors ? 'vectors' : 'quantized';
     // Reads component `band` of source pixel `pixel`, or sets `pixelValid` false for NoData.

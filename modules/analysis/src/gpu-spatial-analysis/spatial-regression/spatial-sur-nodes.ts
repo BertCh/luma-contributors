@@ -10,13 +10,51 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
-import {GPUOrdinaryLeastSquares} from './gpu-ordinary-least-squares';
+import {
+  GPUOrdinaryLeastSquares,
+  getOrdinaryLeastSquaresAllocationLengths
+} from './gpu-ordinary-least-squares';
 import {GPUSpatialErrorGM} from './gpu-spatial-error-gm';
 import {GPUSeeminglyUnrelatedRegression} from './gpu-seemingly-unrelated-regression';
 import {getRegressionTileLayout, getRowTileSumNodes} from './regression-row-tiles';
 import {validateGPUStorageBindingByteLength} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import type {GPUSpatialWeights} from '../spatial-weights/spatial-weights';
 import {GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH} from './ordinary-least-squares-parameters';
+import {getOrdinarySURScratchLength} from './ordinary-sur-nodes';
+
+/** Complete Kelejian-Prucha SUR composition plan; this route does not request Gram probes. */
+export function getSpatialSURAllocationLengths(
+  rowCount: number,
+  equationCount: number,
+  predictorCount: number
+): Readonly<Record<string, number>> {
+  const {tileCount} = getRegressionTileLayout(rowCount);
+  const width = predictorCount + 1;
+  const size = equationCount * width;
+  const filteredMoments = width * width + width + 1;
+  return {
+    ...getOrdinaryLeastSquaresAllocationLengths(rowCount, predictorCount),
+    'SUR filtered predictors': equationCount * rowCount * predictorCount,
+    'SUR filtered responses/residuals': equationCount * rowCount,
+    'SUR filtered coefficients': size,
+    'SUR filtered covariance': size * size,
+    'SUR unfiltered equation': rowCount * (predictorCount + 2),
+    'SUR statistics scratch': getOrdinarySURScratchLength(equationCount, predictorCount, rowCount),
+    'SUR weight partials': tileCount,
+    'SUR GM table': (predictorCount + 2) * 4,
+    'SUR GM summary': 13,
+    'SUR OLS summary': GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH,
+    'SUR GM workspace': predictorCount + 4 + width + 16,
+    'SUR GM mean partials': tileCount * width,
+    'SUR GM moment partials': tileCount * 7,
+    'SUR GM moments': 7,
+    'SUR GM filtered partials': tileCount * filteredMoments,
+    'SUR GM filtered moments': filteredMoments,
+    'SUR GM residual partials': tileCount * 5,
+    'SUR GM residual totals': 5
+  };
+}
 
 /** Spatial SUR composes the existing GM moment optimizer with a joint filtered-residual GLS. */
 export function getSpatialSURNodes<Parameters>(
@@ -240,6 +278,13 @@ export function getSpatialSURWeightValidationNodes<Parameters>(
     output: GraphDataView<'float32'>;
   }
 ): GPUCommandNode<Parameters>[] {
+  validateGraphChunkBindingRanges(graph, props.id, {
+    offsets: props.weights.offsets,
+    neighbors: props.weights.neighbors,
+    weights: props.weights.weights,
+    overflow: props.weights.status?.overflow,
+    output: props.output
+  });
   const layout = getRegressionTileLayout(props.rowCount);
   validateGPUStorageBindingByteLength(
     graph.device,
@@ -266,10 +311,21 @@ export function getSpatialSURWeightValidationNodes<Parameters>(
     bindings: [
       {name: 'offsets', view: props.weights.offsets, type: 'u32', access: 'read'},
       {name: 'neighbors', view: props.weights.neighbors, type: 'u32', access: 'read'},
-      {name: 'weights', view: props.weights.weights, type: 'f32', access: 'read'}
+      {name: 'weights', view: props.weights.weights, type: 'f32', access: 'read'},
+      ...(props.weights.status?.overflow
+        ? [
+            {
+              name: 'overflow',
+              view: props.weights.status.overflow,
+              type: 'u32' as const,
+              access: 'read' as const
+            }
+          ]
+        : [])
     ],
     declarations: `${IS_FINITE_BITS_WGSL}
 fn accumulateRow(row: u32, terms: ptr<function, array<f32, TERM_COUNT>>) {
+  ${props.weights.status?.overflow ? 'if (overflow[overflowOffset] != 0u) { (*terms)[0] = 1.0; return; }' : ''}
   let begin = offsets[offsetsOffset + row];
   let end = offsets[offsetsOffset + row + 1u];
   if (end < begin || end > ${props.weights.neighbors.length}u) { (*terms)[0] = 1.0; return; }

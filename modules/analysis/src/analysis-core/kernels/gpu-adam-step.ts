@@ -19,6 +19,7 @@ import {
 import {createWGSLDispatchGate, createWGSLKernelNode} from './wgsl-kernel-nodes';
 import {GPU_ADAM_STEP_PARAMETER_LENGTH} from './adam-step-parameters';
 import {ADAM_MOMENT_RANGE_WGSL, getAdamBiasCorrectionWGSL} from './adam-step-wgsl';
+import {validateDisjointWritableViews} from './graph-chunk-dispatch';
 
 /** Keeps history small (40 kB) and bias correction bounded to 14 binary-composition rounds. */
 export const GPU_ADAM_STEP_MAXIMUM_ITERATIONS = 10_000;
@@ -97,11 +98,37 @@ export class GPUAdamStep implements GPUCommandNodeProducer {
     );
     for (const [name, view] of Object.entries(output.status))
       validateFittingView(id, `output.status.${name}`, view, 'uint32', 1);
-    validateFittingWritableViews(id, this.getWritableViews(), [
-      props.gradients,
-      props.loss,
-      props.parameters
-    ]);
+    const writable = {
+      weights: output.weights,
+      firstMoment: output.firstMoment,
+      secondMoment: output.secondMoment,
+      lossHistory: output.lossHistory,
+      ...Object.fromEntries(
+        Object.entries(output.status).map(([name, view]) => [`status.${name}`, view])
+      )
+    };
+    validateDisjointWritableViews(id, writable, {separateDispatches: true});
+    // External inputs may share disjoint bytes with a result used in another dispatch.
+    for (const [index, input] of [props.gradients, props.loss, props.parameters].entries()) {
+      validateDisjointWritableViews(
+        id,
+        {...writable, [`input ${index}`]: input},
+        {separateDispatches: true}
+      );
+    }
+    validateFittingWritableViews(
+      id,
+      [output.lossHistory, ...Object.values(output.status)],
+      [props.loss, props.parameters]
+    );
+    // iterationCount is writable in control, then read-only beside the model update.
+    // WebGPU forbids that read-only binding sharing a physical buffer with the writable model,
+    // even when all logical/aligned ranges are disjoint.
+    validateFittingWritableViews(
+      id,
+      [output.weights, output.firstMoment, output.secondMoment],
+      [props.gradients, props.parameters, output.status.iterationCount]
+    );
     validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
   }
 

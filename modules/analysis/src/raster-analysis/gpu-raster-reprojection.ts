@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRasterStorageBindings} from './raster-grid/raster-storage-preflight';
 import {
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -22,7 +23,8 @@ import {
   GPUParameterBuffer,
   validateFiniteNumber,
   validateGPUStorageBindingByteLength,
-  validateRequirement
+  validateRequirement,
+  getGraphOutputViews as getRasterPreflightOutputViews
 } from '../analysis-core/kernels/gpu-contributor-utils';
 import {resolveGPURasterContext} from '../analysis-core/raster-grid';
 import {IS_FINITE_VALUE_WGSL} from '../analysis-core/kernels/wgsl-common';
@@ -209,6 +211,25 @@ export class GPURasterReprojection implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    const storageProps = this.props;
+    const storageCellCount = storageProps.sourceGrid.width * storageProps.sourceGrid.height;
+    validateRasterStorageBindings(
+      graph,
+      this.id,
+      [
+        ...getRasterBandViews(storageProps.input),
+        storageProps.parameters,
+        ...getRasterPreflightOutputViews(storageProps.output)
+      ],
+      {
+        'canonical band planes': storageCellCount * 4,
+        'projection parameters': storageProps.inverseProjection
+          ? storageProps.inverseProjection.packParameters().byteLength
+          : 0,
+        'affine parameters': GPU_RASTER_REPROJECTION_PARAMETER_LENGTH * 4
+      }
+    );
+
     // Projection parameters belong to one graph; rebuilding requires a new contributor.
     validateRequirement(
       this.id,

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {TRAJECTORY_SATURATED_COUNT_WGSL} from '../trajectory-analysis/trajectory-counts-wgsl';
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
   createWGSLKernelNode,
@@ -136,7 +137,8 @@ export function createEncounterScanNode<Parameters>(
       {name: 'hitDistances', view: props.hitDistances, type: 'f32', access: 'read_write'}
     ],
     invocationCount: props.shape.trackCount * props.shape.bucketCount,
-    declarations: `${SPATIAL_JOIN_WGSL_HELPERS}
+    declarations: `${TRAJECTORY_SATURATED_COUNT_WGSL}
+${SPATIAL_JOIN_WGSL_HELPERS}
 ${props.shape.geodesic ? GEODESIC_WGSL : ''}
 ${getShapeConstants(props.shape)}
 // Same rule as the GPUGridIndex build, so a point and its query agree on the cell. luma.gl does not
@@ -209,7 +211,7 @@ fn getCoordinate(value: f32, minimum: f32, maximum: f32, size: u32) -> u32 {
       let separation = length(offset);`
       }
       if (separation <= limit) {
-        let slot = atomicAdd(&state[stateOffset], 1u);
+        let slot = reserveTrajectoryCount();
         if (slot < HIT_CAPACITY) {
           hitPairs[hitPairsOffset + slot * 2u] = min(track, otherTrack);
           hitPairs[hitPairsOffset + slot * 2u + 1u] = max(track, otherTrack);

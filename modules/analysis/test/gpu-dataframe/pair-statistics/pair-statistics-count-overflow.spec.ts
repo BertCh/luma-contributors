@@ -15,6 +15,7 @@ import {GPUMarkedPointStatistics} from '../../../src/dataframe-analysis/pair-sta
 import {getPairStatisticsSegmentTotalNodes} from '../../../src/dataframe-analysis/pair-statistics/pair-statistics-cell-neighbors';
 import {AnalysisRig} from '../../gpu-spatial-analysis/catchment-accessibility/rig';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {getPairCountOverflowPartials} from './pair-count-overflow-injection';
 
 for (const estimator of ['cross', 'marked'] as const) {
   it(`${estimator} pair-count overflow saturates counts and invalidates estimates`, async () => {
@@ -52,9 +53,9 @@ for (const estimator of ['cross', 'marked'] as const) {
       const finish = nodes.find(
         node => node.workload?.variant === (estimator === 'cross' ? 'legacy-finish' : 'grid-finish')
       )!;
-      const countRecord = getWGSLKernelNodeRecord(rig.graph, countNodes[0].id)!;
       const finishRecord = getWGSLKernelNodeRecord(rig.graph, finish.id)!;
-      const partials = countRecord.bindings.find(binding => binding.name === 'entries')!.view;
+      // Runtime-parameter kernels declare resources directly rather than recording WGSL props.
+      const partials = getPairCountOverflowPartials(countNodes[0]);
       const sums = finishRecord.bindings.find(binding => binding.name === 'totalSums')!.view;
       const moments = finishRecord.bindings.find(binding => binding.name === 'moments')?.view;
       // Inject the exact per-focus counts for coincident points, then execute the contributor's

@@ -40,23 +40,27 @@ import {
 } from '../raster-band-utils';
 import {
   requireRasterLength,
-  validateRasterExpansionViews,
   RASTER_BAND_CANONICALIZATION_NODE_COUNT
 } from '../raster-expansion-utils';
 import {GPU_RASTER_CONTRAST_EQUALIZATION_PARAMETER_LENGTH} from './raster-contrast-equalization-parameters';
 import {CLIP_CONTRAST_HISTOGRAM_WGSL} from './contrast-equalization-wgsl';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {
+  validateRasterFractionalBindingByteLength,
+  validateRasterFractionalWritableViews
+} from '../fractional-coverage/raster-fractional-tile-kernel';
 
-/** 64 MiB per packed scalar binding; counts also remain exact float32 integers. */
-const MAXIMUM_CELL_COUNT = 1 << 24;
-/** 64 MiB per histogram/CDF/mapping binding; bounds scan scratch and uint32 prefix totals. */
-const MAXIMUM_HISTOGRAM_LENGTH = 1 << 24;
+/** Cell and reflected-image counts are accumulated exactly as uint32; storage limits are device checks. */
+const MAXIMUM_CELL_COUNT = 0xffffffff;
+/** Histogram addressing is uint32; actual histogram, CDF and mapping bindings are device checked. */
+const MAXIMUM_HISTOGRAM_LENGTH = 0xffffffff;
 /** Each tile clips a bounded histogram serially; never a cell-sized loop. */
 const MAXIMUM_BIN_COUNT = 256;
 /** Bounds reflected tile area to 65,536 virtual pixels and integer map products below 2^31. */
 const MAXIMUM_TILE_SIDE = 256;
 /** Each productive redistribution sweep removes at least one excess count from a bounded tile. */
 const MAXIMUM_REDISTRIBUTION_SWEEPS = MAXIMUM_TILE_SIDE * MAXIMUM_TILE_SIDE;
-/** A packed scan of at most 2^24 entries has four 256-way levels and at most seven passes. */
+/** A packed uint32-length scan has at most four 256-way levels, within this allowance. */
 const SCAN_NODE_ALLOWANCE = 16;
 const OPERATION = 'GPURasterContrastEqualization';
 
@@ -132,8 +136,7 @@ export class GPURasterContrastEqualization implements GPUCommandNodeProducer {
       props.parameters,
       ...(props.reference ? getRasterBandViews(props.reference.input) : [])
     ];
-    const outputs = getGraphOutputViews(props.output);
-    const cellCount = validateRasterExpansionViews(id, props.grid, inputs, outputs);
+    const cellCount = validateRasterGrid(id, props.grid);
     validateMaximumCount(id, 'grid cell count', cellCount, MAXIMUM_CELL_COUNT);
     for (const [name, band, grid] of [
       ['input', props.input, props.grid],
@@ -177,6 +180,16 @@ export class GPURasterContrastEqualization implements GPUCommandNodeProducer {
     );
     this.histogramLength = (matching ? 2 : this.tileColumns * this.tileRows) * this.binCount;
     validateMaximumCount(id, 'histogramLength', this.histogramLength, MAXIMUM_HISTOGRAM_LENGTH);
+    // The single CDF scan spans both matching planes. Bound its total before allocating scratch;
+    // each plane's counts remain integers, and no prefix relies on uint32 wraparound.
+    validateMaximumCount(
+      id,
+      'cumulative histogram count',
+      matching
+        ? cellCount + props.reference!.grid.width * props.reference!.grid.height
+        : this.tileColumns * this.tileRows * this.tileWidth * this.tileHeight,
+      MAXIMUM_CELL_COUNT
+    );
     validateRasterParameters(
       id,
       props.parameters,
@@ -190,6 +203,12 @@ export class GPURasterContrastEqualization implements GPUCommandNodeProducer {
       validateSinglePackedView(view, [format], `${id} ${name}`);
       requireRasterLength(view, count, id, name);
     }
+    validateRasterFractionalWritableViews(id, props.output, inputs, [
+      {
+        writes: [props.output.values, props.output.validity, props.output.status.approximation],
+        reads: [props.parameters]
+      }
+    ]);
     this.estimatedCommandNodeCount =
       (matching ? 2 : 1) * RASTER_BAND_CANONICALIZATION_NODE_COUNT + SCAN_NODE_ALLOWANCE + 6;
     validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
@@ -207,6 +226,11 @@ export class GPURasterContrastEqualization implements GPUCommandNodeProducer {
       ...getGraphOutputViews(props.output),
       ...(props.reference ? getRasterBandViews(props.reference.input) : [])
     ];
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(views.map((view, index) => [`view.${index}`, view]))
+    );
     for (const view of views) {
       validateGPUStorageBindingByteLength(
         graph.device,
@@ -223,6 +247,32 @@ export class GPURasterContrastEqualization implements GPUCommandNodeProducer {
       histogramLength * 4,
       'reduce the grid or binCount'
     );
+    for (const view of views) {
+      validateRasterFractionalBindingByteLength(
+        graph.device,
+        id,
+        view.buffer.id,
+        getViewBindingRange(view).size,
+        'reduce the packed view length',
+        view.buffer.byteLength
+      );
+    }
+    for (const [name, length] of [
+      ['source canonicalization', props.grid.width * props.grid.height],
+      [
+        'reference canonicalization',
+        props.reference ? props.reference.grid.width * props.reference.grid.height : 0
+      ],
+      ['histogram/CDF/mapping scratch', histogramLength],
+      ['tile counts', props.mode === 'match-histograms' ? 2 : tileColumns * tileRows]
+    ] as const)
+      validateRasterFractionalBindingByteLength(
+        graph.device,
+        id,
+        name,
+        length * 4,
+        'reduce grid dimensions or binCount'
+      );
     validateRasterBandBelongsToGraph(id, graph, props.input, []);
     if (props.reference) validateRasterBandBelongsToGraph(id, graph, props.reference.input, []);
     // Includes outputs and parameters; buffer bands were checked above as well.
@@ -374,7 +424,7 @@ var result = getNaN();
 if (counts[countsOffset] > 0u && counts[countsOffset + 1u] > 0u) {
   let sourceCount = counts[countsOffset];
   let referenceCount = counts[countsOffset + 1u];
-  // Products are at most 2^48 under MAXIMUM_CELL_COUNT. Compare before any float conversion:
+  // Exact wide products of uint32 counts. Compare before any float conversion:
   // adjacent normalized CDF knots can round to the same f32 near one.
   let sourceProduct = multiplyUint32Wide(getCumulative(0u, index), referenceCount);
   var previousCount = 0u;

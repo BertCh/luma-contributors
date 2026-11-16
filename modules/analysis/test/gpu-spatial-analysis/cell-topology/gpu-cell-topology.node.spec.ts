@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {addCellChunkNodes} from './gpu-cell-chunks.test-utils';
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
 import {
@@ -72,7 +73,7 @@ it('GPUCellTopology strides', () => {
   ).toThrow(/below/);
 });
 
-it('GPUCellTopology emits one deterministic node per operation', () => {
+it('GPUCellTopology uploads chunk parameters and emits one deterministic decode per operation', () => {
   for (const operation of [
     {type: 'disk', k: 2},
     {type: 'ring', k: 2},
@@ -81,14 +82,15 @@ it('GPUCellTopology emits one deterministic node per operation', () => {
   ] as const) {
     for (const family of ['quadbin', 'h3'] as const) {
       const {graph, contributor} = create(family, operation, 3, {counts: true, id: 'topo'});
-      const nodes = contributor.getCommandNodes(graph);
-      expect(nodes.map(node => node.id)).toEqual(['topo-topology']);
+      const nodes = addCellChunkNodes(graph, contributor);
+      expect(nodes.map(node => node.id)).toEqual(['topo-chunks-upload', 'topo-topology-0']);
     }
   }
   const {graph, contributor} = create('h3', {type: 'disk', k: 1});
   expect(contributor.id).toBe('cell-topology');
-  expect(contributor.getCommandNodes(graph).map(node => node.id)).toEqual([
-    'cell-topology-topology'
+  expect(addCellChunkNodes(graph, contributor).map(node => node.id)).toEqual([
+    'cell-topology-chunks-upload',
+    'cell-topology-topology-0'
   ]);
 });
 
@@ -107,7 +109,7 @@ it('GPUCellTopology validates inputs', () => {
   ).toThrow(/stride/);
   expect(() => new GPUCellTopology({...base, cells: view(graph, 'uint32', 2) as never})).toThrow();
   expect(() => new GPUCellTopology({...base, mask: view(graph, 'uint32', 3)})).toThrow(
-    /mask length/
+    /mask.*row count/
   );
   expect(
     () =>
@@ -130,7 +132,7 @@ it('GPUCellTopology validates inputs', () => {
         ...base,
         output: {cells: view(graph, 'uint32x2', 14), counts: view(graph, 'uint32', 3)}
       })
-  ).toThrow(/counts length/);
+  ).toThrow(/counts.*row count/);
   expect(() => new GPUCellTopology({...base, output: {cells: base.cells}})).toThrow();
   expect(() => new GPUCellTopology({...base, operation: {type: 'disk', k: 9}})).toThrow(/k must/);
   // Foreign views are rejected at node creation.
@@ -180,7 +182,7 @@ it('GPUCellTopology rejects an output binding above maxStorageBufferBindingSize 
       output: {cells: view(graph, 'uint32x2', rows * stride)}
     });
     if (fits) {
-      expect(() => contributor.getCommandNodes(graph)).not.toThrow();
+      expect(() => addCellChunkNodes(graph, contributor)).not.toThrow();
     } else {
       expect(() => contributor.getCommandNodes(graph)).toThrow(/output.cells.*limit 134217728/);
     }

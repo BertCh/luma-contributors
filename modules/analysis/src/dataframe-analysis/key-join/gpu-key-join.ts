@@ -8,7 +8,8 @@ import {
   GPUUint32Gather,
   type GPUCommandGraph,
   type GPUCommandNode,
-  type GraphDataView
+  GraphDataView,
+  GraphVectorView
 } from '@luma.gl/graph/gpu-core';
 import {createStableLexicographicIndexSortNodes} from '../../analysis-core/kernels/stable-lexicographic-index-sort';
 import type {GPUCompactOutput} from '../../analysis-core/kernels/gpu-contributor-types';
@@ -21,10 +22,18 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
+  validateGPUStorageBindingByteLength,
+  validateCapacity,
+  validateMaximumCount,
   validateCompactOutput,
-  validateSinglePackedView
+  validateSinglePackedView,
+  validateCommandNodeBudget,
+  getGraphViewChunks
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  validateGraphChunkBindingRanges,
+  validateDisjointWritableViews
+} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {
   getFixedPointWGSL,
   GPU_CELL_DEFAULT_SUM_SCALE,
@@ -36,7 +45,19 @@ import {
   getFixedPointHeadroomBits
 } from '../../analysis-core/kernels/fixed-point-accumulator';
 
+import {createKeyJoinDistinctNodes} from './key-join-distinct';
+
 const OPERATION = 'GPUKeyJoin';
+/** Base key sorts and scans, including published radix hierarchy at the maximum supported row count. */
+const BASE_COMMAND_NODE_ALLOWANCE = 2048;
+/** Two full-width stable radix sorts plus distinct-key preparation, counting and publication. */
+const DISTINCT_COMMAND_NODE_ALLOWANCE = 1056;
+/** Clear, optional scale reduction, accumulation and finish per ordinary aggregate. */
+const AGGREGATE_COMMAND_NODE_ALLOWANCE = 8;
+/** Published GPUSort accepts at most 2^31 keys; reject larger metadata before scratch allocation. */
+const MAXIMUM_RIGHT_ROW_COUNT = 0x80000000;
+/** Left IDs and compacted row counts are uint32. */
+const MAXIMUM_LEFT_ROW_COUNT = 0xffffffff;
 const MAXIMUM_GATHER_COLUMNS_PER_KERNEL = 3;
 /** Workgroup size of the pass that reduces the largest exponent of an aggregate column. */
 const SUM_SCALE_WORKGROUP_SIZE = 256;
@@ -45,7 +66,13 @@ const SUM_SCALE_WORKGROUP_SIZE = 256;
 export type GPUKeyJoinKind = 'left' | 'inner';
 
 /** Operation of a 1:n {@link GPUKeyJoinAggregate} over all right rows matching a left row's key. */
-export type GPUKeyJoinAggregateOperation = 'count' | 'sum' | 'mean' | 'minimum' | 'maximum';
+export type GPUKeyJoinAggregateOperation =
+  | 'count'
+  | 'sum'
+  | 'mean'
+  | 'minimum'
+  | 'maximum'
+  | 'count-distinct';
 
 /** One 1:1 gathered right column: the first (smallest-row) matching right row's value. */
 export type GPUKeyJoinGather = {
@@ -70,11 +97,12 @@ export type GPUKeyJoinAggregate = {
    * exact sum of the finite values in a 96-bit fixed-point accumulator whose unit follows the
    * largest value among the valid right rows, rounded once to float32; `'mean'` is that sum
    * divided by the finite count. Neither depends on `sumScale`. `'minimum'` and `'maximum'` are
-   * exact.
+   * exact. 'count-distinct' counts unique finite float32 values, treating +/-0 as the same
+   * value; its integer count is rounded once to the existing float32 output.
    */
   operation: GPUKeyJoinAggregateOperation;
   /**
-   * Left-aligned destination. Unmatched rows receive 0 for `'count'` and NaN otherwise; a matched
+   * Left-aligned destination. Unmatched rows receive 0 for `'count'` and `'count-distinct'` and NaN otherwise; a matched
    * row without a finite value receives NaN for `'mean'`, `'minimum'` and `'maximum'`, and 0 for
    * `'sum'`.
    */
@@ -167,6 +195,7 @@ export class GPUKeyJoin implements GPUCommandNodeProducer {
   readonly kind: GPUKeyJoinKind;
   /** Fixed-point scale of the `sums` words. */
   readonly sumScale: number;
+  readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPUKeyJoinProps) {
     this.id = props.id ?? 'key-join';
@@ -189,9 +218,8 @@ export class GPUKeyJoin implements GPUCommandNodeProducer {
     validateSinglePackedView(props.rightKeys, [keyFormat], `${id} rightKeys`);
     const leftCount = props.leftKeys.length;
     const rightCount = props.rightKeys.length;
-    if (leftCount < 1 || rightCount < 1) {
-      throw new Error(`${id} needs at least one left row and one right row`);
-    }
+    validateCapacity(id, 'leftKeys length', leftCount, 1, MAXIMUM_LEFT_ROW_COUNT);
+    validateCapacity(id, 'rightKeys length', rightCount, 1, MAXIMUM_RIGHT_ROW_COUNT);
     for (const [name, view, count] of [
       ['leftMask', props.leftMask, leftCount],
       ['rightMask', props.rightMask, rightCount]
@@ -217,7 +245,9 @@ export class GPUKeyJoin implements GPUCommandNodeProducer {
     }
     for (const [index, entry] of aggregates.entries()) {
       const name = `aggregates[${index}]`;
-      if (!['count', 'sum', 'mean', 'minimum', 'maximum'].includes(entry.operation)) {
+      if (
+        !['count', 'sum', 'mean', 'minimum', 'maximum', 'count-distinct'].includes(entry.operation)
+      ) {
         throw new Error(`${id} ${name}.operation is not supported`);
       }
       if (entry.operation !== 'count' && !entry.column) {
@@ -289,6 +319,75 @@ export class GPUKeyJoin implements GPUCommandNodeProducer {
       ...gather.map(entry => entry.output),
       ...aggregates.flatMap(entry => [entry.output, entry.sums])
     ];
+    const dispatches: (GraphDataView | undefined)[][] = [
+      [output.rightRows, output.matchCounts, output.matched],
+      [output.rows?.status.count, output.rows?.status.overflow, output.rows?.status.requiredCount],
+      ...aggregates.map(entry => [entry.output, entry.sums])
+    ];
+    for (let first = 0; first < gather.length; first += MAXIMUM_GATHER_COLUMNS_PER_KERNEL) {
+      dispatches.push([
+        output.rightRows,
+        ...gather.slice(first, first + MAXIMUM_GATHER_COLUMNS_PER_KERNEL).map(entry => entry.output)
+      ]);
+    }
+    if (output.rows) dispatches.push([output.matched, output.rows.ids]);
+    {
+      const writableOutputs: Readonly<Record<string, GraphDataView | GraphVectorView | undefined>> =
+        Object.fromEntries(outputs.map((view, index) => [`output[${index}]`, view]));
+      const publicationPasses: readonly (readonly (
+        | GraphDataView
+        | GraphVectorView
+        | undefined
+      )[])[] = dispatches;
+      // Model all logical writes as separate chunks; only the explicit publication groups coexist.
+      const writableWordChunks = Object.values(writableOutputs)
+        .flatMap(view => (view ? getGraphViewChunks(view) : []))
+        .map(
+          view =>
+            new GraphDataView(view.buffer, {
+              format: 'uint32',
+              length: (view.length * view.rowByteLength) / 4,
+              byteOffset: view.byteOffset,
+              byteStride: 4,
+              rowByteLength: 4
+            })
+        );
+      const writableWordCount = writableWordChunks.reduce(
+        (total, chunk) => total + chunk.length,
+        0
+      );
+      validateDisjointWritableViews(id, {
+        outputs: new GraphVectorView({
+          id: `${id}-writable-ranges`,
+          name: 'outputs',
+          format: 'uint32',
+          length: writableWordCount,
+          valueLength: writableWordCount,
+          stride: 1,
+          byteStride: 4,
+          rowByteLength: 4,
+          data: writableWordChunks
+        })
+      });
+      for (const fields of publicationPasses) {
+        validateDisjointWritableViews(
+          id,
+          Object.fromEntries(fields.map((view, index) => [String(index), view]))
+        );
+      }
+    }
+    this.estimatedCommandNodeCount =
+      BASE_COMMAND_NODE_ALLOWANCE +
+      Math.ceil(gather.length / MAXIMUM_GATHER_COLUMNS_PER_KERNEL) +
+      aggregates.reduce(
+        (total, entry) =>
+          total +
+          (entry.operation === 'count-distinct'
+            ? DISTINCT_COMMAND_NODE_ALLOWANCE
+            : AGGREGATE_COMMAND_NODE_ALLOWANCE),
+        0
+      );
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     validateGraphOutputsDisjointFromInputs(id, outputs, inputs);
   }
 
@@ -300,7 +399,7 @@ export class GPUKeyJoin implements GPUCommandNodeProducer {
     const output = props.output;
     const gather = props.gather ?? [];
     const aggregates = props.aggregates ?? [];
-    validateGraphViewsBelongToGraph(id, graph, [
+    const boundViews = [
       props.leftKeys,
       props.rightKeys,
       props.leftMask,
@@ -315,7 +414,37 @@ export class GPUKeyJoin implements GPUCommandNodeProducer {
       output.rows?.status.count,
       output.rows?.status.overflow,
       output.rows?.status.requiredCount
-    ]);
+    ];
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(boundViews.map((view, index) => [`view[${index}]`, view]))
+    );
+    const rightRows = props.rightKeys.length;
+    const scratchLengths = {
+      leftRows: props.leftKeys.length,
+      uniqueStart: rightRows + 1,
+      sumWords: aggregates.some(entry => entry.operation === 'sum' || entry.operation === 'mean')
+        ? 2 * rightRows
+        : 0
+    };
+    for (const [name, length] of Object.entries(scratchLengths)) {
+      if (length > 0) {
+        validateMaximumCount(
+          id,
+          `${name} scratch byteLength`,
+          length * 4,
+          graph.device.limits.maxBufferSize
+        );
+        validateGPUStorageBindingByteLength(
+          graph.device,
+          id,
+          `${name} scratch`,
+          length * 4,
+          'reduce the left or right row count'
+        );
+      }
+    }
     const twoWords = props.leftKeys.format === 'uint32x2';
     const leftCount = props.leftKeys.length;
     const rightCount = props.rightKeys.length;
@@ -622,7 +751,8 @@ fn isKeyLess(left: vec2u, right: vec2u) -> bool {
         node(
           `gather-${first}`,
           [
-            read('firstRows', firstView!),
+            // Retained row IDs and gathered outputs may share one writable buffer.
+            write('firstRows', firstView!),
             ...group.flatMap((entry, index) => [
               read(`column${index}`, entry.column),
               write(`out${index}`, entry.output)
@@ -645,6 +775,19 @@ fn isKeyLess(left: vec2u, right: vec2u) -> bool {
     for (const [index, aggregate] of aggregates.entries()) {
       const name = `aggregate-${index}`;
       const {operation, column} = aggregate;
+      if (operation === 'count-distinct') {
+        nodes.push(
+          ...createKeyJoinDistinctNodes(graph, {
+            id: `${id}-${name}-distinct`,
+            column: column!,
+            sortedRows,
+            rowUnique,
+            leftUnique,
+            output: aggregate.output
+          })
+        );
+        continue;
+      }
       const wantsSums = operation === 'sum' || operation === 'mean';
       const wantsCounts = operation === 'mean' || (operation === 'count' && Boolean(column));
       const isMinimum = operation === 'minimum';
@@ -902,7 +1045,8 @@ var<workgroup> workgroupExponentBits: atomic<u32>;`,
         node(
           'compact',
           [
-            read('matched', matchedView),
+            // Retained flags and compact IDs may share one writable buffer.
+            write('matched', matchedView),
             read('positions', positions),
             write('idsOut', output.rows.ids),
             write('totalOut', total)

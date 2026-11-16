@@ -16,8 +16,22 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateCapacity,
   validateMaximumCount,
-  getStorageBindingElementLimit
+  getStorageBindingElementLimit,
+  validateRequirement,
+  validateGPUStorageBindingByteLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+
+/** Exhaustive subset generation uses bounded private selection and capacity arrays. */
+const BOUNDED_ALLOCATION_MAXIMUM_FACILITIES = 32;
+const BOUNDED_ALLOCATION_MAXIMUM_SELECTED_FACILITIES = 8;
+/** Bounds the exhaustive subset enumeration and four-word score records. */
+const BOUNDED_ALLOCATION_MAXIMUM_SUBSETS = 65536;
+/** Demand-order capacity assignment remains a serial reference algorithm. */
+const BOUNDED_ALLOCATION_MAXIMUM_CAPACITATED_DEMAND = 4096;
+/** Cooperative scoring rounds invocation counts to 64 and dense cost indices are uint32. */
+const BOUNDED_ALLOCATION_MAXIMUM_PARALLEL_DEMAND = 0xffffffc0;
 
 export type GPUBoundedFacilityAllocationProps = {
   id?: string;
@@ -58,13 +72,24 @@ export class GPUBoundedFacilityAllocation implements GPUCommandNodeProducer {
   readonly subsetCount: number;
   constructor(readonly props: GPUBoundedFacilityAllocationProps) {
     this.id = props.id ?? 'bounded-facility-allocation';
-    validateCapacity(this.id, 'facilityCount', props.facilityCount, 1, 32);
+    validateRequirement(
+      this.id,
+      ['p-center', 'capacitated-p-median'].includes(props.operation),
+      'operation must be p-center or capacitated-p-median'
+    );
+    validateCapacity(
+      this.id,
+      'facilityCount',
+      props.facilityCount,
+      1,
+      BOUNDED_ALLOCATION_MAXIMUM_FACILITIES
+    );
     validateCapacity(
       this.id,
       'selectCount',
       props.selectCount,
       1,
-      Math.min(8, props.facilityCount)
+      Math.min(BOUNDED_ALLOCATION_MAXIMUM_SELECTED_FACILITIES, props.facilityCount)
     );
     validateCapacity(
       this.id,
@@ -72,11 +97,20 @@ export class GPUBoundedFacilityAllocation implements GPUCommandNodeProducer {
       props.demand.length,
       1,
       props.operation === 'p-center'
-        ? Math.min(0xffffffc0, Math.floor(0xffffffff / props.facilityCount))
-        : 4096
+        ? Math.min(
+            BOUNDED_ALLOCATION_MAXIMUM_PARALLEL_DEMAND,
+            Math.floor(0xffffffff / props.facilityCount)
+          )
+        : BOUNDED_ALLOCATION_MAXIMUM_CAPACITATED_DEMAND
     );
     this.subsetCount = combinationCount(props.facilityCount, props.selectCount);
-    validateCapacity(this.id, 'subsetCount', this.subsetCount, 1, 65536);
+    validateCapacity(
+      this.id,
+      'subsetCount',
+      this.subsetCount,
+      1,
+      BOUNDED_ALLOCATION_MAXIMUM_SUBSETS
+    );
     for (const [view, format, length] of [
       [props.costs, 'float32', props.demand.length * props.facilityCount],
       [props.demand, 'float32', props.demand.length],
@@ -87,13 +121,14 @@ export class GPUBoundedFacilityAllocation implements GPUCommandNodeProducer {
       [props.output.status, 'uint32', 3]
     ] as const) {
       validateSinglePackedView(view, [format], this.id);
-      if (view.length !== length) throw new Error('Facility allocation view length mismatch');
+      if (view.length !== length)
+        throw new Error(`${this.id} ${format} view length must equal ${length}`);
     }
     const outputBuffers = Object.values(props.output)
       .filter(view => view !== undefined)
       .map(view => view.buffer);
     if (new Set(outputBuffers).size !== outputBuffers.length)
-      throw new Error('Outputs must use distinct buffers');
+      throw new Error(`${this.id} outputs must use distinct buffers`);
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
       props.costs,
       props.demand,
@@ -116,6 +151,21 @@ export class GPUBoundedFacilityAllocation implements GPUCommandNodeProducer {
       props.capacities,
       ...Object.values(props.output)
     ]);
+    validateGraphChunkBindingRanges(graph, id, {
+      costs: props.costs,
+      demand: props.demand,
+      capacities: props.capacities,
+      ...Object.fromEntries(
+        Object.entries(props.output).map(([name, view]) => [`output.${name}`, view])
+      )
+    });
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'subset scores',
+      subsetCount * 16,
+      'reduce facilityCount or selectCount'
+    );
     const scores = createTransientView(graph, `${id}-scores`, 'uint32', subsetCount * 4);
     const binomials = Array.from({length: 33 * 9}, (_, position) =>
       combinationCount(Math.floor(position / 9), position % 9)

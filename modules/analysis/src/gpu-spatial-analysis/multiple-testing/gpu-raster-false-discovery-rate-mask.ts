@@ -4,15 +4,21 @@
 
 import {
   createTransientView,
+  getViewBindingRange,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import {
+  validateDisjointWritableViews,
+  validateGraphChunkBindingRanges
+} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {GPURasterHistogram} from '@luma.gl/graph/gpu-raster';
 import {
   captureGraphCommandNodes,
   validateCapacity,
+  validateGPUStorageBindingByteLength,
   validateFiniteNumber,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
@@ -140,6 +146,13 @@ export class GPURasterFalseDiscoveryRateMask implements GPUCommandNodeProducer {
     );
     const {output} = props;
     validateCapacity(id, 'cellCount', props.cellCount, 1, GPU_MULTIPLE_TESTING_MAXIMUM_ROWS - 1);
+    validateCapacity(
+      id,
+      'minimumFamilySize',
+      props.minimumFamilySize ?? 0,
+      0,
+      GPU_MULTIPLE_TESTING_MAXIMUM_ROWS - 1
+    );
     validateSinglePackedView(props.pValues, ['float32'], `${id} pValues`);
     validateSinglePackedView(output.significant, ['uint32'], `${id} output.significant`);
     validateRequirement(
@@ -208,6 +221,7 @@ export class GPURasterFalseDiscoveryRateMask implements GPUCommandNodeProducer {
       ],
       [props.pValues, props.validity, props.parameters]
     );
+    validateDisjointWritableViews(id, output);
   }
 
   getCommandNodes<Parameters>(
@@ -226,6 +240,37 @@ export class GPURasterFalseDiscoveryRateMask implements GPUCommandNodeProducer {
       output.criticalPValue,
       output.histogram
     ]);
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(
+        [props.pValues, props.validity, props.parameters, ...Object.values(output)].map(
+          (view, index) => [`binding ${index}`, view]
+        )
+      )
+    );
+    for (const view of [
+      props.pValues,
+      props.validity,
+      props.parameters,
+      ...Object.values(output)
+    ]) {
+      if (view)
+        validateGPUStorageBindingByteLength(
+          graph.device,
+          id,
+          'raster correction binding',
+          getViewBindingRange(view).size,
+          'reduce cellCount or request larger device bindings'
+        );
+    }
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'raster correction scratch',
+      cellCount * 4,
+      'reduce cellCount or request larger device bindings'
+    );
     const nodes: GPUCommandNode<Parameters>[] = [];
 
     // Untested cells become NaN, so the adjustment's family is exactly the valid cells with p in [0, 1].

@@ -4,7 +4,7 @@
 
 import type {Buffer, Device} from '@luma.gl/core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
-import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {describe, expect, it} from 'vitest';
 import type {GPUTemporalContext} from '../../../src/analysis-core/contracts/index';
 import type {ArrowAnalyticsTimeUnit} from '../../../src/analysis-core/graph-support/arrow-analytics-normalization';
@@ -25,6 +25,7 @@ import {
 } from '../../../src/dataframe-analysis/period-index/index';
 import {getInt64TimeWords} from '../../../src/dataframe-analysis/time-window-filter/index';
 import {
+  createVectorView,
   createInputBuffer,
   createOutputBuffer,
   readUint32,
@@ -47,6 +48,67 @@ const TICKS_PER_MILLISECOND = {
   nanosecond: 1_000_000n
 };
 
+it('compiles maximum signed calendar divisors for packed and chunked rows', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const ticks = [0n, 86_400_000n, 172_800_000n];
+  for (const [calendarUnit, interval] of [
+    ['year', 0x7fffffff],
+    ['week', 306_783_378]
+  ] as const) {
+    for (const chunkLengths of [undefined, [1, 1, 1]]) {
+      const result = await runCalendar(
+        device,
+        ticks,
+        'millisecond',
+        {
+          kind: 'calendar',
+          step: {calendarUnit, interval},
+          origin: {year: 1970},
+          count: 1
+        },
+        {chunkLengths, withStatus: true}
+      );
+      // All three dates are inside the first period, even with the largest supported divisor.
+      expect(result.periods).toEqual([0, 0, 0]);
+      expect(result.invalidCount).toBe(0);
+    }
+  }
+});
+
+it('compiles both signed hour-origin literal boundaries with independent periods', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const hourIndex of [-0x80000000, 0x7fffffff]) {
+    const milliseconds = hourIndex * 3_600_000;
+    const instant = new Date(milliseconds);
+    const offsets = hourIndex < 0 ? [0, 1, 2] : [-2, -1, 0];
+    const expected =
+      hourIndex < 0 ? [0, 1, 2] : [GPU_PERIOD_INDEX_OUT_OF_RANGE, GPU_PERIOD_INDEX_OUT_OF_RANGE, 0];
+    for (const chunkLengths of [undefined, [1, 1, 1]]) {
+      const result = await runCalendar(
+        device,
+        offsets.map(offset => BigInt(milliseconds + offset * 3_600_000)),
+        'millisecond',
+        {
+          kind: 'calendar',
+          step: {calendarUnit: 'hour'},
+          count: 3,
+          origin: {
+            year: instant.getUTCFullYear(),
+            month: instant.getUTCMonth() + 1,
+            day: instant.getUTCDate(),
+            hour: instant.getUTCHours()
+          }
+        },
+        {chunkLengths, withStatus: true}
+      );
+      expect(result.periods).toEqual(expected);
+      expect(result.invalidCount).toBe(hourIndex < 0 ? 0 : 2);
+    }
+  }
+});
+
 function getContext(unit: ArrowAnalyticsTimeUnit): GPUTemporalContext {
   return {unit, epoch: 'unix', encoding: 'int64-words', axis: {kind: 'irregular'}};
 }
@@ -61,9 +123,33 @@ function toTicks(milliseconds: number, unit: ArrowAnalyticsTimeUnit): bigint {
 type RunOptions = {
   mask?: number[];
   withStatus?: boolean;
+  chunkLengths?: readonly number[];
+  repeat?: number;
 };
 
 type RunResult = {periods: number[]; invalidCount?: number};
+
+function splitRows<Format extends 'uint32' | 'sint32' | 'uint32x2'>(
+  graph: GPUCommandGraph,
+  view: GraphDataView<Format>,
+  lengths?: readonly number[]
+) {
+  if (!lengths) return view;
+  let rowBase = 0;
+  return createVectorView(
+    view.buffer.id,
+    view.format,
+    lengths.map(length => {
+      const chunk = graph.createDataView(view.buffer, {
+        format: view.format,
+        byteOffset: rowBase * view.rowByteLength,
+        length
+      });
+      rowBase += length;
+      return chunk;
+    })
+  );
+}
 
 async function runCalendar(
   device: Device,
@@ -95,15 +181,35 @@ async function runCalendar(
     ? track(createInputBuffer(device, Uint32Array.from(options.mask)))
     : null;
   const temporalContext = getContext(unit);
-  const yearView = importGraphBuffer(graph, 'year', year, 'sint32', rowCount);
-  const monthView = importGraphBuffer(graph, 'month', month, 'uint32', rowCount);
-  const dayView = importGraphBuffer(graph, 'day', dayOfMonth, 'uint32', rowCount);
-  const hourView = importGraphBuffer(graph, 'hour', hour, 'uint32', rowCount);
+  const yearView = splitRows(
+    graph,
+    importGraphBuffer(graph, 'year', year, 'sint32', rowCount),
+    options.chunkLengths
+  );
+  const monthView = splitRows(
+    graph,
+    importGraphBuffer(graph, 'month', month, 'uint32', rowCount),
+    options.chunkLengths
+  );
+  const dayView = splitRows(
+    graph,
+    importGraphBuffer(graph, 'day', dayOfMonth, 'uint32', rowCount),
+    options.chunkLengths
+  );
+  const hourView = splitRows(
+    graph,
+    importGraphBuffer(graph, 'hour', hour, 'uint32', rowCount),
+    options.chunkLengths
+  );
   graph.add(
     new GPUCalendarBuckets({
       id: 'calendar',
       temporalContext,
-      timestamps: importGraphBuffer(graph, 'times', timestamps, 'uint32x2', rowCount),
+      timestamps: splitRows(
+        graph,
+        importGraphBuffer(graph, 'times', timestamps, 'uint32x2', rowCount),
+        options.chunkLengths
+      ),
       parameters: parameters.importToGraph(graph),
       output: {year: yearView, month: monthView, dayOfMonth: dayView, hour: hourView}
     })
@@ -114,9 +220,19 @@ async function runCalendar(
       temporalContext,
       periods,
       columns: {year: yearView, month: monthView, dayOfMonth: dayView, hour: hourView},
-      mask: mask ? importGraphBuffer(graph, 'mask', mask, 'uint32', rowCount) : undefined,
+      mask: mask
+        ? splitRows(
+            graph,
+            importGraphBuffer(graph, 'mask', mask, 'uint32', rowCount),
+            options.chunkLengths
+          )
+        : undefined,
       output: {
-        periods: importGraphBuffer(graph, 'periods', periodsBuffer, 'uint32', rowCount),
+        periods: splitRows(
+          graph,
+          importGraphBuffer(graph, 'periods', periodsBuffer, 'uint32', rowCount),
+          options.chunkLengths
+        ),
         ...(options.withStatus
           ? {status: {invalidCount: importGraphBuffer(graph, 'invalid', invalidCount, 'uint32', 1)}}
           : {})
@@ -125,7 +241,8 @@ async function runCalendar(
   );
   const compiled = graph.compile();
   parameters.write(getGPUCalendarBucketsParameterValues(0, 0));
-  submitGraph(device, compiled, undefined);
+  for (let encoding = 0; encoding < (options.repeat ?? 1); encoding++)
+    submitGraph(device, compiled, undefined);
   const result: RunResult = {periods: await readUint32(periodsBuffer, rowCount)};
   if (options.withStatus) {
     result.invalidCount = (await readUint32(invalidCount, 1))[0];
@@ -163,10 +280,24 @@ async function runFixed(
       id: 'period-index',
       temporalContext: getContext(unit),
       periods,
-      timestamps: importGraphBuffer(graph, 'times', timestamps, 'uint32x2', rowCount),
-      mask: mask ? importGraphBuffer(graph, 'mask', mask, 'uint32', rowCount) : undefined,
+      timestamps: splitRows(
+        graph,
+        importGraphBuffer(graph, 'times', timestamps, 'uint32x2', rowCount),
+        options.chunkLengths
+      ),
+      mask: mask
+        ? splitRows(
+            graph,
+            importGraphBuffer(graph, 'mask', mask, 'uint32', rowCount),
+            options.chunkLengths
+          )
+        : undefined,
       output: {
-        periods: importGraphBuffer(graph, 'periods', periodsBuffer, 'uint32', rowCount),
+        periods: splitRows(
+          graph,
+          importGraphBuffer(graph, 'periods', periodsBuffer, 'uint32', rowCount),
+          options.chunkLengths
+        ),
         ...(options.withStatus
           ? {status: {invalidCount: importGraphBuffer(graph, 'invalid', invalidCount, 'uint32', 1)}}
           : {})
@@ -174,7 +305,8 @@ async function runFixed(
     })
   );
   const compiled = graph.compile();
-  submitGraph(device, compiled, undefined);
+  for (let encoding = 0; encoding < (options.repeat ?? 1); encoding++)
+    submitGraph(device, compiled, undefined);
   const result: RunResult = {periods: await readUint32(periodsBuffer, rowCount)};
   if (options.withStatus) {
     result.invalidCount = (await readUint32(invalidCount, 1))[0];
@@ -482,4 +614,69 @@ describe('GPUPeriodIndex fixed periods', () => {
     expect(result.periods).toEqual([GPU_PERIOD_INDEX_OUT_OF_RANGE, 5, GPU_PERIOD_INDEX_INVALID, 3]);
     expect(result.invalidCount).toBe(1);
   });
+});
+
+it('GPUPeriodIndex calendar chunks match packed input and the Date oracle for every step', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const milliseconds = [
+    Date.UTC(2023, 0, 1),
+    Date.UTC(2024, 1, 29),
+    Date.UTC(2024, 2, 1, 12),
+    Date.UTC(1969, 11, 31),
+    Date.UTC(2024, 11, 31),
+    Date.UTC(2030, 0, 1),
+    Date.UTC(2024, 0, 1),
+    Date.UTC(2023, 11, 31, 23),
+    Date.UTC(2025, 0, 1)
+  ];
+  const ticks = milliseconds.map(BigInt);
+  const mask = [1, 1, 0, 1, 1, 1, 1, 1, 1];
+  for (const calendarUnit of ['year', 'quarter', 'month', 'week', 'day', 'hour'] as const) {
+    const periods: GPUPeriodIndexCalendarPeriods = {
+      kind: 'calendar',
+      step: {calendarUnit, interval: 2},
+      origin: {year: 2023},
+      count: 8
+    };
+    const packed = await runCalendar(device, ticks, 'millisecond', periods, {
+      mask,
+      withStatus: true
+    });
+    const chunked = await runCalendar(device, ticks, 'millisecond', periods, {
+      mask,
+      withStatus: true,
+      chunkLengths: [1, 3, 5],
+      repeat: 2
+    });
+    const expected = milliseconds.map((time, index) =>
+      mask[index] === 0
+        ? -2
+        : getExpectedCalendarPeriod(periods.step, periods.origin, periods.count, time)
+    );
+    expect(chunked).toEqual(packed);
+    expect(toSigned(chunked.periods)).toEqual(expected);
+    expect(chunked.invalidCount).toBe(expected.filter(period => period === -1).length);
+  }
+});
+
+it('GPUPeriodIndex fixed chunks match packed and exact BigInt division including sentinels', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const periods: GPUPeriodIndexFixedPeriods = {kind: 'fixed', origin: -10n, width: 3n, count: 4};
+  const ticks = [INT64_MINIMUM, -11n, -10n, -9n, -7n, -1n, 1n, 2n, INT64_MAXIMUM];
+  const mask = [1, 1, 1, 0, 1, 1, 1, 1, 1];
+  const expected = ticks.map((time, index) =>
+    mask[index] === 0 ? -2 : time < -10n || time >= 2n ? -1 : Number((time + 10n) / 3n)
+  );
+  const packed = await runFixed(device, ticks, 'nanosecond', periods, {mask, withStatus: true});
+  const chunked = await runFixed(device, ticks, 'nanosecond', periods, {
+    mask,
+    withStatus: true,
+    chunkLengths: [1, 3, 5],
+    repeat: 2
+  });
+  expect(chunked).toEqual(packed);
+  expect(toSigned(chunked.periods)).toEqual(expected);
+  expect(chunked.invalidCount).toBe(expected.filter(period => period === -1).length);
 });

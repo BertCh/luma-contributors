@@ -762,3 +762,95 @@ it('GPUColumnProfile times one million rows by four columns', async () => {
   expectParity(result, scene, undefined);
   fixture.destroy();
 });
+
+it('GPUColumnProfile preserves exact counts and null counts above the old 2^24 row limit', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Fixed 64 MiB input: exercises an odd total that cannot be represented in float32.
+  const rowCount = 2 ** 24 + 1;
+  const values = new Float32Array(rowCount).fill(5);
+  const fixture = createFixture(device, {
+    columns: [{kind: 'numeric', values}],
+    histogramBinCount: 2,
+    precision: 4,
+    topCategoryCount: 1
+  });
+  try {
+    const populated = await fixture.run();
+    expect(Array.from(populated.counts)).toEqual([rowCount, 0]);
+    expect(populated.statistics[GPU_COLUMN_PROFILE_STATISTIC.count]).toBe(Math.fround(rowCount));
+    expect(populated.statistics[GPU_COLUMN_PROFILE_STATISTIC.mean]).toBe(5);
+    expect(populated.statistics[GPU_COLUMN_PROFILE_STATISTIC.variance]).toBe(0);
+    fixture.columnBuffers[0].write(values.fill(NaN));
+    const empty = await fixture.run();
+    expect(Array.from(empty.counts)).toEqual([0, rowCount]);
+    expect(empty.statistics[GPU_COLUMN_PROFILE_STATISTIC.nullCount]).toBe(Math.fround(rowCount));
+    expect(empty.statistics[GPU_COLUMN_PROFILE_STATISTIC.mean]).toBeNaN();
+  } finally {
+    fixture.destroy();
+  }
+});
+
+it.each([
+  2047, 2048, 2049
+])('mixed column profile at %i rows straddles the moment tile boundary', async rows => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const scene = createMixedScene(rows, 191);
+  const fixture = createFixture(device, scene);
+  try {
+    expectParity(await fixture.run(), scene, undefined);
+  } finally {
+    fixture.destroy();
+  }
+});
+
+it('wide mixed profile retains integer counts and nonconstant finite moments', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const finiteCount = 2 ** 24 + 1;
+  const rowCount = finiteCount + 4;
+  const lowerCount = 2 ** 23 + 1;
+  const upperCount = 2 ** 23;
+  const numeric = new Float32Array(rowCount).fill(1);
+  numeric.fill(3, lowerCount, finiteCount);
+  numeric.set([NaN, NaN, Infinity, -Infinity], finiteCount);
+  const category = new Uint32Array(rowCount).fill(1);
+  category.fill(2, lowerCount, finiteCount);
+  category.set([0xffffffff, 9, 9, 1], finiteCount);
+  const fixture = createFixture(device, {
+    columns: [
+      {kind: 'numeric', values: numeric},
+      {kind: 'category', values: category, categoryCount: 3}
+    ],
+    histogramBinCount: 4,
+    precision: 4,
+    topCategoryCount: 2
+  });
+  const mean = (lowerCount + 3 * upperCount) / finiteCount;
+  const variance = (lowerCount * (1 - mean) ** 2 + upperCount * (3 - mean) ** 2) / finiteCount;
+  try {
+    const actual = await fixture.run();
+    expect(Array.from(actual.counts)).toEqual([finiteCount + 2, 2, rowCount - 1, 1]);
+    const statistic = GPU_COLUMN_PROFILE_STATISTIC;
+    expect(Math.abs(actual.statistics[statistic.mean] - mean)).toBeLessThan(2e-6);
+    expect(Math.abs(actual.statistics[statistic.variance] - variance)).toBeLessThan(2e-6);
+    expect(actual.statistics[statistic.minimum]).toBe(-Infinity);
+    expect(actual.statistics[statistic.maximum]).toBe(Infinity);
+    expect(actual.statistics[GPU_COLUMN_PROFILE_STATISTIC_COUNT + statistic.overflowCount]).toBe(2);
+    expect(Array.from(actual.histograms)).toEqual([
+      lowerCount,
+      0,
+      0,
+      upperCount,
+      0,
+      lowerCount + 1,
+      upperCount,
+      0
+    ]);
+    expect(Array.from(actual.topCategories.slice(2))).toEqual([1, 2]);
+    expect(Array.from(actual.topCategoryCounts.slice(2))).toEqual([lowerCount + 1, upperCount]);
+  } finally {
+    fixture.destroy();
+  }
+});

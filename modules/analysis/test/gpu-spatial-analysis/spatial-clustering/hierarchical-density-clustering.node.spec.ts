@@ -77,9 +77,9 @@ it('GPUHierarchicalDensityClustering kernels parse and fit the core limits', () 
   }
   const ids = nodes.map(node => node.id);
   const order = [
-    'hierarchical-density-clustering-neighbors',
     'hierarchical-density-clustering-init',
     'hierarchical-density-clustering-node-data',
+    'hierarchical-density-clustering-bvh-core',
     'hierarchical-density-clustering-gate-0',
     'hierarchical-density-clustering-search-0',
     'hierarchical-density-clustering-add-0',
@@ -109,7 +109,7 @@ it('GPUHierarchicalDensityClustering rounds add nodes but no kernel variants (ru
   const large = getNodes(5000);
   expect(large.length).toBeGreaterThan(small.length);
   const roundPattern =
-    /-(gate|resolve|leaf-flags|search|tie-low|tie-high|add)-\d+|-(tour|ancestors|depth|representatives)-(gate|jump|copy)-\d+|selection-(level-gate|functions|chain-gate|chain-jump|chain-copy|best|advance)-\d+/;
+    /-(gate|resolve|leaf-flags|search|tie-low|tie-high|add)-\d+|-splice-(gate|round)-\d+|-(tour|ancestors|depth|representatives)-(gate|jump|copy)-\d+|selection-(level-gate|functions|chain-gate|chain-jump|chain-copy|best|advance)-\d+/;
   const countVariants = (nodes: readonly unknown[]) =>
     getGPUCommandNodePipelineKeys(nodes, {idPattern: roundPattern}).size;
   expect(countVariants(large)).toBe(countVariants(small));
@@ -128,7 +128,7 @@ it('tree contraction gates iterative work and never walks the whole tree in one 
     expect(node.workload?.maximumInvocationCount, node.id).toBeGreaterThan(1);
   }
   for (const node of nodes.filter(node =>
-    /-dendrogram-splice|-selection-candidates/.test(node.id)
+    /-dendrogram-splice-(seed|round)-?|-selection-candidates/.test(node.id)
   )) {
     expect(node.workload?.maximumInvocationCount, node.id).toBeGreaterThan(1);
   }

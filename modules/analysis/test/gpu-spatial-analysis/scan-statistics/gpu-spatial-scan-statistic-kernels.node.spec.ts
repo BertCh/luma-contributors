@@ -195,6 +195,7 @@ describe('GPUSpatialScanStatistic kernels', () => {
     );
     expect(writers.map(node => node.id.replace(/-\d+$/, ''))).toEqual([
       'scan-statistic-select-init',
+      'scan-statistic-select-validity',
       'scan-statistic-round-select',
       'scan-statistic-round-select',
       'scan-statistic-round-select'

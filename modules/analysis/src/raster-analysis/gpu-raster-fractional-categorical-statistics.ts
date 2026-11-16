@@ -4,6 +4,7 @@
 
 import {
   createTransientView,
+  getViewBindingRange,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -12,17 +13,31 @@ import {
 import {
   getGraphOutputViews,
   validateCapacity,
+  validateCommandNodeBudget,
   validateSinglePackedView,
   validateRequirement
 } from '../analysis-core/kernels/gpu-contributor-utils';
+import {
+  createRasterFractionalTileNode,
+  validateRasterFractionalBindingByteLength,
+  validateRasterFractionalWritableViews
+} from './fractional-coverage/raster-fractional-tile-kernel';
 import {getSortedSegmentSumNodes} from '../analysis-core/kernels/sorted-segment-sums';
-import {createWGSLKernelNode} from '../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  createWGSLKernelNode,
+  createFillNode,
+  getWGSLFloatLiteral
+} from '../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   getRasterBandViews,
   validateRasterGridAxisAligned,
   validateRasterParameters
 } from './raster-band-utils';
-import {validateRasterCellSizeMode, type GPURasterCellSizeMode} from '../analysis-core/raster-grid';
+import {
+  getRasterGridGeoreference,
+  validateRasterCellSizeMode,
+  type GPURasterCellSizeMode
+} from '../analysis-core/raster-grid';
 import {getRasterRowAreaScaleWGSL} from './raster-grid/raster-cell-area-scale';
 import {
   requireRasterLength,
@@ -41,11 +56,29 @@ const GEOREFERENCE_DETERMINANT_SLOT = 6;
 /** Largest category capacity; dense categories bound scratch space and the per-zone winner scan. */
 const MAXIMUM_CATEGORY_CAPACITY = 65534;
 
-/** Largest zone x (category + missing) group count addressable by one segment-sum pass. */
-const MAXIMUM_ZONE_CATEGORY_GROUPS = 65535;
+/** uint32 group keys reserve the last word for inactive tuple slots. */
+const MAXIMUM_ZONE_CATEGORY_GROUPS = 0xfffffffe;
 
-/** Largest coverage tuple capacity accepted in one invocation. */
-const MAXIMUM_TUPLES = 1048576;
+/** uint32 tuple row indices reserve the last word for saturated status counts. */
+const MAXIMUM_TUPLES = 0xfffffffe;
+
+/** Full-sort reference limit preserves the original reduction order and scratch bound. */
+const MAXIMUM_REFERENCE_TUPLES = 1048576;
+
+/** The original reference route keeps its historical dense group cap. */
+const MAXIMUM_REFERENCE_ZONE_CATEGORY_GROUPS = 65535;
+
+/** Sort tiles retain the historical 1M-row bound on any single sort allocation. */
+const MAXIMUM_TUPLE_TILE_SIZE = 1048576;
+
+/** One full historical-size sort preserves reduction order for every previously accepted input. */
+const DEFAULT_TUPLE_TILE_SIZE = 1048576;
+
+/** Conservative allowance for a 32-bit radix sort, gather, reductions and merge per tile. */
+const TUPLE_TILE_COMMAND_NODE_ALLOWANCE = 256;
+
+/** Classify, reset, summary and publication outside the tuple tiles. */
+const CATEGORICAL_COMMAND_NODE_ALLOWANCE = 8;
 
 export type GPURasterFractionalCategoricalStatisticsProps = {
   id?: string;
@@ -55,6 +88,10 @@ export type GPURasterFractionalCategoricalStatisticsProps = {
   zoneCount: number;
   /** Category IDs are [0, categoryCapacity). Valid IDs outside this range fail the result. */
   categoryCapacity: number;
+  /** Compile-time sort tile size, 1..1048576. Normalisation occurs after all tile support is merged. */
+  tupleTileSize?: number;
+  /** Compile-time default 'tiled'. 'exact' retains a single full sort and the original tuple/group caps. */
+  mode?: 'tiled' | 'exact';
   coverage: GPURasterFractionalCoverageProps['output'];
   /**
    * The per-frame georeference view given to `GPURasterFractionalCoverage` (layout of
@@ -100,7 +137,12 @@ export type GPURasterFractionalCategoricalStatisticsProps = {
 /**
  * Fractional categorical composition using stable, sorted zone/category sums. Coverage, area and
  * proportions are separate outputs; no cell counts or observation weights are inferred. Supports
- * 1..65534 categories, at most 65535 zone*(categoryCapacity+1) groups, and 1..1048576 tuple slots.
+ * 1..65534 categories and uint32-addressable groups and tuple slots, subject to device binding
+ * limits. Fixed-size tuple sorts merge sufficient statistics in tile order before normalisation.
+ * The default tile size keeps every previously accepted input in one sort with its original
+ * reduction order. Above that size, or with an explicit smaller tupleTileSize, float32 sums can
+ * differ by reduction-order rounding; fractions are nonnegative and tile support is merged in a
+ * fixed order. The 'exact' mode retains the original 1M tuple / 65535 group reference limits.
  * The extra group holds missing support. Active tuples must be unique (zone, cell) pairs, as emitted
  * by GPURasterFractionalCoverage; disjoint tile cores may be concatenated with remapped cell IDs.
  *
@@ -114,10 +156,50 @@ export type GPURasterFractionalCategoricalStatisticsProps = {
 export class GPURasterFractionalCategoricalStatistics implements GPUCommandNodeProducer {
   readonly id: string;
   readonly props: GPURasterFractionalCategoricalStatisticsProps;
+  readonly tupleTileSize: number;
+  readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPURasterFractionalCategoricalStatisticsProps) {
     this.id = props.id ?? 'fractional-categorical-statistics';
     this.props = props;
+    validateRequirement(
+      this.id,
+      props.mode === undefined || props.mode === 'tiled' || props.mode === 'exact',
+      "mode must be 'tiled' or 'exact'"
+    );
+    if (props.tupleTileSize !== undefined)
+      validateCapacity(this.id, 'tupleTileSize', props.tupleTileSize, 1, MAXIMUM_TUPLE_TILE_SIZE);
+    if (props.mode === 'exact') {
+      validateCapacity(
+        this.id,
+        'coverage.zoneIds length in exact mode',
+        props.coverage.zoneIds.length,
+        1,
+        MAXIMUM_REFERENCE_TUPLES
+      );
+      validateCapacity(
+        this.id,
+        'zoneCount times (categoryCapacity + 1) in exact mode',
+        props.zoneCount * (props.categoryCapacity + 1),
+        1,
+        MAXIMUM_REFERENCE_ZONE_CATEGORY_GROUPS
+      );
+      validateRequirement(
+        this.id,
+        props.tupleTileSize === undefined || props.tupleTileSize >= props.coverage.zoneIds.length,
+        'tupleTileSize in exact mode must cover coverage.zoneIds.length'
+      );
+    }
+    this.tupleTileSize =
+      props.mode === 'exact'
+        ? props.coverage.zoneIds.length
+        : (props.tupleTileSize ?? Math.min(DEFAULT_TUPLE_TILE_SIZE, props.coverage.zoneIds.length));
+    validateCapacity(this.id, 'tupleTileSize', this.tupleTileSize, 1, MAXIMUM_TUPLE_TILE_SIZE);
+    this.estimatedCommandNodeCount =
+      CATEGORICAL_COMMAND_NODE_ALLOWANCE +
+      Math.ceil(props.coverage.zoneIds.length / this.tupleTileSize) *
+        TUPLE_TILE_COMMAND_NODE_ALLOWANCE;
+    validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
     const {grid, input, coverage, output, categoryCapacity, zoneCount} = props;
     const cellCount = validateRasterExpansionViews(
       this.id,
@@ -125,11 +207,24 @@ export class GPURasterFractionalCategoricalStatistics implements GPUCommandNodeP
       [...getRasterBandViews(input), ...getGraphOutputViews(coverage), props.parameters],
       getGraphOutputViews(output)
     );
+    validateRasterFractionalWritableViews(this.id, props.output, [
+      ...getRasterBandViews(props.input),
+      ...getGraphOutputViews(props.coverage),
+      props.parameters
+    ]);
     if (props.parameters) {
       validateRasterParameters(this.id, props.parameters, GEOREFERENCE_DETERMINANT_SLOT + 1);
     }
     validateRasterCellSizeMode(this.id, props.cellSizeMode);
     validateRasterGridAxisAligned(this.id, grid, props.cellSizeMode);
+    if ((props.cellSizeMode ?? 'uniform') !== 'uniform' && !props.parameters) {
+      const {northEdge, southEdge} = getRasterGridGeoreference(grid);
+      validateRequirement(
+        this.id,
+        Number.isFinite(Math.fround(northEdge)) && Number.isFinite(Math.fround(southEdge)),
+        'grid.affine row edges must fit in finite float32 for cellSizeMode'
+      );
+    }
     // Dense categories bound scratch space and the per-zone winner scan.
     validateCapacity(this.id, 'categoryCapacity', categoryCapacity, 1, MAXIMUM_CATEGORY_CAPACITY);
     validateRequirement(
@@ -220,6 +315,43 @@ export class GPURasterFractionalCategoricalStatistics implements GPUCommandNodeP
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
     const {grid, input, coverage, output, zoneCount, categoryCapacity} = props;
+    // Binding ranges include the alignment prefix of nonzero-offset caller views. Preflight
+    // every allocation before declaring a resource or node, including the sort's derived scratch.
+    for (const view of [
+      ...getRasterBandViews(input),
+      ...getGraphOutputViews(coverage),
+      props.parameters,
+      ...getGraphOutputViews(output)
+    ]) {
+      if (view)
+        validateRasterFractionalBindingByteLength(
+          graph.device,
+          id,
+          view.buffer.id,
+          getViewBindingRange(view).size,
+          'split the raster or coverage into disjoint cores',
+          view.buffer.byteLength
+        );
+    }
+    for (const [name, bytes] of [
+      ['categories', grid.width * grid.height * 4],
+      [
+        'sort tiles',
+        (this.tupleTileSize <= 256
+          ? 2 ** Math.ceil(Math.log2(this.tupleTileSize))
+          : this.tupleTileSize) * 4
+      ],
+      ['segment offsets', (zoneCount * (categoryCapacity + 1) + 1) * 4],
+      ['group sums', zoneCount * (categoryCapacity + 1) * 4],
+      ['zone summary', zoneCount * 16]
+    ] as const)
+      validateRasterFractionalBindingByteLength(
+        graph.device,
+        id,
+        name,
+        bytes,
+        'reduce zoneCount, categoryCapacity or tupleTileSize'
+      );
     validateRasterExpansionGraph(id, graph, [
       ...getRasterBandViews(input),
       ...getGraphOutputViews(coverage),
@@ -232,8 +364,8 @@ export class GPURasterFractionalCategoricalStatistics implements GPUCommandNodeP
     // Slot 6 of the coverage georeference is the affine determinant; read per frame when supplied.
     const cellArea = props.parameters
       ? `abs(georeference[georeferenceOffset + ${GEOREFERENCE_DETERMINANT_SLOT}u])`
-      : String(
-          Math.fround(Math.abs(grid.affine[0] * grid.affine[4] - grid.affine[1] * grid.affine[3]))
+      : getWGSLFloatLiteral(
+          Math.abs(grid.affine[0] * grid.affine[4] - grid.affine[1] * grid.affine[3])
         );
     const georeferenceBindings = props.parameters
       ? [
@@ -257,18 +389,28 @@ export class GPURasterFractionalCategoricalStatistics implements GPUCommandNodeP
     const areaScaleExpression =
       cellSizeMode === 'uniform' ? 'fraction' : `fraction * getRowAreaScale(cell / ${grid.width}u)`;
     const categories = createTransientView(graph, `${id}-categories`, 'uint32', cellCount);
-    const keys = createTransientView(graph, `${id}-keys`, 'uint32', tupleCapacity);
+    const keys = createTransientView(graph, `${id}-keys`, 'uint32', this.tupleTileSize);
     const contributions = createTransientView(
       graph,
       `${id}-contributions`,
       'float32',
-      tupleCapacity
+      this.tupleTileSize
     );
-    const failure = createTransientView(graph, `${id}-failure`, 'uint32', 1);
+    // State: failure word, current tuple base, active tuple count.
+    const failure = createTransientView(graph, `${id}-failure`, 'uint32', 3);
+    const tileSums = createTransientView(graph, `${id}-tile-sums`, 'float32', groupCount);
     const sums = createTransientView(graph, `${id}-sums`, 'float32', groupCount);
     const summary = createTransientView(graph, `${id}-summary`, 'float32x4', zoneCount);
     const operation = 'GPURasterFractionalCategoricalStatistics';
-    return [
+    const nodes: GPUCommandNode<Parameters>[] = [
+      createFillNode(graph, {
+        id: `${id}-clear-sums`,
+        operation,
+        view: sums,
+        type: 'f32',
+        value: '0.0',
+        componentCount: groupCount
+      }),
       createWGSLKernelNode(graph, {
         id: `${id}-classify`,
         operation,
@@ -294,32 +436,71 @@ if (!missing && category >= ${categoryCapacity}u) { categories[categoriesOffset 
           {name: 'count', view: coverage.status.count, type: 'u32', access: 'read'},
           {name: 'required', view: coverage.status.requiredCount, type: 'u32', access: 'read'},
           {name: 'overflow', view: coverage.status.overflow, type: 'u32', access: 'read'},
+          ...(coverage.status.candidateOverflow
+            ? [
+                {
+                  name: 'candidateOverflow',
+                  view: coverage.status.candidateOverflow,
+                  type: 'u32' as const,
+                  access: 'read' as const
+                }
+              ]
+            : []),
           {name: 'failure', view: failure, type: 'u32', access: 'read_write'}
         ],
-        body: `failure[failureOffset] = u32(overflow[overflowOffset] != 0u || count[countOffset] > ${tupleCapacity}u || required[requiredOffset] != count[countOffset]);`
-      }),
-      createWGSLKernelNode(graph, {
-        id: `${id}-prepare-tuples`,
-        operation,
-        invocationCount: tupleCapacity,
-        declarations: areaScaleDeclarations,
-        bindings: [
-          ...georeferenceBindings,
-          {name: 'categories', view: categories, type: 'u32', access: 'read'},
-          {name: 'zones', view: coverage.zoneIds, type: 'u32', access: 'read'},
-          {name: 'cells', view: coverage.cellIds, type: 'u32', access: 'read'},
-          {name: 'fractions', view: coverage.fractions, type: 'f32', access: 'read'},
-          {name: 'count', view: coverage.status.count, type: 'u32', access: 'read'},
-          {name: 'keys', view: keys, type: 'u32', access: 'read_write'},
-          {name: 'contributions', view: contributions, type: 'f32', access: 'read_write'},
-          {name: 'failure', view: failure, type: 'atomic<u32>', access: 'read_write'}
-        ],
-        body: `keys[keysOffset + index] = ${groupCount}u;
+        body: `failure[failureOffset] = u32(overflow[overflowOffset] != 0u ${coverage.status.candidateOverflow ? '|| candidateOverflow[candidateOverflowOffset] != 0u' : ''} || count[countOffset] > ${tupleCapacity}u || required[requiredOffset] != count[countOffset]);
+failure[failureOffset+1u]=0u;failure[failureOffset+2u]=min(count[countOffset],${tupleCapacity}u);`
+      })
+    ];
+    for (let tile = 0; tile < Math.ceil(tupleCapacity / this.tupleTileSize); tile++) {
+      const tileId = `${id}-tile-${tile}`;
+      const tileLength = Math.min(this.tupleTileSize, tupleCapacity - tile * this.tupleTileSize);
+      const tileKeys = graph.createDataView(keys.buffer, {format: 'uint32', length: tileLength});
+      const tileContributions = graph.createDataView(contributions.buffer, {
+        format: 'float32',
+        length: tileLength
+      });
+      nodes.push(
+        // The published sort consumes fixed scratch, whose inactive suffix sorts after all groups.
+        createFillNode(graph, {
+          id: `${tileId}-clear-keys`,
+          operation,
+          view: keys,
+          type: 'u32',
+          value: `${groupCount}u`,
+          componentCount: this.tupleTileSize
+        }),
+        createFillNode(graph, {
+          id: `${tileId}-clear-contributions`,
+          operation,
+          view: contributions,
+          type: 'f32',
+          value: '0.0',
+          componentCount: this.tupleTileSize
+        }),
+        createRasterFractionalTileNode(graph, {
+          id: `${tileId}-prepare-tuples`,
+          operation,
+          invocationCount: tileLength,
+          rowCount: 'arrayLength(&keys)',
+          declarations: areaScaleDeclarations,
+          bindings: [
+            ...georeferenceBindings,
+            {name: 'categories', view: categories, type: 'u32', access: 'read'},
+            {name: 'zones', view: coverage.zoneIds, type: 'u32', access: 'read'},
+            {name: 'cells', view: coverage.cellIds, type: 'u32', access: 'read'},
+            {name: 'fractions', view: coverage.fractions, type: 'f32', access: 'read'},
+            {name: 'keys', view: tileKeys, type: 'u32', access: 'read_write'},
+            {name: 'contributions', view: tileContributions, type: 'f32', access: 'read_write'},
+            {name: 'failure', view: failure, type: 'atomic<u32>', access: 'read_write'}
+          ],
+          body: `keys[keysOffset + index] = ${groupCount}u;
 contributions[contributionsOffset + index] = 0.0;
-if (index >= count[countOffset]) { return; }
-let zone = zones[zonesOffset + index];
-let cell = cells[cellsOffset + index];
-let fraction = fractions[fractionsOffset + index];
+let tuple=atomicLoad(&failure[failureOffset+1u])+index;
+if (tuple >= atomicLoad(&failure[failureOffset+2u])) { return; }
+let zone = zones[zonesOffset + tuple];
+let cell = cells[cellsOffset + tuple];
+let fraction = fractions[fractionsOffset + tuple];
 if (zone >= ${zoneCount}u || cell >= ${cellCount}u || !(fraction >= 0.0 && fraction <= 1.0)) {
   atomicOr(&failure[failureOffset], 1u); return;
 }
@@ -328,15 +509,35 @@ let category = categories[categoriesOffset + cell];
 if (category > ${categoryCapacity}u) { atomicOr(&failure[failureOffset], 1u); return; }
 keys[keysOffset + index] = zone * ${categoryCapacity + 1}u + category;
 contributions[contributionsOffset + index] = ${areaScaleExpression};`
-      }),
-      ...getSortedSegmentSumNodes(graph, {
-        id: `${id}-group`,
-        operation,
-        segmentCount: groupCount,
-        segmentKeys: keys,
-        sumContributions: contributions,
-        sums
-      }),
+        }),
+        ...getSortedSegmentSumNodes(graph, {
+          id: `${tileId}-group`,
+          operation,
+          segmentCount: groupCount,
+          segmentKeys: keys,
+          sumContributions: contributions,
+          sums: tileSums
+        }),
+        createWGSLKernelNode(graph, {
+          id: `${tileId}-merge`,
+          operation,
+          invocationCount: groupCount,
+          bindings: [
+            {name: 'partialSums', view: tileSums, type: 'f32', access: 'read'},
+            {name: 'sums', view: sums, type: 'f32', access: 'read_write'}
+          ],
+          body: 'sums[sumsOffset+index]+=partialSums[partialSumsOffset+index];'
+        }),
+        createWGSLKernelNode(graph, {
+          id: `${tileId}-advance`,
+          operation,
+          invocationCount: 1,
+          bindings: [{name: 'state', view: failure, type: 'u32', access: 'read_write'}],
+          body: `state[stateOffset+1u]+=min(${this.tupleTileSize}u,0xffffffffu-state[stateOffset+1u]);`
+        })
+      );
+    }
+    nodes.push(
       createWGSLKernelNode(graph, {
         id: `${id}-summarize`,
         operation,
@@ -354,7 +555,7 @@ contributions[contributionsOffset + index] = ${areaScaleExpression};`
         body: `let base = sumsOffset + index * ${categoryCapacity + 1}u;
 var observed = 0.0;
 var greatest = 0.0;
-var least = 1048577.0;
+var least = 3.4028234663852886e38;
 var majorityCategory = 0xffffffffu;
 var minorityCategory = 0xffffffffu;
 for (var category = 0u; category < ${categoryCapacity}u; category++) {
@@ -414,6 +615,7 @@ proportions[proportionsOffset + index] = select(invalid, support / select(1.0, o
 observed[observedOffset + index] = summary[summaryOffset + index * 4u + 1u] * ${cellArea};
 missing[missingOffset + index] = summary[summaryOffset + index * 4u + 2u] * ${cellArea};`
       })
-    ];
+    );
+    return nodes;
   }
 }

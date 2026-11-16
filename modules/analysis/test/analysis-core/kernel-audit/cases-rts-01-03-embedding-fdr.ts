@@ -66,7 +66,8 @@ function similarity(context: KernelAuditContext, metric: 'cosine' | 'dot', query
 function classifier(
   context: KernelAuditContext,
   trainingCount = 4096,
-  metric: 'euclidean' | 'cosine' = 'euclidean'
+  metric: 'euclidean' | 'cosine' = 'euclidean',
+  searchStructure?: 'tiled' | 'brute-force'
 ): void {
   const {graph, view} = context;
   const pixelCount = pixelsAtBindingLimit(context);
@@ -75,6 +76,7 @@ function classifier(
       pixelCount,
       dimensions: DIMENSIONS,
       metric,
+      searchStructure,
       vectors: view('float32', pixelCount * DIMENSIONS),
       mask: view('uint32', pixelCount),
       trainingVectors: view('float32', trainingCount * DIMENSIONS),
@@ -390,8 +392,24 @@ export const RTS_01_03_EMBEDDING_FDR_AUDIT_CASES: readonly KernelAuditCase[] = [
   },
   {
     exportName: 'GPURasterEmbeddingKNearestClassifier',
-    name: 'rts03-training-above-maximum',
+    name: 'rts03-4097-training-default-euclidean',
     build: context => classifier(context, 4097)
+  },
+  {
+    exportName: 'GPURasterEmbeddingKNearestClassifier',
+    name: 'rts03-4097-training-default-cosine',
+    build: context => classifier(context, 4097, 'cosine')
+  },
+  ...(['euclidean', 'cosine'] as const).map(metric => ({
+    exportName: 'GPURasterEmbeddingKNearestClassifier',
+    name: `rts03-4096-training-reference-${metric}`,
+    build: (context: KernelAuditContext) => classifier(context, 4096, metric, 'brute-force')
+  })),
+  {
+    exportName: 'GPURasterEmbeddingKNearestClassifier',
+    name: 'rts03-training-above-maximum',
+    // The reference route retains its named limit; the default tiled route accepts 4097 above.
+    build: context => classifier(context, 4097, 'euclidean', 'brute-force')
   },
   {
     exportName: 'GPURasterEmbeddingLinearProbe',

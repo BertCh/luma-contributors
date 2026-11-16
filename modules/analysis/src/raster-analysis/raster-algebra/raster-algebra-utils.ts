@@ -6,6 +6,7 @@ import type {GraphDataView, GraphVectorView, GPUCommandGraph} from '@luma.gl/gra
 import {getWGSLFloatLiteral} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
+  validateFiniteNumber,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -71,9 +72,7 @@ export function validateRasterAlgebraCount(
 
 /** Throws unless the optional sentinel is finite. @internal */
 export function validateRasterAlgebraNoData(id: string, noDataValue: number | undefined): void {
-  if (noDataValue !== undefined && !Number.isFinite(noDataValue)) {
-    throw new Error(`${id} noDataValue must be finite (NaN cells are always nodata)`);
-  }
+  if (noDataValue !== undefined) validateFiniteNumber(id, 'noDataValue', noDataValue);
 }
 
 /**

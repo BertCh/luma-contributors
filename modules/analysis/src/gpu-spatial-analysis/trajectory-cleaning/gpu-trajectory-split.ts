@@ -4,6 +4,7 @@
 
 import {
   createTransientView,
+  getViewBindingRange,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -16,6 +17,8 @@ import type {
 } from '../../analysis-core/contracts/index';
 import {
   validateCapacity,
+  validateFiniteNumber,
+  validateCommandNodeBudget,
   validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
@@ -23,6 +26,14 @@ import {
   validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  validateTrajectoryBindings,
+  validateTrajectoryWritableDispatches
+} from '../trajectory-analysis/trajectory-binding-validation';
+import {
+  createSaturatedCountScanNodes,
+  SCAN_TOTAL_WGSL
+} from '../../analysis-core/kernels/scan-total';
 import {createFillNode, createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {resolveGPUTrajectoryTemporalContext} from '../trajectory-analysis/trajectory-common';
 import {
@@ -33,6 +44,14 @@ import {
 import {MOVEMENT_SENTINEL_WGSL} from '../trajectory-staypoints/movement-common';
 
 const OPERATION = 'GPUTrajectorySplit';
+
+// A uint32 count scan needs at most four radix-256 levels for any uint32 track count.
+// Two uint64 scans use two uint32 scans each, plus carry, high-clear and saturation passes.
+const SPLIT_SCAN_COMMAND_NODE_ALLOWANCE = 4 * 8 + 2 * 3;
+// Row indices and track indices are unsigned words in the shaders.
+const SPLIT_MAXIMUM_ROW_COUNT = 0xffffffff;
+// segmentOffsets needs one terminal row and its fill dispatch count must fit uint32.
+const SPLIT_MAXIMUM_SEGMENT_CAPACITY = 0xfffffffe;
 
 /** How {@link GPUTrajectorySplit} breaks a track into segments. */
 export type GPUTrajectorySplitMode = 'gap' | 'stop' | 'value-change';
@@ -59,9 +78,12 @@ export function getGPUTrajectorySplitParameterValues(
   settings: GPUTrajectorySplitSettings,
   target: Float32Array = new Float32Array(GPU_TRAJECTORY_SPLIT_PARAMETER_LENGTH)
 ): Float32Array {
-  if (!Number.isFinite(settings.maximumGap) || settings.maximumGap < 0) {
-    throw new Error('Split maximumGap must be finite and non-negative');
-  }
+  validateFiniteNumber(OPERATION, 'maximumGap', settings.maximumGap, 0);
+  validateRequirement(
+    OPERATION,
+    target.length >= GPU_TRAJECTORY_SPLIT_PARAMETER_LENGTH,
+    `parameter target must contain ${GPU_TRAJECTORY_SPLIT_PARAMETER_LENGTH} float32 values`
+  );
   target.set([settings.maximumGap, 0, 0, 0]);
   return target;
 }
@@ -118,13 +140,16 @@ export type GPUTrajectorySplitProps = GPUTrajectoryGeometryFields & {
  * rows of the new port are `rowIds`, optionally with copied `positions` and `timestamps`, so the
  * output feeds another trajectory contributor without readback.
  *
- * Two passes per track, one thread each: count, then write after prefix offsets.
+ * Two walks per track: count, then write after parallel saturated prefix scans.
+ * Track walks remain serial; scans never wrap or overwrite an earlier output prefix.
  */
 export class GPUTrajectorySplit implements GPUCommandNodeProducer {
   readonly id: string;
   readonly props: GPUTrajectorySplitProps;
   readonly segmentCapacity: number;
   readonly rowCapacity: number;
+  /** Upper bound including both published uint64 scans and optional geometry gathering. */
+  readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPUTrajectorySplitProps) {
     this.id = props.id ?? 'trajectory-split';
@@ -134,13 +159,10 @@ export class GPUTrajectorySplit implements GPUCommandNodeProducer {
     validateSinglePackedView(positions, ['float32x2'], `${id} positions`);
     validateSinglePackedView(timestamps, ['float32', 'uint32x2'], `${id} timestamps`);
     validateSinglePackedView(trackOffsets, ['uint32'], `${id} trackOffsets`);
+    validateCapacity(id, 'positions rows', positions.length, 0, SPLIT_MAXIMUM_ROW_COUNT);
+    validateCapacity(id, 'trackOffsets rows', trackOffsets.length, 2, SPLIT_MAXIMUM_ROW_COUNT);
     validateViewLength(id, 'timestamps', timestamps, positions.length);
     resolveGPUTrajectoryTemporalContext(id, timestamps, props.temporalContext);
-    validateRequirement(
-      id,
-      trackOffsets.length >= 2,
-      'trackOffsets must contain at least two rows'
-    );
     validateRequirement(
       id,
       ['gap', 'stop', 'value-change'].includes(mode),
@@ -166,7 +188,13 @@ export class GPUTrajectorySplit implements GPUCommandNodeProducer {
     validateSinglePackedView(output.segmentOffsets, ['uint32'], `${id} output.segmentOffsets`);
     validateSinglePackedView(output.segmentTracks, ['uint32'], `${id} output.segmentTracks`);
     validateSinglePackedView(output.rowIds, ['uint32'], `${id} output.rowIds`);
-    validateCapacity(id, 'output.segmentTracks', output.segmentTracks.length);
+    validateCapacity(
+      id,
+      'output.segmentTracks',
+      output.segmentTracks.length,
+      1,
+      SPLIT_MAXIMUM_SEGMENT_CAPACITY
+    );
     validateCapacity(id, 'output.rowIds', output.rowIds.length);
     this.segmentCapacity = output.segmentTracks.length;
     this.rowCapacity = output.rowIds.length;
@@ -184,7 +212,29 @@ export class GPUTrajectorySplit implements GPUCommandNodeProducer {
       validateSinglePackedView(output.timestamps, [timestamps.format], `${id} output.timestamps`);
       validateViewLength(id, 'output.timestamps', output.timestamps, this.rowCapacity);
     }
+    for (const [name, view] of Object.entries(output.status)) {
+      if (view) {
+        validateSinglePackedView(view, ['uint32'], `${id} output.status.${name}`);
+        validateViewLength(id, `output.status.${name}`, view, 1);
+      }
+    }
     validateGraphOutputsDisjointFromInputs(id, this.getOutputViews(), this.getInputViews());
+    validateGraphOutputsDisjointFromInputs(
+      id,
+      [output.positions, output.timestamps],
+      [output.rowIds]
+    );
+    validateTrajectoryWritableDispatches(id, [
+      {
+        segmentOffsets: output.segmentOffsets,
+        segmentTracks: output.segmentTracks,
+        rowIds: output.rowIds
+      },
+      {segmentOffsets: output.segmentOffsets, ...output.status},
+      {positions: output.positions, timestamps: output.timestamps}
+    ]);
+    this.estimatedCommandNodeCount = SPLIT_SCAN_COMMAND_NODE_ALLOWANCE + 6;
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
   }
 
   private getInputViews(): (GraphDataView | undefined)[] {
@@ -221,12 +271,50 @@ export class GPUTrajectorySplit implements GPUCommandNodeProducer {
     validateGraphViewsBelongToGraph(id, graph, [...this.getInputViews(), ...this.getOutputViews()]);
     const rowCount = positions.length;
     const trackCount = trackOffsets.length - 1;
+    for (const [name, view] of Object.entries({
+      positions,
+      timestamps: props.timestamps,
+      trackOffsets,
+      parameters: props.parameters,
+      staypointIds: props.staypointIds,
+      values: props.values,
+      'output.segmentOffsets': output.segmentOffsets,
+      'output.segmentTracks': output.segmentTracks,
+      'output.rowIds': output.rowIds,
+      'output.positions': output.positions,
+      'output.timestamps': output.timestamps,
+      ...Object.fromEntries(
+        Object.entries(output.status).map(([name, view]) => [`output.status.${name}`, view])
+      )
+    })) {
+      if (view) {
+        validateGPUStorageBindingByteLength(
+          graph.device,
+          id,
+          name,
+          getViewBindingRange(view).size,
+          name === 'positions'
+            ? 'split the tracks over several graphs'
+            : 'reduce the view binding range'
+        );
+      }
+    }
+    validateTrajectoryBindings(graph, id, props);
+    // Count buffers, prefixes and all uint64-scan intermediates hold at most one word per
+    // track. Hierarchical block summaries are smaller; the two total words are separate.
     validateGPUStorageBindingByteLength(
       graph.device,
       id,
-      'positions',
-      rowCount * 8,
+      'track scan scratch',
+      trackCount * 4,
       'split the tracks over several graphs'
+    );
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'total scratch',
+      4,
+      'use a device with storage bindings'
     );
     const timeMode = getTrajectoryTimeMode(props);
     const segmentCounts = createTransientView(graph, `${id}-segment-counts`, 'uint32', trackCount);
@@ -235,18 +323,14 @@ export class GPUTrajectorySplit implements GPUCommandNodeProducer {
       graph,
       `${id}-track-segment-offsets`,
       'uint32',
-      trackCount + 1
+      trackCount
     );
-    const rowOffsets = createTransientView(
-      graph,
-      `${id}-track-row-offsets`,
-      'uint32',
-      trackCount + 1
-    );
+    const rowOffsets = createTransientView(graph, `${id}-track-row-offsets`, 'uint32', trackCount);
     const totalSegments = createTransientView(graph, `${id}-total-segments`, 'uint32', 1);
     const totalRows = createTransientView(graph, `${id}-total-rows`, 'uint32', 1);
     // `stepTimeDifference` is declared only in gap mode, so non-gap walks need no time buffer.
-    const modeSource = `${mode === 'gap' ? getTrajectoryTimeSource(timeMode) : ''}
+    const modeSource = `${SCAN_TOTAL_WGSL}
+${mode === 'gap' ? getTrajectoryTimeSource(timeMode) : ''}
 fn breakBefore(row: u32) -> bool {
   ${
     mode === 'gap'
@@ -298,14 +382,14 @@ fn isExcludedRow(row: u32) -> bool {
     if (emittedRows >= 2u) {
       ${
         emit
-          ? `let segmentIndex = segmentBase + segmentTotal;
-      let firstOut = rowBase + rowTotal;
+          ? `let segmentIndex = getSaturatedScanSum(segmentBase, segmentTotal);
+      let firstOut = getSaturatedScanSum(rowBase, rowTotal);
       if (segmentIndex < ${segmentCapacity}u) {
         segmentOffsetsOut[segmentOffsetsOutOffset + segmentIndex] = firstOut;
         segmentTracks[segmentTracksOffset + segmentIndex] = index;
       }
       for (var offset = 0u; offset < emittedRows; offset++) {
-        let target0 = firstOut + offset;
+        let target0 = getSaturatedScanSum(firstOut, offset);
         if (target0 < ${rowCapacity}u) {
           rowIds[rowIdsOffset + target0] = runStart + offset;
         }
@@ -313,7 +397,7 @@ fn isExcludedRow(row: u32) -> bool {
           : ''
       }
       segmentTotal++;
-      rowTotal += emittedRows;
+      rowTotal = getSaturatedScanSum(rowTotal, emittedRows);
     }
     runStart = runEnd;
   }
@@ -336,30 +420,21 @@ fn isExcludedRow(row: u32) -> bool {
         declarations: modeSource,
         body: walkBody(false)
       }),
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-prefix`,
+      ...createSaturatedCountScanNodes(graph, {
+        id: `${id}-segment-prefix`,
         operation: OPERATION,
-        invocationCount: 1,
-        bindings: [
-          {name: 'segmentCounts', view: segmentCounts, type: 'u32', access: 'read'},
-          {name: 'rowCounts', view: rowCounts, type: 'u32', access: 'read'},
-          {name: 'trackSegmentOffsets', view: segmentOffsets, type: 'u32', access: 'read_write'},
-          {name: 'trackRowOffsets', view: rowOffsets, type: 'u32', access: 'read_write'},
-          {name: 'totalSegments', view: totalSegments, type: 'u32', access: 'read_write'},
-          {name: 'totalRows', view: totalRows, type: 'u32', access: 'read_write'}
-        ],
-        body: `var segments = 0u;
-  var rows = 0u;
-  for (var track = 0u; track < ${trackCount}u; track++) {
-    trackSegmentOffsets[trackSegmentOffsetsOffset + track] = segments;
-    trackRowOffsets[trackRowOffsetsOffset + track] = rows;
-    segments += segmentCounts[segmentCountsOffset + track];
-    rows += rowCounts[rowCountsOffset + track];
-  }
-  trackSegmentOffsets[trackSegmentOffsetsOffset + ${trackCount}u] = segments;
-  trackRowOffsets[trackRowOffsetsOffset + ${trackCount}u] = rows;
-  totalSegments[totalSegmentsOffset] = segments;
-  totalRows[totalRowsOffset] = rows;`
+        counts: segmentCounts,
+        offsets: segmentOffsets,
+        rowCount: trackCount,
+        total: totalSegments
+      }),
+      ...createSaturatedCountScanNodes(graph, {
+        id: `${id}-row-prefix`,
+        operation: OPERATION,
+        counts: rowCounts,
+        offsets: rowOffsets,
+        rowCount: trackCount,
+        total: totalRows
       }),
       createFillNode<Parameters>(graph, {
         id: `${id}-offsets-sentinel`,

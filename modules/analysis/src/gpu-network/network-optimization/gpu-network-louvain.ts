@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateNetworkOptimizationInputOutputBuffers} from './network-optimization-bindings';
+
+import {validateNetworkLouvainBindings} from './network-louvain-bindings';
 import {getCoreDefaultBuffer, type GPUNetworkTopology} from '../../analysis-core/network-topology';
 import type {
   GPUApproximationStatusPort,
@@ -22,6 +25,7 @@ import type {
   GPUCommandNodeProducer,
   GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import {createTransientView} from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
@@ -29,7 +33,7 @@ import {
   validateSinglePackedView,
   validateRequirement,
   validateGraphViewsBelongToGraph,
-  validateGraphOutputsDisjointFromInputs
+  validateGPUStorageBindingByteLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 
 /** Largest vertex count: the kernel keeps a dense n x n weight matrix and reevaluates it per move. */
@@ -157,7 +161,9 @@ export type GPUNetworkLouvainProps = {
  *
  * Supplying `topology` selects sparse parallel multilevel Louvain: sort/reduce neighbor-community
  * weights, select positive-gain moves in parallel, reserve both affected communities, then
- * aggregate a quotient multigraph. At most 65,535 nodes and 1,048,576 CSR slots; no degree cap.
+ * aggregate a quotient multigraph. Two-word pair keys support up to 1,073,741,823 nodes or CSR slots, further bounded by the
+ * device's storage binding size (16 bytes per node or CSR slot for the largest scratch binding);
+ * no degree cap. Stable lexicographic ordering preserves pair order and fixed-tree sums at old sizes.
  * Sparse ties choose the lowest candidate label, then an ascending (or seed-XOR) vertex priority.
  * This differs from dense sequential Fisher-Yates visitation; partitions can differ.
  * Compile-time: shapes, direction, seed and round/level budgets. Per-frame: CSR/dense contents
@@ -181,8 +187,15 @@ export class GPUNetworkLouvain implements GPUCommandNodeProducer {
     );
     for (const [name, view] of Object.entries(props.output.status ?? {})) {
       if (!view) continue;
-      validateSinglePackedView(view, ['uint32'], id);
+      validateSinglePackedView(view, ['uint32'], `${id} output.status.${name}`);
       validateRequirement(id, view.length === 1, `output.status.${name} must hold one row`);
+    }
+    for (const [name, view, format] of [
+      ['communities', props.output.communities, 'uint32'],
+      ['objectiveTrace', props.output.objectiveTrace, 'float32'],
+      ['summary', props.output.summary, 'uint32']
+    ] as const) {
+      validateSinglePackedView(view, [format], `${id} output.${name}`);
     }
     // Separate passes write the partition, summary and named status ports. Keep their
     // buffers distinct, including separate graph imports of the same default allocation.
@@ -241,10 +254,11 @@ export class GPUNetworkLouvain implements GPUCommandNodeProducer {
       props.output.summary.length === SUMMARY_WORD_COUNT,
       `output.summary must hold ${SUMMARY_WORD_COUNT} rows`
     );
-    validateGraphOutputsDisjointFromInputs(this.id, getNetworkLouvainOutputViews(props.output), [
-      props.weights,
-      props.parameters
-    ]);
+    validateNetworkOptimizationInputOutputBuffers(
+      this.id,
+      getNetworkLouvainOutputViews(props.output),
+      [props.weights, props.parameters]
+    );
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
@@ -256,11 +270,38 @@ export class GPUNetworkLouvain implements GPUCommandNodeProducer {
         ...getNetworkLouvainStatusNodes(graph, id, props.output)
       ];
     }
+    validateNetworkLouvainBindings(graph, id, props);
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'dense level budget',
+      (props.maximumLevels ?? 8) * 4,
+      'reduce maximumLevels'
+    );
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'dense round budget',
+      (props.maximumIterations ?? 16) * 4,
+      'reduce maximumIterations'
+    );
     validateGraphViewsBelongToGraph(id, graph, [
       props.weights,
       props.parameters,
       ...getNetworkLouvainOutputViews(props.output)
     ]);
+    const levelBudget = createTransientView(
+      graph,
+      `${id}-level-budget`,
+      'uint32',
+      props.maximumLevels ?? 8
+    );
+    const roundBudget = createTransientView(
+      graph,
+      `${id}-round-budget`,
+      'uint32',
+      props.maximumIterations ?? 16
+    );
     return [
       createWGSLKernelNode<Parameters>(graph, {
         id,
@@ -273,7 +314,9 @@ export class GPUNetworkLouvain implements GPUCommandNodeProducer {
           {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
           {name: 'communities', view: props.output.communities, type: 'u32', access: 'read_write'},
           {name: 'trace', view: props.output.objectiveTrace, type: 'f32', access: 'read_write'},
-          {name: 'summary', view: props.output.summary, type: 'u32', access: 'read_write'}
+          {name: 'summary', view: props.output.summary, type: 'u32', access: 'read_write'},
+          {name: 'levelBudget', view: levelBudget, type: 'u32', access: 'read'},
+          {name: 'roundBudget', view: roundBudget, type: 'u32', access: 'read'}
         ],
         declarations: `${GET_NAN_WGSL}
 ${
@@ -306,7 +349,7 @@ fn objective(total: f32, resolution: f32) -> f32 {
         // a seed (test/analysis-core/table-audit/table-audit-strict.spec.ts); see
         // getGPUNetworkLouvainVisitOrderSource for the fault this is about.
         body: `for (var word = 0u; word < 4u; word++) { summary[summaryOffset + word] = 0u; }
-for (var entry = 0u; entry < ${props.output.objectiveTrace.length}u; entry++) { trace[traceOffset + entry] = getNaN(); }
+for (var entry = 0u; entry < arrayLength(&trace) - traceOffset; entry++) { trace[traceOffset + entry] = getNaN(); }
 var groups: array<u32, ${props.nodeCount}>;
 ${
   props.seed === undefined
@@ -336,10 +379,10 @@ var current = objective(total, resolution);
 if (!isFiniteValue(current)) { summary[summaryOffset] = 0u; return; }
 trace[traceOffset] = current;
 var sweeps = 0u;
-for (var level = 0u; level < ${props.maximumLevels ?? 8}u; level++) {
+for (var level = 0u; level < arrayLength(&levelBudget) - levelBudgetOffset; level++) {
   var levelChanged = false;
   var stable = false;
-  for (var round = 0u; round < ${props.maximumIterations ?? 16}u; round++) {
+  for (var round = 0u; round < arrayLength(&roundBudget) - roundBudgetOffset; round++) {
     var changed = false;
     for (var visit = 0u; visit < NODE_COUNT; visit++) {
       let group = ${props.seed === undefined ? 'visit' : 'louvainVisitOrder[visit]'};
@@ -397,7 +440,8 @@ export function getNetworkLouvainOutputViews(output: GPUNetworkLouvainOutput): G
   ];
 }
 
-function getNetworkLouvainStatusNodes<Parameters>(
+/** @internal */
+export function getNetworkLouvainStatusNodes<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   id: string,
   output: GPUNetworkLouvainOutput

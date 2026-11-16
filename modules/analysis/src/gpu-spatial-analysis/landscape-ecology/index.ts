@@ -54,3 +54,7 @@ export type {
   CPUPopulationSupportAlignmentInput,
   CPUPopulationSupportAlignmentResult
 } from './cpu-population-support-alignment-operation';
+export type {
+  GPUPatchProximityBoundaryProps,
+  GPUPatchProximityBoundaryOutput
+} from './patch-proximity-boundary';

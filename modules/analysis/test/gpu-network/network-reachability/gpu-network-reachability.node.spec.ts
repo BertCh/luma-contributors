@@ -166,18 +166,21 @@ it('GPUNetworkReachability validates props', () => {
   ).toThrow(/costs/);
   const shared = graph.createTransientBuffer({
     id: 'shared',
-    byteLength: 64,
+    byteLength: 512,
     usage: 128
   });
+  // Disjoint aligned ranges still share one physical read-only/writable storage usage scope.
   expect(() =>
     create({
       topology: {
         ...base.topology,
         weights: graph.createDataView(shared, {format: 'float32', length: 10})
       },
-      output: {costs: graph.createDataView(shared, {format: 'float32', length: 8})}
+      output: {
+        costs: graph.createDataView(shared, {format: 'float32', length: 8, byteOffset: 256})
+      }
     })
-  ).toThrow(/separate buffers/);
+  ).toThrow(/network-reachability outputs must not share buffers with inputs \(physical storage\)/);
   const otherGraph = new GPUCommandGraph(device);
   expect(() => new GPUNetworkReachability(createProps(otherGraph)).getCommandNodes(graph)).toThrow(
     /belong to the target graph/

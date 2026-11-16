@@ -17,8 +17,14 @@ import {
   type GPUPolygonOverlayOutput
 } from '../polygon-overlay/gpu-polygon-overlay';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {
+  validateOverlayScratchByteLengths,
+  getOverlayOutputViews
+} from '../polygon-overlay/overlay-storage-validation';
 import {
   validateSinglePackedView,
+  getGraphOutputViews,
   validateRequirement,
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs
@@ -177,6 +183,37 @@ export class GPUSphericalPolygonOverlay implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(
+        [
+          ...getGraphOutputViews(props.left),
+          ...getGraphOutputViews(props.right),
+          ...getOverlayOutputViews({
+            ...props.output,
+            geometry: {
+              ...props.output.geometry,
+              positions: props.output.geometry.positions as unknown as GraphDataView<'float32x2'>
+            }
+          }),
+          props.output.complement
+        ].map((view, index) => [`binding.${index}`, view])
+      )
+    );
+    // Chart positions are two words per vertex, bounded by the three-word caller views.
+    // Validate the entire nested planar arrangement before creating either chart stream.
+    const inputRingCount = props.left.ringOffsets.length + props.right.ringOffsets.length - 2;
+    validateOverlayScratchByteLengths(graph, id, {
+      expandedVertexCount:
+        props.left.positions.length + props.right.positions.length + inputRingCount,
+      inputRingCount,
+      intersections: props.capacity.intersections,
+      nodedSegments: props.capacity.nodedSegments,
+      boundaryCapacity: props.output.boundary.endpoints.length,
+      outputRingCapacity: props.output.geometry.ringOffsets.length - 1,
+      outputVertexCapacity: props.output.geometry.positions.length
+    });
     validateGraphViewsBelongToGraph(id, graph, [
       props.left.positions,
       props.right.positions,

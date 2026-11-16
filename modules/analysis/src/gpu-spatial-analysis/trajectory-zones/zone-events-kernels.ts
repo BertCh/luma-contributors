@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {TRAJECTORY_SATURATED_COUNT_WGSL} from '../trajectory-analysis/trajectory-counts-wgsl';
 import {validateMaximumCount} from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPUBVH, GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
@@ -233,7 +234,8 @@ export function createZoneProbeNode<Parameters>(
       {name: 'candidatePairs', view: props.candidatePairs, type: 'u32', access: 'read_write'}
     ],
     invocationCount: shape.rowCount,
-    declarations: `${SPATIAL_JOIN_WGSL_HELPERS}
+    declarations: `${TRAJECTORY_SATURATED_COUNT_WGSL}
+${SPATIAL_JOIN_WGSL_HELPERS}
 ${getTrackConstants(shape)}
 const INTERNAL_NODE_COUNT: u32 = ${bvh.internalNodeCount}u;
 ${TRACK_LOOKUP_WGSL}
@@ -262,7 +264,7 @@ ${NODE_OVERLAPS_WGSL}`,
       }
       let edgeRow = leafIds[leafIdsOffset + node - INTERNAL_NODE_COUNT];
       if (edgeRow < EDGE_COUNT) {
-        let slot = atomicAdd(&state[stateOffset], 1u);
+        let slot = reserveTrajectoryCount();
         if (slot < CANDIDATE_CAPACITY) {
           candidatePairs[candidatePairsOffset + slot * 2u] = rowWord;
           candidatePairs[candidatePairsOffset + slot * 2u + 1u] = edgeRow;

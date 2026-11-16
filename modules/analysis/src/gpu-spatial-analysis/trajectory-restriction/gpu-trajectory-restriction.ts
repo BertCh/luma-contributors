@@ -3,6 +3,12 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  validateTrajectoryBindings,
+  validateTrajectoryScratch,
+  validateTrajectoryOutputRanges,
+  validateTrajectoryWritableDispatches
+} from '../trajectory-analysis/trajectory-binding-validation';
+import {
   doGraphDataViewsOverlap,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -329,6 +335,15 @@ export class GPUTrajectoryRestriction implements GPUCommandNodeProducer {
         'output views must not overlap'
       );
     }
+    validateTrajectoryOutputRanges(this.id, this.props.output);
+    validateTrajectoryWritableDispatches(this.id, [
+      {
+        intervals: props.output.intervals,
+        positions: props.output.positions,
+        status: props.output.status,
+        relationships: props.output.relationships
+      }
+    ]);
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
       props.positions,
       props.times,
@@ -343,6 +358,7 @@ export class GPUTrajectoryRestriction implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateTrajectoryBindings(graph, this.id, this.props);
     const {id, props} = this;
     validateGraphViewsBelongToGraph(id, graph, [
       props.positions,
@@ -355,6 +371,10 @@ export class GPUTrajectoryRestriction implements GPUCommandNodeProducer {
       props.pairs?.count,
       ...Object.values(props.output)
     ]);
+    if (props.times.format === 'uint32x2')
+      validateTrajectoryScratch(graph, id, {
+        'relative word times': Math.max(2 * props.positions.length, 1) * 4
+      });
     const wordTime =
       props.times.format === 'uint32x2'
         ? createRestrictionWordTimeNodes(graph, id, props)

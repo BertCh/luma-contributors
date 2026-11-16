@@ -3,6 +3,14 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  createGraphChunkGroupKernelNode,
+  validateGraphChunkGroupKernelSupport,
+  GRAPH_CHUNK_GROUP_EXTRA_PARAMETER_OFFSET
+} from '../../analysis-core/kernels/graph-chunk-groups';
+
+import {
+  getBoundedDispatchLayout,
+  type GraphVectorView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -14,16 +22,22 @@ import {
 } from '../../analysis-core/contracts/status';
 import {
   validateCapacity,
-  validateGPUStorageBindingByteLength,
+  getGraphViewChunks,
+  validateCommandNodeBudget,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
   validateSinglePackedView,
   validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
+  planGraphChunkDispatch,
+  validateDisjointWritableViews,
+  validateGraphChunkBindingRanges,
+  validateGraphChunkDispatchBindings,
+  type GraphChunkDispatchPlan
+} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {
   createFillNode,
-  createWGSLKernelNode,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
@@ -33,23 +47,32 @@ import {
 } from './cell-period-key-packing';
 
 const OPERATION = 'GPUCellPeriodKeys';
+/** Fixed workgroup size keeps all row chunks on the same pipeline specialization. */
+const WORKGROUP_SIZE = 256;
 /** Periods are `uint32` and the all-ones period is the "already excluded" marker of `GPUPeriodIndex`. */
 const MAXIMUM_PERIOD_COUNT = 0xfffffffd;
 
+/** Preserves packed row types by default and the caller's chunked view kind when requested. */
+type GPUCellPeriodKeysRowView<
+  Format extends GraphDataView['format'],
+  Rows extends GraphDataView | GraphVectorView
+> = Rows extends GraphVectorView ? GraphVectorView<Format> : GraphDataView<Format>;
+
 /** Caller-owned outputs of {@link GPUCellPeriodKeys}. */
-export type GPUCellPeriodKeysOutput = {
-  /**
-   * One packed `uint32x2` `(low, high)` key per input row, the `keys` input of `GPUGroupStatistics`.
-   * A row that is not packed holds the reserved all-ones key, which `GPUGroupStatistics` skips.
-   */
-  keys: GraphDataView<'uint32x2'>;
-  /**
-   * `status.invalidCount`: rows that passed the mask and carry a period and a cell key, but were not
-   * packed because the period is out of range or the low bits of the cell key do not hold the
-   * `fill` pattern (a cell finer than the chosen resolution). Never a silent collision.
-   */
-  status?: GPUInvalidStatusPort;
-};
+export type GPUCellPeriodKeysOutput<Rows extends GraphDataView | GraphVectorView = GraphDataView> =
+  {
+    /**
+     * One packed `uint32x2` `(low, high)` key per input row, the `keys` input of `GPUGroupStatistics`.
+     * A row that is not packed holds the reserved all-ones key, which `GPUGroupStatistics` skips.
+     */
+    keys: GPUCellPeriodKeysRowView<'uint32x2', Rows>;
+    /**
+     * `status.invalidCount`: rows that passed the mask and carry a period and a cell key, but were not
+     * packed because the period is out of range or the low bits of the cell key do not hold the
+     * `fill` pattern (a cell finer than the chosen resolution). Never a silent collision.
+     */
+    status?: GPUInvalidStatusPort;
+  };
 
 /**
  * Properties for {@link GPUCellPeriodKeys}.
@@ -57,7 +80,7 @@ export type GPUCellPeriodKeysOutput = {
  * Per-frame (no recompile): the contents of `cells`, `periods` and `mask`. Topology (needs a new
  * graph): the row count, `periodCount`, `fill`, and whether `mask` and the status are present.
  */
-export type GPUCellPeriodKeysProps = {
+export type GPUCellPeriodKeysProps<Rows extends GraphDataView | GraphVectorView = GraphDataView> = {
   /** Prefix for generated node IDs. Defaults to `'cell-period-keys'`. */
   id?: string;
   /**
@@ -65,12 +88,12 @@ export type GPUCellPeriodKeysProps = {
    * S2 or Quadbin, for example the keys written by `GPUPointToCell`. The all-ones key means "no
    * cell" and is skipped silently.
    */
-  cells: GraphDataView<'uint32x2'>;
+  cells: GPUCellPeriodKeysRowView<'uint32x2', Rows>;
   /**
    * Period per row, the `periods` output of `GPUPeriodIndex`. `0xffffffff` (a row excluded
    * upstream) is skipped silently; a period at or above `periodCount` is skipped and counted.
    */
-  periods: GraphDataView<'uint32'>;
+  periods: GPUCellPeriodKeysRowView<'uint32', Rows>;
   /** Number of periods, 1 to `2^32 - 3` (the period needs `ceil(log2(periodCount))` key bits, at most 32). */
   periodCount: number;
   /**
@@ -79,9 +102,9 @@ export type GPUCellPeriodKeysProps = {
    */
   fill: GPUCellPeriodKeyFill;
   /** Optional `uint32` row mask; zero skips the row silently. */
-  mask?: GraphDataView<'uint32'>;
+  mask?: GPUCellPeriodKeysRowView<'uint32', Rows>;
   /** Caller-owned outputs. */
-  output: GPUCellPeriodKeysOutput;
+  output: GPUCellPeriodKeysOutput<Rows>;
 };
 
 /**
@@ -111,24 +134,33 @@ export type GPUCellPeriodKeysProps = {
  * table of `GPUGroupStatistics` is in cell-major order. A packed key is not a valid cell id; unpack
  * the group table keys with `unpackGPUCellPeriodKey`.
  *
+ * Row inputs and keys may be chunked with matching ordered chunk lengths. Each chunk must fit
+ * one storage binding; total rows fit the shared uint32 chunk limit. Status stays packed.
+ *
  * Limits: `periodCount` at most `2^32 - 3`. Downstream, `GPUGroupStatistics` keeps at most
  * `getGPUGroupStatisticsMaximumGroupCount` (8,388,608 on a default device) distinct (cell, period)
  * groups. Its `sumValues` and `means` use a unit that follows the data, as `GPUValueCube` does;
  * only its `sums` words have the fixed resolution `1 / sumScale`.
  */
-export class GPUCellPeriodKeys implements GPUCommandNodeProducer {
+export class GPUCellPeriodKeys<
+  Props extends GPUCellPeriodKeysProps<GraphDataView | GraphVectorView> = GPUCellPeriodKeysProps
+> implements GPUCommandNodeProducer
+{
   /** Prefix for every node ID. */
   readonly id: string;
   /** Validated properties. */
-  readonly props: GPUCellPeriodKeysProps;
+  readonly props: Props & GPUCellPeriodKeysProps<Props['cells']>;
   /** Number of rows. */
   readonly rowCount: number;
   /** Low key bits replaced by the period. */
   readonly periodBits: number;
 
-  constructor(props: GPUCellPeriodKeysProps) {
+  readonly estimatedCommandNodeCount: number;
+  private readonly chunkPlan: GraphChunkDispatchPlan;
+
+  constructor(props: Props) {
     this.id = props.id ?? 'cell-period-keys';
-    this.props = props;
+    this.props = props as Props & GPUCellPeriodKeysProps<Props['cells']>;
     const id = this.id;
     const {cells, periods, mask, output} = props;
     validateCapacity(id, 'periodCount', props.periodCount, 1, MAXIMUM_PERIOD_COUNT);
@@ -144,38 +176,62 @@ export class GPUCellPeriodKeys implements GPUCommandNodeProducer {
       props.fill === 'ones' || props.fill === 'zeros',
       "fill must be 'ones' or 'zeros'"
     );
-    validateSinglePackedView(cells, ['uint32x2'], `${id} cells`);
-    validateSinglePackedView(periods, ['uint32'], `${id} periods`);
+    for (const chunk of getGraphViewChunks(cells))
+      validateSinglePackedView(chunk, ['uint32x2'], `${id} cells`);
+    for (const chunk of getGraphViewChunks(periods))
+      validateSinglePackedView(chunk, ['uint32'], `${id} periods`);
     this.rowCount = cells.length;
     validateRequirement(id, this.rowCount >= 1, 'needs at least one row');
     validateViewLength(id, 'periods', periods, this.rowCount);
     if (mask) {
-      validateSinglePackedView(mask, ['uint32'], `${id} mask`);
+      for (const chunk of getGraphViewChunks(mask))
+        validateSinglePackedView(chunk, ['uint32'], `${id} mask`);
       validateViewLength(id, 'mask', mask, this.rowCount);
     }
-    validateSinglePackedView(output.keys, ['uint32x2'], `${id} output.keys`);
+    for (const chunk of getGraphViewChunks(output.keys))
+      validateSinglePackedView(chunk, ['uint32x2'], `${id} output.keys`);
     validateViewLength(id, 'output.keys', output.keys, this.rowCount);
     validateGPUStatusPort(id, {invalidCount: output.status?.invalidCount});
     validateGraphOutputsDisjointFromInputs(id, this.getOutputViews(), this.getInputViews());
-    if (output.status?.invalidCount?.buffer === output.keys.buffer) {
-      throw new Error(`${id} outputs must not share buffers with each other`);
-    }
+    validateDisjointWritableViews(id, {
+      keys: output.keys,
+      invalidCount: output.status?.invalidCount
+    });
+    this.chunkPlan = planGraphChunkDispatch(id, {
+      cells,
+      periods,
+      rowMask: mask,
+      keysOut: output.keys
+    });
+    this.estimatedCommandNodeCount =
+      Number(Boolean(output.status?.invalidCount)) + this.chunkPlan.nonemptyChunkCount;
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
   }
 
   /** Returns the optional status clear and the one packing kernel. */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {props, id, rowCount, periodBits} = this;
-    const {cells, periods, mask, output, periodCount, fill} = props;
-    validateGraphViewsBelongToGraph(id, graph, [...this.getInputViews(), ...this.getOutputViews()]);
-    validateGPUStorageBindingByteLength(
-      graph.device,
+    const {props, id, periodBits, chunkPlan} = this;
+    const {mask, output, periodCount, fill} = props;
+    validateGraphChunkDispatchBindings(graph, id, chunkPlan);
+    validateGraphChunkBindingRanges(graph, id, {invalidCount: output.status?.invalidCount});
+    validateGraphChunkGroupKernelSupport(
+      graph,
       id,
-      'cells',
-      rowCount * 8,
-      'split the rows over several graphs'
+      3 + Number(Boolean(mask)) + Number(Boolean(output.status?.invalidCount)),
+      WORKGROUP_SIZE
     );
+    for (const chunk of chunkPlan.chunks) {
+      if (chunk.length > 0)
+        getBoundedDispatchLayout(
+          id,
+          chunk.length,
+          WORKGROUP_SIZE,
+          graph.device.limits.maxComputeWorkgroupsPerDimension
+        );
+    }
+
     const invalidCount = output.status?.invalidCount;
     const nodes: GPUCommandNode<Parameters>[] = [];
     if (invalidCount) {
@@ -190,48 +246,58 @@ export class GPUCellPeriodKeys implements GPUCommandNodeProducer {
       );
     }
     const periodMask = periodBits === 32 ? 0xffffffff : 2 ** periodBits - 1;
-    const bindings: WGSLKernelBinding[] = [
-      {name: 'cells', view: cells, type: 'u32', access: 'read'},
-      {name: 'periods', view: periods, type: 'u32', access: 'read'},
-      ...(mask
-        ? [{name: 'rowMask', view: mask, type: 'u32' as const, access: 'read' as const}]
-        : []),
-      {name: 'keysOut', view: output.keys, type: 'u32', access: 'read_write'},
-      ...(invalidCount
-        ? [
-            {
-              name: 'invalidCountOut',
-              view: invalidCount,
-              type: 'atomic<u32>' as const,
-              access: 'read_write' as const
-            }
-          ]
-        : [])
-    ];
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-pack`,
-        operation: OPERATION,
-        bindings,
-        invocationCount: rowCount,
-        // Shape values are overrides so that cubes of different shapes share one shader module.
-        declarations: `override PERIOD_MASK: u32;
-override EXPECTED_FILL: u32;
-override PERIOD_COUNT: u32;`,
-        constants: {
-          PERIOD_MASK: periodMask,
-          EXPECTED_FILL: fill === 'ones' ? periodMask : 0,
-          PERIOD_COUNT: periodCount
-        },
-        body: `let low = cells[cellsOffset + 2u * index];
-  let high = cells[cellsOffset + 2u * index + 1u];
-  let period = periods[periodsOffset + index];
+    for (const chunk of chunkPlan.chunks) {
+      if (chunk.length === 0) continue;
+      const bindings: WGSLKernelBinding[] = [
+        {name: 'cells', view: chunk.views['cells'], type: 'u32', access: 'read'},
+        {name: 'periods', view: chunk.views['periods'], type: 'u32', access: 'read'},
+        ...(mask
+          ? [
+              {
+                name: 'rowMask',
+                view: chunk.views['rowMask'],
+                type: 'u32' as const,
+                access: 'read' as const
+              }
+            ]
+          : []),
+        {name: 'keysOut', view: chunk.views['keysOut'], type: 'u32', access: 'read_write'},
+        ...(invalidCount
+          ? [
+              {
+                name: 'invalidCountOut',
+                view: invalidCount,
+                type: 'atomic<u32>' as const,
+                access: 'read_write' as const
+              }
+            ]
+          : [])
+      ];
+      nodes.push(
+        createGraphChunkGroupKernelNode<Parameters>(graph, {
+          id: `${id}-pack-chunk-${chunk.chunkIndex}`,
+          operation: OPERATION,
+          bindings: bindings,
+          invocationCount: chunk.length,
+          workgroupSize: WORKGROUP_SIZE,
+          parameterValues: [periodMask, fill === 'ones' ? periodMask : 0, periodCount],
+          body: `let periodMask = getChunkParameter(${GRAPH_CHUNK_GROUP_EXTRA_PARAMETER_OFFSET}u);
+  let expectedFill = getChunkParameter(${GRAPH_CHUNK_GROUP_EXTRA_PARAMETER_OFFSET + 1}u);
+  let periodCount = getChunkParameter(${GRAPH_CHUNK_GROUP_EXTRA_PARAMETER_OFFSET + 2}u);
+  if (index >= getChunkParameter(1u)) { return; }
+  let cellsBase = arrayLength(&cells) - 2u * getChunkParameter(1u);
+  let periodsBase = arrayLength(&periods) - getChunkParameter(1u);
+  let keysOutBase = arrayLength(&keysOut) - 2u * getChunkParameter(1u);
+  ${mask ? 'let rowMaskBase = arrayLength(&rowMask) - getChunkParameter(1u);' : ''}
+  let low = cells[cellsBase + 2u * index];
+  let high = cells[cellsBase + 2u * index + 1u];
+  let period = periods[periodsBase + index];
   var keyLow = 0xffffffffu;
   var keyHigh = 0xffffffffu;
   let isCell = !(low == 0xffffffffu && high == 0xffffffffu);
-  if (isCell && period != 0xffffffffu && ${mask ? 'rowMask[rowMaskOffset + index] != 0u' : 'true'}) {
-    if (period < PERIOD_COUNT && (low & PERIOD_MASK) == EXPECTED_FILL) {
-      keyLow = (low & ~PERIOD_MASK) | period;
+  if (isCell && period != 0xffffffffu && ${mask ? 'rowMask[rowMaskBase + index] != 0u' : 'true'}) {
+    if (period < periodCount && (low & periodMask) == expectedFill) {
+      keyLow = (low & ~periodMask) | period;
       keyHigh = high;
     }${
       invalidCount
@@ -241,22 +307,27 @@ override PERIOD_COUNT: u32;`,
         : ''
     }
   }
-  keysOut[keysOutOffset + 2u * index] = keyLow;
-  keysOut[keysOutOffset + 2u * index + 1u] = keyHigh;`
-      })
-    );
+  keysOut[keysOutBase + 2u * index] = keyLow;
+  keysOut[keysOutBase + 2u * index + 1u] = keyHigh;`
+        })
+      );
+    }
     return nodes;
   }
 
-  private getInputViews(): GraphDataView[] {
+  private getInputViews(): (GraphDataView | GraphVectorView)[] {
     const {cells, periods, mask} = this.props;
-    return [cells, periods, mask].filter(view => Boolean(view)) as GraphDataView[];
+    return [cells, periods, mask].filter(view => Boolean(view)) as (
+      | GraphDataView
+      | GraphVectorView
+    )[];
   }
 
-  private getOutputViews(): GraphDataView[] {
+  private getOutputViews(): (GraphDataView | GraphVectorView)[] {
     const {output} = this.props;
-    return [output.keys, output.status?.invalidCount].filter(view =>
-      Boolean(view)
-    ) as GraphDataView[];
+    return [output.keys, output.status?.invalidCount].filter(view => Boolean(view)) as (
+      | GraphDataView
+      | GraphVectorView
+    )[];
   }
 }

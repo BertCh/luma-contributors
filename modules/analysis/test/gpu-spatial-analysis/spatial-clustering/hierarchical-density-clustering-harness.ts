@@ -23,7 +23,10 @@ export async function runHierarchicalDensityClustering(
   options: {
     minimumClusterSize: number;
     minimumSamples?: number;
+    coreDistanceSearch?: 'bvh' | 'neighbor-search';
     timedEncodings?: number;
+    positionUpdates?: readonly Float32Array[];
+    statusPoison?: number;
     times?: Float32Array;
     timeScale?: number;
     timeScaleUpdates?: readonly number[];
@@ -33,6 +36,13 @@ export async function runHierarchicalDensityClustering(
   labels: number[];
   coreDistances: number[];
   clusterCount: number;
+  requiredClusterCount: number;
+  positionUpdated: {
+    labels: number[];
+    coreDistances: number[];
+    clusterCount: number;
+    requiredClusterCount: number;
+  }[];
   medianEncodingMilliseconds?: number;
   updated: {labels: number[]; coreDistances: number[]; clusterCount: number}[];
 }> {
@@ -42,6 +52,7 @@ export async function runHierarchicalDensityClustering(
   const labelsBuffer = createOutputBuffer(device, rows);
   const coreBuffer = createOutputBuffer(device, rows);
   const countBuffer = createOutputBuffer(device, 1);
+  const requiredCountBuffer = createOutputBuffer(device, 1);
   const timesBuffer = options.times ? createInputBuffer(device, options.times) : undefined;
   const parametersBuffer = options.times
     ? createInputBuffer(
@@ -66,14 +77,29 @@ export async function runHierarchicalDensityClustering(
         : {}),
       minimumClusterSize: options.minimumClusterSize,
       minimumSamples: options.minimumSamples,
+      coreDistanceSearch: options.coreDistanceSearch,
       output: {
         labels: importGraphBuffer(graph, 'labels', labelsBuffer, 'uint32', rows),
         coreDistances: importGraphBuffer(graph, 'core-distances', coreBuffer, 'float32', rows),
-        status: {count: importGraphBuffer(graph, 'count', countBuffer, 'uint32', 1)}
+        status: {
+          count: importGraphBuffer(graph, 'count', countBuffer, 'uint32', 1),
+          requiredCount: importGraphBuffer(
+            graph,
+            'required-count',
+            requiredCountBuffer,
+            'uint32',
+            1
+          )
+        }
       }
     })
   );
   const compiled = await graph.compileAsync();
+  const poisonStatus = () => {
+    countBuffer.write(new Uint32Array([options.statusPoison ?? 123]));
+    requiredCountBuffer.write(new Uint32Array([options.statusPoison ?? 123]));
+  };
+  poisonStatus();
   submitGraph(device, compiled, undefined);
   let medianEncodingMilliseconds: number | undefined;
   if (options.timedEncodings) {
@@ -92,6 +118,7 @@ export async function runHierarchicalDensityClustering(
     labels: await readUint32(labelsBuffer, rows),
     coreDistances: await readFloat32(coreBuffer, rows),
     clusterCount: (await readUint32(countBuffer, 1))[0],
+    requiredClusterCount: (await readUint32(requiredCountBuffer, 1))[0],
     medianEncodingMilliseconds
   };
   const updated: {labels: number[]; coreDistances: number[]; clusterCount: number}[] = [];
@@ -104,11 +131,29 @@ export async function runHierarchicalDensityClustering(
       clusterCount: (await readUint32(countBuffer, 1))[0]
     });
   }
+  const positionUpdated = [];
+  for (const update of options.positionUpdates ?? []) {
+    positionsBuffer.write(update);
+    poisonStatus();
+    submitGraph(device, compiled, undefined);
+    positionUpdated.push({
+      labels: await readUint32(labelsBuffer, rows),
+      coreDistances: await readFloat32(coreBuffer, rows),
+      clusterCount: (await readUint32(countBuffer, 1))[0],
+      requiredClusterCount: (await readUint32(requiredCountBuffer, 1))[0]
+    });
+  }
   compiled.destroy();
-  for (const buffer of [positionsBuffer, labelsBuffer, coreBuffer, countBuffer]) {
+  for (const buffer of [
+    positionsBuffer,
+    labelsBuffer,
+    coreBuffer,
+    countBuffer,
+    requiredCountBuffer
+  ]) {
     buffer.destroy();
   }
   timesBuffer?.destroy();
   parametersBuffer?.destroy();
-  return {...result, updated};
+  return {...result, updated, positionUpdated};
 }

@@ -7,7 +7,8 @@ import {
   type GPUCommandGraph,
   type GPUCommandNode
 } from '@luma.gl/graph/gpu-core';
-import {validateGPUStorageBindingByteLength} from '../analysis-core/kernels/gpu-contributor-utils';
+import {GraphDataView} from '@luma.gl/graph/gpu-core';
+import {validateRasterStorageBindings} from './raster-grid/raster-storage-preflight';
 import {createWGSLKernelNode} from '../analysis-core/kernels/wgsl-kernel-nodes';
 import {GPUDistanceField} from './distance-field/gpu-distance-field';
 import {getDistanceFieldBandLayout} from './distance-field/distance-field-kernels';
@@ -41,13 +42,19 @@ export function getRasterMedialAxisNodes<Parameters>(
     4 * bands.columnBandCount * grid.width,
     2 * bands.rowBandCount * grid.height
   );
-  validateGPUStorageBindingByteLength(
-    graph.device,
-    id,
-    'distance-transform scratch',
-    largestScratchLength * 4,
-    'reduce the raster dimensions'
-  );
+  // Radius is bound only through its grid-sized prefix by the nested distance transform.
+  const radius = new GraphDataView(output.radius.buffer, {
+    format: output.radius.format,
+    byteOffset: output.radius.byteOffset,
+    byteStride: output.radius.byteStride,
+    rowByteLength: output.radius.rowByteLength,
+    length: count
+  });
+  validateRasterStorageBindings(graph, id, [props.input, output.medialAxis, radius], {
+    'distance-transform planes': largestScratchLength * 4,
+    'distance-transform merge slots':
+      bands.mergeRoundCount > 0 ? (bands.mergeRoundCount + 1) * 256 : 0
+  });
   const seeds = createTransientView(graph, `${id}-background`, 'uint32', count);
   const nearestCells = createTransientView(graph, `${id}-nearest-background`, 'uint32', count);
   const parameters = createTransientView(graph, `${id}-distance-parameters`, 'float32', 8);

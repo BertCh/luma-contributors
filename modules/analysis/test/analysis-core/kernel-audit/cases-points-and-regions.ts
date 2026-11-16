@@ -3,6 +3,9 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  GPUAnalysisContiguityStatistics,
+  GPUAnalysisSpacing,
+  GPU_ANALYSIS_SPACING_SUMMARY_LENGTH,
   GPU_PYCNOPHYLACTIC_MAXIMUM_ITERATIONS,
   GPUArealInterpolation,
   GPUCatchmentAccessibility,
@@ -91,6 +94,8 @@ import {makeGPURasterMetadata} from '../../../src/raster-analysis/raster-grid/in
 import type {KernelAuditCase, KernelAuditContext} from './kernel-audit-context';
 
 const ROWS = 300;
+/** 256 + restarts * (64 + 5 * 64 + 4 * 256) must fit the 32,768-node budget. */
+const KMEANS_MAXIMUM_RESTARTS_WITH_MAXIMUM_CLUSTERS_AND_ITERATIONS = 23;
 
 /** Longitude-latitude raster context with its extent. */
 const GEOGRAPHIC = {coordinateSpace: 'longitude-latitude', metric: 'great-circle'} as const;
@@ -119,6 +124,60 @@ function compact(context: KernelAuditContext, capacity: number) {
 
 /** Kernel-audit cases for points-and-regions. */
 export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
+  ...(['queen', 'rook'] as const).map(criterion => ({
+    exportName: 'GPUAnalysisContiguityStatistics',
+    name: `${criterion} feature profile with all status and summary outputs`,
+    build: ({graph, view}: KernelAuditContext) => {
+      graph.add(
+        new GPUAnalysisContiguityStatistics({
+          criterion,
+          snapTolerance: 0.25,
+          coordinateExtent: 16,
+          polygons: {
+            kind: 'polygons',
+            positions: view('float32x2', 32, 'positions'),
+            featureOffsets: view('uint32', 5, 'features'),
+            polygonOffsets: view('uint32', 7, 'parts'),
+            ringOffsets: view('uint32', 9, 'rings')
+          },
+          pairCapacity: 128,
+          output: {
+            weights: {
+              offsets: view('uint32', 5, 'offsets'),
+              neighbors: view('uint32', 32, 'neighbors'),
+              weights: view('float32', 32, 'weights'),
+              status: {
+                overflow: view('uint32', 1, 'overflow'),
+                candidateOverflow: view('uint32', 1, 'candidate-overflow'),
+                requiredCount: view('uint32', 1, 'required-count')
+              }
+            },
+            cardinality: view('uint32', 4, 'cardinality'),
+            counts: view('uint32', 6, 'counts'),
+            median: view('float32', 1, 'median'),
+            validity: view('uint32', 1, 'validity')
+          }
+        })
+      );
+    }
+  })),
+  ...[false, true].map(geographic => ({
+    exportName: 'GPUAnalysisSpacing',
+    name: geographic ? 'geographic-spacing-200k' : 'planar-spacing-200k',
+    build({graph, view}: KernelAuditContext) {
+      graph.add(
+        new GPUAnalysisSpacing({
+          positions: view('float32x2', 200000),
+          mask: view('uint32', 200000),
+          identities: view('uint32', 200000),
+          spatialContext: geographic
+            ? {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}
+            : {coordinateSpace: 'planar', metric: 'native'},
+          output: {summary: view('uint32', GPU_ANALYSIS_SPACING_SUMMARY_LENGTH)}
+        })
+      );
+    }
+  })),
   {
     exportName: 'GPUStudyWindowPreparation',
     name: 'polygon window, sampler and caller-owned summary',
@@ -1559,7 +1618,12 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
       ['first-valid', 1, GPU_SPATIAL_KMEANS_MAXIMUM_CLUSTERS],
       ['first-valid', 1, 1],
       ['kmeans++', 1, GPU_SPATIAL_KMEANS_MAXIMUM_CLUSTERS],
-      ['kmeans++', GPU_SPATIAL_KMEANS_MAXIMUM_RESTARTS, GPU_SPATIAL_KMEANS_MAXIMUM_CLUSTERS],
+      // Maximum k and iterations fit 23 restarts; the next case still covers all 32 restarts.
+      [
+        'kmeans++',
+        KMEANS_MAXIMUM_RESTARTS_WITH_MAXIMUM_CLUSTERS_AND_ITERATIONS,
+        GPU_SPATIAL_KMEANS_MAXIMUM_CLUSTERS
+      ],
       ['kmeans++', GPU_SPATIAL_KMEANS_MAXIMUM_RESTARTS, 7]
     ] as const
   ).map(
@@ -1603,7 +1667,11 @@ export const POINTS_AND_REGIONS_CASES: KernelAuditCase[] = [
             maximumIterations: GPU_SPATIAL_KMEANS_MAXIMUM_ITERATIONS,
             parameters: view('uint32', GPU_SPATIAL_KMEANS_PARAMETER_LENGTH),
             initialization,
-            restartCount: initialization === 'kmeans++' ? GPU_SPATIAL_KMEANS_MAXIMUM_RESTARTS : 1,
+            // 256 + 23 * (64 + 5 * 64 + 4 * 256) = 32,640 nodes; 24 restarts exceed 32,768.
+            restartCount:
+              initialization === 'kmeans++'
+                ? KMEANS_MAXIMUM_RESTARTS_WITH_MAXIMUM_CLUSTERS_AND_ITERATIONS
+                : 1,
             output: {
               labels: view('uint32', rows),
               centers: view('float32x2', k),

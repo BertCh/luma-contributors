@@ -88,7 +88,17 @@ export class GPUTerrainFlowFractions implements GPUCommandNodeProducer {
         props.parameters,
         ...(props.validity ? [props.validity] : [])
       ],
-      Object.values(props.output)
+      Object.values(props.output),
+      [
+        {
+          reads: [
+            ...(!props.validity ? [props.elevation] : []),
+            props.flowDirections,
+            props.parameters
+          ],
+          writes: Object.values(props.output)
+        }
+      ]
     );
   }
   getCommandNodes<Parameters>(

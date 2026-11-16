@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateSpatialStatisticsBindings} from './spatial-statistics-bindings';
 import {
   createTransientView,
   GPUReduction,
@@ -10,7 +11,8 @@ import {
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {createSpatialStatisticsRowNode} from './spatial-statistics-row-dispatch';
+import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
@@ -132,6 +134,10 @@ export class GPUSpatialWeightsValidation<
         throw new Error(`${id} flags length must equal the weights row count`);
       }
     }
+    validateDisjointWritableViews(id, {
+      flags: props.output.flags,
+      invalidCount: props.output.status.invalidCount
+    });
     validateGraphOutputsDisjointFromInputs(
       id,
       [props.output.status.invalidCount, props.output.flags],
@@ -161,6 +167,13 @@ export class GPUSpatialWeightsValidation<
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateSpatialStatisticsBindings(graph, this.id, this.props, {
+      'row scratch':
+        getGPUSpatialWeightsChunkDispatches(this.props.weights).reduce(
+          (total, dispatch) => total + dispatch.rowCount,
+          0
+        ) * 4
+    });
     const {id, props} = this;
     const {weights} = props;
     validateGraphViewsBelongToGraph(id, graph, [
@@ -175,7 +188,8 @@ export class GPUSpatialWeightsValidation<
     const bits = GPU_SPATIAL_WEIGHTS_VIOLATION;
     const operation = isGPUChunkedSpatialWeights(weights) ? CHUNKED_OPERATION : OPERATION;
     const nodes: GPUCommandNode<Parameters>[] = dispatches.map(dispatch =>
-      createWGSLKernelNode<Parameters>(graph, {
+      createSpatialStatisticsRowNode<Parameters>(graph, {
+        rowBase: dispatch.rowStart,
         id: `${id}-rows${dispatch.isWhole ? '' : dispatch.idSuffix}`,
         operation,
         variant: 'rows',
@@ -189,15 +203,13 @@ export class GPUSpatialWeightsValidation<
         invocationCount: dispatch.rowCount,
         declarations: `${IS_FINITE_FLOAT_WGSL}
 const ROWS: u32 = ${rows}u;
-const CHUNK_ROWS: u32 = ${dispatch.rowCount}u;
-const CAPACITY: u32 = ${dispatch.weights.neighbors.length}u;
-${dispatch.constantsWGSL}`,
+`,
         // `index` is the row inside the dispatch's chunk; `row` is the global row.
-        body: `let row = index${dispatch.isWhole ? '' : ' + WEIGHTS_ROW_START'};
-  let begin = offsets[offsetsOffset + index];
-  let end = offsets[offsetsOffset + index + 1u];
+        body: `let row = index; let localRow = index - WEIGHTS_ROW_START;
+  let begin = offsets[offsetsOffset + localRow];
+  let end = offsets[offsetsOffset + localRow + 1u];
   var rowFlags = 0u;
-  if ((index == 0u && begin != 0u) || begin > end || (index + 1u == CHUNK_ROWS && end > CAPACITY)) {
+  if ((localRow == 0u && begin != 0u) || begin > end || (localRow + 2u == arrayLength(&offsets) - offsetsOffset && end > CAPACITY)) {
     rowFlags |= ${bits.offsets}u;
   }
   var previous = 0u;

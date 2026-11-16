@@ -12,6 +12,7 @@ import {
 export type NestedInterpolationValidationOperationProps = Pick<
   GPUNestedInterpolationValidationProps,
   | 'id'
+  | 'mode'
   | 'foldCount'
   | 'innerFoldCount'
   | 'innerBufferDistance'

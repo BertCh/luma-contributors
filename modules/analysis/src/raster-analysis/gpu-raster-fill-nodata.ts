@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRasterStorageBindings} from './raster-grid/raster-storage-preflight';
 import {
   validateCapacity,
-  validateRequirement
+  validateRequirement,
+  getGraphOutputViews as getRasterPreflightOutputViews
 } from '../analysis-core/kernels/gpu-contributor-utils';
 import {validateGPUStatusPort, type GPUInvalidStatusPort} from '../analysis-core/contracts/status';
 import type {
@@ -104,6 +106,20 @@ export class GPURasterFillNoData implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    const storageProps = this.props;
+    const storageCellCount = storageProps.grid.width * storageProps.grid.height;
+    validateRasterStorageBindings(
+      graph,
+      this.id,
+      [
+        ...getRasterBandViews(storageProps.input),
+        ...getRasterPreflightOutputViews(storageProps.output)
+      ],
+      {
+        'canonical band planes': storageCellCount * 4
+      }
+    );
+
     const {props, id} = this;
     const {output, grid} = props;
     const count = grid.width * grid.height;

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {clamp} from '@math.gl/core';
 import {
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -11,9 +12,13 @@ import {
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {validateRasterGrid} from '../../raster-analysis/raster-band-utils';
 import {
+  validateCapacity,
+  validateCommandNodeBudget,
+  validateGPUStorageBindingByteLength,
   validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateGraphChunkGroupKernelSupport} from '../../analysis-core/kernels/graph-chunk-groups';
 import {
   validateTerrainFlowDirectionEncoding,
   type GPUTerrainFlowDirectionEncoding
@@ -26,11 +31,45 @@ import {
 
 import {createTerrainResidentTileNodes} from './terrain-tiled-resident';
 import {validateRasterIterations} from '../../raster-analysis/cost-distance/raster-relaxation';
+import {
+  getTerrainBranchingFlowCommandNodeCount,
+  validateTerrainBranchingFlowScratch
+} from './terrain-branching-flow-budget';
 
 import {
   getTerrainResolutionStatusViews,
   type TerrainResolutionStatusPort
 } from './terrain-resolution-status';
+import {
+  planTerrainD8Tiles,
+  getTerrainD8TileCommandNodeCount,
+  validateTerrainD8TileBindings,
+  type TerrainD8TilePlan
+} from './terrain-tiled-plan';
+import {createTerrainBoundaryTileNodes} from './terrain-tiled-boundary';
+
+// The resident fraction plane has eight uint32-indexed entries per global cell.
+const TERRAIN_TILED_MAXIMUM_CELL_COUNT = Math.floor(0xffffffff / 8);
+// Global D8 cell identifiers are uint32; the largest word is reserved for the no-cell sentinel.
+const TERRAIN_TILED_MAXIMUM_DOMAIN_CELL_COUNT = 0xffffffff;
+// Two count reductions and two status publications cover every optional aggregate status port.
+const TERRAIN_TILED_STATUS_NODE_ALLOWANCE = 6;
+
+function usesTerrainBoundaryRoute(
+  props: GPUTerrainTiledFlowProps,
+  graph: Pick<GPUCommandGraph, 'device'>
+): boolean {
+  return (
+    props.routing !== 'branching' &&
+    props.execution !== 'resident' &&
+    (props.execution === 'tiled' ||
+      props.grid.width * props.grid.height * 32 >
+        Math.min(
+          graph.device.limits.maxStorageBufferBindingSize,
+          graph.device.limits.maxBufferSize
+        ))
+  );
+}
 
 export type GPUTerrainFlowTile = {
   /** Global origin of the input buffer, including any halo. */
@@ -69,6 +108,15 @@ export type GPUTerrainTiledFlowProps = {
   /** Routing is globally prepared. Branching consumes D-infinity/MFD fractions without rerouting at seams. */
   routing?: 'd8' | 'branching';
   /**
+   * `'auto'` (default) retains resident transport while its fraction plane fits, and otherwise
+   * uses bounded D8 tile scratch plus a coarse boundary forest. `'resident'` keeps the existing
+   * reference route; `'tiled'` explicitly selects the D8 boundary route. Branching is resident.
+   * The tiled route uses exact 320-bit sums, rounded at boundary summaries and output.
+   * It preserves exact integer sums through 2^24 and agrees with the CPU sum within 2e-5 relative
+   * on ordinary finite inputs. Long resident float32 chains can accumulate larger rounding error.
+   */
+  execution?: 'auto' | 'resident' | 'tiled';
+  /**
    * Numbering of every tile's `flowDirections`: `'esri'` (default), `'whitebox'` (the
    * WhiteboxTools default pointer) or `'taudem'`, see `GPUTerrainFlowDirectionEncoding`.
    * Compile-time.
@@ -76,7 +124,7 @@ export type GPUTerrainTiledFlowProps = {
   directionEncoding?: GPUTerrainFlowDirectionEncoding;
   /** Disjoint owned rectangles must cover the entire domain. */
   tiles: readonly GPUTerrainFlowTile[];
-  /** GPU DAG sweeps, default clamps width + height to [128, 1024]; each sweep follows bounded successor walks. */
+  /** Resident GPU DAG sweeps, default clamps width + height to [128, 1024]. Tiled D8 uses bounded logarithmic forest passes and ignores this sweep budget. */
   maximumIterations?: number;
   /** Optional aggregate diagnostics over global owned cells, never halo copies. */
   output?: {
@@ -94,14 +142,64 @@ export type GPUTerrainTiledFlowProps = {
  * Owned-cell GPU exchange into a resident global DAG, with atomic transport and pointer-jumped
  * reach identity. Accumulation is in runoff units: it is a transport sum, so no length or area
  * unit and no `cellSizeMode` applies. NaN runoff marks a cell invalid.
+ * Tiled D8 schedules one tile at a time, retaining only maximum-tile scratch and a graph of owned
+ * boundary cells. Caller input/output views remain caller-owned; no host storage paging or terrain
+ * filling is performed. All tile geometry, lengths and offsets use dispatch parameters.
  */
 export class GPUTerrainTiledFlow implements GPUCommandNodeProducer {
   readonly id: string;
+  readonly estimatedCommandNodeCount: number;
+  private readonly tiledPlan?: TerrainD8TilePlan;
   constructor(readonly props: GPUTerrainTiledFlowProps) {
     this.id = props.id ?? 'terrain-tiled-flow';
-    validateRasterGrid(this.id, props.grid);
+    const count = validateRasterGrid(this.id, props.grid);
+    if (props.execution === 'resident' || props.routing === 'branching') {
+      validateCapacity(
+        this.id,
+        'resident grid cell count',
+        count,
+        1,
+        TERRAIN_TILED_MAXIMUM_CELL_COUNT
+      );
+    } else {
+      validateCapacity(
+        this.id,
+        'D8 grid cell count',
+        count,
+        1,
+        TERRAIN_TILED_MAXIMUM_DOMAIN_CELL_COUNT
+      );
+    }
+    validateRequirement(
+      this.id,
+      props.execution === undefined || ['auto', 'resident', 'tiled'].includes(props.execution),
+      "execution must be 'auto', 'resident' or 'tiled'"
+    );
+    validateRequirement(
+      this.id,
+      props.execution !== 'tiled' || props.routing !== 'branching',
+      "execution 'tiled' requires routing 'd8'"
+    );
+    validateRequirement(
+      this.id,
+      props.routing === undefined || props.routing === 'd8' || props.routing === 'branching',
+      "routing must be 'd8' or 'branching'"
+    );
     validateTerrainFlowDirectionEncoding(this.id, props.directionEncoding);
-    validateRasterIterations(this.id, 'maximumIterations', props.maximumIterations ?? 128);
+    const maximumIterations =
+      props.maximumIterations ?? clamp(props.grid.width + props.grid.height, 128, 1024);
+    validateRasterIterations(this.id, 'maximumIterations', maximumIterations);
+    this.estimatedCommandNodeCount = Math.max(
+      getTerrainBranchingFlowCommandNodeCount(maximumIterations) +
+        props.tiles.length * 2 +
+        1 +
+        Math.ceil(Math.log2(count)) +
+        TERRAIN_TILED_STATUS_NODE_ALLOWANCE,
+      props.routing !== 'branching' && props.execution !== 'resident'
+        ? getTerrainD8TileCommandNodeCount(props.tiles.length)
+        : 0
+    );
+    validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
     validateTerrainStatusPorts(this.id, {...props.output?.status});
     let ownedCount = 0;
     const rectangles: number[][] = [];
@@ -112,9 +210,10 @@ export class GPUTerrainTiledFlow implements GPUCommandNodeProducer {
       const [column, row, width, height] = tile.owned;
       validateRequirement(
         this.id,
-        [tile.column, tile.row, tile.width, tile.height, ...tile.owned].every(Number.isInteger),
+        [tile.column, tile.row, tile.width, tile.height, ...tile.owned].every(Number.isSafeInteger),
         `${name} column, row, width, height and owned must be integers`
       );
+      validateCapacity(this.id, `${name} cell count`, tile.width * tile.height);
       validateRequirement(
         this.id,
         tile.width > 0 &&
@@ -148,6 +247,13 @@ export class GPUTerrainTiledFlow implements GPUCommandNodeProducer {
       rectangles.push(rectangle);
       ownedCount += width * height;
       if (props.routing === 'branching') {
+        validateCapacity(
+          this.id,
+          `${name} cell count with routing 'branching'`,
+          tile.width * tile.height,
+          1,
+          TERRAIN_TILED_MAXIMUM_CELL_COUNT
+        );
         validateRequirement(
           this.id,
           Boolean(tile.fractions),
@@ -180,10 +286,21 @@ export class GPUTerrainTiledFlow implements GPUCommandNodeProducer {
       ownedCount === props.grid.width * props.grid.height,
       'owned rectangles must cover every grid cell exactly once'
     );
-    checkTerrainViews(this.id, inputs, [
-      ...outputs,
-      ...getTerrainResolutionStatusViews(props.output?.status)
+    const allOutputs = [...outputs, ...getTerrainResolutionStatusViews(props.output?.status)];
+    const publicationReadsStreams = usesTerrainBoundaryRoute(
+      props,
+      props.tiles[0].streams.buffer.graph as GPUCommandGraph
+    );
+    checkTerrainViews(this.id, inputs, allOutputs, [
+      ...props.tiles.map(tile => ({
+        reads: publicationReadsStreams ? [tile.streams] : [],
+        writes: Object.values(tile.output)
+      })),
+      ...getTerrainResolutionStatusViews(props.output?.status).map(view => ({writes: [view]}))
     ]);
+    if (props.routing !== 'branching' && props.execution !== 'resident') {
+      this.tiledPlan = planTerrainD8Tiles(this.id, props);
+    }
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
@@ -199,6 +316,28 @@ export class GPUTerrainTiledFlow implements GPUCommandNodeProducer {
       ]),
       ...getTerrainResolutionStatusViews(props.output?.status)
     ]);
+    const count = props.grid.width * props.grid.height;
+    const useTiles = this.tiledPlan && usesTerrainBoundaryRoute(props, graph);
+    if (useTiles) {
+      validateTerrainD8TileBindings(graph, id, this.tiledPlan!);
+      validateGraphChunkGroupKernelSupport(graph, id, 8);
+      return createTerrainBoundaryTileNodes(graph, props, id, this.tiledPlan!);
+    }
+    // The fraction plane dominates every cell-proportional transient in the resident composition.
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'resident fractions scratch',
+      count * 8 * 4,
+      'reduce grid dimensions'
+    );
+    validateTerrainBranchingFlowScratch(
+      graph,
+      id,
+      count,
+      props.maximumIterations ?? clamp(props.grid.width + props.grid.height, 128, 1024)
+    );
+    validateGraphChunkGroupKernelSupport(graph, id, props.routing === 'branching' ? 7 : 6);
     return createTerrainResidentTileNodes(graph, props, id);
   }
 }

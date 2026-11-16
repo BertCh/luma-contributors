@@ -3,6 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  createTransientView,
+  GPUScan,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -21,8 +23,12 @@ import type {
 } from '../../analysis-core/contracts/index';
 import {
   validateCapacity,
+  validateCommandNodeBudget,
+  validateGPUStorageBindingByteLength,
+  validateRequirement,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
+  validateFiniteNumber,
+  validateMaximumCount,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -31,7 +37,23 @@ import {
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+
+import type {GPUCardinalityPort, GPUOverflowStatusPort} from '../../analysis-core/contracts/status';
+import {validateOutlineOutputPasses} from './validate-outline-output-passes';
+
 const OPERATION = 'GPUOutlineGeometry';
+/** Counts are scanned as uint32 and must not wrap even when vertex output capacity is small. */
+const MAXIMUM_REQUIRED_VERTEX_COUNT = 0xffffffff;
+/** Four hierarchy scans and three offset passes cover every uint32-sized count column. */
+const MAXIMUM_SCAN_COMMAND_NODE_COUNT = 7;
+
+/** Two scalar f32 coordinates per output vertex must be addressable with uint32 indices. */
+const MAXIMUM_OUTPUT_VERTEX_COUNT = 0x7fffffff;
+/** Smallest normal f32: smaller radii can flush to zero before the shader divides by them. */
+const MINIMUM_SHADER_RADIUS = 2 ** -126;
+/** The sphere radius is emitted as an f32 shader literal and must not round to infinity. */
+const MAXIMUM_SHADER_RADIUS = 3.4028234663852886e38;
 
 /** Planar coordinates, or longitude/latitude with a sphere (great-circle) metric. */
 const SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = Object.freeze({
@@ -99,6 +121,13 @@ export function getGPUOutlineGeometryParameterValues(
     settings.spatialContext,
     settings.distance
   );
+  validateFiniteNumber(
+    OPERATION,
+    'distance',
+    Math.fround(settings.distance),
+    0,
+    MAXIMUM_SHADER_RADIUS
+  );
   target.set([settings.distance, 0, 0, 0]);
   return target;
 }
@@ -113,6 +142,7 @@ export function getGPUOutlineGeometryVerticesPerInput(joinSegments: number): num
 
 /** Caller-owned outputs of {@link GPUOutlineGeometry}. */
 export type GPUOutlineGeometryOutput = {
+  layout?: 'fixed-stride';
   /**
    * Triangle-list vertices, exactly `positions.length * getGPUOutlineGeometryVerticesPerInput(joinSegments)`
    * rows. Input vertex `i` owns rows `[i * k, (i + 1) * k)` with `k` the per-input vertex count.
@@ -122,10 +152,25 @@ export type GPUOutlineGeometryOutput = {
 };
 
 /**
+ * Triangle-list output with no degenerate end quads, and no triangles at distance zero.
+ * Capacity must be divisible by three, so truncation never publishes a partial triangle.
+ * `status.count` is the clamped vertex count for drawing; `requiredCount` is the exact vertex
+ * requirement. `vertexOffsets` has one start per input vertex and a terminal total, clamped to
+ * capacity. `sourceRows` identifies the input vertex for every emitted triangle vertex.
+ */
+export type GPUOutlineGeometryCompactOutput = {
+  layout: 'compact';
+  positions: GraphDataView<'float32x2'>;
+  vertexOffsets: GraphDataView<'uint32'>;
+  sourceRows?: GraphDataView<'uint32'>;
+  status: GPUCardinalityPort & GPUOverflowStatusPort;
+};
+
+/**
  * Properties for {@link GPUOutlineGeometry}.
  *
  * Per-frame (no recompile): the contents of `parameters` (distance) and every input buffer.
- * Compile-time: view lengths, `geometryType`, `spatialContext`, `joinSegments`.
+ * Compile-time: view lengths, `geometryType`, `spatialContext`, `joinSegments`, output layout and optional columns.
  */
 export type GPUOutlineGeometryProps = (
   | {
@@ -168,7 +213,7 @@ export type GPUOutlineGeometryProps = (
   /** Per-frame packed float32 view written with {@link getGPUOutlineGeometryParameterValues}. */
   parameters: GraphDataView<'float32'>;
   /** Output triangles. */
-  output: GPUOutlineGeometryOutput;
+  output: GPUOutlineGeometryOutput | GPUOutlineGeometryCompactOutput;
 };
 
 /**
@@ -184,11 +229,12 @@ export type GPUOutlineGeometryProps = (
  * Self-intersections and holes are not interpreted. No negative buffers and no one-sided
  * (`lineOffset`) strokes; both are open.
  *
- * Output size is fixed up front: every input vertex owns exactly
- * {@link getGPUOutlineGeometryVerticesPerInput} vertices, so there is no capacity, no overflow flag and no
- * scan. The kernel runs one invocation per input vertex with no atomics and is deterministic. The
- * distance is read per frame. Zero-length segments and missing next vertices (line ends, points)
- * emit a degenerate quad. Triangles are counter-clockwise for a positive distance.
+ * The default fixed-stride output reserves {@link getGPUOutlineGeometryVerticesPerInput} vertices
+ * per input vertex, including degenerate end quads. With `output.layout: 'compact'`, count, scan
+ * and emit passes omit those quads and omit every triangle at zero distance, publishing clamped
+ * offsets and exact vertex requirements. Truncation keeps complete triangles. Both routes run
+ * one invocation per input vertex without atomics; distance is read per frame. Triangles are
+ * counter-clockwise for a positive distance.
  *
  * Precision: f32 from the f32 positions.
  */
@@ -207,16 +253,27 @@ export class GPUOutlineGeometry implements GPUCommandNodeProducer {
   readonly verticesPerInput: number;
   /** Line offsets or polygon ring offsets as read by the kernel; absent for points. */
   readonly boundaryOffsets?: GraphDataView<'uint32'>;
+  readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPUOutlineGeometryProps) {
     this.id = props.id ?? 'outline-geometry';
     this.props = props;
+    this.estimatedCommandNodeCount =
+      props.output.layout === 'compact' ? 4 + MAXIMUM_SCAN_COMMAND_NODE_COUNT : 1;
+    validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
     this.spatialContext = resolveGPUSpatialContext(
       this.id,
       props.spatialContext,
       SPATIAL_CONTEXT_SUPPORT
     );
     this.radius = getGPUSphereRadius(this.spatialContext);
+    validateFiniteNumber(
+      this.id,
+      'spatialContext sphere radius',
+      Math.fround(this.radius),
+      MINIMUM_SHADER_RADIUS,
+      MAXIMUM_SHADER_RADIUS
+    );
     this.joinSegments = props.joinSegments ?? GPU_OUTLINE_GEOMETRY_DEFAULT_JOIN_SEGMENTS;
     this.verticesPerInput = getGPUOutlineGeometryVerticesPerInput(this.joinSegments);
     const {id} = this;
@@ -256,30 +313,168 @@ export class GPUOutlineGeometry implements GPUCommandNodeProducer {
     }
     validateSinglePackedView(props.output.positions, ['float32x2'], `${id} output.positions`);
     const expectedLength = props.positions.length * this.verticesPerInput;
-    if (props.output.positions.length !== expectedLength) {
-      throw new Error(`${id} output.positions must hold ${expectedLength} rows`);
-    }
-    if (expectedLength > 0x7fffffff) {
-      throw new Error(`${id} output is too large`);
-    }
-    validateGraphOutputsDisjointFromInputs(
+    validateMaximumCount(
       id,
-      [props.output.positions],
-      [props.positions, this.boundaryOffsets, props.parameters]
+      'positions.length * verticesPerInput',
+      expectedLength,
+      MAXIMUM_REQUIRED_VERTEX_COUNT
     );
+    const output = props.output;
+    if (output.layout === 'compact') {
+      validateRequirement(
+        id,
+        output.positions.length > 0 && output.positions.length % 3 === 0,
+        'output.positions.length must be positive and divisible by three'
+      );
+      validateSinglePackedView(output.vertexOffsets, ['uint32'], `${id} output.vertexOffsets`);
+      validateRequirement(
+        id,
+        output.vertexOffsets.length === props.positions.length + 1,
+        'output.vertexOffsets.length must equal positions.length + 1'
+      );
+      if (output.sourceRows) {
+        validateSinglePackedView(output.sourceRows, ['uint32'], `${id} output.sourceRows`);
+        validateRequirement(
+          id,
+          output.sourceRows.length === output.positions.length,
+          'output.sourceRows.length must equal output.positions.length'
+        );
+      }
+      for (const [name, view] of Object.entries(output.status)) {
+        if (!view) continue;
+        validateSinglePackedView(view, ['uint32'], `${id} output.status.${name}`);
+        validateCapacity(id, `output.status.${name}.length`, view.length, 1);
+      }
+      validateOutlineOutputPasses(
+        id,
+        {
+          positions: output.positions,
+          sourceRows: output.sourceRows,
+          vertexOffsets: output.vertexOffsets,
+          ...output.status
+        },
+        [
+          ['positions', 'sourceRows'],
+          ['vertexOffsets', 'count', 'requiredCount', 'overflow']
+        ]
+      );
+    } else {
+      validateRequirement(
+        id,
+        output.layout === undefined || output.layout === 'fixed-stride',
+        "output.layout must be 'compact' or 'fixed-stride'"
+      );
+      validateRequirement(
+        id,
+        output.positions.length === expectedLength,
+        `output.positions must hold ${expectedLength} rows`
+      );
+    }
+    validateMaximumCount(
+      id,
+      'output.positions.length',
+      output.positions.length,
+      MAXIMUM_OUTPUT_VERTEX_COUNT
+    );
+    validateGraphOutputsDisjointFromInputs(id, this.getOutputViews(), [
+      props.positions,
+      this.boundaryOffsets,
+      props.parameters
+    ]);
   }
 
   /** Returns the single generation node. */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    const {props, id} = this;
+    const output = props.output;
+    validateGraphChunkBindingRanges(graph, id, {
+      positions: props.positions,
+      boundaryOffsets: this.boundaryOffsets,
+      parameters: props.parameters,
+      ...Object.fromEntries(this.getOutputViews().map((view, index) => [`output.${index}`, view]))
+    });
+    if (output.layout !== 'compact') return [this.createGenerationNode(graph)];
+    const byteLength = (props.positions.length + 1) * 4;
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'compact counts and scan scratch',
+      byteLength,
+      'reduce input vertex count'
+    );
+    validateCapacity(
+      id,
+      'compact scratch byteLength',
+      byteLength,
+      1,
+      graph.device.limits.maxBufferSize
+    );
+    const counts = createTransientView(graph, `${id}-counts`, 'uint32', props.positions.length + 1);
+    const starts = createTransientView(graph, `${id}-starts`, 'uint32', props.positions.length + 1);
+    const nodes: GPUCommandNode<Parameters>[] = [
+      this.createGenerationNode(graph, {counts}),
+      ...new GPUScan({id: `${id}-scan`, input: counts, output: starts}).getCommandNodes(graph),
+      this.createGenerationNode(graph, {starts})
+    ];
+    nodes.push(
+      createWGSLKernelNode(graph, {
+        id: `${id}-publish`,
+        operation: OPERATION,
+        invocationCount: output.vertexOffsets.length,
+        bindings: [
+          {name: 'starts', view: starts, type: 'u32', access: 'read'},
+          {name: 'offsets', view: output.vertexOffsets, type: 'u32', access: 'read_write'},
+          {name: 'count', view: output.status.count, type: 'u32', access: 'read_write'},
+          {name: 'overflow', view: output.status.overflow, type: 'u32', access: 'read_write'},
+          ...(output.status.requiredCount
+            ? [
+                {
+                  name: 'required',
+                  view: output.status.requiredCount,
+                  type: 'u32' as const,
+                  access: 'read_write' as const
+                }
+              ]
+            : [])
+        ],
+        body: `let requiredVertices = starts[startsOffset + ${props.positions.length}u];
+offsets[offsetsOffset + index] = min(starts[startsOffset + index], ${output.positions.length}u);
+if (index == 0u) {
+ count[countOffset] = min(requiredVertices, ${output.positions.length}u);
+ overflow[overflowOffset] = select(0u, 1u, requiredVertices > ${output.positions.length}u);
+ ${output.status.requiredCount ? 'required[requiredOffset] = requiredVertices;' : ''}
+}`
+      })
+    );
+    return nodes;
+  }
+
+  private getOutputViews(): (GraphDataView | undefined)[] {
+    const {output} = this.props;
+    return output.layout === 'compact'
+      ? [
+          output.positions,
+          output.vertexOffsets,
+          output.sourceRows,
+          output.status.count,
+          output.status.requiredCount,
+          output.status.overflow
+        ]
+      : [output.positions];
+  }
+
+  private createGenerationNode<Parameters>(
+    graph: GPUCommandGraph<Parameters>,
+    options: {
+      counts?: GraphDataView<'uint32'>;
+      starts?: GraphDataView<'uint32'>;
+    } = {}
+  ): GPUCommandNode<Parameters> {
     const {props, id, joinSegments} = this;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.positions,
-      this.boundaryOffsets,
-      props.parameters,
-      props.output.positions
-    ]);
+    const compact = props.output.layout === 'compact' ? props.output : undefined;
+    const {counts, starts} = options;
     const hasLines = props.geometryType !== 'points';
     const bindings: WGSLKernelBinding[] = [
       {name: 'positions', view: props.positions, type: 'f32', access: 'read'}
@@ -287,19 +482,31 @@ export class GPUOutlineGeometry implements GPUCommandNodeProducer {
     if (hasLines && this.boundaryOffsets) {
       bindings.push({name: 'lineOffsets', view: this.boundaryOffsets, type: 'u32', access: 'read'});
     }
-    bindings.push(
-      {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
-      {name: 'outputPositions', view: props.output.positions, type: 'f32', access: 'read_write'}
-    );
+    bindings.push({name: 'parameters', view: props.parameters, type: 'f32', access: 'read'});
+    if (counts) bindings.push({name: 'counts', view: counts, type: 'u32', access: 'read_write'});
+    else
+      bindings.push({
+        name: 'outputPositions',
+        view: props.output.positions,
+        type: 'f32',
+        access: 'read_write'
+      });
+    if (starts) bindings.push({name: 'starts', view: starts, type: 'u32', access: 'read'});
+    if (compact?.sourceRows && !counts)
+      bindings.push({
+        name: 'sourceRows',
+        view: compact.sourceRows,
+        type: 'u32',
+        access: 'read_write'
+      });
     const spherical = this.spatialContext.coordinateSpace === 'longitude-latitude';
-    return [
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-generate`,
-        operation: OPERATION,
-        variant: props.geometryType,
-        bindings,
-        invocationCount: props.positions.length,
-        declarations: /* wgsl */ `
+    return createWGSLKernelNode<Parameters>(graph, {
+      id: `${id}-${counts ? 'count' : 'generate'}`,
+      operation: OPERATION,
+      variant: props.geometryType,
+      bindings,
+      invocationCount: props.positions.length + (counts ? 1 : 0),
+      declarations: /* wgsl */ `
 const LINE_COUNT: u32 = ${this.boundaryOffsets ? this.boundaryOffsets.length - 1 : 0}u;
 const ROW_COUNT: u32 = ${props.positions.length}u;
 const JOIN_SEGMENTS: u32 = ${joinSegments}u;
@@ -312,10 +519,17 @@ fn getPosition(row: u32) -> vec2<f32> {
   return vec2<f32>(positions[positionsOffset + 2u * row], positions[positionsOffset + 2u * row + 1u]);
 }
 
-fn writeVertex(slot: u32, base: u32, p: vec2<f32>) {
-  let at = outputPositionsOffset + 2u * (base + slot);
-  outputPositions[at] = p.x;
-  outputPositions[at + 1u] = p.y;
+${
+  counts
+    ? ''
+    : `fn writeVertex(slot: u32, base: u32, point: vec2<f32>, owner: u32) {
+  let destination = base + slot;
+  if (destination >= ${props.output.positions.length}u) { return; }
+  let coordinateOffset = outputPositionsOffset + 2u * destination;
+  outputPositions[coordinateOffset] = point.x;
+  outputPositions[coordinateOffset + 1u] = point.y;
+  ${compact?.sourceRows ? 'sourceRows[sourceRowsOffset + destination] = owner;' : ''}
+}`
 }
 
 // Moves p by distance d along the metric direction (east, north).
@@ -344,41 +558,45 @@ fn getDirection(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
   return metric / metricLength;
 }
 ${hasLines ? FIND_LINE_WGSL : ''}`,
-        body: /* wgsl */ `let distance = max(parameters[parametersOffset], 0.0);
-  let base = index * VERTICES_PER_INPUT;
+      body: /* wgsl */ `${counts ? 'if (index == ROW_COUNT) { counts[countsOffset + index] = 0u; return; }' : ''}
+  let distance = max(parameters[parametersOffset], 0.0);
   let center = getPosition(index);
-  // Round join and cap disc: JOIN_SEGMENTS counter-clockwise triangles around the vertex.
-  // Each rim point is shared by two triangles, so it is computed once (one sin/cos per segment).
-  var rimA = offsetPoint(center, vec2<f32>(1.0, 0.0), distance);
-  for (var k = 0u; k < JOIN_SEGMENTS; k++) {
-    let angleB = TAU * f32(k + 1u) / f32(JOIN_SEGMENTS);
-    let rimB = offsetPoint(center, vec2<f32>(cos(angleB), sin(angleB)), distance);
-    writeVertex(3u * k, base, center);
-    writeVertex(3u * k + 1u, base, rimA);
-    writeVertex(3u * k + 2u, base, rimB);
-    rimA = rimB;
-  }
-  // Rectangle toward the next vertex, or a degenerate pair of triangles.
   var nextRow = ROW_COUNT;
   ${hasLines ? getNextRowSource(props.geometryType) : ''}
-  var quad = array<vec2<f32>, 6>(center, center, center, center, center, center);
-  if (nextRow < ROW_COUNT) {
-    let next = getPosition(nextRow);
-    let direction = getDirection(center, next);
-    if (dot(direction, direction) > 0.0) {
-      let normal = vec2<f32>(-direction.y, direction.x);
-      let aLeft = offsetPoint(center, normal, distance);
-      let aRight = offsetPoint(center, -normal, distance);
-      let bRight = offsetPoint(next, -normal, distance);
-      let bLeft = offsetPoint(next, normal, distance);
-      quad = array<vec2<f32>, 6>(aLeft, aRight, bRight, aLeft, bRight, bLeft);
-    }
+  var direction = vec2<f32>(0.0);
+  if (nextRow < ROW_COUNT) { direction = getDirection(center, getPosition(nextRow)); }
+  let hasQuad = dot(direction, direction) > 0.0;
+  ${
+    counts
+      ? `counts[countsOffset + index] = select(0u, 3u * JOIN_SEGMENTS + select(0u, 6u, hasQuad), distance > 0.0);`
+      : `
+  ${compact ? 'if (!(distance > 0.0)) { return; }' : ''}
+  let base = ${starts ? 'starts[startsOffset + index]' : 'index * VERTICES_PER_INPUT'};
+  var rimA = offsetPoint(center, vec2<f32>(1.0, 0.0), distance);
+  for (var corner = 0u; corner < JOIN_SEGMENTS; corner++) {
+    let angle = TAU * f32(corner + 1u) / f32(JOIN_SEGMENTS);
+    let rimB = offsetPoint(center, vec2<f32>(cos(angle), sin(angle)), distance);
+    writeVertex(3u * corner, base, center, index);
+    writeVertex(3u * corner + 1u, base, rimA, index);
+    writeVertex(3u * corner + 2u, base, rimB, index);
+    rimA = rimB;
   }
+  var quad = array<vec2<f32>, 6>(center, center, center, center, center, center);
+  if (hasQuad) {
+    let next = getPosition(nextRow);
+    let normal = vec2<f32>(-direction.y, direction.x);
+    let aLeft = offsetPoint(center, normal, distance);
+    let aRight = offsetPoint(center, -normal, distance);
+    let bRight = offsetPoint(next, -normal, distance);
+    let bLeft = offsetPoint(next, normal, distance);
+    quad = array<vec2<f32>, 6>(aLeft, aRight, bRight, aLeft, bRight, bLeft);
+  }
+  ${compact ? 'if (!hasQuad) { return; }' : ''}
   for (var vertex = 0u; vertex < 6u; vertex++) {
-    writeVertex(3u * JOIN_SEGMENTS + vertex, base, quad[vertex]);
+    writeVertex(3u * JOIN_SEGMENTS + vertex, base, quad[vertex], index);
   }`
-      })
-    ];
+  }`
+    });
   }
 }
 

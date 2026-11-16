@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Buffer, Device} from '@luma.gl/core';
-import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GPUCommandGraph, GraphVectorView, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {
@@ -28,6 +28,7 @@ import {
 } from './group-statistics-oracle';
 import {ORDER_STATISTIC_EDGE_POLICY} from '../dataframe-edge-policy';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {withGroupStatisticsTestBindingLimit} from './group-statistics-test-device';
 
 const SUM_SCALE = 65536;
 const ALL_STATISTICS: GPUGroupStatistic[] = [
@@ -80,6 +81,7 @@ const FIELDS: Record<GPUGroupStatistic, (keyof GPUGroupStatisticsColumnOutput)[]
 type ColumnScene = {values: Float32Array; statistics: GPUGroupStatistic[]};
 
 type Scene = {
+  scratchTileSize?: number;
   keyBits: 32 | 64;
   keys: bigint[];
   mask?: Uint32Array;
@@ -145,13 +147,91 @@ async function readWords(buffer: Buffer, length: number): Promise<Uint32Array> {
   return new Uint32Array(bytes.slice(0, length * 4).buffer.slice(0, length * 4));
 }
 
+type InputChunking = {
+  keys: number[];
+  values: number[][];
+  /** Separate physical buffers; otherwise use offset views of the rewritable input buffers. */
+  separateBuffers?: boolean;
+};
+
 /** One compiled graph with rewritable keys, mask, values and percentile fractions. */
-async function createRun(harness: Harness, scene: Scene) {
+async function createRun(harness: Harness, scene: Scene, chunking?: InputChunking) {
   const {device} = harness;
   const rows = scene.keys.length;
   const {capacity} = scene;
   const fractionCount = scene.fractions.length;
   const graph = new GPUCommandGraph(device, {id: 'group-statistics-graph'});
+  const inputWrites = new Map<
+    string,
+    {buffer: Buffer; byteOffset: number; rowOffset: number; length: number; stride: number}[]
+  >();
+  function rewriteInput(name: string, data: Float32Array | Uint32Array): void {
+    for (const segment of inputWrites.get(name) ?? []) {
+      if (segment.length > 0)
+        segment.buffer.write(
+          data.subarray(
+            segment.rowOffset * segment.stride,
+            (segment.rowOffset + segment.length) * segment.stride
+          ),
+          segment.byteOffset
+        );
+    }
+  }
+  function inputView<Format extends 'float32' | 'uint32' | 'uint32x2'>(
+    name: string,
+    buffer: Buffer,
+    format: Format,
+    data: Float32Array | Uint32Array,
+    lengths?: number[]
+  ): GraphDataView<Format> | GraphVectorView<Format> {
+    const packed = importGraphBuffer(graph, name, buffer, format, rows);
+    const stride = format === 'uint32x2' ? 2 : 1;
+    const segments: {
+      buffer: Buffer;
+      byteOffset: number;
+      rowOffset: number;
+      length: number;
+      stride: number;
+    }[] = [];
+    inputWrites.set(name, segments);
+    if (!lengths) {
+      segments.push({buffer, byteOffset: 0, rowOffset: 0, length: rows, stride});
+      return packed;
+    }
+    let rowOffset = 0;
+    const chunks = lengths.map((length, chunkIndex) => {
+      const byteOffset = rowOffset * stride * 4;
+      const values = data.subarray(rowOffset * stride, (rowOffset + length) * stride);
+      rowOffset += length;
+      // Record the buffers actually bound, including physically separate chunks.
+      const chunkBuffer = chunking?.separateBuffers
+        ? harness.input(values.length ? values : new Uint32Array(stride))
+        : buffer;
+      const chunkByteOffset = chunking?.separateBuffers ? 0 : byteOffset;
+      segments.push({
+        buffer: chunkBuffer,
+        byteOffset: chunkByteOffset,
+        rowOffset: rowOffset - length,
+        length,
+        stride
+      });
+      return chunking?.separateBuffers
+        ? importGraphBuffer(graph, `${name}-chunk-${chunkIndex}`, chunkBuffer, format, length)
+        : graph.createDataView(packed.buffer, {format, length, byteOffset});
+    });
+    expect(rowOffset).toBe(rows);
+    return new GraphVectorView({
+      id: name,
+      name,
+      format,
+      length: rows,
+      valueLength: rows * stride,
+      stride,
+      byteStride: stride * 4,
+      rowByteLength: stride * 4,
+      data: chunks
+    });
+  }
   const keyWordCount = scene.keyBits === 64 ? 2 : 1;
   const keyFormat = scene.keyBits === 64 ? 'uint32x2' : 'uint32';
   const keysBuffer = harness.input(packKeys(scene.keys, scene.keyBits));
@@ -207,20 +287,33 @@ async function createRun(harness: Harness, scene: Scene) {
       lengths
     });
     return {
-      values: importGraphBuffer(
-        graph,
+      values: inputView(
         `values-${columnIndex}`,
         valueBuffers[columnIndex],
         'float32',
-        rows
+        column.values,
+        chunking?.values[columnIndex]
       ),
       statistics: column.statistics,
       output: views as GPUGroupStatisticsColumnOutput
     };
   });
   const contributor = new GPUGroupStatistics({
-    keys: importGraphBuffer(graph, 'keys', keysBuffer, keyFormat, rows) as never,
-    mask: importGraphBuffer(graph, 'mask', maskBuffer, 'uint32', rows),
+    scratchTileSize: scene.scratchTileSize,
+    keys: inputView(
+      'keys',
+      keysBuffer,
+      keyFormat,
+      packKeys(scene.keys, scene.keyBits),
+      chunking?.keys
+    ) as never,
+    mask: inputView(
+      'mask',
+      maskBuffer,
+      'uint32',
+      scene.mask ?? new Uint32Array(rows).fill(1),
+      chunking?.keys
+    ),
     columns,
     variance: scene.variance,
     keyCount: scene.keyCount,
@@ -256,6 +349,12 @@ async function createRun(harness: Harness, scene: Scene) {
     keysBuffer,
     maskBuffer,
     valueBuffers,
+    rewriteColumn(columnIndex: number, values: Float32Array): void {
+      rewriteInput(`values-${columnIndex}`, values);
+    },
+    rewriteKeys(keys: bigint[]): void {
+      rewriteInput('keys', packKeys(keys, scene.keyBits));
+    },
     poison(): void {
       for (const [buffer, length] of allOutputs) {
         buffer.write(new Uint32Array(length).fill(0xa5a5a5a5));
@@ -1183,9 +1282,14 @@ it('GPUGroupStatistics merges across unaligned group boundaries with dense gaps 
   }
 });
 
-it.each([
-  40, 41, 42
-])('GPUGroupStatistics cancels large signed cubic branches at amplitude 2^%s', async exponent => {
+it.each(
+  [40, 41, 42].flatMap(exponent =>
+    [undefined, 128, 256, 512].map(scratchTileSize => ({exponent, scratchTileSize}))
+  )
+)('GPUGroupStatistics cancels cubic branches at 2^$exponent with tile $scratchTileSize', async ({
+  exponent,
+  scratchTileSize
+}) => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const amplitude = 2 ** exponent;
@@ -1198,6 +1302,7 @@ it.each([
   );
   const harness = new Harness(device);
   const run = await createRun(harness, {
+    scratchTileSize,
     keyBits: 32,
     keys: Array<bigint>(rowCount).fill(0n),
     columns: [{values, statistics: ['skewness']}],
@@ -1258,6 +1363,608 @@ it('GPUGroupStatistics chooses signed moment scales independently for each group
       'small group'
     );
     expect(Number.isNaN(actual.columns[0].skewness![2])).toBe(true);
+  } finally {
+    run.destroy();
+    harness.destroy();
+  }
+});
+
+it('GPUGroupStatistics chunked keys and independent value chunks match packed bits and the CPU oracle', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const harness = new Harness(device);
+  try {
+    // Both atomic strategies, 32/64-bit keys, dense gaps and sparse capacity overflow.
+    for (const configuration of [
+      {keyBits: 64 as const, capacity: 5, keyCount: undefined},
+      {keyBits: 32 as const, capacity: 512, keyCount: 512}
+    ]) {
+      const rows = 1031;
+      const scene: Scene = {
+        ...configuration,
+        keys: Array.from({length: rows}, (_, row) =>
+          row % 37 === 0
+            ? configuration.keyBits === 64
+              ? 0xffffffffffffffffn
+              : 0xffffffffn
+            : BigInt((row * 17) % 11) + (configuration.keyBits === 64 ? 1n << 40n : 0n)
+        ),
+        mask: Uint32Array.from({length: rows}, (_, row) => Number(row % 13 !== 0)),
+        columns: [
+          {
+            values: Float32Array.from({length: rows}, (_, row) =>
+              row % 23 === 0
+                ? NaN
+                : row % 29 === 0
+                  ? Infinity
+                  : row % 7 === 0
+                    ? -0
+                    : ((row % 31) - 15) / 8
+            ),
+            statistics: ALL_STATISTICS
+          },
+          {
+            values: Float32Array.from({length: rows}, (_, row) =>
+              row < 19 ? 1e-4 : ((row % 5) - 2) * 1e6
+            ),
+            statistics: ['sum', 'mean', 'variance', 'zScore']
+          }
+        ],
+        fractions: [0, 0.25, 0.5, 1, NaN]
+      };
+      const packed = await createRun(harness, scene);
+      try {
+        const expected = await packed.run();
+        expectMatchesOracle(expected, scene, 'packed chunk oracle');
+        for (const separateBuffers of [false, true]) {
+          const chunked = await createRun(harness, scene, {
+            keys: [0, 1, 256, 0, rows - 257, 0],
+            values: [
+              [2, 0, 17, rows - 19, 0],
+              [19, 1, 0, rows - 20]
+            ],
+            separateBuffers
+          });
+          try {
+            const actual = await chunked.run();
+            expect(actual.words).toEqual(expected.words);
+            expectMatchesOracle(actual, scene, 'chunked oracle');
+            chunked.poison();
+            expect((await chunked.run()).words).toEqual(expected.words);
+          } finally {
+            chunked.destroy();
+          }
+        }
+      } finally {
+        packed.destroy();
+      }
+    }
+  } finally {
+    harness.destroy();
+  }
+});
+
+it('GPUGroupStatistics streams over a million rows from chunked keys and values', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const harness = new Harness(device);
+  const rows = 2 ** 20 + 17;
+  const scene: Scene = {
+    keyBits: 32,
+    keys: Array.from({length: rows}, (_, row) => BigInt(row % 4)),
+    keyCount: 4,
+    capacity: 4,
+    fractions: [],
+    columns: [
+      {
+        values: Float32Array.from({length: rows}, (_, row) => (row % 4) + 1),
+        statistics: ['count', 'sum', 'mean', 'minimum', 'maximum']
+      }
+    ]
+  };
+  const run = await createRun(harness, scene, {
+    keys: [1, 2 ** 19, rows - 2 ** 19 - 1],
+    values: [[2 ** 18 + 3, rows - 2 ** 18 - 3]],
+    separateBuffers: true
+  });
+  try {
+    const actual = await run.run();
+    for (let group = 0; group < 4; group++) {
+      const count = Math.floor(rows / 4) + Number(group < rows % 4);
+      expect(actual.counts[group]).toBe(count);
+      expect(actual.columns[0].counts![group]).toBe(count);
+      expect(actual.columns[0].sumValues![group]).toBe(count * (group + 1));
+      expect(actual.columns[0].means![group]).toBe(group + 1);
+      expect(actual.columns[0].minimums![group]).toBe(group + 1);
+      expect(actual.columns[0].maximums![group]).toBe(group + 1);
+    }
+  } finally {
+    run.destroy();
+    harness.destroy();
+  }
+});
+
+it('GPUGroupStatistics skips empty tails at allocation end and retains explicit group values', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const harness = new Harness(device);
+  try {
+    for (const keyBits of [32, 64] as const) {
+      for (const scratchTileSize of [undefined, 2]) {
+        const scene: Scene = {
+          keyBits,
+          keys: [1n, 0n, 1n],
+          capacity: 2,
+          fractions: [],
+          scratchTileSize,
+          columns: [
+            {values: Float32Array.of(1, 4, 3), statistics: ['count', 'mean', 'minimum', 'maximum']}
+          ]
+        };
+        const run = await createRun(harness, scene, {
+          keys: [0, 1, 2, 0],
+          values: [[1, 0, 2, 0]]
+        });
+        try {
+          const actual = await run.run();
+          expect(actual.keys).toEqual([0n, 1n]);
+          expect(actual.counts).toEqual([1, 2]);
+          expect(actual.columns[0].means).toEqual([4, 2]);
+          expect(actual.columns[0].minimums).toEqual([4, 1]);
+          expect(actual.columns[0].maximums).toEqual([4, 3]);
+          expectMatchesOracle(actual, scene, 'empty trailing input chunks');
+          scene.columns[0].values.set([2, 6, 4]);
+          run.rewriteColumn(0, scene.columns[0].values);
+          expectMatchesOracle(await run.run(), scene, 'rewritten empty trailing chunks');
+        } finally {
+          run.destroy();
+        }
+      }
+    }
+  } finally {
+    harness.destroy();
+  }
+});
+
+it('GPUGroupStatistics resets the shared scale from huge to tiny across actual separate chunk buffers', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const harness = new Harness(device);
+  const rows = 257;
+  const scene: Scene = {
+    keyBits: 32,
+    keys: new Array<bigint>(rows).fill(0n),
+    capacity: 1,
+    fractions: [],
+    columns: [{values: new Float32Array(rows).fill(2 ** 60), statistics: ['sum', 'mean']}]
+  };
+  const run = await createRun(harness, scene, {
+    keys: [1, 0, 255, 1],
+    values: [[0, 129, 0, 128]],
+    separateBuffers: true
+  });
+  try {
+    for (const magnitude of [2 ** 60, 2 ** -60, 2 ** 60, 2 ** -60]) {
+      run.rewriteColumn(0, new Float32Array(rows).fill(magnitude));
+      const actual = await run.run();
+      expect(actual.counts).toEqual([rows]);
+      expect(actual.columns[0].sumValues).toEqual([rows * magnitude]);
+      expectClose(
+        actual.columns[0].means![0],
+        magnitude,
+        {relative: 1e-6, absolute: 0},
+        'explicit magnitude mean'
+      );
+    }
+  } finally {
+    run.destroy();
+    harness.destroy();
+  }
+});
+
+it('GPUGroupStatistics handles chunk and workgroup boundaries at both accumulator capacities', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const harness = new Harness(device);
+  try {
+    for (const rows of [1, 255, 256, 257]) {
+      for (const capacity of [256, 257]) {
+        const scene: Scene = {
+          keyBits: 32,
+          keyCount: capacity,
+          capacity,
+          fractions: [0, 0.5, 1],
+          keys: Array.from({length: rows}, (_, row) => BigInt(row % 3)),
+          columns: [
+            {
+              values: Float32Array.from({length: rows}, (_, row) => (row % 8) + 1),
+              statistics: ALL_STATISTICS
+            }
+          ]
+        };
+        const valueFirstLength = Math.ceil(rows / 2);
+        const run = await createRun(harness, scene, {
+          keys: [0, 1, 0, rows - 1, 0],
+          values: [[0, valueFirstLength, 0, rows - valueFirstLength, 0]],
+          separateBuffers: true
+        });
+        try {
+          const actual = await run.run();
+          expectMatchesOracle(actual, scene, `${rows} rows ${capacity} capacity`);
+          expect(actual.count).toBe(capacity);
+          expect(actual.overflow).toBe(0);
+          expect(actual.counts[0]).toBe(Math.ceil(rows / 3));
+        } finally {
+          run.destroy();
+        }
+      }
+    }
+  } finally {
+    harness.destroy();
+  }
+});
+
+it('GPUGroupStatistics preserves every moment of a cancellation-heavy dominant group across chunks and tree levels', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const harness = new Harness(device);
+  const rows = 2053;
+  const scene: Scene = {
+    keyBits: 64,
+    capacity: 257,
+    fractions: [],
+    keys: Array.from({length: rows}, (_, row) => (1n << 40n) + BigInt(row % 127 === 0 ? 1 : 0)),
+    columns: [
+      {
+        values: Float32Array.from({length: rows}, (_, row) => [2 ** 20, 1, -(2 ** 20), 2][row % 4]),
+        statistics: [
+          'count',
+          'sum',
+          'mean',
+          'minimum',
+          'maximum',
+          'variance',
+          'standardDeviation',
+          'skewness',
+          'kurtosis',
+          'zScore'
+        ]
+      }
+    ]
+  };
+  const packed = await createRun(harness, scene);
+  const chunked = await createRun(harness, scene, {
+    keys: [1, 254, 2, 257, 0, rows - 514],
+    values: [[0, 129, 128, 513, rows - 770, 0]],
+    separateBuffers: true
+  });
+  try {
+    const expected = await packed.run();
+    const actual = await chunked.run();
+    expect(actual.words).toEqual(expected.words);
+    expectMatchesOracle(actual, scene, 'dominant cancellation-heavy group');
+  } finally {
+    packed.destroy();
+    chunked.destroy();
+    harness.destroy();
+  }
+});
+
+it('GPUGroupStatistics orders chunked 64-bit keys larger than a binding and refreshes overflow on later frames', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const originalLimits = device.limits;
+  await withGroupStatisticsTestBindingLimit(device, async limitedDevice => {
+    // Keep the original device identity: imported buffers and the graph must have the same owner.
+    expect(limitedDevice).toBe(device);
+    const limits = limitedDevice.limits;
+    const harness = new Harness(limitedDevice);
+    const rows = 10001;
+    const scene: Scene = {
+      keyBits: 64,
+      capacity: 2,
+      fractions: [],
+      keys: Array.from({length: rows}, (_, row) => (1n << 40n) + BigInt([7, 2, 5][row % 3])),
+      columns: [{values: new Float32Array(rows).fill(2), statistics: ['count', 'sum', 'mean']}]
+    };
+    let run: Awaited<ReturnType<typeof createRun>> | undefined;
+    try {
+      expect(rows * 8).toBeGreaterThan(limits.maxStorageBufferBindingSize);
+      expect(rows * 4).toBeLessThan(limits.maxStorageBufferBindingSize);
+      run = await createRun(harness, scene, {
+        keys: [5000, 0, 5001],
+        values: [[1, 4000, 6000]],
+        separateBuffers: true
+      });
+      const initial = await run.run();
+      expectMatchesOracle(initial, scene, '64-bit chunk binding overflow');
+      expect(initial.keys).toEqual([(1n << 40n) + 2n, (1n << 40n) + 5n]);
+      expect([initial.count, initial.total, initial.overflow]).toEqual([2, 3, 1]);
+      const nextKeys = Array.from({length: rows}, (_, row) => (1n << 41n) + BigInt(row % 2));
+      run.rewriteKeys(nextKeys);
+      run.rewriteColumn(0, new Float32Array(rows).fill(4));
+      const updated = await run.run();
+      expectMatchesOracle(
+        updated,
+        {
+          ...scene,
+          keys: nextKeys,
+          columns: [{...scene.columns[0], values: new Float32Array(rows).fill(4)}]
+        },
+        '64-bit refreshed chunks'
+      );
+      expect(updated.keys).toEqual([1n << 41n, (1n << 41n) + 1n]);
+      expect([updated.count, updated.total, updated.overflow]).toEqual([2, 2, 0]);
+      expect(updated.columns[0].means).toEqual([4, 4]);
+      expect((await run.run()).words).toEqual(updated.words);
+    } finally {
+      run?.destroy();
+      harness.destroy();
+    }
+  });
+  expect(device.limits).toBe(originalLimits);
+});
+
+it('GPUGroupStatistics rejects co-bound alignment overlap and computes explicit results with separated output bindings', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const harness = new Harness(device);
+  const graph = new GPUCommandGraph(device);
+  const columnBuffer = harness.output(65);
+  const keyBuffer = harness.output(1);
+  const groupCountsBuffer = harness.output(1);
+  const statusBuffer = harness.output(1);
+  const overflowBuffer = harness.output(1);
+  const counts = importGraphBuffer(graph, 'aligned-column-counts', columnBuffer, 'uint32', 1);
+  const values = importGraphBuffer(
+    graph,
+    'aligned-values',
+    harness.input(new Float32Array([1, 2, 3])),
+    'float32',
+    3
+  );
+  const createContributor = (byteOffset: number) =>
+    new GPUGroupStatistics({
+      keys: importGraphBuffer(
+        graph,
+        `aligned-keys-${byteOffset}`,
+        harness.input(new Uint32Array([7, 7, 7])),
+        'uint32',
+        3
+      ),
+      columns: [
+        {
+          values: new GraphVectorView({
+            id: 'aligned-value-chunks',
+            name: 'aligned-value-chunks',
+            format: 'float32',
+            length: 3,
+            valueLength: 3,
+            stride: 1,
+            byteStride: 4,
+            rowByteLength: 4,
+            data: [
+              graph.createDataView(values.buffer, {format: 'float32', length: 1}),
+              graph.createDataView(values.buffer, {format: 'float32', length: 2, byteOffset: 4})
+            ]
+          }),
+          statistics: ['count', 'mean'],
+          output: {
+            counts,
+            means: graph.createDataView(counts.buffer, {format: 'float32', length: 1, byteOffset})
+          }
+        }
+      ],
+      output: {
+        keys: importGraphBuffer(graph, `aligned-output-keys-${byteOffset}`, keyBuffer, 'uint32', 1),
+        counts: importGraphBuffer(
+          graph,
+          `aligned-output-counts-${byteOffset}`,
+          groupCountsBuffer,
+          'uint32',
+          1
+        ),
+        status: {
+          count: importGraphBuffer(
+            graph,
+            `aligned-status-${byteOffset}`,
+            statusBuffer,
+            'uint32',
+            1
+          ),
+          overflow: importGraphBuffer(
+            graph,
+            `aligned-overflow-${byteOffset}`,
+            overflowBuffer,
+            'uint32',
+            1
+          )
+        }
+      }
+    });
+  let compiled: ReturnType<typeof graph.compile> | undefined;
+  try {
+    expect(() => createContributor(4)).toThrow(/aligned binding byte ranges must not overlap/);
+    graph.add(createContributor(256));
+    compiled = graph.compile();
+    submitGraph(device, compiled, undefined);
+    const words = await readWords(columnBuffer, 65);
+    expect(words[0]).toBe(3);
+    expect(new Float32Array(words.buffer)[64]).toBe(2);
+    expect(Array.from(await readWords(keyBuffer, 1))).toEqual([7]);
+    expect(Array.from(await readWords(groupCountsBuffer, 1))).toEqual([3]);
+    expect(Array.from(await readWords(statusBuffer, 1))).toEqual([1]);
+    expect(Array.from(await readWords(overflowBuffer, 1))).toEqual([0]);
+  } finally {
+    compiled?.destroy();
+    harness.destroy();
+  }
+});
+
+it('GPUGroupStatistics keeps non-finite percentile fractions in runtime data and returns explicit missing values', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const harness = new Harness(device);
+  const scene: Scene = {
+    keyBits: 32,
+    keys: [7n, 7n, 7n, 7n],
+    capacity: 1,
+    fractions: [0, 0.5, 1, Infinity, -Infinity, NaN],
+    columns: [
+      {values: new Float32Array([-1, 1, 3, 5]), statistics: ['count', 'mean', 'percentiles']}
+    ]
+  };
+  const run = await createRun(harness, scene, {
+    keys: [0, 1, 3],
+    values: [[2, 0, 2]],
+    separateBuffers: true
+  });
+  try {
+    const actual = await run.run();
+    expectMatchesOracle(actual, scene, 'non-finite runtime fractions');
+    expect(actual.counts).toEqual([4]);
+    expect(actual.columns[0].means).toEqual([2]);
+    expect(actual.columns[0].percentiles).toEqual([-1, 2, 5, NaN, NaN, NaN]);
+  } finally {
+    run.destroy();
+    harness.destroy();
+  }
+});
+
+for (const keyBits of [32, 64] as const)
+  it(`fixed group tiles match the independent CPU oracle for ${keyBits}-bit keys and moments`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const harness = new Harness(device);
+    const statistics: GPUGroupStatistic[] = [
+      'count',
+      'sum',
+      'mean',
+      'minimum',
+      'maximum',
+      'variance',
+      'standardDeviation',
+      'skewness',
+      'kurtosis'
+    ];
+    const scene = createScene({
+      seed: 91,
+      keyBits,
+      mask: true,
+      columns: [statistics, statistics],
+      bigGroupSize: 137,
+      smallGroups: 3,
+      capacity: 5
+    });
+    scene.scratchTileSize = 64;
+    const run = await createRun(harness, scene, {
+      keys: [3, 0, 127, scene.keys.length - 130],
+      values: [
+        [7, scene.keys.length - 7],
+        [89, 0, scene.keys.length - 89]
+      ],
+      separateBuffers: true
+    });
+    try {
+      run.poison();
+      expectMatchesOracle(await run.run(), scene, 'fixed tile moments and overflow');
+      const changed = Float32Array.from(scene.columns[0].values, value =>
+        Math.fround(value * 0.5 + 8)
+      );
+      run.rewriteColumn(0, changed);
+      expectMatchesOracle(
+        await run.run(),
+        {...scene, columns: [{...scene.columns[0], values: changed}, scene.columns[1]]},
+        'rewritten tile values'
+      );
+      const missing = new Array<bigint>(scene.keys.length).fill(
+        keyBits === 64 ? 0xffffffffffffffffn : 0xffffffffn
+      );
+      run.rewriteKeys(missing);
+      expectMatchesOracle(
+        await run.run(),
+        {
+          ...scene,
+          keys: missing,
+          columns: [{...scene.columns[0], values: changed}, scene.columns[1]]
+        },
+        'all invalid tiles'
+      );
+    } finally {
+      run.destroy();
+      harness.destroy();
+    }
+  });
+
+it('fixed dense group tiles keep empty groups and ignore out-of-domain keys', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const harness = new Harness(device);
+  const rows = 259;
+  const scene: Scene = {
+    keyBits: 32,
+    keys: Array.from({length: rows}, (_, row) => BigInt([0, 2, 2, 8, 0xffffffff][row % 5])),
+    capacity: 4,
+    keyCount: 4,
+    scratchTileSize: 32,
+    fractions: [],
+    columns: [
+      {
+        values: Float32Array.from({length: rows}, (_, row) => (row % 17) - 8),
+        statistics: [
+          'count',
+          'sum',
+          'mean',
+          'minimum',
+          'maximum',
+          'variance',
+          'skewness',
+          'kurtosis'
+        ]
+      }
+    ]
+  };
+  const run = await createRun(harness, scene);
+  try {
+    expectMatchesOracle(await run.run(), scene, 'dense fixed tiles');
+  } finally {
+    run.destroy();
+    harness.destroy();
+  }
+});
+
+it('group statistics automatically tiles scalar scratch beyond a 64 KiB binding', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const harness = new Harness(device);
+  const scene = createScene({
+    seed: 97,
+    keyBits: 64,
+    mask: true,
+    bigGroupSize: 20003,
+    smallGroups: 3,
+    capacity: 5,
+    columns: [['count', 'sum', 'mean', 'minimum', 'maximum', 'variance', 'skewness', 'kurtosis']]
+  });
+  const lengths = (first: number, width: number) => {
+    const chunks = [first, 0];
+    let remaining = scene.keys.length - first;
+    while (remaining > 0) {
+      const length = Math.min(remaining, width);
+      chunks.push(length);
+      remaining -= length;
+    }
+    return chunks;
+  };
+  const run = await withGroupStatisticsTestBindingLimit(device, () =>
+    createRun(harness, scene, {
+      keys: lengths(3, 4096),
+      values: [lengths(17, 4000)],
+      separateBuffers: true
+    })
+  );
+  try {
+    expectMatchesOracle(await run.run(), scene, 'beyond one binding');
   } finally {
     run.destroy();
     harness.destroy();

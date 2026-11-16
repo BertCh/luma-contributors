@@ -12,6 +12,8 @@ import {
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
+  validateGraphOutputsDisjointFromInputs,
+  validateRequirement,
   validateCommandNodeBudget,
   validateGPUStorageBindingByteLength,
   validateGraphViewsBelongToGraph,
@@ -27,10 +29,14 @@ import {
   getGTWRAdaptiveBandwidthWGSL,
   validateGTWRBandwidthSearch
 } from './gtwr-bandwidth-search';
-import {validatePredictionViews} from '../../analysis-core/kernels/gpu-prediction-utils';
+import {validateRegressionOutputDispatches} from './regression-output-dispatches';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {getLocalKernelWeightWGSL} from './local-weighted-least-squares-wgsl';
-import {GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS} from './geographically-weighted-regression-parameters';
+import {
+  GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS,
+  GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY_LENGTH
+} from './geographically-weighted-regression-parameters';
 import {
   createSpaceTimePointNodes,
   GPUGeographicallyTemporallyWeightedRegression,
@@ -104,7 +110,7 @@ export type GPUMultiscaleGeographicallyTemporallyWeightedRegressionOutput = {
 /** Properties for {@link GPUMultiscaleGeographicallyTemporallyWeightedRegression}. */
 export type GPUMultiscaleGeographicallyTemporallyWeightedRegressionProps = Omit<
   GPUGeographicallyTemporallyWeightedRegressionProps,
-  'output' | 'parameters'
+  'output' | 'parameters' | 'gaussianCutoff' | 'searchStructure'
 > & {
   /** Backfitting iterations, 1 to {@link GPU_MGTWR_MAXIMUM_ITERATION_COUNT}; fixed at compile time. */
   iterationCount: number;
@@ -138,6 +144,8 @@ const STATUS = GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS;
  * tolerance, here the `scores` show where that would have happened. A row whose initial local fit
  * is singular starts from zero components. A component smoother whose weighted `x^2` sum is not
  * positive gives a NaN coefficient and contributes nothing, which keeps the rest of the fit finite.
+ * gaussianCutoff and searchStructure are unsupported; initialization explicitly uses the reference
+ * GTWR route, keeping the same kernel in every component and the declared command estimate.
  * Exhaustive over rows, float32, `O(iterations x predictors x rows^2)`.
  */
 export class GPUMultiscaleGeographicallyTemporallyWeightedRegression
@@ -150,6 +158,22 @@ export class GPUMultiscaleGeographicallyTemporallyWeightedRegression
     this.id = props.id ?? 'multiscale-geographically-temporally-weighted-regression';
     const {id} = this;
     const columns = props.predictorCount;
+    // Reject unsupported GTWR-only options from JavaScript or structurally wider objects too.
+    const gtwrOptions = props as typeof props &
+      Pick<
+        GPUGeographicallyTemporallyWeightedRegressionProps,
+        'gaussianCutoff' | 'searchStructure'
+      >;
+    validateRequirement(
+      id,
+      gtwrOptions.gaussianCutoff === undefined,
+      'gaussianCutoff is not supported by multiscale GTWR'
+    );
+    validateRequirement(
+      id,
+      gtwrOptions.searchStructure === undefined,
+      'searchStructure is not supported by multiscale GTWR'
+    );
     const searchIterations = validateGTWRBandwidthSearch(
       id,
       props.bandwidthSearch,
@@ -222,7 +246,22 @@ export class GPUMultiscaleGeographicallyTemporallyWeightedRegression
         2 + 2 * (columns + 1)
       );
     }
-    validatePredictionViews(id, this.getInputViews(), this.getOutputViews());
+    validateGraphOutputsDisjointFromInputs(id, this.getOutputViews(), this.getInputViews());
+    validateRegressionOutputDispatches(
+      id,
+      {
+        ...output,
+        status: undefined,
+        ...Object.fromEntries(
+          Object.entries(output.status ?? {}).map(([name, view]) => [`status.${name}`, view])
+        )
+      },
+      [
+        ['fitted', 'residuals', 'localStatus'],
+        {read: ['coefficients'], write: ['fitted', 'residuals', 'localStatus']},
+        Object.keys(output.status ?? {}).map(name => `status.${name}`)
+      ]
+    );
   }
 
   private getInputViews(): GraphDataView[] {
@@ -233,7 +272,7 @@ export class GPUMultiscaleGeographicallyTemporallyWeightedRegression
       props.predictors,
       props.response,
       props.mask,
-      props.parameters,
+      props.bandwidthSearch ? undefined : props.parameters,
       props.bandwidthSearch?.parameters
     ];
     return views.filter((view): view is GraphDataView => view !== undefined);
@@ -254,6 +293,24 @@ export class GPUMultiscaleGeographicallyTemporallyWeightedRegression
     const columns = props.predictorCount;
     const size = columns + 1;
     validateGraphViewsBelongToGraph(id, graph, [...this.getInputViews(), ...this.getOutputViews()]);
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(
+        [...this.getInputViews(), ...this.getOutputViews()].map((view, index) => [
+          `input/output[${index}]`,
+          view
+        ])
+      )
+    );
+    // Includes the fixed summary and search/status scratch at the smallest row counts.
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'initial summary scratch',
+      GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY_LENGTH * 4,
+      'use a device with a larger storage binding limit'
+    );
     validateGPUStorageBindingByteLength(
       graph.device,
       id,
@@ -272,7 +329,11 @@ export class GPUMultiscaleGeographicallyTemporallyWeightedRegression
       fitted: transient('initial-fitted', 'float32', rows),
       hatDiagonal: transient('initial-hat', 'float32', rows),
       residuals: transient('initial-residuals', 'float32', rows),
-      summary: transient('initial-summary', 'float32', 12)
+      summary: transient(
+        'initial-summary',
+        'float32',
+        GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY_LENGTH
+      )
     };
     const selectedParameters = props.bandwidthSearch
       ? transient('selected-parameters', 'float32', 2 + 2 * size)
@@ -283,6 +344,7 @@ export class GPUMultiscaleGeographicallyTemporallyWeightedRegression
       transient('components-b', 'float32', rows * size)
     ];
     const errors = [transient('errors-a', 'float32', rows), transient('errors-b', 'float32', rows)];
+    const iterationState = transient('iteration-state', 'uint32', 1);
     // Design column 0 is the intercept; column c is predictor c - 1.
     const designWGSL = `fn getDesign(row: u32, column: u32) -> f32 {
   if (column == 0u) { return 1.0; }
@@ -303,6 +365,7 @@ export class GPUMultiscaleGeographicallyTemporallyWeightedRegression
         response: props.response,
         mask: props.mask,
         kernel: props.kernel,
+        searchStructure: 'brute-force',
         parameters: props.parameters,
         output: {
           ...initial,
@@ -322,13 +385,15 @@ export class GPUMultiscaleGeographicallyTemporallyWeightedRegression
           {name: 'response', view: props.response, type: 'f32', access: 'read'},
           {name: 'initialCoefficients', view: initial.coefficients, type: 'f32', access: 'read'},
           {name: 'components', view: components[0], type: 'f32', access: 'read_write'},
-          {name: 'errors', view: errors[0], type: 'f32', access: 'read_write'}
+          {name: 'errors', view: errors[0], type: 'f32', access: 'read_write'},
+          {name: 'iterationState', view: iterationState, type: 'u32', access: 'read_write'}
         ],
         declarations: `${IS_FINITE_BITS_WGSL}
 ${designWGSL}`,
         // Components are beta_j x_j of the initial fit. A singular row starts from zero components
         // and the whole response as its error; an excluded row holds zeros.
-        body: `let included = isFiniteBits(points[pointsOffset + 3u * index]);
+        body: `if (index == 0u) { iterationState[iterationStateOffset] = 0u; }
+  let included = isFiniteBits(points[pointsOffset + 3u * index]);
   var total = 0.0;
   var finite = included;
   for (var column = 0u; column < ${size}u; column++) {
@@ -471,7 +536,8 @@ ${designWGSL}`,
             {name: 'points', view: spaceTime.points, type: 'f32', access: 'read'},
             {name: 'previous', view: previous, type: 'f32', access: 'read'},
             {name: 'next', view: next, type: 'f32', access: 'read'},
-            {name: 'scores', view: output.scores, type: 'f32', access: 'read_write'}
+            {name: 'scores', view: output.scores, type: 'f32', access: 'read_write'},
+            {name: 'iterationState', view: iterationState, type: 'u32', access: 'read_write'}
           ],
           declarations: `${IS_FINITE_BITS_WGSL}`,
           body: `var count = 0.0;
@@ -489,7 +555,9 @@ ${designWGSL}`,
     }
     total += sum * sum;
   }
-  scores[scoresOffset + ${iteration}u] = sqrt(change / count / total);`
+  let scoreIndex = iterationState[iterationStateOffset];
+  scores[scoresOffset + scoreIndex] = sqrt(change / count / total);
+  iterationState[iterationStateOffset] = scoreIndex + 1u;`
         })
       );
     }

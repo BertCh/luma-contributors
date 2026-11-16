@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {TRAJECTORY_SATURATED_COUNT_WGSL} from '../trajectory-analysis/trajectory-counts-wgsl';
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
   createWGSLKernelNode,
@@ -380,7 +381,8 @@ export function createClosestApproachPairsNode<Parameters>(
       {name: 'hits', view: props.hits, type: 'u32', access: 'read_write'}
     ],
     invocationCount: shape.entryCapacity,
-    declarations: `${getShapeConstants(shape)}
+    declarations: `${TRAJECTORY_SATURATED_COUNT_WGSL}
+${getShapeConstants(shape)}
 ${getTimestampSourceWGSL(shape.isWordMode)}
 fn getEntryCell(entry: u32) -> vec3<i32> {
   let base = entryRecordsOffset + entry * ENTRY_WORDS;
@@ -445,7 +447,7 @@ fn testSegments(first: u32, second: u32, radius: f32) {
     return;
   }
   let nearest = separationStart + velocity * closest;
-  let slot = atomicAdd(&state[stateOffset], 1u);
+  let slot = reserveTrajectoryCount();
   if (slot >= HIT_CAPACITY) { return; }
   // Report times relative to the first sample of the lower track.
   let lowTrack = segmentRecords[segmentRecordsOffset + low * SEGMENT_WORDS + 6u];

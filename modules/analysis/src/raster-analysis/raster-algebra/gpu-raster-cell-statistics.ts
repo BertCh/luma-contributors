@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRasterAlgebraInputBindings} from './raster-algebra-input';
+import {validateRasterStorageBindings} from '../raster-grid/raster-storage-preflight';
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
   createWGSLKernelNode,
@@ -9,7 +11,10 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
-import {validateCommandNodeBudget} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  validateCommandNodeBudget,
+  getGraphOutputViews as getRasterPreflightOutputViews
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getRasterAlgebraStackNodeCount,
   getRasterAlgebraStackNodes,
@@ -164,6 +169,28 @@ export class GPURasterCellStatistics implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    const storageProps = this.props;
+    validateRasterAlgebraInputBindings(
+      graph,
+      this.id,
+      isRasterAlgebraBandStack(storageProps.stack) ? storageProps.stack : [storageProps.stack],
+      storageProps.grid
+    );
+    validateRasterStorageBindings(
+      graph,
+      this.id,
+      [
+        storageProps.mask,
+        storageProps.parameters,
+        ...getRasterPreflightOutputViews(storageProps.output)
+      ],
+      {
+        'packed band stack': isRasterAlgebraBandStack(storageProps.stack)
+          ? storageProps.layerCount * storageProps.cellCount * 4
+          : 0
+      }
+    );
+
     const {id, props} = this;
     const {output, layerCount, cellCount} = props;
     validateRasterAlgebraGraph(id, graph, [

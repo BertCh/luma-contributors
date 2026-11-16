@@ -104,7 +104,7 @@ describe('GPUCubeLayoutTranspose validation', () => {
       );
     };
     expect(() => add(limit, 1)).not.toThrow();
-    expect(() => add(limit + 1, 1)).toThrow(/cube needs 134217732 bytes in one binding/);
+    expect(() => add(limit + 1, 1)).toThrow(/values chunk 0 needs 134217732 bytes in one binding/);
     device.destroy();
   });
 
@@ -149,10 +149,8 @@ describe('GPUCubeLayoutTranspose validation', () => {
           cellCount: length,
           periodCount: 1
         });
-        const bindingName = offsetView === 'values' ? 'cube' : 'transposed';
         expect(() => transpose.getCommandNodes(graph)).toThrow(
-          `GPUCubeLayoutTranspose: kernel cube-layout-transpose-transpose binding ${bindingName} ` +
-            'needs 134217732 bytes, above the device limit of 134217728'
+          `cube-layout-transpose ${offsetView} chunk 0 needs 134217732 bytes in one binding (limit 134217728)`
         );
         device.destroy();
       });

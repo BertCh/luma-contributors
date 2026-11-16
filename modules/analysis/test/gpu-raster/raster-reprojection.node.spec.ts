@@ -180,7 +180,7 @@ it.each([
   try {
     if (limit < 204) {
       expect(() => contributor.getCommandNodes(graph)).toThrow(
-        /^reprojection sourceGrid canonical band needs 204 bytes in one binding \(limit 203\)/
+        /^reprojection .*needs 204 bytes in one binding \(limit 203\)/
       );
       expect(allocations).not.toHaveBeenCalled();
     } else {
@@ -206,7 +206,7 @@ it('checks projection parameter storage before allocating source scratch', () =>
   const contributor = new GPURasterReprojection({...props, inverseProjection});
   try {
     expect(() => contributor.getCommandNodes(graph)).toThrow(
-      /^reprojection inverseProjection parameters needs .*limit/
+      /^reprojection projection parameters scratch needs .*limit/
     );
     expect(allocations).not.toHaveBeenCalled();
   } finally {
@@ -261,7 +261,7 @@ it('checks the affine parameter binding before allocating source scratch', () =>
   const contributor = new GPURasterReprojection(props);
   try {
     expect(() => contributor.getCommandNodes(graph)).toThrow(
-      /^reprojection affine parameters needs 80 bytes in one binding \(limit 79\)/
+      /^reprojection affine parameters scratch needs 80 bytes in one binding \(limit 79\)/
     );
     expect(allocations).not.toHaveBeenCalled();
   } finally {

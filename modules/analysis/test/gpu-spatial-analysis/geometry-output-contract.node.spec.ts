@@ -38,9 +38,14 @@ describe('geometry output named-limit validation (STD-03)', () => {
         status: {converged: view('uint32', 2)}
       }
     });
-    expect(() => new GPUConstrainedDelaunayTriangulation({...props(), maximumFlips: 0})).toThrow(
-      /^constrained-delaunay maximumFlips must be an integer in \[1, 4294967295\]/
-    );
+    // The inclusive verification iteration must leave room for its final uint32 increment.
+    for (const maximumFlips of [0, 0xffffffff, 0x100000000])
+      expect(() => new GPUConstrainedDelaunayTriangulation({...props(), maximumFlips})).toThrow(
+        /^constrained-delaunay maximumFlips must be an integer in \[1, 4294967294\]/
+      );
+    expect(
+      () => new GPUConstrainedDelaunayTriangulation({...props(), maximumFlips: 0xfffffffe})
+    ).not.toThrow();
     const undersized = props();
     undersized.output.status.converged = view('uint32', 1);
     expect(() => new GPUConstrainedDelaunayTriangulation(undersized)).toThrow(

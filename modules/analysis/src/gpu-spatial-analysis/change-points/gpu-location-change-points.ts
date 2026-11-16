@@ -26,6 +26,9 @@ import type {GPUOverflowStatusPort} from '../../analysis-core/contracts/status';
 import type {GPUSpaceTimeWeightsLayout} from '../spatial-weights/spatial-weights-space-time-stages';
 import {getChangePointSeriesReaderWGSL} from './change-point-series-wgsl';
 
+import {validateSpatialStatisticsBindings} from '../spatial-weights/spatial-statistics-bindings';
+import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
+
 const OPERATION = 'GPULocationChangePoints';
 
 /** Elements of the `parameters` view: `[penalty, minimumSegmentLength]`. */
@@ -228,6 +231,7 @@ export class GPULocationChangePoints implements GPUCommandNodeProducer {
     if (output.status?.overflow) {
       validateSinglePackedView(output.status.overflow, ['uint32'], `${id} status.overflow`);
     }
+    validateDisjointWritableViews(id, {...output, status: undefined, ...output.status});
     validateGraphOutputsDisjointFromInputs(
       id,
       [
@@ -260,6 +264,7 @@ export class GPULocationChangePoints implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
+    validateSpatialStatisticsBindings(graph, id, props);
     const {values, layout, cellCount, sliceCount, cost, maximumChangePoints, parameters, output} =
       props;
     validateGraphViewsBelongToGraph(id, graph, [

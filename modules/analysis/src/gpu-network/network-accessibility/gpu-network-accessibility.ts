@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateNetworkViewBindings, validateNetworkWritableViews} from '../network-view-utils';
+
 import {
   createTransientView,
   validatePackedView,
@@ -10,10 +12,7 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
-import {
-  validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
-} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateGraphOutputsDisjointFromInputs} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   GPUCatchmentAccessibility,
   type GPUCatchmentMethod
@@ -185,6 +184,17 @@ export class GPUNetworkAccessibility implements GPUCommandNodeProducer {
   constructor(props: GPUNetworkAccessibilityProps) {
     this.id = props.id ?? 'network-accessibility';
     this.props = props;
+    const outputs = {
+      cumulative: props.cumulative,
+      gravity: props.gravity,
+      catchment: props.catchment?.output,
+      ratios: props.catchment?.ratios
+    };
+    validateNetworkWritableViews(this.id, outputs, [
+      {outputs: {cumulative: outputs.cumulative, gravity: outputs.gravity}},
+      {outputs: {ratios: outputs.ratios}},
+      {outputs: {catchment: outputs.catchment}, inputs: {ratios: outputs.ratios}}
+    ]);
     this.orientation = props.orientation ?? 'opportunity-rows';
     const {id} = this;
     const {catchment} = props;
@@ -248,12 +258,7 @@ export class GPUNetworkAccessibility implements GPUCommandNodeProducer {
     if (!props.cumulative && !props.gravity && !catchment) {
       throw new Error(`${id} needs at least one of cumulative, gravity, or catchment`);
     }
-    const outputs = [props.cumulative, props.gravity, catchment?.output, catchment?.ratios];
-    validateGraphOutputsDisjointFromInputs(id, outputs, getInputs(props));
-    const outputBuffers = outputs.filter(view => view !== undefined).map(view => view.buffer);
-    if (new Set(outputBuffers).size !== outputBuffers.length) {
-      throw new Error(`${id} outputs must use separate buffers`);
-    }
+    validateGraphOutputsDisjointFromInputs(id, Object.values(outputs), getInputs(props));
   }
 
   /**
@@ -266,7 +271,7 @@ export class GPUNetworkAccessibility implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, rowCount, nodeCount} = this;
     const {catchment} = props;
-    validateGraphViewsBelongToGraph(id, graph, [
+    validateNetworkViewBindings(id, graph, [
       ...getInputs(props),
       props.cumulative,
       props.gravity,
@@ -274,6 +279,11 @@ export class GPUNetworkAccessibility implements GPUCommandNodeProducer {
       catchment?.ratios
     ]);
     const nodes: GPUCommandNode<Parameters>[] = [];
+    if (catchment)
+      validateNetworkViewBindings(id, graph, [], {
+        catchmentPairs: rowCount * nodeCount * 4,
+        catchmentOffsets: (Math.max(rowCount, nodeCount) + 1) * 4
+      });
     if (props.cumulative || props.gravity) {
       nodes.push(
         this.orientation === 'opportunity-rows'

@@ -3,20 +3,23 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GraphDataView} from '@luma.gl/graph/gpu-core';
+import type {RasterEmbeddingView} from './raster-embedding-chunks';
 import type {GraphEmbeddingMatrix} from '@luma.gl/graph/gpu-vector-search';
 import {
+  getGraphViewChunks,
   validateCapacity,
   validateSinglePackedView,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 
-/**
- * Longest embedding vector. Kernels keep one vector (and the nearest-neighbour or probe state next
- * to it) in per-thread private memory, so the length is a per-thread bound: 128 floats is 512
- * bytes, well inside the 8 KiB function-memory budget of the kernel audit. AlphaEarth has 64
- * bands and TESSERA v2 up to 128.
- */
-export const MAXIMUM_RASTER_EMBEDDING_DIMENSIONS = 128;
+/** Bounds per-pixel band loops to 1,024 streamed bands; each storage-backed chunk must also fit its binding. */
+export const MAXIMUM_RASTER_EMBEDDING_DIMENSIONS = 1024;
+
+/** Reference kernels retain their private-memory layouts and the CPU dense eigensolver its original work bound. */
+export const MAXIMUM_REFERENCE_RASTER_EMBEDDING_DIMENSIONS = 128;
+
+/** Every flattened component address within one chunk must fit a uint32 WGSL index. */
+export const MAXIMUM_RASTER_EMBEDDING_ELEMENT_COUNT = 0xffffffff;
 
 /** NoData of AlphaEarth's int8 embeddings; a pixel with this value in any band is invalid. */
 export const RASTER_EMBEDDING_NODATA = -128;
@@ -28,14 +31,17 @@ export const RASTER_EMBEDDING_NO_LABEL = 0xffffffff;
 export function validateRasterEmbeddingShape(
   id: string,
   pixelCount: number,
-  dimensions: number
+  dimensions: number,
+  maximumDimensions: number = MAXIMUM_REFERENCE_RASTER_EMBEDDING_DIMENSIONS,
+  validatePackedElementCount: boolean = true
 ): void {
   validateCapacity(id, 'pixelCount', pixelCount);
-  validateCapacity(id, 'dimensions', dimensions, 1, MAXIMUM_RASTER_EMBEDDING_DIMENSIONS);
+  validateCapacity(id, 'dimensions', dimensions, 1, maximumDimensions);
   // Element indices are u32 in the kernels.
   validateRequirement(
     id,
-    pixelCount * dimensions <= 0xffffffff,
+    !validatePackedElementCount ||
+      pixelCount * dimensions <= MAXIMUM_RASTER_EMBEDDING_ELEMENT_COUNT,
     'pixelCount times dimensions must stay below 2^32'
   );
 }
@@ -44,19 +50,27 @@ export function validateRasterEmbeddingShape(
 export function validateRasterEmbeddingVectors(
   id: string,
   name: string,
-  vectors: GraphDataView<'float32'>,
+  vectors: RasterEmbeddingView<'float32'>,
   pixelCount: number,
   dimensions: number,
-  mask?: GraphDataView<'uint32'>
+  mask?: RasterEmbeddingView<'uint32'>
 ): void {
-  validateSinglePackedView(vectors, ['float32'], `${id} ${name}`);
+  for (const chunk of getGraphViewChunks(vectors)) {
+    validateSinglePackedView(chunk, ['float32'], `${id} ${name}`);
+    validateRequirement(
+      id,
+      chunk.length % dimensions === 0,
+      `${name} chunks must hold complete pixel vectors`
+    );
+  }
   validateRequirement(
     id,
     vectors.length === pixelCount * dimensions,
     `${name} must hold pixelCount times dimensions entries`
   );
   if (mask) {
-    validateSinglePackedView(mask, ['uint32'], `${id} ${name} mask`);
+    for (const chunk of getGraphViewChunks(mask))
+      validateSinglePackedView(chunk, ['uint32'], `${id} ${name} mask`);
     validateRequirement(
       id,
       mask.length === pixelCount,
@@ -69,11 +83,12 @@ export function validateRasterEmbeddingVectors(
 export function validateRasterEmbeddingQuantized(
   id: string,
   name: string,
-  quantized: GraphDataView<'uint32'>,
+  quantized: RasterEmbeddingView<'uint32'>,
   pixelCount: number,
   dimensions: number
 ): void {
-  validateSinglePackedView(quantized, ['uint32'], `${id} ${name}`);
+  for (const chunk of getGraphViewChunks(quantized))
+    validateSinglePackedView(chunk, ['uint32'], `${id} ${name}`);
   validateRequirement(
     id,
     quantized.length === Math.ceil((pixelCount * dimensions) / 4),

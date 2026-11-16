@@ -392,6 +392,12 @@ export function addCellDiskWeightsNodes<Parameters>(
   const {cells, weights} = props;
   const rows = cells.length;
   const capacity = weights.neighbors.length;
+  const diskCells = createTransientView(
+    graph,
+    `${id}-disk-cells`,
+    'uint32x2',
+    rows * getCellTopologyStride(props.family, {type: 'disk', k: props.rings})
+  );
   const topology = builder.add(
     new GPUCellTopology({
       id: `${id}-disk`,
@@ -400,17 +406,11 @@ export function addCellDiskWeightsNodes<Parameters>(
       cells,
       mask: props.mask,
       output: {
-        cells: createTransientView(
-          graph,
-          `${id}-disk-cells`,
-          'uint32x2',
-          rows * getCellTopologyStride(props.family, {type: 'disk', k: props.rings})
-        )
+        cells: diskCells
       }
     })
   );
   const stride = topology.stride;
-  const diskCells = topology.props.output.cells;
   const counts = createTransientView(graph, `${id}-slot-counts`, 'uint32', rows);
   const inclusive = createTransientView(graph, `${id}-slot-ends`, 'uint32', rows);
   const declarations = `const STRIDE: u32 = ${stride}u;

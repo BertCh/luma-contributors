@@ -4,7 +4,7 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {WgslReflect} from 'wgsl_reflect';
-import {expect, it} from 'vitest';
+import {expect, it, vi} from 'vitest';
 import {GPUSegmentRingAssembly} from '../../../src/analysis-core/ring-assembly/index';
 import {GPUMakeValid} from '../../../src/gpu-spatial-analysis/geometry-topology/gpu-make-valid';
 import {GPUOffsetCurve} from '../../../src/gpu-spatial-analysis/outline-geometry/gpu-offset-curve';
@@ -125,19 +125,42 @@ it.each([
 }) => {
   const {graph, view} = createHarness();
   graph.device.limits.maxStorageBufferBindingSize = limit;
+  // Keep every caller binding within the tiny budget so the intended derived shell table
+  // is the first failure. Caller preflight now correctly precedes derived scratch checks.
   const contributor = new GPUSegmentRingAssembly({
     id: 'bounded-shells',
-    endpoints: view('float32x4', 16),
+    endpoints: view('float32x4', 1),
     output: {
-      positions: view('float32x2', 32),
+      positions: view('float32x2', 1),
       ringOffsets: view('uint32', ringCapacity + 1),
       ringShells: view('uint32', ringCapacity),
       status: {count: view('uint32', 1), overflow: view('uint32', 1)}
     }
   });
-  expect(() => contributor.getCommandNodes(graph)).toThrow(
-    new RegExp(`^bounded-shells ${binding}.*limit ${limit}`)
-  );
+  const bytes =
+    binding === 'shell records'
+      ? ringCapacity * 3 * 4
+      : binding === 'shell bounds'
+        ? ringCapacity * 4 * 4
+        : (2 * 2 ** Math.ceil(Math.log2(ringCapacity)) - 1) * 2 * 4;
+  expect(bytes).toBeGreaterThan(limit);
+  const allocate = vi.spyOn(graph, 'createTransientBuffer');
+  try {
+    expect(() => contributor.getCommandNodes(graph)).toThrow(
+      `bounded-shells ${binding} needs ${bytes} bytes in one binding (limit ${limit})`
+    );
+    expect(allocate).not.toHaveBeenCalled();
+    // At the exact largest derived binding size the same layout is accepted.
+    graph.device.limits.maxStorageBufferBindingSize = Math.max(
+      ringCapacity * 3 * 4,
+      ringCapacity * 4 * 4,
+      (2 * 2 ** Math.ceil(Math.log2(ringCapacity)) - 1) * 2 * 4
+    );
+    expect(() => contributor.getCommandNodes(graph)).not.toThrow();
+  } finally {
+    allocate.mockRestore();
+    graph.device.destroy();
+  }
 });
 
 it('make-valid rejects parity scratch that exceeds the storage-binding budget', () => {

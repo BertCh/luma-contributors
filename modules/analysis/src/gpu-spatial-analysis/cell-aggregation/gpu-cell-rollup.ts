@@ -9,10 +9,11 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {createCellLevelKernelNode} from './cell-level-kernel';
 import {
-  validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateCapacity,
+  validateSinglePackedView,
+  validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   CELL_KEY_WGSL,
@@ -29,6 +30,12 @@ import {
   validateCellTable,
   type GPUCellTable
 } from './cell-table';
+import {
+  validateCellPublishBindingCount,
+  validateCellViewBindingRanges,
+  validateCellTableScratchBindingSizes,
+  validateCellWritableViews
+} from './cell-validation';
 import {GPU_CELL_DEFAULT_SUM_SCALE, validateSumScale} from '../../analysis-core/cell-key-wgsl';
 
 const OPERATION = 'GPUCellRollup';
@@ -116,6 +123,14 @@ export class GPUCellRollup implements GPUCommandNodeProducer {
     if ((output.minimums && !source.minimums) || (output.maximums && !source.maximums)) {
       throw new Error(`${id} source extremes are required to roll up extremes`);
     }
+    for (const [index, view] of (props.extraCounts ?? []).entries()) {
+      validateSinglePackedView(view, ['uint32'], `${id} extraCounts[${index}]`);
+      validateCapacity(id, `extraCounts[${index}] rows`, view.length);
+    }
+    validateCellWritableViews(id, [
+      ...getCellTableViews(output).map((view, index) => [`output field ${index}`, view] as const),
+      ...(props.extraCounts ?? []).map((view, index) => [`extraCounts[${index}]`, view] as const)
+    ]);
     validateGraphOutputsDisjointFromInputs(
       id,
       [...getCellTableViews(output), ...(props.extraCounts ?? [])],
@@ -128,60 +143,76 @@ export class GPUCellRollup implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, layout} = this;
-    validateGraphViewsBelongToGraph(id, graph, [
+    validateCellPublishBindingCount(
+      graph.device,
+      id,
+      Boolean(props.output.status.requiredCount),
+      1,
+      props.extraCounts?.length ?? 0
+    );
+    validateCellViewBindingRanges(graph, id, [
       ...getCellTableViews(props.source),
       ...getCellTableViews(props.output),
       ...(props.extraCounts ?? [])
     ]);
     const rows = props.source.cells.length;
+    validateCellTableScratchBindingSizes(graph.device, id, rows, props.output.cells.length);
     const twoWords = hasCellKeyHighWord(layout);
     const keyLow = createTransientView(graph, `${id}-key-low`, 'uint32', rows);
     const keyHigh = twoWords
       ? createTransientView(graph, `${id}-key-high`, 'uint32', rows)
       : undefined;
-    const keyNode = createWGSLKernelNode<Parameters>(graph, {
-      id: `${id}-keys`,
-      operation: OPERATION,
-      variant: 'parent-keys',
-      bindings: [
-        {
-          name: 'childCells',
-          view: props.source.cells,
-          type: 'u32',
-          access: 'read'
-        },
-        {
-          name: 'childCount',
-          view: props.source.status.count,
-          type: 'u32',
-          access: 'read'
-        },
-        {name: 'keyLow', view: keyLow, type: 'u32', access: 'read_write'},
-        ...(keyHigh
-          ? [
-              {
-                name: 'keyHigh',
-                view: keyHigh,
-                type: 'u32',
-                access: 'read_write'
-              } as const
-            ]
-          : [])
-      ],
-      invocationCount: rows,
-      declarations: `const SOURCE_RESOLUTION: u32 = ${props.sourceResolution}u;
-const RESOLUTION_MASK: u32 = ${props.family === 'quadbin' ? '0x1fu' : '0xfu'};
+    const keyNode = createCellLevelKernelNode<Parameters>(
+      graph,
+      {
+        id: `${id}-keys`,
+        operation: OPERATION,
+        variant: 'parent-keys',
+        bindings: [
+          {
+            name: 'childCells',
+            view: props.source.cells,
+            type: 'u32',
+            access: 'read'
+          },
+          {
+            name: 'childCount',
+            view: props.source.status.count,
+            type: 'u32',
+            access: 'read'
+          },
+          {name: 'keyLow', view: keyLow, type: 'u32', access: 'read_write'},
+          ...(keyHigh
+            ? [
+                {
+                  name: 'keyHigh',
+                  view: keyHigh,
+                  type: 'u32',
+                  access: 'read_write'
+                } as const
+              ]
+            : [])
+        ],
+        invocationCount: rows,
+        declarations: `const RESOLUTION_MASK: u32 = ${props.family === 'quadbin' ? '0x1fu' : '0xfu'};
 ${CELL_KEY_WGSL}`,
-      body: `var compact = cellShiftLeft(vec2u(0u, 1u), ${layout.width}u);
+        body: `var compact = cellShiftLeft(vec2u(0u, 1u), CELL_WIDTH);
   let key = vec2u(childCells[childCellsOffset + 2u * index + 1u], childCells[childCellsOffset + 2u * index]);
   if (index < childCount[childCountOffset] && ((key.x >> 20u) & RESOLUTION_MASK) == SOURCE_RESOLUTION) {
-    compact = cellGetCompactKey(key, ${layout.lowBit}u, ${layout.width}u);
+    compact = cellGetCompactKey(key, CELL_LOW_BIT, CELL_WIDTH);
   }
   keyLow[keyLowOffset + index] = compact.y;
   ${keyHigh ? 'keyHigh[keyHighOffset + index] = compact.x;' : ''}`
-    });
+      },
+      {
+        SOURCE_RESOLUTION: props.sourceResolution,
+        CELL_WIDTH: layout.width,
+        CELL_LOW_BIT: layout.lowBit
+      }
+    );
     return [
-      keyNode,
+      ...keyNode.uploads,
+      keyNode.node,
       ...getCellTableNodes<Parameters>(graph, {
         id,
         operation: OPERATION,

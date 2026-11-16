@@ -2,6 +2,15 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  validateInterpolationPredictionViews,
+  validateInterpolationOutputPasses,
+  validateInterpolationOutputsDisjointFromInputs
+} from './interpolation-view-validation';
+
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateGPUStorageBindingByteLength} from '../../analysis-core/kernels/gpu-contributor-utils';
+
 import type {
   GPUCommandGraph,
   GPUCommandNode,
@@ -15,13 +24,9 @@ import {
 } from '../../analysis-core/contracts/spatial-context';
 import {
   validateCapacity,
-  validateGraphViewsBelongToGraph,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {
-  getPackedPredictionAccessors,
-  validatePredictionViews
-} from '../../analysis-core/kernels/gpu-prediction-utils';
+import {getPackedPredictionAccessors} from '../../analysis-core/kernels/gpu-prediction-utils';
 import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
   createWGSLKernelNode,
@@ -132,7 +137,18 @@ export class GPUVecchiaFisherScoring implements GPUCommandNodeProducer {
     validateViewLength(id, 'output.siteStatus', output.siteStatus, this.rowCount);
     validateViewLength(id, 'output.totals', output.totals, GPU_VECCHIA_FISHER_CELL_COUNT * 2);
     validateViewLength(id, 'output.status', output.status, 3);
-    validatePredictionViews(
+    validateInterpolationOutputPasses(id, output, [
+      {write: {siteTerms: output.siteTerms, siteStatus: output.siteStatus, status: output.status}},
+      {read: {status: output.status}, write: {totals: output.totals}}
+    ]);
+    validateInterpolationOutputsDisjointFromInputs(id, Object.values(output), [
+      positions,
+      observations,
+      neighborhoodOffsets,
+      neighborhoods,
+      parameters
+    ]);
+    validateInterpolationPredictionViews(
       id,
       [positions, observations, neighborhoodOffsets, neighborhoods, parameters],
       [output.siteTerms, output.siteStatus, output.totals, output.status]
@@ -143,6 +159,28 @@ export class GPUVecchiaFisherScoring implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, rowCount} = this;
+    validateGraphChunkBindingRanges(graph, id, {
+      positions: props.positions,
+      observations: props.observations,
+      neighborhoodOffsets: props.neighborhoodOffsets,
+      neighborhoods: props.neighborhoods,
+      parameters: props.parameters,
+      ...props.output
+    });
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'fixed-point words',
+      GPU_VECCHIA_FISHER_CELL_COUNT * 3 * 4,
+      'reduce the likelihood cell count'
+    );
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'fixed-point scale',
+      4,
+      'use a device with storage bindings'
+    );
     const {
       positions,
       observations,
@@ -162,11 +200,6 @@ export class GPUVecchiaFisherScoring implements GPUCommandNodeProducer {
       {name: 'siteStatus', view: output.siteStatus, type: 'u32', access: 'read_write'},
       {name: 'counters', view: output.status, type: 'atomic<u32>', access: 'read_write'}
     ] as const;
-    validateGraphViewsBelongToGraph(
-      id,
-      graph,
-      bindings.map(binding => binding.view)
-    );
     const cellCount = GPU_VECCHIA_FISHER_CELL_COUNT;
     return [
       createWGSLKernelNode(graph, {

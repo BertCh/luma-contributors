@@ -3,16 +3,24 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  getSpatialAnalysisPackedKernelNodes,
+  validateSpatialAnalysisPackedOutputAllocations
+} from '../geographic-distribution/spatial-analysis-packed-kernel';
+import {
   createTransientView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {
-  validateGraphOutputsDisjointFromInputs,
+  validateCatchmentViews,
+  validateCatchmentStorage
+} from './catchment-accessibility-validation';
+import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
+import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {SPATIAL_ANALYSIS_QUOTIENT_WGSL} from '../geographic-distribution/spatial-analysis-quotient';
+import {
   validateGraphViewsBelongToGraph,
   validateSinglePackedView,
   validateRequirement
@@ -47,7 +55,7 @@ export function getGPUHuffTradeAreasParameterValues(
   settings: GPUHuffTradeAreasSettings = {}
 ): Float32Array {
   const exponent = settings.exponent ?? 1;
-  if (!Number.isFinite(exponent) || !(exponent > 0)) {
+  if (!Number.isFinite(Math.fround(exponent)) || !(Math.fround(exponent) > 0)) {
     throw new Error('GPUHuffTradeAreas exponent must be positive and finite');
   }
   return Float32Array.of(exponent);
@@ -212,12 +220,31 @@ export class GPUHuffTradeAreas implements GPUCommandNodeProducer {
         throw new Error(`${id} facilityWeights row count must equal the facility count`);
       }
     }
-    const outputs = getOutputs(output);
-    validateGraphOutputsDisjointFromInputs(id, outputs, getInputs(props));
-    const outputBuffers = outputs.filter(view => view !== undefined).map(view => view.buffer);
-    if (new Set(outputBuffers).size !== outputBuffers.length) {
-      throw new Error(`${id} outputs must use separate buffers`);
-    }
+    const inputs = Object.fromEntries(
+      getInputs(props).map((view, index) => [`input.${index}`, view])
+    );
+    const demandInputs = {
+      offsets: props.demandWeights.offsets,
+      neighbors: props.demandWeights.neighbors,
+      weights: props.demandWeights.weights
+    };
+    const facilityInputs = props.output.expectedDemand
+      ? {
+          offsets: props.facilityWeights?.offsets,
+          neighbors: props.facilityWeights?.neighbors,
+          weights: props.facilityWeights?.weights,
+          demand: props.demand
+        }
+      : {};
+    validateCatchmentViews(id, inputs, output, [
+      {
+        reads: demandInputs,
+        writes: {tradeArea: output.tradeArea, tradeAreaProbability: output.tradeAreaProbability}
+      },
+      {reads: demandInputs, writes: {probabilities: output.probabilities}},
+      {reads: facilityInputs, writes: {expectedDemand: output.expectedDemand}},
+      {reads: {demand: props.demand}, writes: {validity: output.validity}}
+    ]);
   }
 
   /** Returns `denominators`, `trade-area`, `probabilities` and `expected-demand` nodes as requested. */
@@ -226,7 +253,14 @@ export class GPUHuffTradeAreas implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, facilityCount, demandCount} = this;
     const {attractiveness, demandWeights, parameters, output} = props;
+    validateSpatialAnalysisPackedOutputAllocations(graph, id, output);
     validateGraphViewsBelongToGraph(id, graph, [...getInputs(props), ...getOutputs(output)]);
+    validateGraphChunkBindingRanges(graph, id, {
+      ...Object.fromEntries(getInputs(props).map((view, index) => [`input.${index}`, view])),
+      ...output
+    });
+    validateCatchmentStorage(graph.device, id, 'denominators scratch', demandCount * 4);
+    validateCatchmentStorage(graph.device, id, 'attraction scratch', facilityCount * 4);
     const denominators = createTransientView(graph, `${id}-denominators`, 'float32', demandCount);
     const parameterBinding = parameters
       ? [{name: 'parameters', view: parameters, type: 'f32' as const, access: 'read' as const}]
@@ -234,7 +268,9 @@ export class GPUHuffTradeAreas implements GPUCommandNodeProducer {
     // The attraction pow is evaluated once per facility, not once per table slot.
     const attraction = createTransientView(graph, `${id}-attraction`, 'float32', facilityCount);
     const declarations = `const FACILITIES: u32 = ${facilityCount}u;
-const DEMANDS: u32 = ${demandCount}u;`;
+const DEMANDS: u32 = ${demandCount}u;
+${IS_FINITE_VALUE_WGSL}
+${SPATIAL_ANALYSIS_QUOTIENT_WGSL}`;
     const rowLoop = (
       inner: string
     ) => `for (var slot = offsets[offsetsOffset + index]; slot < offsets[offsetsOffset + index + 1u]; slot++) {
@@ -255,8 +291,8 @@ const DEMANDS: u32 = ${demandCount}u;`;
       {name: 'weights', view: demandWeights.weights, type: 'f32' as const, access: 'read' as const},
       {name: 'attraction', view: attraction, type: 'f32' as const, access: 'read' as const}
     ];
-    const nodes: GPUCommandNode<Parameters>[] = [
-      createWGSLKernelNode<Parameters>(graph, {
+    const nodes: (GPUCommandNode<Parameters> | GPUCommandNode<Parameters>[])[] = [
+      getSpatialAnalysisPackedKernelNodes<Parameters>(graph, {
         id: `${id}-attraction`,
         operation: OPERATION,
         variant: 'attraction',
@@ -270,7 +306,7 @@ const DEMANDS: u32 = ${demandCount}u;`;
   let exponent = ${parameters ? 'parameters[parametersOffset]' : '1.0'};
   attraction[attractionOffset + index] = select(0.0, pow(value, exponent), value > 0.0);`
       }),
-      createWGSLKernelNode<Parameters>(graph, {
+      getSpatialAnalysisPackedKernelNodes<Parameters>(graph, {
         id: `${id}-trade-area`,
         operation: OPERATION,
         variant: 'trade-area',
@@ -301,12 +337,12 @@ const DEMANDS: u32 = ${demandCount}u;`;
       }`)}
   denominators[denominatorsOffset + index] = total;
   tradeArea[tradeAreaOffset + index] = select(${GPU_HUFF_NO_TRADE_AREA}u, bestFacility, total > 0.0);
-  ${output.tradeAreaProbability ? 'tradeProbability[tradeProbabilityOffset + index] = select(0.0, best / total, total > 0.0);' : ''}`
+  ${output.tradeAreaProbability ? 'tradeProbability[tradeProbabilityOffset + index] = select(0.0, getSpatialAnalysisQuotient(best,total), total > 0.0);' : ''}`
       })
     ];
     if (output.probabilities) {
       nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
+        getSpatialAnalysisPackedKernelNodes<Parameters>(graph, {
           id: `${id}-probabilities`,
           operation: OPERATION,
           variant: 'probabilities',
@@ -322,7 +358,7 @@ const DEMANDS: u32 = ${demandCount}u;`;
     let partner = neighbors[neighborsOffset + slot];
     var probability = 0.0;
     if (partner < FACILITIES && total > 0.0) {
-      probability = attraction[attractionOffset + partner] * weights[weightsOffset + slot] / total;
+      probability = getSpatialAnalysisQuotient(attraction[attractionOffset + partner] * weights[weightsOffset + slot],total);
     }
     probabilities[probabilitiesOffset + slot] = probability;
   }`
@@ -332,7 +368,7 @@ const DEMANDS: u32 = ${demandCount}u;`;
     if (output.expectedDemand && props.facilityWeights && props.demand) {
       const facilityWeights = props.facilityWeights;
       nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
+        getSpatialAnalysisPackedKernelNodes<Parameters>(graph, {
           id: `${id}-expected-demand`,
           operation: OPERATION,
           variant: 'expected-demand',
@@ -346,8 +382,7 @@ const DEMANDS: u32 = ${demandCount}u;`;
             {name: 'expectedDemand', view: output.expectedDemand, type: 'f32', access: 'read_write'}
           ],
           invocationCount: facilityCount,
-          declarations: `${declarations}
-${IS_FINITE_VALUE_WGSL}`,
+          declarations,
           body: `var captured = 0.0;
   for (var slot = offsets[offsetsOffset + index]; slot < offsets[offsetsOffset + index + 1u]; slot++) {
     let partner = neighbors[neighborsOffset + slot];
@@ -356,17 +391,18 @@ ${IS_FINITE_VALUE_WGSL}`,
       let partnerDemand = demand[demandOffset + partner];
       // A non-finite demand is missing and adds nothing, as in GPUCatchmentAccessibility.
       if (total > 0.0 && isFiniteValue(partnerDemand)) {
-        captured += partnerDemand * weights[weightsOffset + slot] / total;
+        let share = getSpatialAnalysisQuotient(attraction[attractionOffset + index] * weights[weightsOffset + slot],total);
+        captured += partnerDemand * share;
       }
     }
   }
-  expectedDemand[expectedDemandOffset + index] = attraction[attractionOffset + index] * captured;`
+  expectedDemand[expectedDemandOffset + index] = captured;`
         })
       );
     }
     if (output.validity && props.demand) {
       nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
+        getSpatialAnalysisPackedKernelNodes<Parameters>(graph, {
           id: `${id}-validity`,
           operation: OPERATION,
           variant: 'validity',
@@ -380,7 +416,7 @@ ${IS_FINITE_VALUE_WGSL}`,
         })
       );
     }
-    return nodes;
+    return nodes.flat();
   }
 }
 
@@ -399,13 +435,17 @@ function getOutputs(output: GPUHuffTradeAreasOutput): (GraphDataView | undefined
 function getInputs(props: GPUHuffTradeAreasProps): (GraphDataView | undefined)[] {
   return [
     props.attractiveness,
-    props.demand,
+    props.output.expectedDemand || props.output.validity ? props.demand : undefined,
     props.parameters,
     props.demandWeights.offsets,
     props.demandWeights.neighbors,
     props.demandWeights.weights,
-    props.facilityWeights?.offsets,
-    props.facilityWeights?.neighbors,
-    props.facilityWeights?.weights
+    ...(props.output.expectedDemand
+      ? [
+          props.facilityWeights?.offsets,
+          props.facilityWeights?.neighbors,
+          props.facilityWeights?.weights
+        ]
+      : [])
   ];
 }

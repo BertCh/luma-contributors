@@ -13,6 +13,7 @@ import {
 } from '../../utils/gpu-contributor-test-utils';
 
 import {makeExtentGrid} from '../spatial-interpolation/extent-grid';
+import {getDensityReservedWords} from './density-wgsl-reserved-words';
 
 const REDUCTION_WORKGROUP_SIZE = 256;
 
@@ -34,7 +35,7 @@ function createNodes(pointCount: number, withRule = true) {
     }
   });
   const nodes = kde.getCommandNodes(graph);
-  return {device, nodes};
+  return {device, nodes, kde};
 }
 
 it('bandwidth rule moments are a two-stage hierarchical reduction, ordered before the density kernels', () => {
@@ -80,17 +81,30 @@ it('bandwidth rule moments are a two-stage hierarchical reduction, ordered befor
 });
 
 it('bandwidth rule kernels parse as WGSL and the density kernels read the state slot', () => {
-  const {device, nodes} = createNodes(300);
+  const {device, nodes, kde} = createNodes(300);
   const sources = getGPUCommandNodeKernelSources(nodes);
   expect(sources.length).toBeGreaterThan(0);
   for (const {id, source} of sources) {
     expect(() => new WgslReflect(source), id).not.toThrow();
+    expect(getDensityReservedWords(source), id).toEqual([]);
   }
   const byId = (fragment: string) => sources.find(entry => entry.id.includes(fragment))?.source;
   for (const fragment of ['point-weights', 'gather']) {
     const source = byId(fragment) ?? '';
-    expect(source, fragment).toContain('bandwidthState[bandwidthStateOffset]');
-    expect(source, fragment).not.toContain('params[paramsOffset + 4u]');
+    if (fragment === 'point-weights') {
+      // Chunk binding prefixes are runtime metadata, so all chunks reuse the same shader.
+      expect(source, fragment).toMatch(/bandwidthState\[densityDispatch\.words\[\d+\]\[\d+\]\]/);
+    } else {
+      expect(source, fragment).toContain('bandwidthState[bandwidthStateOffset]');
+    }
+    expect(source, fragment).not.toMatch(
+      /params\[(?:paramsOffset|densityDispatch\.words\[\d+\]\[\d+\])\s*\+\s*4u\]/
+    );
+    const node = nodes.find(candidate => candidate.id === `kernel-density-${fragment}`);
+    expect(node?.resources, fragment).toContainEqual({
+      buffer: kde.props.output.bandwidth,
+      usage: 'storage-read'
+    });
   }
   const rule = byId('bandwidth-rule') ?? '';
   expect(rule).toContain('pow(effective, -1.0 / 6.0)');

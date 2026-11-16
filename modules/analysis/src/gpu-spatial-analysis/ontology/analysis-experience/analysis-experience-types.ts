@@ -93,6 +93,15 @@ export type GPUAnalysisColumnStatistics = {
   /** Distinct non-null values; an estimate when `distinctCountIsEstimate` is true. */
   distinctCount?: number;
   distinctCountIsEstimate?: boolean;
+  /**
+   * Guaranteed inclusive bounds on distinct accepted non-null values in the inspected rows.
+   * These are deterministic guarantees, never standard errors or confidence intervals. Both
+   * members must be supplied together. With sampleSize, the full population has at least the
+   * lower bound and at most upperBound + (rowCount - sampleSize) distinct values. An exact
+   * sample count therefore cannot silently authorize a capacity for the whole population.
+   */
+  distinctCountLowerBound?: number;
+  distinctCountUpperBound?: number;
   /** True when every finite value of a number column is a whole number. */
   integral?: boolean;
   /** Rows the statistics were computed on, when fewer than `rowCount`. */
@@ -166,6 +175,8 @@ export type GPUAnalysisDataProfile = {
   kind: GPUSpatialAnalysisDataKind;
   rowCount: number;
   vertexCount?: number;
+  /** Exact counts for the selected network topology; absent until that topology is profiled. */
+  network?: {nodeCount: number; edgeCount: number; arcCount: number};
   coordinates?: {
     model: GPUAnalysisCoordinateModel;
     source: GPUAnalysisFactSource;
@@ -188,6 +199,16 @@ export type GPUAnalysisDataProfile = {
   contiguity?: {minimum: number; median: number; maximum: number; islandCount: number};
 };
 
+/** A scalar comparison; `whenParameter` preserves the original field-role spelling. */
+export type GPUAnalysisParameterComparison =
+  | {parameter: string; equals: readonly (string | number | boolean)[]}
+  | {whenParameter: string; equals: readonly (string | number | boolean)[]};
+
+/** Any branch may activate a setting or require a role, including different controllers. */
+export type GPUAnalysisParameterCondition =
+  | GPUAnalysisParameterComparison
+  | {anyOf: readonly GPUAnalysisParameterCondition[]};
+
 /** A column an operation reads, by the role it plays. */
 export type GPUAnalysisFieldRoleSpec = {
   /** Stable role id: `value`, `cases`, `population`, `time`, `category`, `response`, `predictors`. */
@@ -196,8 +217,8 @@ export type GPUAnalysisFieldRoleSpec = {
   accepts: readonly GPUAnalysisColumnType[];
   /** Measurement levels the method is meant for. Another level is a warning, never a block. */
   measurement?: readonly GPUAnalysisMeasurementLevel[];
-  /** True, false, or required only while a parameter holds one of the listed values. */
-  required: boolean | {whenParameter: string; equals: readonly (string | number | boolean)[]};
+  /** True, false, or required while the parameter condition holds (including cross-parameter OR). */
+  required: boolean | GPUAnalysisParameterCondition;
   /** Present when the role takes several columns. */
   multiple?: {minimum: number; maximum: number};
 };
@@ -210,15 +231,20 @@ export const GPU_ANALYSIS_REQUIREMENT_IDS = [
   'minimum-rows',
   'maximum-rows',
   'maximum-vertices',
+  'maximum-network-edges',
+  'maximum-network-nodes',
+  'maximum-network-arcs',
   'planar-coordinates',
   'geographic-coordinates',
   'declared-coordinates',
   'row-semantics',
   'positive-values',
   'non-negative-values',
+  'numeric-range',
   'no-missing-values',
   'varying-values',
   'minimum-distinct-values',
+  'maximum-distinct-values',
   'every-row-has-a-neighbor',
   'no-duplicate-locations',
   'connected-weights',
@@ -232,10 +258,16 @@ export type GPUAnalysisRequirementSpec = {
   id: GPUAnalysisRequirementId;
   /** `block`: the operation would fail or be meaningless. `warn`: it runs, read with care. */
   severity: 'block' | 'warn';
-  /** Numeric limit of `minimum-rows`, `maximum-rows`, `maximum-vertices`, `minimum-distinct-values`. */
+  /** Numeric limit of row/vertex/network counts and minimum/maximum distinct-value requirements. */
   limit?: number;
   /** Field role the requirement is about, for the value requirements. */
   role?: string;
+  /** Inclusive bounds and optional integrality for `numeric-range`; at least one is required. */
+  minimum?: number;
+  maximum?: number;
+  integer?: boolean;
+  /** Numeric parameter checked instead of a column role, for `numeric-range`. */
+  parameter?: string;
   /** Accepted row semantics, for `row-semantics`. */
   expects?: readonly GPUAnalysisRowSemantics[];
   /** What the user can do about a failure: `Aggregate the points to cells first`. */

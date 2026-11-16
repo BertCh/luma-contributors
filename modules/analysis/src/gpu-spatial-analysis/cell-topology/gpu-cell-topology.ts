@@ -3,27 +3,44 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  createGPUComputeCommandNode,
+  getBoundedDispatchLayout,
+  getViewBinding,
   type GPUCommandGraph,
   type GPUCommandNode,
-  type GraphDataView
+  type GraphDataView,
+  type GraphVectorView,
+  type GPUCommandNodeProducer
 } from '@luma.gl/graph/gpu-core';
-import {dggs} from '@luma.gl/shaders';
-import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
+import {Kernel} from '@luma.gl/graph';
 import {
-  createWGSLKernelNode,
-  type WGSLKernelBinding
-} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+  createGraphChunkDispatchParameters,
+  planGraphChunkDispatch,
+  validateDisjointWritableViews,
+  validateGraphChunkBindingRanges,
+  validateGraphChunkDispatchBindings,
+  type GraphChunkDispatchPlan
+} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {
+  getGraphViewChunks,
+  validateCommandNodeBudget,
+  validateMaximumCount,
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGPUStorageBindingByteLength,
-  validateGraphViewsBelongToGraph,
   validateSinglePackedView,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  type WGSLKernelProps,
+  type WGSLKernelBinding
+} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+
+import {dggs} from '@luma.gl/shaders';
+
 import {CELL_KEY_WGSL} from '../cell-aggregation/cell-keys';
 import {
   validateCellIndexResolution,
-  type GPUCellIndexFamily
+  type GPUCellFamily
 } from '../cell-indexing/cell-index-families';
 import type {GPUCellWordOrder} from '../cell-aggregation/gpu-cell-aggregation';
 import {H3_NEIGHBOR_WGSL} from './h3-neighbor-wgsl';
@@ -34,6 +51,13 @@ import {
 } from './cell-topology-wgsl';
 import {S2_NEIGHBORS_WGSL} from './s2-neighbor-wgsl';
 import {S2_TOPOLOGY_WGSL} from './s2-topology-wgsl';
+
+/** Fixed workgroup size makes chunk lengths runtime dispatch metadata. */
+const CHUNK_WORKGROUP_SIZE = 256;
+/** Storage component indices of whole fixed-stride records cannot wrap uint32. */
+const MAXIMUM_CHUNK_COMPONENT_COUNT = 0xffffffff;
+/** Guard padded workgroups before multiplying their index into a uint32 invocation index. */
+const MAXIMUM_LINEAR_WORKGROUP_COUNT = 16777216;
 
 const OPERATION = 'GPUCellTopology';
 
@@ -72,11 +96,11 @@ export type GPUCellTopologyOperation =
 /** Output columns of {@link GPUCellTopology}. */
 export type GPUCellTopologyOutput = {
   /** `uint32x2` little-endian `(low, high)` cells, `rows * stride` entries, row-major, zero padded. */
-  cells: GraphDataView<'uint32x2'>;
+  cells: GraphDataView<'uint32x2'> | GraphVectorView<'uint32x2'>;
   /** Optional `uint32` grid distances aligned with `cells` (`disk` only), zero padded. */
-  distances?: GraphDataView<'uint32'>;
+  distances?: GraphDataView<'uint32'> | GraphVectorView<'uint32'>;
   /** Optional `uint32` number of valid entries per input row (0 for invalid or masked rows). */
-  counts?: GraphDataView<'uint32'>;
+  counts?: GraphDataView<'uint32'> | GraphVectorView<'uint32'>;
 };
 
 /**
@@ -89,15 +113,15 @@ export type GPUCellTopologyProps = {
   /** Prefix for generated node IDs. Defaults to `'cell-topology'`. */
   id?: string;
   /** Cell family. */
-  family: Extract<GPUCellIndexFamily, 'quadbin' | 'h3' | 's2'>;
+  family: GPUCellFamily;
   /** Operation, fixing the output stride. */
   operation: GPUCellTopologyOperation;
   /** Input `uint32x2` cell keys. Zero or invalid keys produce zero rows. */
-  cells: GraphDataView<'uint32x2'>;
+  cells: GraphDataView<'uint32x2'> | GraphVectorView<'uint32x2'>;
   /** Word order of `cells`. Defaults to `'little-endian'`. */
   wordOrder?: GPUCellWordOrder;
   /** Optional per-row mask; zero produces a zero row with count 0. */
-  mask?: GraphDataView<'uint32'>;
+  mask?: GraphDataView<'uint32'> | GraphVectorView<'uint32'>;
   /** Caller-owned outputs. */
   output: GPUCellTopologyOutput;
 };
@@ -113,7 +137,7 @@ function getH3DiskSize(k: number): number {
  * @throws if `k`, resolutions or the stride are out of range.
  */
 export function getCellTopologyStride(
-  family: Extract<GPUCellIndexFamily, 'quadbin' | 'h3' | 's2'>,
+  family: GPUCellFamily,
   operation: GPUCellTopologyOperation
 ): number {
   validateRequirement(
@@ -169,6 +193,8 @@ export function getCellTopologyStride(
  * are exact at levels 0–30, with children in ascending Hilbert-key order.
  *
  * Consumes cell keys only, so it takes no `spatialContext`.
+ *
+ * Accepts packed or chunked row inputs; output chunks mirror inputs and keep whole fixed-stride records.
  */
 export class GPUCellTopology implements GPUCommandNodeProducer {
   /** Prefix for every node ID. */
@@ -177,6 +203,11 @@ export class GPUCellTopology implements GPUCommandNodeProducer {
   readonly props: GPUCellTopologyProps;
   /** Output entries per input row. */
   readonly stride: number;
+
+  /** Upload plus one dispatch per nonempty chunk. */
+  readonly estimatedCommandNodeCount: number;
+  private readonly chunkPlan: GraphChunkDispatchPlan;
+  private readonly recordChunks: Readonly<Record<string, readonly GraphDataView[]>>;
 
   constructor(props: GPUCellTopologyProps) {
     this.id = props.id ?? 'cell-topology';
@@ -197,37 +228,118 @@ export class GPUCellTopology implements GPUCommandNodeProducer {
     } catch (error) {
       throw new Error(`${id} ${(error as Error).message}`);
     }
-    const rows = props.cells.length;
-    if (rows < 1) {
-      throw new Error(`${id} needs at least one row`);
-    }
-    validateSinglePackedView(props.cells, ['uint32x2'], `${id} cells`);
-    if (props.mask) {
-      validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
-      if (props.mask.length !== rows) {
-        throw new Error(`${id} mask length must equal the row count`);
-      }
-    }
     const {output} = props;
-    validateSinglePackedView(output.cells, ['uint32x2'], `${id} output.cells`);
-    if (output.cells.length !== rows * this.stride) {
-      throw new Error(`${id} output.cells length must be rows * stride = ${rows * this.stride}`);
+    validateRequirement(
+      id,
+      !output.distances || props.operation.type === 'disk',
+      'output.distances is only available for the disk operation'
+    );
+    this.chunkPlan = planGraphChunkDispatch(id, {
+      cells: props.cells,
+      mask: props.mask,
+      counts: output.counts
+    });
+    validateCapacity(id, 'cells row count', this.chunkPlan.totalLength);
+    for (const chunk of this.chunkPlan.chunks) {
+      if (chunk.views['cells'])
+        validateSinglePackedView(
+          chunk.views['cells'],
+          ['uint32x2'],
+          `${id} cells chunk ${chunk.chunkIndex}`
+        );
+      validateMaximumCount(
+        id,
+        'cells chunk components',
+        chunk.length * 2,
+        MAXIMUM_CHUNK_COMPONENT_COUNT
+      );
+      if (chunk.views['mask'])
+        validateSinglePackedView(
+          chunk.views['mask'],
+          ['uint32'],
+          `${id} mask chunk ${chunk.chunkIndex}`
+        );
+      validateMaximumCount(
+        id,
+        'mask chunk components',
+        chunk.length,
+        MAXIMUM_CHUNK_COMPONENT_COUNT
+      );
+      if (chunk.views['counts'])
+        validateSinglePackedView(
+          chunk.views['counts'],
+          ['uint32'],
+          `${id} counts chunk ${chunk.chunkIndex}`
+        );
+      validateMaximumCount(
+        id,
+        'counts chunk components',
+        chunk.length,
+        MAXIMUM_CHUNK_COMPONENT_COUNT
+      );
     }
+    const recordChunks: Record<string, readonly GraphDataView[]> = {};
+    recordChunks['outputCells'] = output.cells ? getGraphViewChunks(output.cells) : [];
+    if (output.cells) {
+      validateRequirement(
+        id,
+        output.cells.length === this.chunkPlan.totalLength * this.stride,
+        'output.cells length must equal input rows * record stride'
+      );
+      validateRequirement(
+        id,
+        recordChunks['outputCells'].length === this.chunkPlan.chunks.length,
+        'output.cells must match input chunk topology'
+      );
+      for (const chunk of this.chunkPlan.chunks) {
+        const view = recordChunks['outputCells'][chunk.chunkIndex];
+        validateSinglePackedView(view, ['uint32x2'], `${id} outputCells chunk ${chunk.chunkIndex}`);
+        validateRequirement(
+          id,
+          view.length === chunk.length * this.stride,
+          `output.cells chunk ${chunk.chunkIndex} length must equal input chunk rows * record stride`
+        );
+        validateMaximumCount(
+          id,
+          'outputCells chunk components',
+          view.length * 2,
+          MAXIMUM_CHUNK_COMPONENT_COUNT
+        );
+      }
+    }
+    recordChunks['distances'] = output.distances ? getGraphViewChunks(output.distances) : [];
     if (output.distances) {
-      if (props.operation.type !== 'disk') {
-        throw new Error(`${id} output.distances is only available for the disk operation`);
-      }
-      validateSinglePackedView(output.distances, ['uint32'], `${id} output.distances`);
-      if (output.distances.length !== rows * this.stride) {
-        throw new Error(`${id} output.distances length must equal output.cells length`);
+      validateRequirement(
+        id,
+        output.distances.length === this.chunkPlan.totalLength * this.stride,
+        'output.distances length must equal input rows * record stride'
+      );
+      validateRequirement(
+        id,
+        recordChunks['distances'].length === this.chunkPlan.chunks.length,
+        'output.distances must match input chunk topology'
+      );
+      for (const chunk of this.chunkPlan.chunks) {
+        const view = recordChunks['distances'][chunk.chunkIndex];
+        validateSinglePackedView(view, ['uint32'], `${id} distances chunk ${chunk.chunkIndex}`);
+        validateRequirement(
+          id,
+          view.length === chunk.length * this.stride,
+          `output.distances chunk ${chunk.chunkIndex} length must equal input chunk rows * record stride`
+        );
+        validateMaximumCount(
+          id,
+          'distances chunk components',
+          view.length * 1,
+          MAXIMUM_CHUNK_COMPONENT_COUNT
+        );
       }
     }
-    if (output.counts) {
-      validateSinglePackedView(output.counts, ['uint32'], `${id} output.counts`);
-      if (output.counts.length !== rows) {
-        throw new Error(`${id} output.counts length must equal the row count`);
-      }
-    }
+    this.recordChunks = recordChunks;
+    validateDisjointWritableViews(id, props.output);
+    this.estimatedCommandNodeCount =
+      (this.chunkPlan.chunks.length > 0 ? 1 : 0) + this.chunkPlan.nonemptyChunkCount;
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     validateGraphOutputsDisjointFromInputs(
       id,
       [output.cells, output.distances, output.counts],
@@ -235,87 +347,119 @@ export class GPUCellTopology implements GPUCommandNodeProducer {
     );
   }
 
-  /** Returns the single topology node `${id}-topology`. */
+  /** Uploads chunk parameters and dispatches each nonempty cell chunk. */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, stride} = this;
     const {family, operation, output} = props;
-    validateGraphViewsBelongToGraph(id, graph, [props.cells, props.mask, ...Object.values(output)]);
-    const rows = props.cells.length;
-    // rows * stride uint32x2 entries in one binding (a k = 2 H3 disk passes 128 MiB near 880k rows).
-    validateGPUStorageBindingByteLength(
-      graph.device,
+    validateMaximumCount(
       id,
-      'output.cells',
-      rows * stride * 8,
-      'reduce the rows or the disk k'
+      'storage bindings',
+      2 + Number(Boolean(props.mask)) + Object.values(props.output).filter(Boolean).length,
+      graph.device.limits.maxStorageBuffersPerShaderStage
     );
-    const isH3 = family === 'h3';
-    const isS2 = family === 's2';
-    const bindings: WGSLKernelBinding[] = [
-      {name: 'cells', view: props.cells, type: 'u32', access: 'read'},
-      ...(props.mask
-        ? [{name: 'rowMask', view: props.mask, type: 'u32', access: 'read'} as const]
-        : []),
-      {name: 'outCells', view: output.cells, type: 'u32', access: 'read_write'},
-      ...(output.distances
-        ? [
-            {
-              name: 'outDistances',
-              view: output.distances,
-              type: 'u32',
-              access: 'read_write'
-            } as const
-          ]
-        : []),
-      ...(output.counts
-        ? [{name: 'outCounts', view: output.counts, type: 'u32', access: 'read_write'} as const]
-        : [])
-    ];
+    validateGraphChunkDispatchBindings(graph, id, this.chunkPlan);
+    validateGraphChunkBindingRanges(graph, id, {
+      'output.cells': output.cells,
+      'output.distances': output.distances
+    });
+    const invocationsPerRow = props.operation.type === 'children' ? this.stride : 1;
+    const layouts = this.chunkPlan.chunks.map(chunk =>
+      getBoundedDispatchLayout(
+        id,
+        Math.max(chunk.length * invocationsPerRow, 1),
+        CHUNK_WORKGROUP_SIZE,
+        graph.device.limits.maxComputeWorkgroupsPerDimension
+      )
+    );
+    const {slots, nodes} = createGraphChunkDispatchParameters(graph, {
+      id: `${id}-chunks`,
+      plan: this.chunkPlan
+    });
+    // Every chunk closes over the same source string, including assembled fp64 modules.
+    let sharedShaderSource: string | undefined;
+    const chunkNodes = this.chunkPlan.chunks
+      .filter(chunk => chunk.length > 0)
+      .map(chunk => {
+        const isH3 = family === 'h3';
+        const isS2 = family === 's2';
+        const bindings: WGSLKernelBinding[] = [
+          {name: 'chunkParameters', view: slots[chunk.chunkIndex], type: 'u32', access: 'read'},
+          {name: 'cells', view: chunk.views['cells'], type: 'u32', access: 'read'},
+          ...(props.mask
+            ? [{name: 'rowMask', view: chunk.views['mask'], type: 'u32', access: 'read'} as const]
+            : []),
+          {
+            name: 'outCells',
+            view: this.recordChunks['outputCells'][chunk.chunkIndex],
+            type: 'u32',
+            access: 'read_write'
+          },
+          ...(output.distances
+            ? [
+                {
+                  name: 'outDistances',
+                  view: this.recordChunks['distances'][chunk.chunkIndex],
+                  type: 'u32',
+                  access: 'read_write'
+                } as const
+              ]
+            : []),
+          ...(output.counts
+            ? [
+                {
+                  name: 'outCounts',
+                  view: chunk.views['counts'],
+                  type: 'u32',
+                  access: 'read_write'
+                } as const
+              ]
+            : [])
+        ];
 
-    const isNeighborhood = operation.type === 'disk' || operation.type === 'ring';
-    const radius = isNeighborhood ? operation.k : 0;
-    const capacity = isNeighborhood
-      ? isH3
-        ? getH3DiskSize(radius)
-        : getCellTopologyStride(family, {type: 'disk', k: radius})
-      : 1;
-    // The source resolution a row must have (children), or the minimum (parent).
-    const targetResolution =
-      operation.type === 'parent' || operation.type === 'children' ? operation.resolution : 0;
-    const inputResolution = operation.type === 'children' ? operation.inputResolution : 0;
-    const depth = operation.type === 'children' ? operation.resolution - inputResolution : 0;
+        const isNeighborhood = operation.type === 'disk' || operation.type === 'ring';
+        const radius = isNeighborhood ? operation.k : 0;
+        const capacity = isNeighborhood
+          ? isH3
+            ? getH3DiskSize(radius)
+            : getCellTopologyStride(family, {type: 'disk', k: radius})
+          : 1;
+        // The source resolution a row must have (children), or the minimum (parent).
+        const targetResolution =
+          operation.type === 'parent' || operation.type === 'children' ? operation.resolution : 0;
+        const inputResolution = operation.type === 'children' ? operation.inputResolution : 0;
+        const depth = operation.type === 'children' ? operation.resolution - inputResolution : 0;
 
-    const resolutionOf = isH3
-      ? 'dggs_h3_get_resolution(key)'
-      : isS2
-        ? 'dggs_s2_get_level(key)'
-        : '((key.x >> 20u) & 0x1fu)';
-    const validity = isH3
-      ? 'dggs_h3_is_valid_cell_id(key)'
-      : isS2
-        ? 'dggs_s2_is_valid_cell_id(key)'
-        : 'cellIsValidQuadbin(key)';
-    let resolutionCheck = 'true';
-    if (operation.type === 'parent') {
-      resolutionCheck = `${resolutionOf} >= TARGET_RESOLUTION`;
-    } else if (operation.type === 'children') {
-      resolutionCheck = `${resolutionOf} == INPUT_RESOLUTION`;
-    }
-    const readRow = (rowExpression: string) => `
+        const resolutionOf = isH3
+          ? 'dggs_h3_get_resolution(key)'
+          : isS2
+            ? 'dggs_s2_get_level(key)'
+            : '((key.x >> 20u) & 0x1fu)';
+        const validity = isH3
+          ? 'dggs_h3_is_valid_cell_id(key)'
+          : isS2
+            ? 'dggs_s2_is_valid_cell_id(key)'
+            : 'cellIsValidQuadbin(key)';
+        let resolutionCheck = 'true';
+        if (operation.type === 'parent') {
+          resolutionCheck = `${resolutionOf} >= TARGET_RESOLUTION`;
+        } else if (operation.type === 'children') {
+          resolutionCheck = `${resolutionOf} == INPUT_RESOLUTION`;
+        }
+        const readRow = (rowExpression: string) => `
   let words = vec2u(cells[cellsOffset + 2u * ${rowExpression}], cells[cellsOffset + 2u * ${rowExpression} + 1u]);
   let key = ${props.wordOrder === 'high-low' ? 'words' : 'words.yx'};
   var isValid = ${validity} && ${resolutionCheck};
   ${props.mask ? `isValid = isValid && rowMask[rowMaskOffset + ${rowExpression}] != 0u;` : ''}`;
-    const writeCell = (slot: string, cell: string, distance?: string) => `
+        const writeCell = (slot: string, cell: string, distance?: string) => `
   outCells[outCellsOffset + 2u * ${slot}] = ${cell}.y;
   outCells[outCellsOffset + 2u * ${slot} + 1u] = ${cell}.x;
   ${output.distances ? `outDistances[outDistancesOffset + ${slot}] = ${distance ?? '0u'};` : ''}`;
 
-    let body: string;
-    if (isNeighborhood) {
-      body = `${readRow('index')}
+        let body: string;
+        if (isNeighborhood) {
+          body = `${readRow('index')}
   var written = 0u;
   if (isValid) {
     written = ${isH3 || isS2 ? 'cellTopologyNeighborhood' : 'cellTopologyQuadbinNeighborhood'}(key, ${operation.type === 'ring'});
@@ -327,42 +471,41 @@ export class GPUCellTopology implements GPUCommandNodeProducer {
     }
   }
   ${output.counts ? 'outCounts[outCountsOffset + index] = written;' : ''}`;
-    } else if (operation.type === 'parent') {
-      const parent = isH3
-        ? 'dggs_h3_get_parent(key, TARGET_RESOLUTION)'
-        : isS2
-          ? 'cellTopologyS2GetParent(key, TARGET_RESOLUTION)'
-          : 'cellTopologyQuadbinGetParent(key, TARGET_RESOLUTION)';
-      body = `${readRow('index')}
+        } else if (operation.type === 'parent') {
+          const parent = isH3
+            ? 'dggs_h3_get_parent(key, TARGET_RESOLUTION)'
+            : isS2
+              ? 'cellTopologyS2GetParent(key, TARGET_RESOLUTION)'
+              : 'cellTopologyQuadbinGetParent(key, TARGET_RESOLUTION)';
+          body = `${readRow('index')}
   var parent = vec2u(0u);
   if (isValid) {
     parent = ${parent};
   }${writeCell('index', 'parent')}
   ${output.counts ? 'outCounts[outCountsOffset + index] = select(0u, 1u, isValid);' : ''}`;
-    } else {
-      const child = isH3
-        ? 'cellTopologyH3GetChild(key, TARGET_RESOLUTION, DEPTH, slotInRow)'
-        : isS2
-          ? 'cellTopologyS2GetChild(key, TARGET_RESOLUTION, DEPTH, slotInRow)'
-          : 'cellTopologyQuadbinGetChild(key, TARGET_RESOLUTION, DEPTH, slotInRow)';
-      const count = isH3 ? 'cellTopologyH3GetChildCount(key, DEPTH)' : 'STRIDE';
-      body = `let row = index / STRIDE;
+        } else {
+          const child = isH3
+            ? 'cellTopologyH3GetChild(key, TARGET_RESOLUTION, DEPTH, slotInRow)'
+            : isS2
+              ? 'cellTopologyS2GetChild(key, TARGET_RESOLUTION, DEPTH, slotInRow)'
+              : 'cellTopologyQuadbinGetChild(key, TARGET_RESOLUTION, DEPTH, slotInRow)';
+          const count = isH3 ? 'cellTopologyH3GetChildCount(key, DEPTH)' : 'STRIDE';
+          body = `let row = index / STRIDE;
   let slotInRow = index % STRIDE;${readRow('row')}
   var child = vec2u(0u);
   if (isValid) {
     child = ${child};
   }${writeCell('index', 'child')}
   ${output.counts ? `if (slotInRow == 0u) {\n    outCounts[outCountsOffset + row] = select(0u, ${count}, isValid);\n  }` : ''}`;
-    }
+        }
 
-    return [
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-topology`,
-        operation: OPERATION,
-        variant: `${family}-${operation.type}`,
-        bindings,
-        invocationCount: operation.type === 'children' ? rows * stride : rows,
-        declarations: `const STRIDE: u32 = ${stride}u;
+        const kernelProps: WGSLKernelProps<Parameters> = {
+          id: `${id}-topology`,
+          operation: OPERATION,
+          variant: `${family}-${operation.type}`,
+          bindings,
+          invocationCount: chunk.length * invocationsPerRow,
+          declarations: `const STRIDE: u32 = ${stride}u;
 const CELL_TOPOLOGY_K: u32 = ${radius}u;
 const CELL_TOPOLOGY_CAPACITY: u32 = ${capacity}u;
 const TARGET_RESOLUTION: u32 = ${targetResolution}u;
@@ -384,8 +527,90 @@ fn cellTopologyNeighbor(cell: vec2u, direction: u32) -> vec2u {
 ${CELL_TOPOLOGY_NEIGHBORHOOD_WGSL}`
     : ''
 }`,
-        body
-      })
-    ];
+          body
+        };
+        const storageDeclarations = kernelProps.bindings
+          .map(
+            (binding, location) =>
+              `@group(0) @binding(${location}) var<storage, ${binding.access}> ${binding.name}: array<${binding.type}>;`
+          )
+          .join('\n');
+        const bindingComponentCounts: Record<string, number> = {
+          cells: 2,
+          rowMask: 1,
+          outCells: stride * 2,
+          outDistances: stride * 1,
+          outCounts: 1
+        };
+        const bindingOffsets = kernelProps.bindings
+          .filter(binding => binding.name !== 'chunkParameters')
+          .map(
+            binding =>
+              `let ${binding.name}Offset = arrayLength(&${binding.name}) - rowCount * ${bindingComponentCounts[binding.name]}u;`
+          )
+          .join('\n  ');
+        const source =
+          sharedShaderSource ??
+          `${storageDeclarations}
+${kernelProps.declarations ?? ''}
+@compute @workgroup_size(${CHUNK_WORKGROUP_SIZE})
+fn main(@builtin(workgroup_id) workgroupId: vec3u,
+  @builtin(num_workgroups) workgroupCount: vec3u,
+  @builtin(local_invocation_index) localInvocationIndex: u32) {
+  let workgroupIndex = (workgroupId.z * workgroupCount.y + workgroupId.y) * workgroupCount.x + workgroupId.x;
+  if (workgroupIndex >= ${MAXIMUM_LINEAR_WORKGROUP_COUNT}u) { return; }
+  let index = workgroupIndex * ${CHUNK_WORKGROUP_SIZE}u + localInvocationIndex;
+  let rowCount = chunkParameters[1];
+  if (index >= rowCount * ${invocationsPerRow}u) { return; }
+  ${bindingOffsets}
+  ${kernelProps.body}
+}`;
+        sharedShaderSource = source;
+        const kernelBindings = kernelProps.bindings;
+        const operationName = kernelProps.operation;
+        const layout = layouts[chunk.chunkIndex];
+        return createGPUComputeCommandNode<Parameters>({
+          id: `${kernelProps.id}-${chunk.chunkIndex}`,
+          resources: kernelProps.bindings.map(binding => ({
+            buffer: binding.view,
+            usage: binding.access === 'read' ? 'storage-read' : 'storage-read-write'
+          })),
+          workload: {
+            operation: kernelProps.operation,
+            ...(kernelProps.variant ? {variant: kernelProps.variant} : {}),
+            commandCount: 1,
+            maximumWorkgroupCount: layout.x * layout.y * layout.z,
+            maximumInvocationCount: chunk.length * invocationsPerRow
+          },
+          compile: ({device}) => {
+            const kernel = new Kernel(device, {
+              id: operationName,
+              source,
+              shaderLayout: {
+                bindings: kernelBindings.map((binding, location) => ({
+                  name: binding.name,
+                  group: 0,
+                  location,
+                  type: binding.access === 'read' ? 'read-only-storage' : 'storage'
+                }))
+              }
+            });
+            return {
+              encode: ({computePass, getBuffer}) =>
+                kernel.dispatch(computePass, {
+                  bindings: Object.fromEntries(
+                    kernelBindings.map(binding => [
+                      binding.name,
+                      getViewBinding(binding.view, getBuffer)
+                    ])
+                  ),
+                  ...layout
+                }),
+              destroy: () => kernel.destroy()
+            };
+          }
+        });
+      });
+    return [...nodes, ...chunkNodes];
   }
 }

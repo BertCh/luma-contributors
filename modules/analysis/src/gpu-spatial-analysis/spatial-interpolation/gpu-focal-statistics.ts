@@ -2,6 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+
+import {
+  validateInterpolationOutputsDisjointFromInputs,
+  validateInterpolationOutputPasses
+} from './interpolation-view-validation';
+
 import {
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -15,8 +22,7 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
-  validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
+  validateFiniteNumber,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {validateRasterGrid} from '../../raster-analysis/raster-band-utils';
@@ -153,11 +159,19 @@ export class GPUFocalStatistics implements GPUCommandNodeProducer, GPURasterHalo
         throw new Error(`${id} output.${name} must hold grid.width * grid.height rows`);
       }
     }
-    const outputBuffers = outputs.map(([, view]) => view.buffer);
-    if (new Set(outputBuffers).size !== outputBuffers.length) {
-      throw new Error(`${id} outputs must not share buffers`);
-    }
-    validateGraphOutputsDisjointFromInputs(
+    if (props.noDataValue !== undefined) validateFiniteNumber(id, 'noDataValue', props.noDataValue);
+    validateInterpolationOutputPasses(id, output, [
+      {
+        write: {
+          mean: output.mean,
+          sum: output.sum,
+          standardDeviation: output.standardDeviation,
+          counts: output.counts
+        }
+      },
+      {write: {min: output.min, max: output.max, range: output.range}}
+    ]);
+    validateInterpolationOutputsDisjointFromInputs(
       id,
       outputs.map(([, view]) => view),
       [props.values, props.validity, props.parameters]
@@ -170,12 +184,12 @@ export class GPUFocalStatistics implements GPUCommandNodeProducer, GPURasterHalo
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, cellCount} = this;
     const {output} = props;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.values,
-      props.validity,
-      props.parameters,
-      ...getOutputEntries(output).map(([, view]) => view)
-    ]);
+    validateGraphChunkBindingRanges(graph, id, {
+      values: props.values,
+      validity: props.validity,
+      parameters: props.parameters,
+      ...output
+    });
     const inputs: WGSLKernelBinding[] = [
       {name: 'raster', view: props.values, type: 'f32', access: 'read'},
       ...(props.validity

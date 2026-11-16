@@ -3,9 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Buffer, Device} from '@luma.gl/core';
-import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
+import type {GPUUint32Rows} from '../../../src/analysis-core/kernels/gpu-contributor-types';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {
   GPU_SPATIAL_JOIN_NO_FEATURE as N,
@@ -44,6 +45,8 @@ type JoinBufferName =
   | 'featureCounts'
   | 'overflow'
   | 'candidateCount'
+  | 'candidateTruncated'
+  | 'candidateOverflow'
   | 'uncertainCount'
   | 'matchIds'
   | 'matchCount'
@@ -53,15 +56,18 @@ type JoinBufferName =
 type JoinFixture = {
   graph: GPUCommandGraph;
   buffers: Record<JoinBufferName, Buffer>;
-  props: GPUPointInPolygonJoinProps;
+  props: GPUPointInPolygonJoinProps<GPUUint32Rows>;
 };
 
 function createJoinFixture(
   device: Device,
   points: [number, number][],
-  options: Partial<GPUPointInPolygonJoinProps> & {matchCapacity?: number} = {}
+  options: Partial<GPUPointInPolygonJoinProps> & {
+    matchCapacity?: number;
+    chunkLengths?: number[];
+  } = {}
 ): JoinFixture {
-  const {matchCapacity, ...overrides} = options;
+  const {matchCapacity, chunkLengths, ...overrides} = options;
   const graph = new GPUCommandGraph(device, {id: 'pip-join'});
   const arrays = buildPolygonFeatureArrays(POLYGON_FEATURES);
   const pointCount = points.length;
@@ -78,13 +84,15 @@ function createJoinFixture(
     featureCounts: createOutputBuffer(device, featureCount),
     overflow: createOutputBuffer(device, 1),
     candidateCount: createOutputBuffer(device, 1),
+    candidateTruncated: createOutputBuffer(device, pointCount),
+    candidateOverflow: createOutputBuffer(device, 1),
     uncertainCount: createOutputBuffer(device, 1),
     matchIds: createOutputBuffer(device, matchCapacity ?? pointCount),
     matchCount: createOutputBuffer(device, 1),
     matchOverflow: createOutputBuffer(device, 1),
     matchTotal: createOutputBuffer(device, 1)
   };
-  const props: GPUPointInPolygonJoinProps = {
+  const props: GPUPointInPolygonJoinProps<GPUUint32Rows> = {
     points: {
       kind: 'points',
       positions: importGraphBuffer(graph, 'points', buffers.points, 'float32x2', pointCount),
@@ -174,6 +182,49 @@ function createJoinFixture(
     },
     ...overrides
   };
+  props.output.candidateTruncated = importGraphBuffer(
+    graph,
+    'candidate-truncated',
+    buffers.candidateTruncated,
+    'uint32',
+    pointCount
+  );
+  props.output.status.candidateOverflow = importGraphBuffer(
+    graph,
+    'candidate-overflow',
+    buffers.candidateOverflow,
+    'uint32',
+    1
+  );
+  if (chunkLengths) {
+    function chunkView<Format extends 'float32x2' | 'uint32'>(view: GraphDataView<Format>) {
+      let firstRow = 0;
+      return createVectorView(
+        `chunks-${view.buffer.id}`,
+        view.format,
+        chunkLengths!.map(length => {
+          const chunk = graph.createDataView(view.buffer, {
+            format: view.format,
+            length,
+            byteOffset: firstRow * view.rowByteLength
+          });
+          firstRow += length;
+          return chunk;
+        })
+      );
+    }
+    props.points = {
+      ...props.points,
+      positions: chunkView(props.points.positions as GraphDataView<'float32x2'>),
+      sourceIds: chunkView(props.points.sourceIds as GraphDataView<'uint32'>)
+    };
+    props.output.pointFeatureIds = chunkView(
+      props.output.pointFeatureIds as GraphDataView<'uint32'>
+    );
+    props.output.candidateTruncated = chunkView(
+      props.output.candidateTruncated as GraphDataView<'uint32'>
+    );
+  }
   return {graph, buffers, props};
 }
 
@@ -251,6 +302,8 @@ it('GPUPointInPolygonJoin reports candidate, leaf, and match overflow', async ()
   let compiled = candidateFixture.graph.compile();
   submitGraph(device, compiled, undefined);
   expect(await readUint32(candidateFixture.buffers.overflow, 1)).toEqual([1]);
+  // Aggregate compact completeness includes intermediate loss even with ample match capacity.
+  expect(await readUint32(candidateFixture.buffers.matchOverflow, 1)).toEqual([1]);
   expect(await readUint32(candidateFixture.buffers.candidateCount, 1)).toEqual([9]);
   const featureIds = await readUint32(candidateFixture.buffers.pointFeatureIds, 10);
   for (const [row, featureId] of featureIds.entries()) {
@@ -264,6 +317,7 @@ it('GPUPointInPolygonJoin reports candidate, leaf, and match overflow', async ()
   compiled = leafFixture.graph.compile();
   submitGraph(device, compiled, undefined);
   expect(await readUint32(leafFixture.buffers.overflow, 1)).toEqual([1]);
+  expect(await readUint32(leafFixture.buffers.matchOverflow, 1)).toEqual([1]);
   expect((await readUint32(leafFixture.buffers.pointFeatureIds, 10)).slice(0, 7)).toEqual([
     100,
     N,
@@ -368,3 +422,196 @@ it('GPUPointInPolygonJoin preserves point chunks and matches a random oracle', a
 });
 
 registerLonLatPolygonStatusTests('GPUPointInPolygonJoin');
+
+for (const edgeSlabs of [false, true]) {
+  for (const querySort of [false, true]) {
+    for (const candidateCapacity of [4, 32]) {
+      for (const matchCapacity of [3, 10]) {
+        it(`GPUPointInPolygonJoin packed and three uneven chunks agree (slabs ${edgeSlabs}, sorted ${querySort}, candidates ${candidateCapacity}, matches ${matchCapacity})`, async () => {
+          const device = await getWebGPUTestDevice();
+          requireTestDevice(device);
+          const fixtures = [undefined, [2, 3, 5]].map(chunkLengths =>
+            createJoinFixture(device, POLYGON_POINTS, {
+              chunkLengths,
+              edgeSlabs,
+              querySort,
+              candidateCapacity,
+              matchCapacity
+            })
+          );
+          const compiled = fixtures.map(fixture => {
+            fixture.graph.add(new GPUPointInPolygonJoin(fixture.props));
+            return fixture.graph.compile();
+          });
+          try {
+            // Repeat encodings to catch per-feature counts or compact counts being cleared per chunk
+            // or retained from the preceding frame.
+            for (let frame = 0; frame < 2; frame++) {
+              const framePoints = POLYGON_POINTS.map(point => [...point] as [number, number]);
+              if (frame === 1) framePoints[8] = [6, 3];
+              for (const fixture of fixtures)
+                fixture.buffers.points.write(Float32Array.from(framePoints.flat()));
+              for (const graph of compiled) submitGraph(device, graph, undefined);
+              const results = await Promise.all(
+                fixtures.map(async ({buffers}) => ({
+                  assignments: await readUint32(buffers.pointFeatureIds, 10),
+                  featureCounts: await readUint32(buffers.featureCounts, 4),
+                  matches: await readCompactIds(buffers.matchIds, buffers.matchCount),
+                  matchCount: await readUint32(buffers.matchCount, 1),
+                  matchTotal: await readUint32(buffers.matchTotal, 1),
+                  matchOverflow: await readUint32(buffers.matchOverflow, 1),
+                  candidateTruncated: await readUint32(buffers.candidateTruncated, 10),
+                  candidateOverflow: await readUint32(buffers.candidateOverflow, 1),
+                  candidateCount: await readUint32(buffers.candidateCount, 1),
+                  uncertainCount: await readUint32(buffers.uncertainCount, 1),
+                  overflow: await readUint32(buffers.overflow, 1)
+                }))
+              );
+              expect(results[1]).toEqual(results[0]);
+              if (candidateCapacity === 32) {
+                const oracle = joinPointsInPolygons(framePoints, POLYGON_FEATURES, true);
+                expect(results[1].assignments).toEqual(
+                  oracle.featureRows.map(row => (row === N ? N : 100 + row))
+                );
+                expect(results[1].featureCounts).toEqual(oracle.counts);
+                // Stable compact IDs are in source-row order across chunk boundaries, also on overflow.
+                expect(results[1].matches).toEqual(
+                  oracle.featureRows
+                    .flatMap((row, index) => (row === N ? [] : [1000 + index]))
+                    .slice(0, matchCapacity)
+                );
+                expect(results[1].matchTotal).toEqual([frame === 0 ? 6 : 7]);
+              }
+            }
+          } finally {
+            for (const graph of compiled) graph.destroy();
+            for (const fixture of fixtures) destroyFixture(fixture);
+          }
+        });
+      }
+    }
+  }
+}
+
+for (const edgeSlabs of [false, true]) {
+  it(`point candidates stream across pages and reset every encoding (slabs ${edgeSlabs})`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const fixture = createJoinFixture(device, POLYGON_POINTS, {
+      candidateCapacity: 16,
+      candidateTileCapacity: 2,
+      edgeSlabs,
+      querySort: true,
+      spatialSort: true,
+      chunkLengths: [1, 3, 6],
+      matchCapacity: 3
+    });
+    fixture.graph.add(new GPUPointInPolygonJoin(fixture.props));
+    const compiled = fixture.graph.compile();
+    try {
+      for (const populated of [true, false, true]) {
+        fixture.buffers.points.write(
+          populated ? Float32Array.from(POLYGON_POINTS.flat()) : new Float32Array(20).fill(1000)
+        );
+        submitGraph(device, compiled, undefined);
+        expect(await readUint32(fixture.buffers.pointFeatureIds, 10)).toEqual(
+          populated ? [100, N, 100, 100, 101, 102, 102, N, N, N] : new Array(10).fill(N)
+        );
+        expect(await readUint32(fixture.buffers.featureCounts, 4)).toEqual(
+          populated ? [3, 1, 2, 0] : [0, 0, 0, 0]
+        );
+        expect(await readUint32(fixture.buffers.candidateCount, 1)).toEqual([populated ? 9 : 0]);
+        expect(await readUint32(fixture.buffers.candidateOverflow, 1)).toEqual([0]);
+        expect(await readUint32(fixture.buffers.candidateTruncated, 10)).toEqual(
+          new Array(10).fill(0)
+        );
+        expect(await readUint32(fixture.buffers.uncertainCount, 1)).toEqual([0]);
+        expect(await readUint32(fixture.buffers.matchTotal, 1)).toEqual([populated ? 6 : 0]);
+        expect(await readCompactIds(fixture.buffers.matchIds, fixture.buffers.matchCount)).toEqual(
+          populated ? [1000, 1002, 1003] : []
+        );
+        expect(await readUint32(fixture.buffers.matchOverflow, 1)).toEqual([Number(populated)]);
+      }
+    } finally {
+      compiled.destroy();
+      destroyFixture(fixture);
+    }
+  });
+}
+
+for (const edgeSlabs of [false, true]) {
+  it(`point pages preserve the global candidate cutoff and compact prefix (slabs ${edgeSlabs})`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const bounds = POLYGON_FEATURES.map(feature => {
+      const vertices = feature.flat(2);
+      return [
+        Math.min(...vertices.map(point => point[0])),
+        Math.min(...vertices.map(point => point[1])),
+        Math.max(...vertices.map(point => point[0])),
+        Math.max(...vertices.map(point => point[1]))
+      ];
+    });
+    const candidates = POLYGON_POINTS.flatMap((point, pointRow) =>
+      bounds.flatMap((box, featureRow) =>
+        point[0] >= box[0] && point[0] <= box[2] && point[1] >= box[1] && point[1] <= box[3]
+          ? [{pointRow, featureRow}]
+          : []
+      )
+    );
+    expect(candidates).toHaveLength(9);
+    for (const candidateCapacity of [4, 7]) {
+      const assigned = new Array<number>(POLYGON_POINTS.length).fill(N);
+      for (const candidate of candidates.slice(0, candidateCapacity)) {
+        if (
+          classifyPointInFeature(
+            POLYGON_POINTS[candidate.pointRow],
+            POLYGON_FEATURES[candidate.featureRow]
+          ) !== 'outside'
+        )
+          assigned[candidate.pointRow] = Math.min(
+            assigned[candidate.pointRow],
+            100 + candidate.featureRow
+          );
+      }
+      const expectedTruncated = POLYGON_POINTS.map((_, pointRow) =>
+        Number(
+          candidates.slice(candidateCapacity).some(candidate => candidate.pointRow === pointRow)
+        )
+      );
+      const matches = assigned.flatMap((feature, pointRow) =>
+        feature === N ? [] : [1000 + pointRow]
+      );
+      const counts = POLYGON_FEATURES.map(
+        (_, featureRow) => assigned.filter(feature => feature === 100 + featureRow).length
+      );
+      const fixture = createJoinFixture(device, POLYGON_POINTS, {
+        candidateCapacity,
+        candidateTileCapacity: 2,
+        spatialSort: false,
+        querySort: true,
+        edgeSlabs,
+        chunkLengths: [2, 1, 7],
+        matchCapacity: 3
+      });
+      fixture.graph.add(new GPUPointInPolygonJoin(fixture.props));
+      const compiled = fixture.graph.compile();
+      try {
+        submitGraph(device, compiled, undefined);
+        expect(await readUint32(fixture.buffers.pointFeatureIds, 10)).toEqual(assigned);
+        expect(await readUint32(fixture.buffers.featureCounts, 4)).toEqual(counts);
+        expect(await readUint32(fixture.buffers.candidateTruncated, 10)).toEqual(expectedTruncated);
+        expect(await readUint32(fixture.buffers.candidateCount, 1)).toEqual([9]);
+        expect(await readUint32(fixture.buffers.candidateOverflow, 1)).toEqual([1]);
+        expect(await readUint32(fixture.buffers.matchTotal, 1)).toEqual([matches.length]);
+        expect(await readCompactIds(fixture.buffers.matchIds, fixture.buffers.matchCount)).toEqual(
+          matches.slice(0, 3)
+        );
+        expect(await readUint32(fixture.buffers.matchOverflow, 1)).toEqual([1]);
+      } finally {
+        compiled.destroy();
+        destroyFixture(fixture);
+      }
+    }
+  });
+}

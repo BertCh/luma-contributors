@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateSpatialStatisticsBindings} from '../spatial-weights/spatial-statistics-bindings';
 import {
   createTransientView,
   getViewBindingRange,
@@ -210,6 +212,7 @@ export class GPUMultivariateLocalGearyPermutationTest implements GPUCommandNodeP
         validateSinglePackedView(view, [format], this.id);
         if (view.length !== length) throw new Error(`${this.id}: shape mismatch`);
       }
+    validateDisjointWritableViews(this.id, props.output);
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
       props.values,
       props.mask,
@@ -235,6 +238,11 @@ export class GPUMultivariateLocalGearyPermutationTest implements GPUCommandNodeP
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateSpatialStatisticsBindings(graph, this.id, this.props, {
+      'row scratch': this.props.values.length * 4,
+      'tiled accumulators': this._getRowCount() * 16,
+      'moment partials': Math.ceil(this._getRowCount() / 4096) * this.props.variableCount * 12
+    });
     const {props, id} = this;
     const rows = this._getRowCount();
     validateGraphViewsBelongToGraph(id, graph, [

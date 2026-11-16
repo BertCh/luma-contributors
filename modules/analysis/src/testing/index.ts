@@ -12,3 +12,9 @@ export {requireTestDevice} from './require-test-device';
 
 // Internals that dependent packages' tests exercise directly.
 export {importGraphBuffer} from '../analysis-core/kernels/gpu-contributor-utils';
+export {
+  getGPUResourceCounts,
+  getGPUResourceLeaks,
+  validateNoGPUResourceLeaks
+} from './gpu-resource-counts';
+export type {GPUResourceCounts} from './gpu-resource-counts';

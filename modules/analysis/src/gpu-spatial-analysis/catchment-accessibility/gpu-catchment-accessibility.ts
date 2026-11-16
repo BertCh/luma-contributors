@@ -3,16 +3,24 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  getSpatialAnalysisPackedKernelNodes,
+  validateSpatialAnalysisPackedOutputAllocations
+} from '../geographic-distribution/spatial-analysis-packed-kernel';
+import {
   createTransientView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
-import {IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {
-  validateGraphOutputsDisjointFromInputs,
+  validateCatchmentViews,
+  validateCatchmentStorage
+} from './catchment-accessibility-validation';
+import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
+import {IS_FINITE_BITS_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {SPATIAL_ANALYSIS_QUOTIENT_WGSL} from '../geographic-distribution/spatial-analysis-quotient';
+import {
   validateGraphViewsBelongToGraph,
   validateSinglePackedView,
   validateRequirement
@@ -194,21 +202,38 @@ export class GPUCatchmentAccessibility implements GPUCommandNodeProducer {
       );
     }
     const weightViews = getWeightViews(props);
-    const outputs = [
-      output.accessibility,
-      output.ratios,
-      output.reachableFacilities,
-      output.validity
-    ];
-    validateGraphOutputsDisjointFromInputs(id, outputs, [
-      props.supply,
-      props.demand,
-      ...weightViews
+    const inputs = {
+      supply: props.supply,
+      demand: props.demand,
+      ...Object.fromEntries(weightViews.map((view, index) => [`weights.${index}`, view]))
+    };
+    const outputViews = {...output};
+    const facilityInputs = {
+      offsets: props.facilityWeights.offsets,
+      neighbors: props.facilityWeights.neighbors,
+      weights: props.facilityWeights.weights
+    };
+    const demandWeights = props.demandWeights ?? props.facilityWeights;
+    const demandInputs = {
+      offsets: demandWeights.offsets,
+      neighbors: demandWeights.neighbors,
+      weights: demandWeights.weights
+    };
+    validateCatchmentViews(id, inputs, outputViews, [
+      {
+        reads: {demand: props.demand, supply: props.supply, ...facilityInputs},
+        writes: {ratios: output.ratios}
+      },
+      {
+        reads: {...demandInputs, ratios: output.ratios},
+        writes: {accessibility: output.accessibility}
+      },
+      {
+        reads: {offsets: demandWeights.offsets, neighbors: demandWeights.neighbors},
+        writes: {reachableFacilities: output.reachableFacilities}
+      },
+      {reads: {demand: props.demand}, writes: {validity: output.validity}}
     ]);
-    const outputBuffers = outputs.filter(view => view !== undefined).map(view => view.buffer);
-    if (new Set(outputBuffers).size !== outputBuffers.length) {
-      throw new Error(`${id} outputs must use separate buffers`);
-    }
   }
 
   /**
@@ -222,6 +247,7 @@ export class GPUCatchmentAccessibility implements GPUCommandNodeProducer {
     const {supply, demand, facilityWeights, output} = props;
     const {accessibility} = output;
     const demandWeights = props.demandWeights ?? facilityWeights;
+    validateSpatialAnalysisPackedOutputAllocations(graph, id, output);
     validateGraphViewsBelongToGraph(id, graph, [
       supply,
       demand,
@@ -231,16 +257,26 @@ export class GPUCatchmentAccessibility implements GPUCommandNodeProducer {
       output.validity,
       ...getWeightViews(props)
     ]);
+    validateGraphChunkBindingRanges(graph, id, {
+      supply,
+      demand,
+      ...output,
+      ...Object.fromEntries(getWeightViews(props).map((view, index) => [`weights.${index}`, view]))
+    });
+    if (!output.ratios)
+      validateCatchmentStorage(graph.device, id, 'ratios scratch', facilityCount * 4);
+    if (props.method === '3sfca')
+      validateCatchmentStorage(graph.device, id, 'selection scratch', demandCount * 4);
     const isThreeStep = props.method === '3sfca';
     const ratios =
       output.ratios ?? createTransientView(graph, `${id}-ratios`, 'float32', facilityCount);
     const selection = isThreeStep
       ? createTransientView(graph, `${id}-selection`, 'float32', demandCount)
       : undefined;
-    const nodes: GPUCommandNode<Parameters>[] = [];
+    const nodes: (GPUCommandNode<Parameters> | GPUCommandNode<Parameters>[])[] = [];
     if (selection) {
       nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
+        getSpatialAnalysisPackedKernelNodes<Parameters>(graph, {
           id: `${id}-selection`,
           operation: OPERATION,
           variant: 'selection',
@@ -266,7 +302,7 @@ export class GPUCatchmentAccessibility implements GPUCommandNodeProducer {
       ? [{name: 'selection', view: selection, type: 'f32' as const, access: 'read' as const}]
       : [];
     nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
+      getSpatialAnalysisPackedKernelNodes<Parameters>(graph, {
         id: `${id}-ratios`,
         operation: OPERATION,
         variant: 'ratios',
@@ -281,7 +317,9 @@ export class GPUCatchmentAccessibility implements GPUCommandNodeProducer {
         ],
         invocationCount: facilityCount,
         declarations: `const PARTNERS: u32 = ${demandCount}u;
-${IS_FINITE_BITS_WGSL}`,
+${IS_FINITE_BITS_WGSL}
+${IS_FINITE_VALUE_WGSL}
+${SPATIAL_ANALYSIS_QUOTIENT_WGSL}`,
         body: `var captured = 0.0;
   for (var slot = offsets[offsetsOffset + index]; slot < offsets[offsetsOffset + index + 1u]; slot++) {
     let partner = neighbors[neighborsOffset + slot];
@@ -295,16 +333,16 @@ ${IS_FINITE_BITS_WGSL}`,
         if (total > 0.0) {
           // Wan, Zou and Sternberg (2012): selection weight G = w / T times the decay w.
           let weight = weights[weightsOffset + slot];
-          captured += partnerDemand * weight * weight / total;
+          captured += getSpatialAnalysisQuotient(partnerDemand * weight * weight,total);
         }`
             : 'captured += partnerDemand * weights[weightsOffset + slot];'
         }
       }
     }
   }
-  ratios[ratiosOffset + index] = select(0.0, supply[supplyOffset + index] / captured, captured > 0.0);`
+  ratios[ratiosOffset + index] = select(0.0, getSpatialAnalysisQuotient(supply[supplyOffset + index],captured), captured > 0.0);`
       }),
-      createWGSLKernelNode<Parameters>(graph, {
+      getSpatialAnalysisPackedKernelNodes<Parameters>(graph, {
         id: `${id}-scores`,
         operation: OPERATION,
         variant: 'scores',
@@ -318,7 +356,9 @@ ${IS_FINITE_BITS_WGSL}`,
         ],
         invocationCount: demandCount,
         declarations: `const PARTNERS: u32 = ${facilityCount}u;
-${IS_FINITE_BITS_WGSL}`,
+${IS_FINITE_BITS_WGSL}
+${IS_FINITE_VALUE_WGSL}
+${SPATIAL_ANALYSIS_QUOTIENT_WGSL}`,
         body: `var score = 0.0;
   for (var slot = offsets[offsetsOffset + index]; slot < offsets[offsetsOffset + index + 1u]; slot++) {
     let partner = neighbors[neighborsOffset + slot];
@@ -334,7 +374,7 @@ ${IS_FINITE_BITS_WGSL}`,
   ${
     isThreeStep
       ? `let total = selection[selectionOffset + index];
-  score = select(0.0, score / total, total > 0.0);`
+  score = select(0.0, getSpatialAnalysisQuotient(score,total), total > 0.0);`
       : ''
   }
   accessibility[accessibilityOffset + index] = score;`
@@ -342,7 +382,7 @@ ${IS_FINITE_BITS_WGSL}`,
     );
     if (output.reachableFacilities) {
       nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
+        getSpatialAnalysisPackedKernelNodes<Parameters>(graph, {
           id: `${id}-reachable`,
           operation: OPERATION,
           variant: 'reachable',
@@ -365,7 +405,7 @@ ${IS_FINITE_BITS_WGSL}`,
     }
     if (output.validity) {
       nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
+        getSpatialAnalysisPackedKernelNodes<Parameters>(graph, {
           id: `${id}-validity`,
           operation: OPERATION,
           variant: 'validity',
@@ -379,7 +419,7 @@ ${IS_FINITE_BITS_WGSL}`,
         })
       );
     }
-    return nodes;
+    return nodes.flat();
   }
 }
 

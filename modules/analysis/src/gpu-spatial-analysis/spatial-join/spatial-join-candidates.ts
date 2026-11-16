@@ -4,7 +4,6 @@
 
 import {
   createTransientView,
-  GPUScan,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -13,10 +12,16 @@ import {
   createWGSLKernelNode,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {createScanCarryNode} from '../../analysis-core/kernels/scan-total';
+import {
+  createSpatialJoinCandidateQueryRange,
+  type SpatialJoinCandidatePage
+} from './spatial-join-candidate-pages';
+import {createGraphChunkGroupKernelNode} from '../../analysis-core/kernels/graph-chunk-groups';
+import {createSaturatedCountScanNodes} from '../../analysis-core/kernels/scan-total';
 import {getCandidateTruncationNodes, SPATIAL_JOIN_WGSL_HELPERS} from './spatial-join-passes';
 import {NODE_OVERLAPS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {GEODESIC_WGSL} from '../geometry-measures/geodesic-wgsl';
+import {SCALED_QUOTIENT_WGSL} from '../../analysis-core/kernels/scaled-quotient-wgsl';
 
 const OPERATION = 'GPUSpatialJoinCandidates';
 
@@ -59,6 +64,7 @@ export function getSpatialJoinCandidateNodes<Parameters>(
     leftMaxima: GraphDataView<'float32x2'>;
     tree: SpatialJoinCandidateTree;
     candidateCapacity: number;
+    page?: SpatialJoinCandidatePage;
     /**
      * Box expansion in coordinate units: a compile-time number, or a one-row float32 view read at
      * every encoding (a negative, NaN or infinite value counts as 0).
@@ -96,8 +102,10 @@ export function getSpatialJoinCandidateNodes<Parameters>(
     throw new Error(`${id} requires at least one left feature`);
   }
   const nodes: GPUCommandNode<Parameters>[] = [];
-  const leftCounts = createTransientView(graph, `${id}-left-counts`, 'uint32', leftCount);
-  const leftOffsets = createTransientView(graph, `${id}-left-offsets`, 'uint32', leftCount);
+  const leftCounts =
+    props.page?.counts ?? createTransientView(graph, `${id}-left-counts`, 'uint32', leftCount);
+  const leftOffsets =
+    props.page?.offsets ?? createTransientView(graph, `${id}-left-offsets`, 'uint32', leftCount);
   const marginView = typeof props.margin === 'number' ? undefined : props.margin;
   const {sphereRadius} = props;
   const probeBindings = (extra: WGSLKernelBinding[]): WGSLKernelBinding[] => [
@@ -127,6 +135,7 @@ ${
   sphereRadius === undefined
     ? ''
     : `${GEODESIC_WGSL}
+${SCALED_QUOTIENT_WGSL}
 const SPHERE_RADIUS: f32 = ${formatSpatialJoinFloat(sphereRadius)};
 const WRAP_SHIFT: vec2f = vec2f(360.0, 0.0);`
 }`;
@@ -139,7 +148,7 @@ const WRAP_SHIFT: vec2f = vec2f(360.0, 0.0);`
     var wrapDown = false;
     var wrapUp = false;
     if (margin > 0.0) {
-      let angle = margin / SPHERE_RADIUS * 1.001;
+      let angle = getScaledQuotient(margin, SPHERE_RADIUS, 1.0, 0) * 1.001;
       let deltaLatitude = angle * GEODESIC_RADIANS_TO_DEGREES + 1.0e-5;
       queryMinimum.y = boxMinimum.y - deltaLatitude;
       queryMaximum.y = boxMaximum.y + deltaLatitude;
@@ -196,60 +205,60 @@ const WRAP_SHIFT: vec2f = vec2f(360.0, 0.0);`
     }
   }
   ${epilogue}`;
-  nodes.push(
-    createWGSLKernelNode<Parameters>(graph, {
-      id: `${id}-count-candidates`,
-      operation: OPERATION,
-      variant: 'count-candidates',
-      bindings: probeBindings([
-        {name: 'leftCounts', view: leftCounts, type: 'u32', access: 'read_write'}
-      ]),
-      invocationCount: leftCount,
-      declarations: probeDeclarations,
-      body: probeBody(
-        'found = found + 1u;',
-        'var found = 0u;',
-        'leftCounts[leftCountsOffset + index] = found;'
-      )
-    })
-  );
-  nodes.push(
-    ...new GPUScan({
-      id: `${id}-scan-candidates`,
-      input: leftCounts,
-      output: leftOffsets,
-      mode: 'exclusive'
-    }).getCommandNodes(graph)
-  );
-  nodes.push(
-    createWGSLKernelNode<Parameters>(graph, {
-      id: `${id}-total-candidates`,
-      operation: OPERATION,
-      variant: 'total-candidates',
-      bindings: [
-        {name: 'leftCounts', view: leftCounts, type: 'u32', access: 'read'},
-        {name: 'leftOffsets', view: leftOffsets, type: 'u32', access: 'read'},
-        {name: 'state', view: state, type: 'u32', access: 'read_write'}
-      ],
-      invocationCount: 1,
-      body: `state[stateOffset] = leftOffsets[leftOffsetsOffset + ${leftCount - 1}u] + leftCounts[leftCountsOffset + ${leftCount - 1}u];`
-    })
-  );
-  // A candidate total of 2^32 or more wraps in the uint32 scan; saturate it (S-8).
-  nodes.push(
-    createScanCarryNode<Parameters>(graph, {
-      id: `${id}-candidates`,
-      operation: OPERATION,
-      counts: leftCounts,
-      offsets: leftOffsets,
-      rowCount: leftCount,
-      total: state
-    })
-  );
+  if (!props.page || props.page.initialize) {
+    nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-count-candidates`,
+        operation: OPERATION,
+        variant: 'count-candidates',
+        bindings: probeBindings([
+          {name: 'leftCounts', view: leftCounts, type: 'u32', access: 'read_write'}
+        ]),
+        invocationCount: leftCount,
+        declarations: probeDeclarations,
+        body: probeBody(
+          'found = found + 1u;',
+          'var found = 0u;',
+          'leftCounts[leftCountsOffset + index] = found;'
+        )
+      })
+    );
+    nodes.push(
+      ...createSaturatedCountScanNodes(graph, {
+        id: `${id}-scan-candidates`,
+        operation: OPERATION,
+        counts: leftCounts,
+        offsets: leftOffsets,
+        rowCount: leftCount,
+        total: state
+      })
+    );
+  }
   // One invocation owns each left row's candidate segment. A bounded max heap retains the
   // smallest source IDs even when capacity cuts through that row; sorting only the first visited
   // leaves would return a different overflow prefix from the unsorted tree. No extra scratch or
   // storage bindings are needed. The ordinary source-ordered traversal keeps its fast path.
+  const pageRankDeclarations =
+    props.page && tree.spatialSort
+      ? `
+fn countRightsThrough(index: u32, maximumRight: u32) -> u32 {
+${probeBody('if (rightRow <= maximumRight) { found++; }', 'var found = 0u;', 'return found;')}
+}
+fn findFirstPageRight(index: u32, rank: u32) -> u32 {
+  // The first retained candidate needs no rank selection, including every single-page query.
+  if (rank == 0u) { return 0u; }
+  var lower = 0u;
+  var upper = RIGHT_COUNT - 1u;
+  // At most 32 bisections of uint32 source IDs; no candidate-prefix allocation is needed.
+  for (var step = 0u; step < 32u; step++) {
+    if (lower >= upper) { break; }
+    let middle = lower + (upper - lower) / 2u;
+    if (countRightsThrough(index, middle) > rank) { upper = middle; }
+    else { lower = middle + 1u; }
+  }
+  return lower;
+}`
+      : '';
   const sortedDeclarations = tree.spatialSort
     ? `
 fn readCandidateRight(start: u32, slot: u32) -> u32 {
@@ -274,20 +283,10 @@ fn siftCandidateDown(start: u32, size: u32, value: u32) {
   writeCandidateRight(start, parent, value);
 }`
     : '';
-  nodes.push(
-    createWGSLKernelNode<Parameters>(graph, {
-      id: `${id}-write-candidates`,
-      operation: OPERATION,
-      variant: 'write-candidates',
-      bindings: probeBindings([
-        {name: 'leftOffsets', view: leftOffsets, type: 'u32', access: 'read'},
-        {name: 'candidatePairs', view: candidatePairs, type: 'u32', access: 'read_write'}
-      ]),
-      invocationCount: leftCount,
-      declarations: probeDeclarations + sortedDeclarations,
-      body: probeBody(
-        tree.spatialSort
-          ? `if (found < slotEnd - slotStart) {
+  const body = probeBody(
+    tree.spatialSort
+      ? `${props.page ? 'if (rightRow >= minimumRight) {' : ''}
+          if (found < slotEnd - slotStart) {
             var child = found;
             found = found + 1u;
             loop {
@@ -301,24 +300,39 @@ fn siftCandidateDown(start: u32, size: u32, value: u32) {
             writeCandidateRight(slotStart, child, rightRow);
           } else if (rightRow < readCandidateRight(slotStart, 0u)) {
             siftCandidateDown(slotStart, found, rightRow);
-          }`
-          : `let slot = slotStart + found;
+          }
+          ${props.page ? '}' : ''}`
+      : `${props.page ? 'if (found >= skipped) {' : ''}
+          let slot = slotStart + found${props.page ? ' - skipped' : ''};
           candidatePairs[candidatePairsOffset + slot * 2u] = index;
           candidatePairs[candidatePairsOffset + slot * 2u + 1u] = rightRow;
-          found = found + 1u;
-          if (slot + 1u >= slotEnd) { break; }`,
-        // Left features with no candidates, or whose slots all fall past the capacity, skip the
-        // second traversal; source-ordered probes stop at their last retained candidate. The last
-        // row's end comes from the capacity, keeping this pass within 8 storage bindings.
-        `var found = 0u;
+          if (slot + 1u >= slotEnd) { break; }
+          ${props.page ? '}' : ''}
+          found = found + 1u;`,
+    // Left features with no candidates, or whose slots all fall past the capacity, skip the
+    // second traversal; source-ordered probes stop at their last retained candidate. The last
+    // row's end comes from the capacity, keeping this pass within 8 storage bindings.
+    props.page
+      ? `var found = 0u;
+  let globalStart = leftOffsets[leftOffsetsOffset + index];
+  var globalEnd = CANDIDATE_CAPACITY;
+  if (index + 1u < ${leftCount}u) { globalEnd = min(leftOffsets[leftOffsetsOffset + index + 1u], CANDIDATE_CAPACITY); }
+  let pageFirst = getChunkParameter(36u);
+  let pageEnd = pageFirst + getChunkParameter(37u);
+  if (globalStart >= pageEnd || globalEnd <= pageFirst) { return; }
+  let skipped = max(globalStart, pageFirst) - globalStart;
+  let slotStart = max(globalStart, pageFirst) - pageFirst;
+  let slotEnd = min(globalEnd, pageEnd) - pageFirst;
+  ${tree.spatialSort ? 'let minimumRight = findFirstPageRight(index, skipped);' : ''}`
+      : `var found = 0u;
   let slotStart = leftOffsets[leftOffsetsOffset + index];
   var slotEnd = CANDIDATE_CAPACITY;
   if (index + 1u < ${leftCount}u) {
     slotEnd = min(leftOffsets[leftOffsetsOffset + index + 1u], CANDIDATE_CAPACITY);
   }
   if (slotStart >= slotEnd) { return; }`,
-        tree.spatialSort
-          ? `var remaining = found;
+    tree.spatialSort
+      ? `var remaining = found;
   loop {
     if (remaining <= 1u) { break; }
     remaining = remaining - 1u;
@@ -330,23 +344,76 @@ fn siftCandidateDown(start: u32, size: u32, value: u32) {
   for (var slot = 0u; slot < found; slot = slot + 1u) {
     candidatePairs[candidatePairsOffset + (slotStart + slot) * 2u] = index;
   }`
-          : ''
-      )
-    })
+      : ''
   );
+  const queryRange =
+    props.page?.metadataRow === undefined
+      ? undefined
+      : createSpatialJoinCandidateQueryRange(graph, {
+          id,
+          offsets: leftOffsets,
+          total: state,
+          firstSlot: props.page.firstSlot,
+          length: props.page.length,
+          candidateCapacity,
+          queryFirst: 0,
+          queryLength: leftCount,
+          queryCount: leftCount,
+          metadataRow: props.page.metadataRow
+        });
+  if (queryRange) nodes.push(queryRange.updateNode);
   nodes.push(
-    ...getCandidateTruncationNodes<Parameters>(graph, {
-      id,
-      operation: OPERATION,
-      counts: leftCounts,
-      offsets: leftOffsets,
-      rowCount: leftCount,
-      candidateCapacity,
-      total: state,
-      candidateTruncated: props.candidateTruncated,
-      candidateOverflow: props.candidateOverflow,
-      bvhOverflow: props.bvhOverflow
-    })
+    (props.page ? createGraphChunkGroupKernelNode<Parameters> : createWGSLKernelNode<Parameters>)(
+      graph,
+      {
+        ...(props.page
+          ? {
+              parameterValues: [
+                props.page.firstSlot,
+                props.page.length,
+                props.page.metadataRow ?? 0
+              ]
+            }
+          : {}),
+        ...(queryRange ? {condition: queryRange.condition} : {}),
+        id: `${id}-write-candidates`,
+        operation: OPERATION,
+        variant: 'write-candidates',
+        bindings: probeBindings([
+          {name: 'leftOffsets', view: leftOffsets, type: 'u32', access: 'read'},
+          {name: 'candidatePairs', view: candidatePairs, type: 'u32', access: 'read_write'}
+        ]),
+        invocationCount: leftCount,
+        declarations:
+          probeDeclarations +
+          sortedDeclarations +
+          pageRankDeclarations +
+          (queryRange
+            ? `
+fn writeCandidateQuery(index: u32) { ${body} }`
+            : ''),
+        body: queryRange
+          ? `let metadata = leftOffsetsOffset + getChunkParameter(38u);
+  if (index >= leftOffsets[metadata + 1u]) { return; }
+  writeCandidateQuery(leftOffsets[metadata] + index);`
+          : body
+      }
+    )
   );
+  if (!props.page || props.page.initialize)
+    nodes.push(
+      ...getCandidateTruncationNodes<Parameters>(graph, {
+        id,
+        operation: OPERATION,
+        counts: leftCounts,
+        offsets: leftOffsets,
+        rowCount: leftCount,
+        candidateCapacity,
+        total: state,
+        candidateTruncated: props.candidateTruncated,
+        candidateOverflow: props.candidateOverflow,
+        bvhOverflow: props.bvhOverflow
+      })
+    );
   return nodes;
 }

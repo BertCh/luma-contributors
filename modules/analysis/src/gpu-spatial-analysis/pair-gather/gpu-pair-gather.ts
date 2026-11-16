@@ -24,6 +24,10 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {validateGPUCompactPairPort} from '../../analysis-core/contracts/index';
 import type {GPUCompactPairPort} from '../../analysis-core/contracts/index';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateGPUStorageBindingByteLength} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateGeographicDistributionViews} from '../geographic-distribution/geographic-distribution-validation';
+import {validateGeometryReadWriteViews} from '../geometry-edit/geometry-storage-validation';
 
 const OPERATION = 'GPUPairGather';
 const NO_FEATURE = 0xffffffff;
@@ -238,6 +242,32 @@ export class GPUPairGather implements GPUCommandNodeProducer {
       validateSinglePackedView(flag, ['uint32'], `${id} overflowSources`);
     }
     validateGraphOutputsDisjointFromInputs(id, this._getOutputViews(), this._getInputViews());
+    validateGeographicDistributionViews(
+      id,
+      {},
+      Object.fromEntries(this._getOutputViews().map((view, index) => [`output.${index}`, view])),
+      [
+        {reads: {}, writes: {leftRows: output.leftRows, rightRows: output.rightRows}},
+        {
+          reads: {},
+          writes: {
+            rowCount: output.rowCount,
+            overflow: output.status.overflow,
+            matchedCount: output.status.matchedCount
+          }
+        }
+      ]
+    );
+    validateGeometryReadWriteViews(
+      id,
+      [output.leftRows],
+      (props.leftColumns ?? []).map(column => column.output)
+    );
+    validateGeometryReadWriteViews(
+      id,
+      [output.rightRows],
+      (props.rightColumns ?? []).map(column => column.output)
+    );
   }
 
   private _getOutputViews(): GraphDataView[] {
@@ -289,6 +319,28 @@ export class GPUPairGather implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id, how} = this;
     const {output} = props;
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(
+        [...this._getInputViews(), ...this._getOutputViews()].map((view, index) => [
+          `binding.${index}`,
+          view
+        ])
+      )
+    );
+    // Visibility creates scalar masks/identity/compaction offsets. Scan summaries shrink from
+    // those planes. No nested allocation exceeds the larger neighbor-slot/query plane.
+    const scratchRows = props.neighbors
+      ? Math.max(props.neighbors.ids.length, props.neighbors.counts.length)
+      : 1;
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'pair visibility scratch',
+      4 * Math.max(scratchRows, 1),
+      'reduce neighbor slots or query count'
+    );
     validateGraphViewsBelongToGraph(id, graph, [
       ...this._getInputViews(),
       ...this._getOutputViews()

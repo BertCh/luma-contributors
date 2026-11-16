@@ -10,7 +10,7 @@ import {
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {createStatisticsKernelNode as createWGSLKernelNode} from './statistics-kernel-node';
 import {createSpatialStatisticsParameterNodes} from '../../analysis-core/kernels/spatial-statistics-parameter-nodes';
 import {
   getGPUSpatialWeightsSummaryParameterValues,

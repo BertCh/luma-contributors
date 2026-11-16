@@ -143,7 +143,8 @@ fn coverSegmentHitsRect(a: vec2f, b: vec2f, lo: vec2f, hi: vec2f) -> bool {
 }
 `;
 
-const POLYGON_WGSL = /* wgsl */ `${COMMON_WGSL}
+/** Shared planar polygon containment and bounds for every cell family. @internal */
+export const POLYGON_WGSL = /* wgsl */ `${COMMON_WGSL}
 ${LON_LAT_RING_WGSL}
 struct CoverFeatureInfo {
   bounds: vec4f,

@@ -86,13 +86,18 @@ it('GPUGeographicallyWeightedRegressionNonstationarityTest validates its inputs 
   expect(nodes.map(node => node.id.replace('gwr-nonstationarity-test-', ''))).toEqual([
     'validate',
     'tile-counts',
-    'tile-offsets',
+    'tile-offsets-level-0-scan',
     'compact',
     'bandwidths',
+    'anchor-tiles',
+    'anchor-minimum-level-0',
+    'anchor-minimum-finalize',
     'anchor',
     'observed-tiles',
-    'permuted-tiles',
-    'merge',
+    'batch-reset',
+    'batch-0-permuted-tiles',
+    'batch-0-merge',
+    'batch-0-advance',
     'finish'
   ]);
   device.destroy();

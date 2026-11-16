@@ -8,13 +8,16 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {
-  validateGPUStorageBindingByteLength,
-  validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validateRequirement,
+  validateGraphOutputsDisjointFromInputs,
   validateSinglePackedView,
   validateViewLength
 } from './gpu-contributor-utils';
+
+import {
+  validateDisjointWritableViews,
+  validateGraphChunkBindingRanges
+} from './graph-chunk-dispatch';
 
 /** Default WebGPU storage binding limit; fitting inputs are deliberately minibatch sized. */
 export const GPU_FITTING_MAXIMUM_BINDING_BYTES = 128 * 1024 * 1024;
@@ -43,22 +46,17 @@ export function validateFittingView(
   );
 }
 
-/** Fitting writable ports use distinct buffers, including persistent optimizer state. @internal */
+/** Co-bound writable ports need disjoint aligned ranges and separate read-only buffers. @internal */
 export function validateFittingWritableViews(
   id: string,
   writable: readonly GraphDataView[],
   inputs: readonly GraphDataView[]
 ): void {
-  validateRequirement(
+  validateDisjointWritableViews(
     id,
-    new Set(writable.map(view => view.buffer)).size === writable.length,
-    'writable views must use separate buffers'
+    Object.fromEntries(writable.map((view, index) => [`output ${index}`, view]))
   );
-  validateRequirement(
-    id,
-    writable.every(output => inputs.every(input => output.buffer !== input.buffer)),
-    'writable views must use separate buffers from read-only inputs'
-  );
+  validateGraphOutputsDisjointFromInputs(id, writable, inputs);
 }
 
 /** Check device limits before allocating any transient view or command node. @internal */
@@ -67,14 +65,9 @@ export function validateFittingGraph<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   views: readonly GraphDataView[]
 ): void {
-  validateGraphViewsBelongToGraph(id, graph, views);
-  for (const [index, view] of views.entries()) {
-    validateGPUStorageBindingByteLength(
-      graph.device,
-      id,
-      `view ${index}`,
-      getViewBindingRange(view).size,
-      'reduce the minibatch or feature count'
-    );
-  }
+  validateGraphChunkBindingRanges(
+    graph,
+    id,
+    Object.fromEntries(views.map((view, index) => [`view ${index}`, view]))
+  );
 }

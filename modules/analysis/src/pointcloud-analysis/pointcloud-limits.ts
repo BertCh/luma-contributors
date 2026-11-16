@@ -34,8 +34,8 @@ export const GPU_POINT_CLOUD_MAXIMUM_GROUND_RADIUS_CELLS = 32;
 
 /**
  * Largest SMRF opening window, in cells. The openings are unrolled into published raster
- * morphology passes of radius at most 8, and their number grows as the square of the window
- * (about 350 passes at 64).
+ * radius-one morphology passes, keeping two public pipelines across all rounds. Their number
+ * grows as the square of the window (2,144 object-opening passes at 64, before low/net filtering).
  */
 export const GPU_POINT_CLOUD_MAXIMUM_SMRF_WINDOW_CELLS = 64;
 

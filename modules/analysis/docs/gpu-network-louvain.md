@@ -50,12 +50,34 @@ is supported; a positive tolerance avoids moves driven by float32 cancellation.
 
 Compile-time: node/slot capacities, directed mode, optional uint32 seed, output
 ports, `maximumLevels` (default 8, 1–32) and `maximumIterations` per level (default
-16, 1–64). Sparse node count is 1–65,535: pair keys must fit a uint32 while reserving
-`0xffffffff`. CSR capacity is 0–1,048,576 slots; no degree or community-size cap.
-The constructor validates the estimated command-node count against 32,768, so not
+16, 1–64). Sparse node count is 1–1,073,741,823 and CSR capacity is
+0–1,073,741,823 slots. These uint32 addressing bounds account for four strength
+words per node and two two-word weak-neighbor records per CSR slot. Pair keys use
+separate source and destination words, sorted stably in lexicographic order;
+there is no degree or community-size cap.
+
+Device `maxStorageBufferBindingSize` further restricts both counts: the largest
+scratch binding needs 16 bytes per node or CSR slot. A 128 MiB binding limit
+therefore permits at most 8,388,608 nodes and 8,388,608 CSR slots independently.
+The binding checks run before any command resources are created. Total GPU memory
+usage includes several such buffers, so fitting one binding does not guarantee
+that the complete graph fits device memory.
+
+The constructor validates the estimated command-node count against 65,536, so not
 every combination of level/round maxima is accepted. The conservative bound is
-`256 + maximumLevels * (224 * maximumIterations + 112) + 1`. Device storage-binding
-limits are checked before creating nodes. Scratch is linear in vertices and edges.
+`352 + maximumLevels * (320 * maximumIterations + 208) + 1`, or 42,977 for the
+default 8 levels and 16 rounds. The bound includes the second stable radix pass
+needed when both vertex IDs no longer fit one uint32 sort key. Scratch is linear
+in vertices and edges for a fixed level/round budget. Recorded command graphs at the
+uint32 bounds contain 35,283 nodes for the default schedule and 53,483 for 16 levels
+and 12 rounds (estimated at 65,121). These metadata counts justify the 65,536 budget;
+they measure graph size, not GPU execution time.
+
+Round/level controls use GPU counters and the bound lengths of runtime budget views.
+The trace initialization dispatch has a fixed 2,049-row upper bound and checks the
+bound trace length. Increasing the schedule therefore reuses the same shader and
+pipeline variants. Caller binding checks include the prefix from the required
+256-byte-aligned binding offset, and run before any resource declaration.
 
 ## Algorithm and upstream evaluation
 
@@ -103,5 +125,10 @@ scores, independently cross-checked with NumPy's modularity matrix. Fixtures cov
 isolates, and a graph that needs coarsened moves. Node specs also check exact ties,
 round/level exhaustion, the largest supported shape, command estimates and generated
 kernel audits. The headless spec compares every CPU/GPU output and the NetworkX
-quality, plus zero/invalid/empty-slot cases. GPU execution must be verified by the
+quality, plus zero/invalid/empty-slot cases. Additional headless cases compare every
+output bit against the retained packed-key reference below the old limits, using
+mixed-magnitude duplicate arcs with more than 256 contributions per pair and gains
+near tolerance boundaries. They cover the 65,535/65,536/65,537-node sort transition
+with duplicates, self-loops and both graph directions, and a 131,072-node weighted
+planted graph whose partition improves after quotient aggregation. GPU execution must be verified by the
 landing environment; Chromium is unavailable in the implementation sandbox.

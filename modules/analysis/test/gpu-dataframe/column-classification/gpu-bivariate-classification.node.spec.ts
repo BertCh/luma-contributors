@@ -149,7 +149,7 @@ it('GPUBivariateClassification rejects aliased buffers and foreign graphs', () =
         ...props,
         output: {classIds: props.output.colors, colors: props.output.colors}
       })
-  ).toThrow(/share buffers/);
+  ).toThrow(/aligned binding byte ranges must not overlap/);
   const contributor = new GPUBivariateClassification(createProps(graph));
   expect(() => contributor.getCommandNodes(new GPUCommandGraph(device))).toThrow(/target graph/);
   device.destroy();

@@ -17,6 +17,7 @@ import {
   GPURasterWhittakerSmoother,
   type GPURasterIrregularDateAxis
 } from '@luma-contributors/analysis/raster-analysis';
+import {MAXIMUM_STANDARDIZED_INDEX_CHUNK_SLICE_COUNT} from '../../../src/raster-analysis/raster-time-series/gpu-raster-standardized-index';
 import type {GPUTemporalContext} from '../../../src/analysis-core/contracts/index';
 import type {KernelAuditCase, KernelAuditContext} from './kernel-audit-context';
 
@@ -142,24 +143,25 @@ function standardizedIndex(
   context: KernelAuditContext,
   distribution: 'gamma' | 'fisk',
   zeroInflated: boolean,
-  chunkSliceCount = 256
+  chunkSliceCount = 256,
+  cellCount = CELLS
 ): void {
   const {graph, view} = context;
   const slotCount = 12;
   graph.add(
     new GPURasterStandardizedIndex({
-      cellCount: CELLS,
+      cellCount,
       chunkSliceCount,
       slotCount,
       distribution,
       zeroInflated,
-      values: view('float32', CELLS * chunkSliceCount),
+      values: view('float32', cellCount * chunkSliceCount),
       slotIndices: view('uint32', chunkSliceCount),
-      fit: view('float32', CELLS * slotCount * 3),
+      fit: view('float32', cellCount * slotCount * 3),
       parameters: view('float32', 2),
       output: {
-        index: view('float32', CELLS * chunkSliceCount),
-        status: view('uint32', CELLS * chunkSliceCount)
+        index: view('float32', cellCount * chunkSliceCount),
+        status: view('uint32', cellCount * chunkSliceCount)
       }
     })
   );
@@ -320,7 +322,19 @@ export const RTS_TIME_SERIES_AUDIT_CASES: KernelAuditCase[] = [
   {
     exportName: 'GPURasterStandardizedIndex',
     name: 'rts06-index-chunk-above-maximum',
-    build: context => standardizedIndex(context, 'gamma', true, 257)
+    build: context =>
+      standardizedIndex(context, 'gamma', true, MAXIMUM_STANDARDIZED_INDEX_CHUNK_SLICE_COUNT + 1, 1)
+  },
+  {
+    exportName: 'GPURasterStandardizedIndex',
+    name: 'rts06-index-chunk-at-maximum',
+    build: context =>
+      standardizedIndex(context, 'gamma', true, MAXIMUM_STANDARDIZED_INDEX_CHUNK_SLICE_COUNT, 1)
+  },
+  {
+    exportName: 'GPURasterStandardizedIndex',
+    name: 'rts06-index-chunk-above-former-maximum',
+    build: context => standardizedIndex(context, 'fisk', false, 257)
   },
   {
     exportName: 'GPURasterClimateRunAccumulator',

@@ -4,29 +4,34 @@
 
 import type {
   GraphDataView,
+  GraphVectorView,
   GPUCommandGraph,
   GPUCommandNode,
   GPUCommandNodeProducer
 } from '@luma.gl/graph/gpu-core';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  createRasterTimeSeriesKernelNode,
+  planRasterTimeSeriesChunks,
+  validateRasterTimeSeriesBindings,
+  validateRasterTimeSeriesViews,
+  type RasterTimeSeriesField,
+  type RasterTimeSeriesScalarView
+} from './raster-time-series-chunks';
 import {
   validateCapacity,
+  validateCommandNodeBudget,
   validateFiniteNumber,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   RASTER_FINITE_WGSL,
   getRasterLeastSquaresWGSL,
-  rasterBinding,
-  validateRasterGraph,
-  validateRasterViews,
-  type RasterScalarView
+  rasterBinding
 } from '../remote-sensing/raster-kernel-utils';
 import {
   getGPURasterDateAxisBinding,
   getGPURasterDateAxisDeclarations,
   resolveGPURasterIrregularDateAxis,
-  validateGPURasterDateAxisGraph,
   type GPURasterIrregularDateAxis
 } from './raster-irregular-date-axis';
 import {getRasterHarmonicTrendDesignWGSL} from './raster-harmonic-trend-design-wgsl';
@@ -68,14 +73,16 @@ export function getGPURasterBFASTMonitorParameterValues(
 }
 
 /** Properties of {@link GPURasterBFASTMonitor}. */
-export type GPURasterBFASTMonitorProps = {
+export type GPURasterBFASTMonitorProps<
+  Rows extends GraphDataView<'float32'> | GraphVectorView<'float32'> = GraphDataView<'float32'>
+> = {
   id?: string;
   cellCount: number;
   sliceCount: number;
   /** Cell-major `cell * sliceCount + slice`; nonfinite samples are missing. */
-  values: GraphDataView<'float32'>;
+  values: Rows;
   /** Per-observation QA; zero rejects the sample. */
-  mask?: GraphDataView<'uint32'>;
+  mask?: RasterTimeSeriesField<'uint32', Rows>;
   /** Float32, see {@link getGPURasterBFASTMonitorParameterValues}. */
   parameters: GraphDataView<'float32'>;
   /** Acquisition dates; the model is defined on real elapsed years. */
@@ -88,13 +95,13 @@ export type GPURasterBFASTMonitorProps = {
   includeTrend?: boolean;
   output: {
     /** Per cell: intercept, slope per year when `includeTrend`, then cosine and sine per harmonic. NaN unless status is 0. */
-    coefficients: GraphDataView<'float32'>;
+    coefficients: RasterTimeSeriesField<'float32', Rows>;
     /** Two floats per cell: `[magnitude, maximumBoundaryRatio]`. `magnitude` is the median residual over the monitoring observations (bfastmonitor's `magnitude`); the ratio is the largest `|MOSUM| / boundary`. Both NaN unless status is 0. */
-    scores: GraphDataView<'float32'>;
+    scores: RasterTimeSeriesField<'float32', Rows>;
     /** Three words per cell: `[breakSlice, status, historyObservationCount]`. `breakSlice` is the first monitoring slice whose MOSUM crossed the boundary, or {@link GPU_RASTER_BFAST_MONITOR_NO_BREAK}. `status`: 0 monitored, 1 too few valid history observations, 2 rank failure or zero residual scale. */
-    cellSummary: GraphDataView<'uint32'>;
+    cellSummary: RasterTimeSeriesField<'uint32', Rows>;
     /** Optional `cell * (sliceCount - historySliceCount) + monitoringSlice`: MOSUM per monitoring slice, NaN for missing observations. */
-    process?: GraphDataView<'float32'>;
+    process?: RasterTimeSeriesField<'float32', Rows>;
   };
 };
 
@@ -111,17 +118,25 @@ export type GPURasterBFASTMonitorProps = {
  * Stable-history selection (ROC and Bai-Perron) and critical-value tables are not included: the
  * history is fixed and `lambda` is supplied.
  *
+ * Cell-major fields accept packed views or matching vector chunks of complete cell records.
+ * Shared date, model and parameter tables remain packed.
+ *
  * Per-frame: `parameters`. Compile-time: `cellCount`, `sliceCount`, `historySliceCount`,
  * `harmonicCount`, `includeTrend`, and which optional views exist.
  */
-export class GPURasterBFASTMonitor implements GPUCommandNodeProducer {
+export class GPURasterBFASTMonitor<
+  Rows extends GraphDataView<'float32'> | GraphVectorView<'float32'> = GraphDataView<'float32'>
+> implements GPUCommandNodeProducer
+{
   readonly id: string;
+  readonly estimatedCommandNodeCount: number;
+  private readonly chunkProps: readonly GPURasterBFASTMonitorProps<Rows>[];
   readonly harmonicCount: number;
   readonly includeTrend: boolean;
   readonly columnCount: number;
   private readonly ticksPerYear: number;
 
-  constructor(readonly props: GPURasterBFASTMonitorProps) {
+  constructor(readonly props: GPURasterBFASTMonitorProps<Rows>) {
     const id = props.id ?? 'raster-bfast-monitor';
     this.id = id;
     this.harmonicCount = props.harmonicCount ?? 3;
@@ -174,15 +189,30 @@ export class GPURasterBFASTMonitor implements GPUCommandNodeProducer {
       `parameters must hold ${GPU_RASTER_BFAST_MONITOR_PARAMETER_LENGTH} entries`
     );
     this.ticksPerYear = resolveGPURasterIrregularDateAxis(id, props.dateAxis, slices);
-    validateRasterViews(id, this.getInputs(), this.getOutputs());
+    this.chunkProps = planRasterTimeSeriesChunks(id, props, {
+      values: props.sliceCount,
+      mask: props.sliceCount,
+      'output.coefficients': this.columnCount,
+      'output.scores': 2,
+      'output.cellSummary': 3,
+      'output.process': props.sliceCount - props.historySliceCount
+    });
+    this.estimatedCommandNodeCount = this.chunkProps.length * 1;
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
+    validateRasterTimeSeriesViews(id, this.getInputs(), this.getOutputs());
   }
 
-  private getInputs(): RasterScalarView[] {
+  private getInputs(): RasterTimeSeriesScalarView[] {
     const {values, mask, parameters} = this.props;
-    return [values, parameters, ...(mask ? [mask] : [])];
+    return [
+      values,
+      parameters,
+      ...(mask ? [mask] : []),
+      ...(this.props.dateAxis ? [this.props.dateAxis.acquisitionTimes] : [])
+    ];
   }
 
-  private getOutputs(): RasterScalarView[] {
+  private getOutputs(): RasterTimeSeriesScalarView[] {
     const {coefficients, scores, cellSummary, process} = this.props.output;
     return [coefficients, scores, cellSummary, ...(process ? [process] : [])];
   }
@@ -190,7 +220,21 @@ export class GPURasterBFASTMonitor implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {props, id, columnCount: columns, includeTrend} = this;
+    validateRasterTimeSeriesBindings(graph, this.id, [...this.getInputs(), ...this.getOutputs()]);
+    return this.chunkProps.flatMap((props, chunkIndex) =>
+      this.getChunkCommandNodes(graph, {
+        ...props,
+        id: `${this.id}-chunk-${chunkIndex}`
+      } as unknown as GPURasterBFASTMonitorProps)
+    );
+  }
+
+  private getChunkCommandNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>,
+    props: GPURasterBFASTMonitorProps
+  ): readonly GPUCommandNode<Parameters>[] {
+    const {columnCount: columns, includeTrend} = this;
+    const id = props.id!;
     const {
       sliceCount: slices,
       historySliceCount: history,
@@ -199,11 +243,9 @@ export class GPURasterBFASTMonitor implements GPUCommandNodeProducer {
       parameters,
       output
     } = props;
-    validateRasterGraph(id, graph, this.getInputs(), this.getOutputs());
-    validateGPURasterDateAxisGraph(id, graph, props.dateAxis);
     const monitoringSlices = slices - history;
     return [
-      createWGSLKernelNode<Parameters>(graph, {
+      createRasterTimeSeriesKernelNode<Parameters>(graph, {
         id,
         operation: 'GPURasterBFASTMonitor',
         invocationCount: props.cellCount,

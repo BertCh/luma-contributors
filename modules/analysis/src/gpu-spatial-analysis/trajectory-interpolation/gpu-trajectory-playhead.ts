@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  validateTrajectoryBindings,
+  validateTrajectoryWritableDispatches,
+  validateTrajectoryOutputRanges
+} from '../trajectory-analysis/trajectory-binding-validation';
 import type {Device} from '@luma.gl/core';
 import {
   resolveGPUSpatialContext,
@@ -272,9 +277,28 @@ export class GPUTrajectoryPlayhead implements GPUCommandNodeProducer {
     ) {
       throw new Error(`${id} requires at least one output`);
     }
+    validateTrajectoryOutputRanges(this.id, this.props.output);
+    validateTrajectoryWritableDispatches(this.id, [
+      {
+        currentPositions: output.currentPositions,
+        currentElevations: output.currentElevations,
+        headings: output.headings,
+        speeds: output.speeds
+      },
+      {
+        trackStatus: output.trackStatus,
+        segmentRows: output.segmentRows,
+        segmentFractions: output.segmentFractions
+      },
+      {
+        ids: output.activeTracks?.ids,
+        ...output.activeTracks?.status,
+        drawInstanceCount: output.drawInstanceCount
+      }
+    ]);
     validateGraphOutputsDisjointFromInputs(id, this.getOutputViews(), [
       props.positions,
-      props.elevations,
+      output.currentElevations ? props.elevations : undefined,
       props.timestamps,
       props.trackOffsets,
       props.parameters
@@ -303,6 +327,10 @@ export class GPUTrajectoryPlayhead implements GPUCommandNodeProducer {
       trackCount,
       getGPUTrajectoryPlayheadMaximumTrackCount(graph.device)
     );
+    validateTrajectoryBindings(graph, this.id, {
+      ...props,
+      elevations: output.currentElevations ? props.elevations : undefined
+    });
     const bracket = createTransientView(
       graph,
       `${id}-bracket`,

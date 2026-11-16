@@ -24,6 +24,8 @@ import {
   validateRasterGraph
 } from './raster-kernel-utils';
 
+import {validateRasterStorageBindings} from './raster-binding-validation';
+
 /** Source cells each destination cell may overlap: one invocation loops over them and the prepared-weight stride stores them, so the loop and the storage stay small. */
 export const MAXIMUM_CONSERVATIVE_CANDIDATE_CELLS = 256;
 
@@ -342,10 +344,18 @@ export class GPURasterConservativeRemapping implements GPUCommandNodeProducer {
       'destination cells times candidate stride',
       destinationCount * this.candidateWidth * this.candidateHeight
     );
+    const inputs = [props.values, ...(props.mask ? [props.mask] : [])];
+    const prepared = props.preparedWeights ? Object.values(props.preparedWeights) : [];
+    const outputs = Object.values(props.output);
+    const reuse = props.weightMode === 'reuse';
     validateRasterViews(
       this.id,
-      [props.values, ...(props.mask ? [props.mask] : [])],
-      Object.values(props.output)
+      [...inputs, ...(reuse ? prepared : [])],
+      [...outputs, ...(!reuse ? prepared : [])],
+      [
+        ...(!reuse && prepared.length ? [{inputs: [], outputs: prepared}] : []),
+        {inputs: [...inputs, ...prepared], outputs}
+      ]
     );
   }
   getCommandNodes<Parameters>(
@@ -360,11 +370,16 @@ export class GPURasterConservativeRemapping implements GPUCommandNodeProducer {
       [...inputs, ...(props.weightMode === 'reuse' ? preparedViews : [])],
       [...Object.values(props.output), ...(props.weightMode !== 'reuse' ? preparedViews : [])]
     );
-    validateRasterViews(id, inputs, [...Object.values(props.output), ...preparedViews]);
     const source = props.source;
     const destination = props.destination;
     const count = destination.width * destination.height;
     const stride = this.candidateWidth * this.candidateHeight;
+    validateRasterStorageBindings(
+      graph,
+      id,
+      [],
+      props.preparedWeights ? {} : {'prepared indices and areas scratch': count * stride * 4}
+    );
     const indices =
       props.preparedWeights?.indices ??
       createTransientView(graph, `${id}-indices`, 'uint32', count * stride);
@@ -375,13 +390,19 @@ export class GPURasterConservativeRemapping implements GPUCommandNodeProducer {
     // float32 coordinates: f32(index) * f32(spacing) puts coinciding edges one float32 step
     // apart at large indices, which gave a destination cell a sliver of a cell it only touches.
     const [planX, planY] = this.axisPlans;
-    const prepare = createWGSLKernelNode<Parameters>(graph, {
-      id: `${id}-prepare`,
-      operation: 'GPURasterConservativeRemapping',
-      invocationCount: count,
-      bindings: [rasterBinding('indices', indices, true), rasterBinding('weights', weights, true)],
-      declarations: CONSERVATIVE_OVERLAP_WGSL,
-      body: `let destinationColumn = index % ${destination.width}u;
+    const prepare =
+      props.weightMode === 'reuse'
+        ? undefined
+        : createWGSLKernelNode<Parameters>(graph, {
+            id: `${id}-prepare`,
+            operation: 'GPURasterConservativeRemapping',
+            invocationCount: count,
+            bindings: [
+              rasterBinding('indices', indices, true),
+              rasterBinding('weights', weights, true)
+            ],
+            declarations: CONSERVATIVE_OVERLAP_WGSL,
+            body: `let destinationColumn = index % ${destination.width}u;
 let destinationRow = index / ${destination.width}u;
 ${getConservativeAxisEdgesWGSL('x', 'destinationColumn', planX)}
 ${getConservativeAxisEdgesWGSL('y', 'destinationRow', planY)}
@@ -397,7 +418,7 @@ for (var candidate = 0u; candidate < ${stride}u; candidate++) {
   indices[indicesOffset + slot] = u32(coordinate.y) * ${source.width}u + u32(coordinate.x);
   weights[weightsOffset + slot] = (overlapX * overlapY) * ${getWGSLFloatLiteral(source.spacing[0] * source.spacing[1])};
 }`
-    });
+          });
     const apply = createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-apply`,
       operation: 'GPURasterConservativeRemapping',
@@ -423,11 +444,11 @@ for (var candidate = 0u; candidate < ${stride}u; candidate++) {
 coveredArea[coveredAreaOffset + index] = support;
 var value = missing(); var code = 1u;
 if (support > 0.0) {
-  value = numerator / ${props.normalization === 'covered-area' ? 'support' : String(props.normalization === 'extensive' ? source.spacing[0] * source.spacing[1] : destination.spacing[0] * destination.spacing[1])};
+  value = numerator / ${props.normalization === 'covered-area' ? 'support' : getWGSLFloatLiteral(props.normalization === 'extensive' ? source.spacing[0] * source.spacing[1] : destination.spacing[0] * destination.spacing[1])};
   code = select(2u, 0u, finite(value));
 }
 result[resultOffset + index] = value; status[statusOffset + index] = code;`
     });
-    return props.weightMode === 'reuse' ? [apply] : [prepare, apply];
+    return prepare ? [prepare, apply] : [apply];
   }
 }

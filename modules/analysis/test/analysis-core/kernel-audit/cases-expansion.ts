@@ -763,36 +763,39 @@ for (const grouped of [false, true])
         );
     }
   );
+// The reference route reserves the final uint32 increment for convergence verification.
+// A small round budget also audits the auto-selected parallel route on the same geometry.
 for (const useZOrderHash of [false, true])
   for (const largePolygonMethod of ['monotone', 'none'] as const)
-    add(
-      'GPUConstrainedDelaunayTriangulation',
-      `4096vertices,holes and allmeshmetadata,hash${useZOrderHash},${largePolygonMethod}`,
-      context => {
-        context.graph.add(
-          new spatial.GPUConstrainedDelaunayTriangulation({
-            positions: context.view('float32x2', 4096),
-            featureOffsets: context.view('uint32', 5),
-            polygonOffsets: context.view('uint32', 9),
-            ringOffsets: context.view('uint32', 17),
-            maximumFlips: 0xffffffff,
-            maximumWork: 0xffffffff,
-            useZOrderHash,
-            largePolygonMethod,
-            output: {
-              indices: context.view(
-                'uint32',
-                spatial.getPolygonTriangulationIndexCount(4096, 16, 8)
-              ),
-              valid: context.view('uint32', 8),
-              triangleOffsets: context.view('uint32', 9),
-              triangleCount: context.view('uint32', 8),
-              status: {converged: context.view('uint32', 8)}
-            }
-          })
-        );
-      }
-    );
+    for (const maximumFlips of [0xfffffffe, 3])
+      add(
+        'GPUConstrainedDelaunayTriangulation',
+        `4096vertices,holes and allmeshmetadata,hash${useZOrderHash},${largePolygonMethod}${maximumFlips === 3 ? ',parallel-rounds' : ''}`,
+        context => {
+          context.graph.add(
+            new spatial.GPUConstrainedDelaunayTriangulation({
+              positions: context.view('float32x2', 4096),
+              featureOffsets: context.view('uint32', 5),
+              polygonOffsets: context.view('uint32', 9),
+              ringOffsets: context.view('uint32', 17),
+              maximumFlips,
+              maximumWork: 0xffffffff,
+              useZOrderHash,
+              largePolygonMethod,
+              output: {
+                indices: context.view(
+                  'uint32',
+                  spatial.getPolygonTriangulationIndexCount(4096, 16, 8)
+                ),
+                valid: context.view('uint32', 8),
+                triangleOffsets: context.view('uint32', 9),
+                triangleCount: context.view('uint32', 8),
+                status: {converged: context.view('uint32', 8)}
+              }
+            })
+          );
+        }
+      );
 
 for (const edgesOnly of [false, true])
   add(

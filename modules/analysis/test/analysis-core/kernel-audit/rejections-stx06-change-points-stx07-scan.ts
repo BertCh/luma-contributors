@@ -14,7 +14,7 @@ export const STX06_CHANGE_POINTS_STX07_SCAN_REJECTIONS: readonly KernelAuditReje
     kind: 'binding',
     limit: BINDING_BYTES,
     rejects:
-      /^Error: location-change-points values needs 134219776 bytes in one binding \(limit 134217728\); reduce cellCount \* sliceCount$/
+      /^Error: location-change-points values chunk 0 needs 134219776 bytes in one binding \(limit 134217728\); reduce the chunk row count or output capacity$/
   },
   {
     exportName: 'GPUPettittTest',
@@ -22,7 +22,7 @@ export const STX06_CHANGE_POINTS_STX07_SCAN_REJECTIONS: readonly KernelAuditReje
     kind: 'binding',
     limit: BINDING_BYTES,
     rejects:
-      /^Error: pettitt-test values needs 134219776 bytes in one binding \(limit 134217728\); reduce cellCount \* sliceCount$/
+      /^Error: pettitt-test values chunk 0 needs 134219776 bytes in one binding \(limit 134217728\); reduce the chunk row count or output capacity$/
   },
   {
     exportName: 'GPUExpectationBasedSpaceTimeScan',

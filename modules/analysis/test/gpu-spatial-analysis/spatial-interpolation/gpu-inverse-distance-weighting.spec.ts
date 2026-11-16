@@ -14,9 +14,9 @@ import {
 import {
   getGPUInverseDistanceWeightingParameterValues,
   GPU_INVERSE_DISTANCE_WEIGHTING_PARAMETER_LENGTH,
-  GPUInverseDistanceWeighting,
   type GPUInverseDistanceWeightingSettings
-} from '../../../src/gpu-spatial-analysis/spatial-interpolation/index';
+} from '../../../src/gpu-spatial-analysis/spatial-interpolation/spatial-interpolation-parameters';
+import {GPUInverseDistanceWeighting} from '../../../src/gpu-spatial-analysis/spatial-interpolation/gpu-inverse-distance-weighting';
 import {GPUTerrainContours} from '../../../src/gpu-terrain/terrain-analysis/index';
 import {
   createInputBuffer,
@@ -47,6 +47,7 @@ type Scene = {
   indexGridSize: [number, number];
   indexBounds: [number, number, number, number];
   maximumNeighborCount: number;
+  invocationTileSize?: number;
   spatialContext?: GPUSpatialContext;
 };
 
@@ -131,6 +132,7 @@ function createFixture(device: Device, scene: Scene): Fixture {
       indexGridSize: scene.indexGridSize,
       indexBounds: scene.indexBounds,
       maximumNeighborCount: scene.maximumNeighborCount,
+      invocationTileSize: scene.invocationTileSize,
       output: {
         values: importGraphBuffer(graph, 'values-out', valuesOut, 'float32', cellCount),
         counts: importGraphBuffer(graph, 'counts-out', countsOut, 'uint32', cellCount)
@@ -573,5 +575,178 @@ it('GPUInverseDistanceWeighting great-circle mode matches haversine weights at 4
       }
     }
     fixture.destroy();
+  }
+});
+
+it('IDW storage top-k matches the CPU oracle at 65, 256 and 1024, including equal-distance ties', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const cardinal = [
+    [1.5, 0.5],
+    [-0.5, 0.5],
+    [0.5, 1.5],
+    [0.5, -0.5]
+  ];
+  const sampleCount = 1100;
+  const scene: Scene = {
+    positions: Float32Array.from(
+      Array.from({length: sampleCount}, (_, row) => cardinal[row % 4]).flat()
+    ),
+    values: Float32Array.from({length: sampleCount}, (_, row) => row),
+    width: 1,
+    height: 1,
+    indexGridSize: [4, 4],
+    indexBounds: [-1, -1, 2, 2],
+    maximumNeighborCount: 1024
+  };
+  const storage = createFixture(device, scene);
+  const privateList = createFixture(device, {...scene, maximumNeighborCount: 64});
+  try {
+    for (const neighborCount of [1, 16, 64, 65, 256, 1024, 0]) {
+      const settings = {extent: [0, 0, 1, 1] as const, searchRadius: 1, power: 2, neighborCount};
+      const actual = await storage.run(settings);
+      expectParity(actual, scene, settings);
+      const kept = neighborCount || sampleCount;
+      // Every distance is exactly one; (distance, row) keeps the first k values.
+      expect(actual.counts[0]).toBe(kept);
+      expect(actual.values[0]).toBeCloseTo((kept - 1) / 2, 3);
+      if (neighborCount > 0 && neighborCount <= 64) {
+        const previous = await privateList.run(settings);
+        expect(new Uint32Array(actual.values.buffer)).toEqual(
+          new Uint32Array(previous.values.buffer)
+        );
+        expect(actual.counts).toEqual(previous.counts);
+      }
+    }
+  } finally {
+    storage.destroy();
+    privateList.destroy();
+  }
+});
+
+it('IDW storage top-k reuses scratch across nondivisible gather tiles', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const scene = {
+    ...createRandomScene(18, 1100),
+    width: 5,
+    height: 1,
+    maximumNeighborCount: 1024,
+    invocationTileSize: 2
+  };
+  const fixture = createFixture(device, scene);
+  try {
+    for (const neighborCount of [1, 64, 65, 256, 1024, 0]) {
+      const settings = {extent: [0, 0, 100, 60] as const, searchRadius: Infinity, neighborCount};
+      expectParity(await fixture.run(settings), scene, settings);
+    }
+  } finally {
+    fixture.destroy();
+  }
+});
+
+it.each([
+  false,
+  true
+])('IDW storage batches preserve masked, missing and exact-hit semantics (greatCircle=%s)', async greatCircle => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const extent = [7.75, 46.875, 7.90625, 46.90625] as const;
+  const positions = Float32Array.from(
+    Array.from({length: 130}, (_, row) => [
+      7.75 + (row % 13) / 128,
+      46.875 + Math.floor(row / 13) / 1024
+    ]).flat()
+  );
+  positions.set([7.765625, 46.890625, 7.765625, 46.890625]);
+  positions[10] = NaN;
+  const values = Float32Array.from({length: 130}, (_, row) => 7 + (row % 7));
+  values[0] = 11;
+  values[1] = 99;
+  values[3] = NaN;
+  const mask = new Uint32Array(130).fill(1);
+  mask[4] = 0;
+  const scene: Scene = {
+    positions,
+    values,
+    mask,
+    width: 5,
+    height: 1,
+    indexGridSize: [8, 8],
+    indexBounds: [7.5, 46.5, 8, 47],
+    maximumNeighborCount: 65,
+    spatialContext: greatCircle
+      ? {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}
+      : undefined
+  };
+  const tiled = createFixture(device, {...scene, invocationTileSize: 2});
+  const untiled = createFixture(device, scene);
+  try {
+    for (const searchRadius of [greatCircle ? 1500 : 0.02, Infinity]) {
+      const settings = {extent, searchRadius, neighborCount: 65, power: 2};
+      const actual = await tiled.run(settings);
+      const other = await untiled.run(settings);
+      const expectedValues: number[] = [];
+      const expectedCounts: number[] = [];
+      for (let column = 0; column < 5; column++) {
+        const center = [
+          extent[0] + ((column + 0.5) * (extent[2] - extent[0])) / 5,
+          (extent[1] + extent[3]) / 2
+        ];
+        const candidates = Array.from({length: values.length}, (_, row) => {
+          const deltaLongitude = ((positions[2 * row] - center[0]) * Math.PI) / 180;
+          const deltaLatitude = ((positions[2 * row + 1] - center[1]) * Math.PI) / 180;
+          const haversine =
+            Math.sin(deltaLatitude / 2) ** 2 +
+            Math.cos((center[1] * Math.PI) / 180) *
+              Math.cos((positions[2 * row + 1] * Math.PI) / 180) *
+              Math.sin(deltaLongitude / 2) ** 2;
+          const distance = greatCircle
+            ? 2 * 6371008.8 * Math.asin(Math.sqrt(Math.min(haversine, 1)))
+            : Math.hypot(positions[2 * row] - center[0], positions[2 * row + 1] - center[1]);
+          return {row, distance};
+        })
+          .filter(
+            entry =>
+              mask[entry.row] !== 0 &&
+              Number.isFinite(values[entry.row]) &&
+              Number.isFinite(entry.distance) &&
+              entry.distance <= searchRadius
+          )
+          .sort((first, second) => first.distance - second.distance || first.row - second.row)
+          .slice(0, 65);
+        expectedCounts.push(candidates.length);
+        if (!candidates.length) {
+          expectedValues.push(NaN);
+          continue;
+        }
+        if (candidates[0].distance === 0) {
+          expectedValues.push(values[candidates[0].row]);
+          continue;
+        }
+        const weightSum = candidates.reduce((sum, entry) => sum + 1 / entry.distance ** 2, 0);
+        expectedValues.push(
+          candidates.reduce((sum, entry) => sum + values[entry.row] / entry.distance ** 2, 0) /
+            weightSum
+        );
+      }
+      expect(Array.from(actual.counts)).toEqual(expectedCounts);
+      expect(Array.from(other.counts)).toEqual(expectedCounts);
+      for (let cell = 0; cell < 5; cell++) {
+        for (const result of [actual, other]) {
+          if (Number.isNaN(expectedValues[cell]))
+            expect(Number.isNaN(result.values[cell])).toBe(true);
+          else
+            expect(Math.abs(result.values[cell] - expectedValues[cell])).toBeLessThanOrEqual(
+              greatCircle ? 0.2 : 0.002
+            );
+        }
+      }
+      expect(actual.values[0]).toBe(11);
+      expect(new Uint32Array(actual.values.buffer)).toEqual(new Uint32Array(other.values.buffer));
+    }
+  } finally {
+    tiled.destroy();
+    untiled.destroy();
   }
 });

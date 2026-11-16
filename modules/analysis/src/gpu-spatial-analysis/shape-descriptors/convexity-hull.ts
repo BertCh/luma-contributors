@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {Device} from '@luma.gl/core';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -9,7 +10,10 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {GPUGroupConvexHull} from '../group-geometry/gpu-group-convex-hull';
+import {
+  GPUGroupConvexHull,
+  validateGroupConvexHullScratch
+} from '../group-geometry/gpu-group-convex-hull';
 import {
   getPositionDeclarations,
   getRingBindings,
@@ -23,6 +27,22 @@ const HULL_LIMIT = 2 ** 24 - 1;
 /** Whether the sort-based hull can serve this input size. @internal */
 export function canUseMonotoneChainConvexity(rowCount: number, featureCount: number): boolean {
   return rowCount < HULL_LIMIT && featureCount < HULL_LIMIT;
+}
+
+/**
+ * Preflights the wrapper's planes and the default GPUGroupConvexHull scratch without declaring
+ * views. Group hull's chain uses rows + groups words, its default prefilter uses 2 * rows + 2,
+ * and its default extreme filter (up to 65,536 groups) uses 16 words per group. The remaining
+ * row/group planes and published sort/reduction scratch are smaller than these or positions.
+ * Keep this synchronized with the default options passed below. @internal
+ */
+export function validateMonotoneChainConvexityScratch(
+  device: Device,
+  id: string,
+  rowCount: number,
+  featureCount: number
+): void {
+  validateGroupConvexHullScratch(device, id, rowCount, featureCount);
 }
 
 /**
@@ -42,6 +62,7 @@ export function getMonotoneChainConvexityNodes<Parameters>(
 ): GPUCommandNode<Parameters>[] {
   const {id, operation, featureCount} = props;
   const rowCount = props.positions.length;
+  validateMonotoneChainConvexityScratch(graph.device, id, rowCount, featureCount);
   const labels = createTransientView(graph, `${id}-labels`, 'uint32', rowCount);
   const hullIndices = createTransientView(graph, `${id}-hull-indices`, 'uint32', rowCount);
   const hullOffsets = createTransientView(graph, `${id}-hull-offsets`, 'uint32', featureCount + 1);

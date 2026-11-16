@@ -4,6 +4,12 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
+import {WgslExec, WgslParser} from 'wgsl_reflect';
+import {
+  recordWGSLKernelNodes,
+  getWGSLKernelNodeRecord
+} from '../../../src/analysis-core/kernels/wgsl-kernel-nodes';
+import {auditWGSLModule} from '../../analysis-core/kernel-audit/kernel-audit-wgsl';
 import {
   getGPUNetworkLineGraphParameterValues,
   GPUNetworkLineGraph
@@ -12,6 +18,57 @@ import {
   createNullWebGPUDevice,
   getParsedKernelSources
 } from '../../utils/gpu-contributor-test-utils';
+
+it('saturates every arc prefix after the uint32 boundary, not just the final total', () => {
+  const graph = new GPUCommandGraph(createNullWebGPUDevice());
+  let serial = 0;
+  const view = <Format extends 'uint32' | 'float32' | 'float32x2'>(
+    format: Format,
+    length: number
+  ) => createTransientView(graph, `saturation-view-${serial++}`, format, length);
+  recordWGSLKernelNodes(graph);
+  const nodes = new GPUNetworkLineGraph({
+    id: 'saturation',
+    topology: {
+      offsets: view('uint32', 2),
+      neighbors: view('uint32', 3),
+      weights: view('float32', 3),
+      nodePositions: view('float32x2', 1)
+    },
+    parameters: view('float32', 8),
+    output: {
+      topology: {
+        offsets: view('uint32', 4),
+        neighbors: view('uint32', 4),
+        weights: view('float32', 4)
+      },
+      status: {overflow: view('uint32', 1)}
+    }
+  }).getCommandNodes(graph);
+  for (const [name, source] of getParsedKernelSources(nodes))
+    expect(auditWGSLModule(source), name).toEqual([]);
+  const record = getWGSLKernelNodeRecord(graph, 'saturation-scan-saturate')!;
+  expect(record).toBeDefined();
+  expect(auditWGSLModule(record.source)).toEqual([]);
+  // Counts [2^32-2, 3, 4, 0] have these inclusive uint64 prefixes.
+  const offsets = new Uint32Array(4);
+  const total = new Uint32Array(1);
+  const values: Record<string, Uint32Array> = {
+    low: Uint32Array.of(0xfffffffe, 1, 5, 5),
+    high: Uint32Array.of(0, 1, 1, 1),
+    offsets,
+    total
+  };
+  const bindings = Object.fromEntries(
+    record.bindings.map((binding, index) => [index, values[binding.name]])
+  );
+  const interpreter = new WgslExec(
+    new WgslParser().parse(record.source.replace(/^\s*_\s*=[^;]*;/gm, ''))
+  );
+  interpreter.dispatchWorkgroups('main', [1, 1, 1], {0: bindings}, {constants: record.constants});
+  expect(Array.from(offsets)).toEqual([0, 0xfffffffe, 0xffffffff, 0xffffffff]);
+  expect(total[0]).toBe(0xffffffff);
+});
 
 it('GPUNetworkLineGraph schedules the count, scan, fill and clamp nodes', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice());

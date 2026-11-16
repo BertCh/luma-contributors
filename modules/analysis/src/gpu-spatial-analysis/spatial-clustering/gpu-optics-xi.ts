@@ -32,7 +32,7 @@ export function createOPTICSXiNodes<Parameters>(
     output.clusterSummary ?? createTransientView(graph, `${id}-xi-summary`, 'uint32', 2);
   // Retain [areaCount, next, maximumBetween bits, label, visited, batchStart].
   // Reading batchStart from storage lets all batches share shader source and pipelines.
-  // Per-area scans remain reference-tier, bounded by GPU_OPTICS_GRID_MAXIMUM_ROWS.
+  // Per-area scans remain reference-tier, bounded by GPU_OPTICS_XI_MAXIMUM_ROWS.
   const gate = createWGSLDispatchGate(graph, {
     id: `${id}-xi-dispatch`,
     operation: 'GPUOPTICS',

@@ -74,11 +74,18 @@ export function getDriveTimeOracle(
     ];
     for (let stop = 0; stop + 1 < stops.length; stop++) {
       const share = stops[stop + 1].fromLow - stops[stop].fromLow;
-      if (Number.isFinite(upCost)) {
-        adjacency[stops[stop].node].push({target: stops[stop + 1].node, cost: share * upCost});
+      // Coincident stops are the same network location, regardless of road direction.
+      if (share === 0 || Number.isFinite(upCost)) {
+        adjacency[stops[stop].node].push({
+          target: stops[stop + 1].node,
+          cost: share === 0 ? 0 : share * upCost
+        });
       }
-      if (Number.isFinite(downCost)) {
-        adjacency[stops[stop + 1].node].push({target: stops[stop].node, cost: share * downCost});
+      if (share === 0 || Number.isFinite(downCost)) {
+        adjacency[stops[stop + 1].node].push({
+          target: stops[stop].node,
+          cost: share === 0 ? 0 : share * downCost
+        });
       }
     }
   }

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateNetworkViewBindings} from '../network-view-utils';
 import {
   createTransientView,
   GPUGroupAggregation,
@@ -13,7 +14,6 @@ import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
   validateRequirement,
-  validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -30,6 +30,7 @@ import {
 } from '../network-reachability/gpu-network-reachability';
 import {
   createFrontierState,
+  FRONTIER_DISPATCH_SLOT_WORDS,
   getFrontierPhaseLayout,
   getFrontierPhaseMaximumStamp,
   type FrontierPhase
@@ -352,8 +353,27 @@ export class GPUNetworkServiceAreas implements GPUCommandNodeProducer {
     const {output} = props;
     const {offsets, neighbors, weights} = props.topology;
     const labelIterations = this.maximumLabelIterations;
-    validateGraphViewsBelongToGraph(id, graph, getViews(props));
     const nodeCount = output.assignments.length;
+    const costLayout = getFrontierPhaseLayout(maximumIterations);
+    const labelLayout = getFrontierPhaseLayout(labelIterations);
+    const predecessorLayout = getFrontierPhaseLayout(this.maximumTieIterations);
+    validateNetworkViewBindings(id, graph, getViews(props), {
+      nodeColumns: nodeCount * 4,
+      frontierQueues: nodeCount * 8,
+      costControl: costLayout.controlWordCount * 4,
+      costDispatch: costLayout.dispatchSlotCount * FRONTIER_DISPATCH_SLOT_WORDS * 4,
+      labelControl:
+        (labelLayout.controlWordCount +
+          (output.predecessors ? predecessorLayout.controlWordCount : 0)) *
+        4,
+      labelDispatch:
+        (labelLayout.dispatchSlotCount +
+          (output.predecessors ? predecessorLayout.dispatchSlotCount : 0)) *
+        FRONTIER_DISPATCH_SLOT_WORDS *
+        4,
+      edgeBits: Math.max(1, Math.ceil(neighbors.length / 32)) * 4,
+      reachabilityConverged: 4
+    });
     const costs = output.costs ?? createTransientView(graph, `${id}-costs`, 'float32', nodeCount);
     const reachabilityConverged =
       output.status?.converged || output.status?.iterationLimitReached

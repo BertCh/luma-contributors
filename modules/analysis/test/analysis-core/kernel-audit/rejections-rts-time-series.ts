@@ -54,8 +54,9 @@ export const RTS_TIME_SERIES_REJECTIONS: readonly KernelAuditRejection[] = [
     exportName: 'GPURasterStandardizedIndex',
     name: 'rts06-index-chunk-above-maximum',
     kind: 'binding',
-    limit: 256,
-    rejects: /^Error: raster-standardized-index chunkSliceCount must be an integer in \[1, 256\]$/
+    limit: 16777216,
+    rejects:
+      /^Error: raster-standardized-index chunkSliceCount must be an integer in \[1, 16777216\]$/
   },
   {
     exportName: 'GPURasterClimateRunAccumulator',

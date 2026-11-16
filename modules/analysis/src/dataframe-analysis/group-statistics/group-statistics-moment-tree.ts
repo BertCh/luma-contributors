@@ -8,12 +8,13 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {createGroupStatisticsKernelNode} from './group-statistics-kernel';
 import {
   GROUP_NONE,
   GROUP_VALUE_KEY_WGSL,
   readBinding,
-  writeBinding
+  writeBinding,
+  type GroupValueChunk
 } from './group-statistics-common';
 import type {GroupStructure} from './group-statistics-sort';
 
@@ -38,36 +39,59 @@ export function getGroupMomentTreeNodes<Parameters>(
     id: string;
     operation: string;
     structure: GroupStructure;
-    valueBits: GraphDataView<'uint32'>;
+    valueChunks: readonly GroupValueChunk[];
     /** Interleaved [shift mean, nonnegative power-of-two scale exponent] per group. */
     means: GraphDataView<'float32'>;
     output: GraphDataView<'float32'>;
+    /** Tile partials must stay scaled until every tile has contributed its signed terms. */
+    retainScaledOddMoments?: boolean;
   }
 ): GPUCommandNode<Parameters>[] {
-  const {id, operation, structure, valueBits, means, output} = props;
+  const {id, operation, structure, valueChunks, means, output} = props;
   const {rowCount, positionGroups, permutation, offsets} = structure;
   const powers = Array.from({length: 4}, (_, component) =>
     createTransientView(graph, `${id}-moment-power-${component + 1}`, 'float32', rowCount)
   );
-  const nodes: GPUCommandNode<Parameters>[] = [
-    createWGSLKernelNode<Parameters>(graph, {
-      id: `${id}-moment-terms`,
+  const nodes: GPUCommandNode<Parameters>[] = [];
+  // An inverse permutation lets each chunk scatter its terms to exactly the same sorted
+  // positions as packed input. The tree and its floating point addition order stay unchanged.
+  const sourcePositions = createTransientView(graph, `${id}-source-positions`, 'uint32', rowCount);
+  nodes.push(
+    createGroupStatisticsKernelNode<Parameters>(graph, {
+      id: `${id}-source-positions`,
       operation,
-      variant: 'moment-terms',
+      variant: 'source-positions',
       bindings: [
-        readBinding('positionGroups', positionGroups),
         readBinding('permutation', permutation),
-        readBinding('valueBits', valueBits),
-        readBinding('means', means, 'f32'),
-        ...powers.map((view, component) => writeBinding(`power${component + 1}`, view, 'f32'))
+        writeBinding('sourcePositions', sourcePositions)
       ],
       invocationCount: rowCount,
-      declarations: GROUP_VALUE_KEY_WGSL,
-      body: `let group = positionGroups[positionGroupsOffset + index];
+      body: 'sourcePositions[sourcePositionsOffset + permutation[permutationOffset + index]] = index;'
+    })
+  );
+  for (const [chunkIndex, {valueBits, rowOffset}] of valueChunks.entries()) {
+    nodes.push(
+      createGroupStatisticsKernelNode<Parameters>(graph, {
+        id: valueChunks.length === 1 ? `${id}-moment-terms` : `${id}-moment-terms-${chunkIndex}`,
+        operation,
+        variant: 'moment-terms',
+        bindings: [
+          readBinding('rowGroups', structure.rowGroups),
+          readBinding('sourcePositions', sourcePositions),
+          readBinding('valueBits', valueBits),
+          readBinding('means', means, 'f32'),
+          ...powers.map((view, component) => writeBinding(`power${component + 1}`, view, 'f32'))
+        ],
+        invocationCount: valueBits.length,
+        rowOffset,
+        declarations: GROUP_VALUE_KEY_WGSL,
+        body: `let sourceRow = index + GROUP_ROW_OFFSET;
+  let position = sourcePositions[sourcePositionsOffset + sourceRow];
+  let group = rowGroups[rowGroupsOffset + sourceRow];
   var deviation = 0.0;
   var scaledDeviation = 0.0;
   if (group != ${GROUP_NONE}u) {
-    let bits = valueBits[valueBitsOffset + permutation[permutationOffset + index]];
+    let bits = valueBits[valueBitsOffset + index];
     if (isFiniteBits(bits)) {
       let value = bitcast<f32>(bits);
       let mean = means[meansOffset + 2u * group];
@@ -81,15 +105,16 @@ export function getGroupMomentTreeNodes<Parameters>(
     }
   }
   let squared = deviation * deviation;
-  power1[power1Offset + index] = scaledDeviation;
-  power2[power2Offset + index] = squared;
-  power3[power3Offset + index] = scaledDeviation * scaledDeviation * scaledDeviation;
-  power4[power4Offset + index] = squared * squared;`
-    })
-  ];
+  power1[power1Offset + position] = scaledDeviation;
+  power2[power2Offset + position] = squared;
+  power3[power3Offset + position] = scaledDeviation * scaledDeviation * scaledDeviation;
+  power4[power4Offset + position] = squared * squared;`
+      })
+    );
+  }
   for (let halfWidth = 1; halfWidth < rowCount; halfWidth *= 2) {
     nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
+      createGroupStatisticsKernelNode<Parameters>(graph, {
         id: `${id}-moment-merge-${halfWidth}`,
         operation,
         variant: 'moment-merge',
@@ -99,9 +124,10 @@ export function getGroupMomentTreeNodes<Parameters>(
           ...powers.map((view, component) => writeBinding(`power${component + 1}`, view, 'f32'))
         ],
         invocationCount: Math.ceil(rowCount / (2 * halfWidth)),
-        body: `let blockBegin = index * ${halfWidth}u * 2u;
-  let midpoint = blockBegin + ${halfWidth}u;
-  if (midpoint >= ${rowCount}u) {
+        halfWidth,
+        body: `let blockBegin = index * GROUP_HALF_WIDTH * 2u;
+  let midpoint = blockBegin + GROUP_HALF_WIDTH;
+  if (midpoint >= arrayLength(&positionGroups) - positionGroupsOffset) {
     return;
   }
   let group = positionGroups[positionGroupsOffset + midpoint];
@@ -123,7 +149,7 @@ export function getGroupMomentTreeNodes<Parameters>(
     );
   }
   nodes.push(
-    createWGSLKernelNode<Parameters>(graph, {
+    createGroupStatisticsKernelNode<Parameters>(graph, {
       id: `${id}-moments`,
       operation,
       variant: 'moments',
@@ -142,11 +168,10 @@ export function getGroupMomentTreeNodes<Parameters>(
     return;
   }
   let scaleExponent = i32(means[meansOffset + 2u * group + 1u]);
-  momentSums[momentSumsOffset + 4u * group] = ldexp(power1[power1Offset + index], scaleExponent);
+  momentSums[momentSumsOffset + 4u * group] = ${props.retainScaledOddMoments ? 'power1[power1Offset + index]' : 'ldexp(power1[power1Offset + index], scaleExponent)'};
   momentSums[momentSumsOffset + 4u * group + 1u] = power2[power2Offset + index];
   // Three bounded exponent steps also handle a zero sum when 3 * scaleExponent exceeds 127.
-  momentSums[momentSumsOffset + 4u * group + 2u] = ldexp(ldexp(ldexp(
-    power3[power3Offset + index], scaleExponent), scaleExponent), scaleExponent);
+  momentSums[momentSumsOffset + 4u * group + 2u] = ${props.retainScaledOddMoments ? 'power3[power3Offset + index]' : 'ldexp(ldexp(ldexp(power3[power3Offset + index], scaleExponent), scaleExponent), scaleExponent)'};
   momentSums[momentSumsOffset + 4u * group + 3u] = power4[power4Offset + index];`
     })
   );

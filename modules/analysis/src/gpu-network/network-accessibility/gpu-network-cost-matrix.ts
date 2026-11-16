@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateNetworkViewBindings, validateNetworkWritableViews} from '../network-view-utils';
+
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -18,7 +20,6 @@ import {
   validateCommandNodeBudget,
   validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GPUNetworkReachability} from '../network-reachability/index';
@@ -182,6 +183,10 @@ export class GPUNetworkCostMatrix implements GPUCommandNodeProducer {
   constructor(props: GPUNetworkCostMatrixProps) {
     this.id = props.id ?? 'network-cost-matrix';
     this.props = props;
+    validateNetworkWritableViews(this.id, props.output, [
+      {outputs: {costs: props.output.costs}},
+      {outputs: {status: props.output.status}}
+    ]);
     const {id} = this;
     const {costs} = props.output;
     const converged = props.output.status?.converged;
@@ -282,7 +287,7 @@ export class GPUNetworkCostMatrix implements GPUCommandNodeProducer {
       Number(copiedBatchCount > 0) +
       this.batchCount * reachabilityNodeCount +
       copiedBatchCount +
-      Number(Boolean(converged || iterationLimitReached));
+      2 * Number(Boolean(converged || iterationLimitReached));
     // The rounds of every batch are unrolled; lower maximumIterations or raise laneCount.
     validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     validateGraphOutputsDisjointFromInputs(
@@ -290,14 +295,6 @@ export class GPUNetworkCostMatrix implements GPUCommandNodeProducer {
       [costs, converged, iterationLimitReached],
       getInputs(props)
     );
-    for (const status of [converged, iterationLimitReached]) {
-      if (status && status.buffer === costs.buffer) {
-        throw new Error(`${id} outputs must use separate buffers`);
-      }
-    }
-    if (converged && iterationLimitReached && converged.buffer === iterationLimitReached.buffer) {
-      throw new Error(`${id} outputs must use separate buffers`);
-    }
   }
 
   /**
@@ -313,12 +310,27 @@ export class GPUNetworkCostMatrix implements GPUCommandNodeProducer {
     const {offsets, neighbors, weights} = props.topology;
     const {costs} = props.output;
     const iterationLimitReached = props.output.status?.iterationLimitReached;
-    validateGraphViewsBelongToGraph(id, graph, [
+    validateNetworkViewBindings(id, graph, [
       ...getInputs(props),
-      costs,
+      targetNodes ? costs : undefined,
       props.output.status?.converged,
       iterationLimitReached
     ]);
+    // The all-node matrix is bound through batch windows and may exceed a single binding.
+    // Check the actual aligned windows without declaring resources; target gathers bind it whole.
+    if (!targetNodes)
+      validateNetworkViewBindings(
+        id,
+        graph,
+        Array.from({length: batchCount}, (_, batch) =>
+          getAlignedWindow(graph, costs, batch * laneCount * nodeCount, laneCount * nodeCount)
+        )
+      );
+    validateNetworkViewBindings(id, graph, [], {
+      frontier: laneCount * nodeCount * 8,
+      expandedSeeds: batchCount * alignElementCount(props.startNodes.length) * 4,
+      batchMetadata: batchCount * ALIGNMENT_ELEMENTS * 4
+    });
     // The limit flag is the complement of `converged`, so it needs the reduction's flag.
     const converged =
       props.output.status?.converged ??
@@ -555,45 +567,35 @@ const TARGET_COUNT: u32 = ${targetNodes.length}u;`,
       }
     }
     if (converged && batchConverged) {
+      const ports = [
+        {name: 'converged', view: converged},
+        ...(iterationLimitReached ? [{name: 'limitReached', view: iterationLimitReached}] : [])
+      ];
       nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
+        createWGSLKernelNode(graph, {
+          id: `${id}-converged-initialize`,
+          operation: OPERATION,
+          variant: 'converged-initialize',
+          invocationCount: 1,
+          bindings: ports.map(port => ({...port, type: 'u32', access: 'read_write'})),
+          body: `converged[convergedOffset] = 1u; ${iterationLimitReached ? 'limitReached[limitReachedOffset] = 0u;' : ''}`
+        }),
+        createWGSLKernelNode(graph, {
           id: `${id}-converged`,
           operation: OPERATION,
           variant: 'converged',
+          invocationCount: batchCount,
           bindings: [
-            {
-              name: 'batchConverged',
-              view: batchConverged,
-              type: 'u32',
-              access: 'read'
-            },
-            {
-              name: 'converged',
-              view: converged,
-              type: 'u32',
-              access: 'read_write'
-            },
-            ...(iterationLimitReached
-              ? [
-                  {
-                    name: 'limitReached',
-                    view: iterationLimitReached,
-                    type: 'u32' as const,
-                    access: 'read_write' as const
-                  }
-                ]
-              : [])
+            {name: 'batchConverged', view: batchConverged, type: 'u32', access: 'read'},
+            ...ports.map(port => ({
+              ...port,
+              type: 'atomic<u32>' as const,
+              access: 'read_write' as const
+            }))
           ],
-          invocationCount: 1,
-          declarations: `const BATCH_COUNT: u32 = ${batchCount}u;
-const SLOT_WORDS: u32 = ${ALIGNMENT_ELEMENTS}u;`,
-          body: `var allConverged = 1u;
-  for (var batch = 0u; batch < BATCH_COUNT; batch++) {
-    allConverged = min(allConverged, batchConverged[batchConvergedOffset + batch * SLOT_WORDS]);
-  }
-  converged[convergedOffset] = allConverged;${
-    iterationLimitReached ? '\n  limitReached[limitReachedOffset] = 1u - allConverged;' : ''
-  }`
+          body: `let done = batchConverged[batchConvergedOffset + index * ${ALIGNMENT_ELEMENTS}u];
+          atomicMin(&converged[convergedOffset], done);
+          ${iterationLimitReached ? 'atomicMax(&limitReached[limitReachedOffset], 1u - done);' : ''}`
         })
       );
     }

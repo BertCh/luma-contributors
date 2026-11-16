@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateTerrainBindings} from '../terrain-processing/terrain-binding-preflight';
 import {
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -139,6 +140,7 @@ export class GPUSolarPosition implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateTerrainBindings(graph, this.id, this.props);
     const {id, props} = this;
     const {output} = props;
     validateGraphViewsBelongToGraph(id, graph, [

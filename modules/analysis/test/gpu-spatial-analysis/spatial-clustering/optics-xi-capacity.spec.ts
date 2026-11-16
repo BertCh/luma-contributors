@@ -8,7 +8,7 @@ import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
 import {createOPTICSXiNodes} from '../../../src/gpu-spatial-analysis/spatial-clustering/gpu-optics-xi';
 import {
-  GPU_OPTICS_GRID_MAXIMUM_ROWS,
+  GPU_OPTICS_XI_MAXIMUM_ROWS,
   type GPUOPTICSProps
 } from '../../../src/gpu-spatial-analysis/spatial-clustering/gpu-optics';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
@@ -25,7 +25,7 @@ it('xi extracts a plateau spanning the full 65536-row capacity and every dispatc
   requireTestDevice(device);
   const graph = new GPUCommandGraph(device);
   const buffers: Buffer[] = [];
-  const rows = GPU_OPTICS_GRID_MAXIMUM_ROWS;
+  const rows = GPU_OPTICS_XI_MAXIMUM_ROWS;
   const input = <Format extends 'uint32' | 'float32'>(
     name: string,
     format: Format,

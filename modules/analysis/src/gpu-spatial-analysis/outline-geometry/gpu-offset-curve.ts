@@ -8,6 +8,8 @@ import {
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
 import {
+  createTransientView,
+  GPUScan,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -19,8 +21,12 @@ import type {
 } from '../../analysis-core/contracts/index';
 import {
   validateCapacity,
+  validateFiniteNumber,
+  validateCommandNodeBudget,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
+  validateGPUStorageBindingByteLength,
+  validateMaximumCount,
+  validateRequirement,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -29,7 +35,15 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {EXACT_ORIENTATION_WGSL} from '../../analysis-core/kernels/exact-orientation-wgsl';
 import {EXACT_GEOMETRY_WGSL} from '../../analysis-core/kernels/exact-geometry-wgsl';
+import {validateOutlineOutputPasses} from './validate-outline-output-passes';
 import {FIND_LINE_WGSL} from './gpu-outline-geometry';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import type {GPULineGeometryOutput} from '../line-segmentize/line-segmentize-types';
+import {
+  createLineGeometryCountNode,
+  getLineGeometryOutputViews,
+  validateLineGeometryOutput
+} from '../line-segmentize/line-geometry-output';
 
 /** Spatial contexts supported by this distance-measuring operation. */
 const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
@@ -38,6 +52,15 @@ const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
 } as const);
 
 const OPERATION = 'GPUOffsetCurve';
+
+/** Two scalar f32 coordinates per output row must be addressable by a uint32 index. */
+const MAXIMUM_OUTPUT_VERTEX_COUNT = 0x7fffffff;
+/** The exclusive count scan and requiredVertexCount use uint32, without wrapping. */
+const MAXIMUM_REQUIRED_VERTEX_COUNT = 0xffffffff;
+/** Parameter values are encoded as f32 and must remain finite in the GPU buffer. */
+const MAXIMUM_PARAMETER_MAGNITUDE = 3.4028234663852886e38;
+/** A uint32-sized scan needs at most four 256-row hierarchy levels and three offset passes. */
+const COMPACT_SCAN_MAXIMUM_COMMAND_NODE_COUNT = 7;
 
 /** Number of float32 elements in a {@link GPUOffsetCurve} parameter buffer. */
 export const GPU_OFFSET_CURVE_PARAMETER_LENGTH = 4;
@@ -97,6 +120,20 @@ export function getGPUOffsetCurveParameterValues(
   if (!Number.isFinite(mitreLimit) || mitreLimit < 1) {
     throw new Error('Offset curve mitreLimit must be a finite number of at least 1');
   }
+  validateFiniteNumber(
+    OPERATION,
+    'distance',
+    Math.fround(settings.distance),
+    -MAXIMUM_PARAMETER_MAGNITUDE,
+    MAXIMUM_PARAMETER_MAGNITUDE
+  );
+  validateFiniteNumber(
+    OPERATION,
+    'mitreLimit',
+    Math.fround(mitreLimit),
+    1,
+    MAXIMUM_PARAMETER_MAGNITUDE
+  );
   target.set([settings.distance, mitreLimit, 0, 0]);
   return target;
 }
@@ -128,6 +165,8 @@ export type GPUOffsetCurveInsideTurns = 'intersection' | 'buffer';
 
 /** Caller-owned outputs of {@link GPUOffsetCurve}. */
 export type GPUOffsetCurveOutput = {
+  /** Existing padded output layout (default). */
+  layout?: 'fixed-stride';
   /**
    * Offset points, exactly `positions.length * getGPUOffsetCurveRowsPerVertex(...)` rows. Input
    * vertex `i` owns rows `[i * k, (i + 1) * k)`; its first `counts[i]` rows are the offset points in
@@ -136,6 +175,18 @@ export type GPUOffsetCurveOutput = {
   positions: GraphDataView<'float32x2'>;
   /** Optional per-input-vertex number of distinct offset points, `positions.length` rows. */
   counts?: GraphDataView<'uint32'>;
+};
+
+/**
+ * Compact offset points, with one output line per input line or ring and no stride padding.
+ * Ring closure remains implicit. `sourceRows` identifies the input corner that emitted each
+ * point, and `sourceLineIndices` identifies the input line or ring. Measures are unsupported:
+ * an offset corner need not lie on the source line. Capacity truncates a suffix, with clamped
+ * line offsets and exact `status.requiredVertexCount`. This avoids a worst-case stride-sized
+ * output allocation; scratch uses two uint32 words per input vertex, plus scan summaries.
+ */
+export type GPUOffsetCurveCompactOutput = Omit<GPULineGeometryOutput, 'measures'> & {
+  layout: 'compact';
 };
 
 /**
@@ -181,7 +232,7 @@ export type GPUOffsetCurveProps = (
   /** Per-frame packed float32 view written with {@link getGPUOffsetCurveParameterValues}. */
   parameters: GraphDataView<'float32'>;
   /** Output points. */
-  output: GPUOffsetCurveOutput;
+  output: GPUOffsetCurveOutput | GPUOffsetCurveCompactOutput;
 };
 
 /**
@@ -207,8 +258,9 @@ export type GPUOffsetCurveProps = (
  * leaves the corner at the first vertex open (a quirk); this contributor joins it. Repeated vertices are treated as line ends on that side, so remove duplicates first,
  * and rings must not repeat the first vertex.
  *
- * Output size is fixed up front ({@link getGPUOffsetCurveRowsPerVertex} rows per input vertex), so
- * there is no capacity, overflow flag or scan; one invocation per vertex, no atomics, deterministic.
+ * The default output reserves {@link getGPUOffsetCurveRowsPerVertex} padded rows per input vertex.
+ * With `output.layout: 'compact'`, count, exclusive scan and emit passes write only real corner
+ * points into caller capacity. Both layouts use one invocation per input vertex, deterministically.
  * The distance and mitre limit are read per frame. Precision: f32 from the f32 positions.
  *
  * Planar only: `spatialContext` defaults to native planar coordinates and a longitude/latitude
@@ -234,10 +286,15 @@ export class GPUOffsetCurve implements GPUCommandNodeProducer {
   readonly rowsPerVertex: number;
   /** Resolved inside-of-turn rule. */
   readonly insideTurns: GPUOffsetCurveInsideTurns;
+  /** Upper bound including the published scan's hierarchy nodes. */
+  readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPUOffsetCurveProps) {
     this.id = props.id ?? 'offset-curve';
     this.props = props;
+    this.estimatedCommandNodeCount =
+      props.output.layout === 'compact' ? 4 + COMPACT_SCAN_MAXIMUM_COMMAND_NODE_COUNT : 1;
+    validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
     this.spatialContext = resolveGPUSpatialContext(
       this.id,
       props.spatialContext,
@@ -291,62 +348,232 @@ export class GPUOffsetCurve implements GPUCommandNodeProducer {
         `${id} parameters must hold ${GPU_OFFSET_CURVE_PARAMETER_LENGTH} float32 values`
       );
     }
-    validateSinglePackedView(props.output.positions, ['float32x2'], `${id} output.positions`);
-    const expectedLength = props.positions.length * this.rowsPerVertex;
-    if (props.output.positions.length !== expectedLength) {
-      throw new Error(`${id} output.positions must hold ${expectedLength} rows`);
-    }
-    if (expectedLength > 0x7fffffff) {
-      throw new Error(`${id} output is too large`);
-    }
-    if (props.output.counts) {
-      validateSinglePackedView(props.output.counts, ['uint32'], `${id} output.counts`);
-      if (props.output.counts.length !== props.positions.length) {
-        throw new Error(`${id} output.counts must hold ${props.positions.length} rows`);
+    const maximumRequiredCount = props.positions.length * this.rowsPerVertex;
+    validateMaximumCount(
+      id,
+      'positions.length * rowsPerVertex',
+      maximumRequiredCount,
+      MAXIMUM_REQUIRED_VERTEX_COUNT
+    );
+    validateCapacity(id, `${offsetsName}.length`, this.boundaryOffsets.length, 2);
+    if (props.output.layout === 'compact') {
+      validateLineGeometryOutput(id, props.output, this.boundaryOffsets.length - 1);
+      validateRequirement(
+        id,
+        !('measures' in props.output && props.output.measures),
+        'output.measures is unsupported for offset corners'
+      );
+    } else {
+      validateRequirement(
+        id,
+        props.output.layout === undefined || props.output.layout === 'fixed-stride',
+        "output.layout must be 'fixed-stride' or 'compact'"
+      );
+      validateSinglePackedView(props.output.positions, ['float32x2'], `${id} output.positions`);
+      validateRequirement(
+        id,
+        props.output.positions.length === maximumRequiredCount,
+        `output.positions must hold ${maximumRequiredCount} rows`
+      );
+      if (props.output.counts) {
+        validateSinglePackedView(props.output.counts, ['uint32'], `${id} output.counts`);
+        validateRequirement(
+          id,
+          props.output.counts.length === props.positions.length,
+          `output.counts must hold ${props.positions.length} rows`
+        );
       }
     }
-    validateGraphOutputsDisjointFromInputs(
+    validateMaximumCount(
       id,
-      [props.output.positions, props.output.counts],
-      [props.positions, this.boundaryOffsets, props.parameters]
+      'output.positions.length',
+      props.output.positions.length,
+      MAXIMUM_OUTPUT_VERTEX_COUNT
     );
+    const outputs = this.getOutputViews();
+    const output = props.output;
+    if (output.layout === 'compact') {
+      validateOutlineOutputPasses(
+        id,
+        {
+          positions: output.positions,
+          sourceRows: output.sourceRows,
+          lineOffsets: output.lineOffsets,
+          sourceLineIndices: output.sourceLineIndices,
+          ...output.status
+        },
+        [
+          ['positions', 'sourceRows'],
+          ['lineOffsets', 'overflow', 'vertexCount', 'requiredVertexCount', 'sourceLineIndices'],
+          ['count', 'requiredCount']
+        ]
+      );
+    } else {
+      validateOutlineOutputPasses(id, {positions: output.positions, counts: output.counts}, [
+        ['positions', 'counts']
+      ]);
+    }
+    validateGraphOutputsDisjointFromInputs(id, outputs, [
+      props.positions,
+      this.boundaryOffsets,
+      props.parameters
+    ]);
   }
 
-  /** Returns the single generation node. */
+  private getOutputViews(): (GraphDataView | undefined)[] {
+    const {output} = this.props;
+    return output.layout === 'compact'
+      ? getLineGeometryOutputViews(output)
+      : [output.positions, output.counts];
+  }
+
+  /** Returns padded generation, or compact count, scan, generation and publication. */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.positions,
-      this.boundaryOffsets,
-      props.parameters,
-      props.output.positions,
-      props.output.counts
-    ]);
+    const output = props.output;
+    const compactOutput = output.layout === 'compact' ? output : undefined;
+    const outputCounts = output.layout === 'compact' ? undefined : output.counts;
+    validateGraphChunkBindingRanges(graph, id, {
+      positions: props.positions,
+      boundaryOffsets: this.boundaryOffsets,
+      parameters: props.parameters,
+      ...Object.fromEntries(this.getOutputViews().map((view, index) => [`output.${index}`, view]))
+    });
+    if (compactOutput) {
+      // Both count columns include a terminal zero; all upstream scan summaries are smaller.
+      const byteLength = (props.positions.length + 1) * Uint32Array.BYTES_PER_ELEMENT;
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        'compact count scratch',
+        byteLength,
+        'reduce the input vertex count'
+      );
+      validateCapacity(
+        id,
+        'compact count scratch byteLength',
+        byteLength,
+        0,
+        graph.device.limits.maxBufferSize
+      );
+    }
+    const counts = compactOutput
+      ? createTransientView(graph, `${id}-counts`, 'uint32', props.positions.length + 1)
+      : undefined;
+    const starts = compactOutput
+      ? createTransientView(graph, `${id}-starts`, 'uint32', props.positions.length + 1)
+      : undefined;
+    const nodes: GPUCommandNode<Parameters>[] = [];
+    if (counts && starts) {
+      nodes.push(this.createGenerationNode(graph, {counts, countOnly: true}));
+      nodes.push(
+        ...new GPUScan({id: `${id}-scan`, input: counts, output: starts}).getCommandNodes(graph)
+      );
+    }
+    nodes.push(this.createGenerationNode(graph, {counts: outputCounts, starts, compactOutput}));
+    if (compactOutput && starts) {
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-publish`,
+          operation: OPERATION,
+          variant: 'compact-publish',
+          invocationCount: this.boundaryOffsets.length,
+          bindings: [
+            {name: 'starts', view: starts, type: 'u32', access: 'read'},
+            {name: 'boundaries', view: this.boundaryOffsets, type: 'u32', access: 'read'},
+            {name: 'offsets', view: compactOutput.lineOffsets, type: 'u32', access: 'read_write'},
+            {
+              name: 'overflow',
+              view: compactOutput.status.overflow,
+              type: 'u32',
+              access: 'read_write'
+            },
+            ...(
+              [
+                ['vertexCount', compactOutput.status.vertexCount],
+                ['requiredVertexCount', compactOutput.status.requiredVertexCount],
+                ['sourceLineIndices', compactOutput.sourceLineIndices]
+              ] as const
+            ).flatMap(([name, view]) =>
+              view ? [{name, view, type: 'u32' as const, access: 'read_write' as const}] : []
+            )
+          ],
+          declarations: `const ROW_COUNT: u32 = ${props.positions.length}u;
+const LINE_COUNT: u32 = ${this.boundaryOffsets.length - 1}u;
+const CAPACITY: u32 = ${compactOutput.positions.length}u;`,
+          body: `let row = min(boundaries[boundariesOffset + index], ROW_COUNT);
+offsets[offsetsOffset + index] = min(starts[startsOffset + row], CAPACITY);
+${compactOutput.sourceLineIndices ? 'if (index < LINE_COUNT) { sourceLineIndices[sourceLineIndicesOffset + index] = index; }' : ''}
+if (index == 0u) {
+  let required = starts[startsOffset + ROW_COUNT];
+  overflow[overflowOffset] = select(0u, 1u, required > CAPACITY);
+  ${compactOutput.status.vertexCount ? 'vertexCount[vertexCountOffset] = min(required, CAPACITY);' : ''}
+  ${compactOutput.status.requiredVertexCount ? 'requiredVertexCount[requiredVertexCountOffset] = required;' : ''}
+}`
+        })
+      );
+      nodes.push(
+        createLineGeometryCountNode(graph, {
+          id,
+          operation: OPERATION,
+          output: compactOutput,
+          lineCapacity: this.boundaryOffsets.length - 1
+        })
+      );
+    }
+    return nodes;
+  }
+
+  /** Same corner computation for padded generation, compact counting and compact emission. */
+  private createGenerationNode<Parameters>(
+    graph: GPUCommandGraph<Parameters>,
+    options: {
+      counts?: GraphDataView<'uint32'>;
+      countOnly?: boolean;
+      starts?: GraphDataView<'uint32'>;
+      compactOutput?: GPUOffsetCurveCompactOutput;
+    }
+  ): GPUCommandNode<Parameters> {
+    const {props, id} = this;
+    const {counts, countOnly, starts, compactOutput} = options;
     const bindings: WGSLKernelBinding[] = [
       {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
       {name: 'lineOffsets', view: this.boundaryOffsets, type: 'u32', access: 'read'},
-      {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
-      {name: 'outputPositions', view: props.output.positions, type: 'f32', access: 'read_write'}
+      {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'}
     ];
-    if (props.output.counts) {
+    if (!countOnly) {
+      bindings.push({
+        name: 'outputPositions',
+        view: props.output.positions,
+        type: 'f32',
+        access: 'read_write'
+      });
+    }
+    if (counts) {
       bindings.push({
         name: 'outputCounts',
-        view: props.output.counts,
+        view: counts,
         type: 'u32',
         access: 'read_write'
       });
     }
-    const hasCounts = Boolean(props.output.counts);
-    return [
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-generate`,
-        operation: OPERATION,
-        variant: `${this.geometryType}-${this.joinStyle}-${this.insideTurns}`,
-        bindings,
-        invocationCount: props.positions.length,
-        declarations: /* wgsl */ `
+    if (starts) bindings.push({name: 'starts', view: starts, type: 'u32', access: 'read'});
+    if (compactOutput?.sourceRows)
+      bindings.push({
+        name: 'sourceRows',
+        view: compactOutput.sourceRows,
+        type: 'u32',
+        access: 'read_write'
+      });
+    return createWGSLKernelNode<Parameters>(graph, {
+      id: `${id}-${countOnly ? 'count' : 'generate'}`,
+      operation: OPERATION,
+      variant: `${this.geometryType}-${this.joinStyle}-${this.insideTurns}`,
+      bindings,
+      invocationCount: props.positions.length + (countOnly ? 1 : 0),
+      declarations: /* wgsl */ `
 const LINE_COUNT: u32 = ${this.boundaryOffsets.length - 1}u;
 const ROW_COUNT: u32 = ${props.positions.length}u;
 const ROWS_PER_VERTEX: u32 = ${this.rowsPerVertex}u;
@@ -370,7 +597,8 @@ fn rotateVector(v: vec2<f32>, angle: f32) -> vec2<f32> {
 ${FIND_LINE_WGSL}
 ${EXACT_ORIENTATION_WGSL}
 ${EXACT_GEOMETRY_WGSL}`,
-        body: /* wgsl */ `let offsetDistance = parameters[parametersOffset];
+      body: /* wgsl */ `${countOnly ? 'if (index == ROW_COUNT) { outputCounts[outputCountsOffset + index] = 0u; return; }' : ''}
+  let offsetDistance = parameters[parametersOffset];
   let mitreLimit = max(parameters[parametersOffset + 1u], 1.0);
   let magnitude = abs(offsetDistance);
   let center = getPosition(index);
@@ -467,16 +695,22 @@ ${EXACT_GEOMETRY_WGSL}`,
     }
   }
 
-  let base = index * ROWS_PER_VERTEX;
-  for (var slot = 0u; slot < ROWS_PER_VERTEX; slot++) {
+  ${
+    countOnly
+      ? ''
+      : `let base = ${starts ? 'starts[startsOffset + index]' : 'index * ROWS_PER_VERTEX'};
+  for (var slot = 0u; slot < ${starts ? 'count' : 'ROWS_PER_VERTEX'}; slot++) {
+    ${starts ? `if (base + slot >= ${props.output.positions.length}u) { break; }` : ''}
     let point = points[min(slot, count - 1u)];
-    let at = outputPositionsOffset + 2u * (base + slot);
-    outputPositions[at] = point.x;
-    outputPositions[at + 1u] = point.y;
+    let destination = base + slot;
+    let coordinateOffset = outputPositionsOffset + 2u * destination;
+    outputPositions[coordinateOffset] = point.x;
+    outputPositions[coordinateOffset + 1u] = point.y;
+    ${compactOutput?.sourceRows ? 'sourceRows[sourceRowsOffset + destination] = index;' : ''}
+  }`
   }
-  ${hasCounts ? 'outputCounts[outputCountsOffset + index] = count;' : ''}`
-      })
-    ];
+  ${counts ? 'outputCounts[outputCountsOffset + index] = count;' : ''}`
+    });
   }
 }
 

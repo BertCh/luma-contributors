@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/graph/gpu-core';
+import {createGraphChunkGroupKernelNode} from '../../analysis-core/kernels/graph-chunk-groups';
 import {GUARDED_ATAN2_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
   createWGSLKernelNode,
@@ -108,9 +109,10 @@ export function createPointProjectionNode<Parameters>(
     results: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
-  return createWGSLKernelNode<Parameters>(graph, {
+  return createGraphChunkGroupKernelNode<Parameters>(graph, {
     id: props.id,
     operation: props.operation,
+    pipelineId: props.id.replace(/-chunk-\d+/g, ''),
     variant: 'project',
     bindings: [
       {name: 'points', view: props.points, type: 'f32', access: 'read'},
@@ -451,9 +453,10 @@ export function createSphericalProjectionNode<Parameters>(
     results: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
-  return createWGSLKernelNode<Parameters>(graph, {
+  return createGraphChunkGroupKernelNode<Parameters>(graph, {
     id: props.id,
     operation: props.operation,
+    pipelineId: props.id.replace(/-chunk-\d+/g, ''),
     variant: 'spherical-project',
     bindings: [
       {name: 'points', view: props.points, type: 'f32', access: 'read'},
@@ -723,9 +726,10 @@ export function createPackedScatterNodes<Parameters>(
       }))
     ];
     nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
+      createGraphChunkGroupKernelNode<Parameters>(graph, {
         id: first === 0 ? `${props.id}` : `${props.id}-${first / 7}`,
         operation: props.operation,
+        pipelineId: `${props.id.replace(/-chunk-\d+/g, '')}${first === 0 ? '' : `-${first / 7}`}`,
         variant: 'scatter',
         bindings,
         invocationCount: props.rowCount,
@@ -844,9 +848,10 @@ export function createLineLocateNode<Parameters>(
   if (props.parameters) {
     bindings.push({name: 'parameters', view: props.parameters, type: 'f32', access: 'read'});
   }
-  return createWGSLKernelNode<Parameters>(graph, {
+  return createGraphChunkGroupKernelNode<Parameters>(graph, {
     id: props.id,
     operation: props.operation,
+    pipelineId: props.id.replace(/-chunk-\d+/g, ''),
     variant: 'locate',
     bindings,
     invocationCount: props.eventLineIndices.length,

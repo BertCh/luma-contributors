@@ -26,6 +26,9 @@ import {GPU_LOCAL_OUTLIER_FACTOR_PARAMETER_LENGTH} from './outlier-detection-par
 
 import {IS_NAN_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 
+import {validateSpatialStatisticsBindings} from '../spatial-weights/spatial-statistics-bindings';
+import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
+
 const OPERATION = 'GPULocalOutlierFactor';
 
 /** Caller-owned outputs of {@link GPULocalOutlierFactor}. */
@@ -173,6 +176,7 @@ export class GPULocalOutlierFactor implements GPUCommandNodeProducer {
         throw new Error(`${id} output.outlierCount requires output.outlier`);
       }
     }
+    validateDisjointWritableViews(id, output);
     validateGraphOutputsDisjointFromInputs(
       id,
       [
@@ -196,6 +200,7 @@ export class GPULocalOutlierFactor implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
+    validateSpatialStatisticsBindings(graph, id, props);
     const {neighbors, parameters, output} = props;
     const {kDistance, localReachabilityDensity, lof} = output;
     const distances = neighbors.distances!;

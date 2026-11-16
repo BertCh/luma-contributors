@@ -2,6 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateOutlineOutputPasses} from '../outline-geometry/validate-outline-output-passes';
+import {
+  validateRefinementScratchByteLengths,
+  validateRefinementLineNodingScratch,
+  validateRefinementShaderNumber
+} from './refinement-storage-validation';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -18,10 +25,12 @@ import {
 import {
   validateCapacity,
   validateSinglePackedView,
-  validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getReadPointWGSL} from '../shared/spatial-wgsl-point-helpers';
+
+/** Fragment metadata has four uint32 words; every scalar index must remain addressable. */
+const MAXIMUM_FRAGMENT_WORD_COUNT = 0xffffffff;
 
 export type GPUOffsetCurveComponentsProps = {
   id?: string;
@@ -52,6 +61,29 @@ export class GPUOffsetCurveComponents implements GPUCommandNodeProducer {
   constructor(props: GPUOffsetCurveComponentsProps) {
     this.id = props.id ?? 'offset-curve-components';
     this.props = props;
+    validateRefinementShaderNumber(this.id, 'distance magnitude', Math.abs(props.distance));
+    validateRefinementShaderNumber(this.id, 'tolerance', props.tolerance);
+    validateCapacity(
+      this.id,
+      'fragment metadata words',
+      props.segmentCapacity * (props.original.positions.length * 6 + 1) * 4,
+      1,
+      MAXIMUM_FRAGMENT_WORD_COUNT
+    );
+    validateCapacity(
+      this.id,
+      'output component words',
+      props.output.components.length * 4,
+      0,
+      MAXIMUM_FRAGMENT_WORD_COUNT
+    );
+    validateCapacity(
+      this.id,
+      'output position words',
+      props.output.positions.length * 2,
+      0,
+      MAXIMUM_FRAGMENT_WORD_COUNT
+    );
     for (const geometry of [props.original, props.raw]) {
       validateSinglePackedView(geometry.positions, ['float32x2'], this.id);
       validateSinglePackedView(geometry.lineOffsets, ['uint32'], this.id);
@@ -74,6 +106,7 @@ export class GPUOffsetCurveComponents implements GPUCommandNodeProducer {
       props.output.status.length !== 2
     )
       throw new Error('Invalid offset output size');
+    validateOutlineOutputPasses(this.id, props.output, [Object.keys(props.output)]);
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
       props.original.positions,
       props.original.lineOffsets,
@@ -86,13 +119,32 @@ export class GPUOffsetCurveComponents implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
     const capacity = props.segmentCapacity;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.original.positions,
-      props.original.lineOffsets,
-      props.raw.positions,
-      props.raw.lineOffsets,
-      ...Object.values(props.output)
-    ]);
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(
+        [
+          props.original.positions,
+          props.original.lineOffsets,
+          props.raw.positions,
+          props.raw.lineOffsets,
+          ...Object.values(props.output)
+        ].map((view, index) => [`binding.${index}`, view])
+      )
+    );
+    validateRefinementLineNodingScratch(
+      graph,
+      id,
+      props.raw.positions.length,
+      props.raw.lineOffsets.length - 1,
+      props.intersectionCapacity
+    );
+    const requiredCutCapacity = props.original.positions.length * 6 + 2;
+    validateRefinementScratchByteLengths(graph, id, {
+      cuts: capacity * requiredCutCapacity * 4,
+      fragmentsAndMetadata: capacity * (requiredCutCapacity - 1) * 16,
+      nodedEndpoints: capacity * 16
+    });
     const transient = <Format extends 'uint32' | 'float32' | 'float32x4'>(
       name: string,
       format: Format,

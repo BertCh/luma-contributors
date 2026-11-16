@@ -9,9 +9,37 @@ import {
   type GPUCommandGraph,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import {
+  addVisibilityGraphCSRRecipe,
+  VISIBILITY_GRAPH_MAXIMUM_RAY_TOLERANCE,
+  type GPUVisibilityGraphCSRProps
+} from './visibility-graph-csr';
+export type {
+  GPUVisibilityGraphCSRProps,
+  GPUVisibilityGraphCSROutput,
+  GPUVisibilityGraphCSRStatus
+} from './visibility-graph-csr';
+export {
+  getGPUVisibilityGraphCSRParameterValues,
+  GPU_VISIBILITY_GRAPH_CSR_PARAMETER_LENGTH
+} from './visibility-graph-csr';
+import {
+  validateUrbanRecipeBindings,
+  validateUrbanStorageByteLength
+} from './building-tessellation-validation';
 import {createRecipeKernelNode, getRecipeView} from '../recipes/expansion-recipe-utils';
 import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
-import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {getWGSLFloatLiteral} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  validateSinglePackedView,
+  validateRequirement
+} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  addUrbanPointGrid,
+  getUrbanPointGridShape,
+  getUrbanPointGridDeclarations,
+  getUrbanPointGridRadiusWalk
+} from './visibility-graph-point-grid';
 import {classifyUrbanViewpoints, type UrbanFreeSpaceRegion} from './classify-viewpoints';
 import {
   URBAN_MAXIMUM_OBSTACLE_SEGMENT_COUNT,
@@ -57,10 +85,19 @@ export type GPUVisibilityGraphOutput = {
 
 export type GPUVisibilityGraphProps = {
   id?: string;
+  /** Explicit small dense reference; existing calls retain their output layout. */
+  mode?: 'reference';
   positions: GraphDataView<'float32x2'>;
   segments: GraphDataView<'float32x4'>;
   maximumDistance: number;
+  /**
+   * Compile-time viewpoint candidate search. Default 'grid' tests sightlines only for cells
+   * meeting maximumDistance; 'brute-force' preserves the exhaustive reference route. The
+   * dense adjacency and exact Brandes outputs retain VISIBILITY_GRAPH_MAXIMUM_POINT_COUNT.
+   */
+  searchStructure?: 'grid' | 'brute-force';
   edgeCapacity: number;
+  /** Positive float32; indexed obstacles also require VISIBILITY_GRAPH_MAXIMUM_RAY_TOLERANCE. */
   tolerance?: number;
   /** Optional explicit filled-ring free-space classification. Default checks boundaries only. */
   region?: UrbanFreeSpaceRegion;
@@ -78,14 +115,32 @@ export type GPUVisibilityGraphProps = {
   output?: Partial<GPUVisibilityGraphOutput>;
 };
 
-/** Closed obstacles block sightlines. Full dense visibility drives hop integration and Brandes choice. */
+/** Closed obstacles block sightlines. CSR mode builds adjacency and degree only; import the same recipe name from @luma-contributors/analysis/gpu-network for sampled centrality. The dense reference retains exact integration and choice. */
 export function addVisibilityGraphRecipe<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: GPUVisibilityGraphCSRProps
+): ReturnType<typeof addVisibilityGraphCSRRecipe>;
+export function addVisibilityGraphRecipe<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: GPUVisibilityGraphProps
+): ReturnType<typeof addVisibilityGraphReferenceRecipe>;
+export function addVisibilityGraphRecipe<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: GPUVisibilityGraphProps | GPUVisibilityGraphCSRProps
+) {
+  return props.mode === 'csr'
+    ? addVisibilityGraphCSRRecipe(graph, props)
+    : addVisibilityGraphReferenceRecipe(graph, props);
+}
+function addVisibilityGraphReferenceRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: GPUVisibilityGraphProps
 ) {
   const id = props.id ?? 'visibility-graph';
   const count = props.positions.length;
   const tolerance = props.tolerance ?? 1e-6;
+  validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
+  validateSinglePackedView(props.segments, ['float32x4'], `${id} segments`);
   validateRequirement(
     id,
     count > 0 && count <= VISIBILITY_GRAPH_MAXIMUM_POINT_COUNT,
@@ -98,19 +153,51 @@ export function addVisibilityGraphRecipe<Parameters>(
   );
   validateRequirement(
     id,
-    Number.isFinite(props.maximumDistance) && props.maximumDistance > 0,
-    'maximumDistance must be a positive finite number'
+    Number.isFinite(Math.fround(props.maximumDistance)) && Math.fround(props.maximumDistance) > 0,
+    'maximumDistance must be a positive finite float32 number'
   );
   validateRequirement(
     id,
-    Number.isFinite(tolerance) && tolerance > 0,
-    'tolerance must be a positive finite number'
+    Number.isFinite(Math.fround(tolerance)) && Math.fround(tolerance) > 0,
+    'tolerance must be a positive finite float32 number'
+  );
+  const usesObstacleBVH =
+    resolveUrbanObstacleIndex(props.obstacleIndex, props.segments.length) === 'bvh';
+  validateRequirement(
+    id,
+    !usesObstacleBVH || tolerance <= VISIBILITY_GRAPH_MAXIMUM_RAY_TOLERANCE,
+    `tolerance must be at most VISIBILITY_GRAPH_MAXIMUM_RAY_TOLERANCE (${VISIBILITY_GRAPH_MAXIMUM_RAY_TOLERANCE}) so four times tolerance is finite in float32`
   );
   validateRequirement(
     id,
     Number.isSafeInteger(props.edgeCapacity) && props.edgeCapacity > 0,
     'edgeCapacity must be a positive integer'
   );
+  validateUrbanRecipeBindings(
+    graph,
+    id,
+    {positions: props.positions, segments: props.segments},
+    props.output
+  );
+  let leafCapacity = 2;
+  while (leafCapacity < props.segments.length) leafCapacity *= 2;
+  // Check every row-proportional binding before adding any nodes or allocating recipe scratch.
+  for (const [name, byteLength, hint] of [
+    ['BVH node bounds', usesObstacleBVH ? (2 * leafCapacity - 1) * 8 : 4, 'reduce segments length'],
+    [
+      'point grid',
+      props.searchStructure === 'brute-force' ? 4 : getUrbanPointGridShape(count).byteLength,
+      'reduce positions length'
+    ],
+    ['positions', count * 8, 'reduce positions length'],
+    ['segments', props.segments.length * 16, 'reduce segments length'],
+    ['adjacency and pair scratch', count * count * 4, 'reduce positions length'],
+    ['choice contributions', count * count * 4, 'reduce positions length'],
+    ['edges', props.edgeCapacity * 8, 'reduce edgeCapacity'],
+    ['metrics', count * 16, 'reduce positions length']
+  ] as const) {
+    validateUrbanStorageByteLength(graph.device, id, name, byteLength, hint);
+  }
   const output = props.output;
   const obstacleBVH =
     resolveUrbanObstacleIndex(props.obstacleIndex, props.segments.length) === 'bvh'
@@ -169,15 +256,51 @@ export function addVisibilityGraphRecipe<Parameters>(
     count,
     output?.normalizedChoice
   );
+  const pointGrid =
+    props.searchStructure === 'brute-force'
+      ? undefined
+      : addUrbanPointGrid(graph, {
+          id: `${id}-viewpoint-grid`,
+          positions: props.positions
+        });
+  if (pointGrid)
+    graph.add(
+      createRecipeKernelNode(graph, {
+        id: `${id}-clear-adjacency`,
+        operation: id,
+        invocationCount: count * count,
+        bindings: [
+          {name: 'classifications', view: viewpointClassifications, type: 'u32', access: 'read'},
+          {name: 'adjacency', view: adjacency, type: 'u32', access: 'read_write'}
+        ],
+        body: `let valid=classifications[classificationsOffset+index/${count}u]==0u&&classifications[classificationsOffset+index%${count}u]==0u;
+adjacency[adjacencyOffset+index]=select(0xffffffffu,0u,valid);`
+      })
+    );
+  const testSightline = `let origin=vec2<f32>(positions[positionsOffset+2u*first],positions[positionsOffset+2u*first+1u]);
+let destination=vec2<f32>(positions[positionsOffset+2u*second],positions[positionsOffset+2u*second+1u]);
+let displacement=destination-origin;
+let distance=length(displacement);
+let valid=classifications[classificationsOffset+first]==0u&&classifications[classificationsOffset+second]==0u&&isFiniteValue(origin.x)&&isFiniteValue(origin.y)&&isFiniteValue(destination.x)&&isFiniteValue(destination.y);
+var visible=false;
+if(valid&&first!=second&&distance>${getWGSLFloatLiteral(tolerance)}&&distance<=${getWGSLFloatLiteral(props.maximumDistance)}){
+  let hit=castRay(origin,displacement/distance,distance);
+  visible=hit.y<0.0;
+}
+output[outputOffset+first*${count}u+second]=select(u32(visible),0xffffffffu,!valid);`;
   graph.add(
     createRecipeKernelNode(graph, {
       id: `${id}-visibility`,
       operation: id,
-      invocationCount: count * count,
+      invocationCount: pointGrid ? count : count * count,
       declarations:
         IS_FINITE_VALUE_WGSL +
+        (pointGrid ? getUrbanPointGridDeclarations(pointGrid) : '') +
         getUrbanRayDeclarations(props.segments.length, tolerance, obstacleBVH),
       bindings: [
+        ...(pointGrid
+          ? [{name: 'pointGrid', view: pointGrid.data, type: 'u32', access: 'read'} as const]
+          : []),
         {name: 'classifications', view: viewpointClassifications, type: 'u32', access: 'read'},
         {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
         {name: 'segments', view: props.segments, type: 'f32', access: 'read'},
@@ -187,19 +310,12 @@ export function addVisibilityGraphRecipe<Parameters>(
       // Segment finiteness and clearance of both viewpoints are part of their classification
       // (3 for a non-finite segment, 2 within tolerance of a segment), so the pair test needs no
       // pass over the segments besides the ray itself.
-      body: `let first=index/${count}u;
-let second=index%${count}u;
-let origin=vec2<f32>(positions[positionsOffset+2u*first],positions[positionsOffset+2u*first+1u]);
-let destination=vec2<f32>(positions[positionsOffset+2u*second],positions[positionsOffset+2u*second+1u]);
-let displacement=destination-origin;
-let distance=length(displacement);
-let valid=classifications[classificationsOffset+first]==0u&&classifications[classificationsOffset+second]==0u&&isFiniteValue(origin.x)&&isFiniteValue(origin.y)&&isFiniteValue(destination.x)&&isFiniteValue(destination.y);
-var visible=false;
-if(valid&&first!=second&&distance>${tolerance}&&distance<=${props.maximumDistance}){
-  let hit=castRay(origin,displacement/distance,distance);
-  visible=hit.y<0.0;
-}
-output[outputOffset+index]=select(u32(visible),0xffffffffu,!valid);`
+      body: pointGrid
+        ? `let first=index;
+let center=vec2<f32>(positions[positionsOffset+2u*first],positions[positionsOffset+2u*first+1u]);
+if(classifications[classificationsOffset+first]!=0u){return;}
+${getUrbanPointGridRadiusWalk(pointGrid, 'center', getWGSLFloatLiteral(props.maximumDistance), 'second', testSightline)}`
+        : `let first=index/${count}u;let second=index%${count}u;${testSightline}`
     })
   );
   // Visible pairs (first < second) in row-major order: flag, stable compaction of the pair ids,
@@ -300,7 +416,7 @@ status[statusOffset+3u]=invalidCount[invalidCountOffset];`
         {name: 'contributions', view: contributions, type: 'f32', access: 'read_write'}
       ],
       body: `var distances:array<i32,${count}>;var paths:array<f32,${count}>;var dependency:array<f32,${count}>;var queue:array<u32,${count}>;
-for(var vertex=0u;vertex<${count}u;vertex++){distances[vertex]=-1;}
+for(var vertex=0u;vertex<${count}u*min(arrayLength(&adjacency),1u);vertex++){distances[vertex]=-1;}
 queue[0u]=index;distances[index]=0;paths[index]=1.0;var head=0u;var tail=1u;var degree=0.0;var distanceSum=0.0;
 for(var vertex=0u;vertex<${count}u;vertex++){degree+=f32(adjacency[adjacencyOffset+index*${count}u+vertex]==1u);}
 loop{if(head>=tail){break;}let vertex=queue[head];head++;
@@ -371,6 +487,7 @@ normalized[normalizedOffset+index]=select(missing,2.0*choice[choiceOffset+index]
       tolerance,
       region: props.region,
       obstacleIndex: obstacleBVH ? ('bvh' as const) : ('brute-force' as const),
+      searchStructure: pointGrid ? ('grid' as const) : ('brute-force' as const),
       integration: 'reachable-component-hillier-hanson' as const,
       choice: 'unnormalized-undirected-betweenness' as const
     }

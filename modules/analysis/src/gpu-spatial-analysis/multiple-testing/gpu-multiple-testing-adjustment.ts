@@ -4,6 +4,7 @@
 
 import {
   createTransientView,
+  getViewBindingRange,
   GPUSort,
   validatePackedUint32View,
   type GPUCommandGraph,
@@ -13,15 +14,21 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   createFillNode,
-  createWGSLKernelNode,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {createStatisticsKernelNode as createWGSLKernelNode} from '../spatial-weights/statistics-kernel-node';
 import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validateSinglePackedView
+  validateSinglePackedView,
+  validateGPUStorageBindingByteLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  validateDisjointWritableViews,
+  validateGraphChunkBindingRanges
+} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {SPATIAL_STATISTICS_COUNTS_WGSL} from '../spatial-weights/spatial-statistics-counts-wgsl';
 import {GET_NAN_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import type {GPUMultipleTestingMethod} from '../../analysis-core/contracts/index';
 
@@ -37,10 +44,10 @@ const UNTESTED_KEY = 0x3f800001;
 const SORT_KEY_BITS = 30;
 
 /**
- * Largest supported row count (exclusive): ranks and family sizes are held as exact f32 integers,
- * so the row count must stay below 2^24.
+ * Largest supported row count (exclusive): published GPUSort supports at most 2^31 rows.
+ * Counts and rank differences stay uint32; only statistical products and ratios convert to f32.
  */
-export const GPU_MULTIPLE_TESTING_MAXIMUM_ROWS = 1 << 24;
+export const GPU_MULTIPLE_TESTING_MAXIMUM_ROWS = 2 ** 31 + 1;
 
 const METHODS: readonly GPUMultipleTestingMethod[] = [
   'none',
@@ -92,7 +99,7 @@ export type GPUMultipleTestingAdjustmentProps = {
    */
   method: GPUMultipleTestingMethod;
   /**
-   * Compile-time, optional non-negative integer below 2^24. The family size used is
+   * Compile-time, optional non-negative integer at most 2^31. The family size used is
    * `m = max(testedRows, minimumFamilySize)`: rows that have no p-value count as `p = 1`. Use it to
    * pin `m` when the tested set can shrink (for example a statistic whose analysis mask follows a
    * viewport) so masking cannot make the remaining rows more significant. Defaults to 0 (`m` is the
@@ -213,8 +220,8 @@ export function getMultipleTestingAdjustedPValues(
  * on scheduling. Tied p-values get identical adjusted values through the cumulative extremum.
  *
  * Cost: `none` and Bonferroni are O(n). The step procedures add one 30-bit `GPUSort` of `n` keys
- * plus about 6 linear kernels; memory is a handful of `n`-sized `u32`/`f32` scratch columns. Row
- * counts are limited to below 2^24 so ranks are exact f32 integers.
+ * plus about 6 linear kernels; memory is a handful of `n`-sized `u32`/`f32` scratch columns. Ranks, rank differences and family counts stay uint32; only products and ratios
+ * convert to float32. Row buffers must fit the device storage binding limit.
  */
 export class GPUMultipleTestingAdjustment implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -248,6 +255,7 @@ export class GPUMultipleTestingAdjustment implements GPUCommandNodeProducer {
       [props.output.adjustedPValues, props.output.testedCount],
       [props.pValues]
     );
+    validateDisjointWritableViews(id, props.output);
   }
 
   /** Returns the adjustment nodes in dependency order. */
@@ -260,11 +268,39 @@ export class GPUMultipleTestingAdjustment implements GPUCommandNodeProducer {
       props.output.adjustedPValues,
       props.output.testedCount
     ]);
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(
+        [props.pValues, props.output.adjustedPValues, props.output.testedCount].map(
+          (view, index) => [`binding ${index}`, view]
+        )
+      )
+    );
+    for (const view of [props.pValues, props.output.adjustedPValues, props.output.testedCount]) {
+      if (view)
+        validateGPUStorageBindingByteLength(
+          graph.device,
+          id,
+          'multiple testing binding',
+          getViewBindingRange(view).size,
+          'reduce rows or request larger device bindings'
+        );
+    }
+    // Every row-proportional sort/scan plane is one uint32 or float32 word per row.
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'multiple testing row scratch',
+      props.pValues.length * 4,
+      'reduce rows or request larger device bindings'
+    );
     const method = resolveGPUMultipleTestingMethod(id, props.method);
     const minimumFamilySize = validateMinimumFamilySize(id, props.minimumFamilySize);
     const rows = props.pValues.length;
     const nodes: GPUCommandNode<Parameters>[] = [];
     const testedWGSL = `${GET_NAN_WGSL}
+${SPATIAL_STATISTICS_COUNTS_WGSL}
 // A p-value is tested when it is in [0, 1]: +0..1.0 as positive bit patterns, or -0.
 fn isTestedBits(bits: u32) -> bool {
   return bits <= 0x3f800000u || bits == 0x80000000u;
@@ -411,8 +447,8 @@ fn getHarmonicNumber(m: u32) -> f32 {
           invocationCount: rows,
           declarations: testedWGSL,
           body: `let p = pValues[pValuesOffset + index];
-  let m = f32(family[familyOffset + 1u]);
-  let value = ${method === 'none' ? 'p + 0.0' : 'min(p * m, 1.0)'};
+  let m = family[familyOffset + 1u];
+  let value = ${method === 'none' ? 'p + 0.0' : 'min(multiplyBySpatialCount(p, m), 1.0)'};
   adjusted[adjustedOffset + index] = select(getNaN(), value, isTestedBits(bitcast<u32>(p)));`
         })
       );
@@ -430,7 +466,8 @@ fn getHarmonicNumber(m: u32) -> f32 {
     // accumulate a minimum downward from the largest rank, so their scan runs on reversed order.
     const isMaximumScan = method === 'holm';
     const reverse = !isMaximumScan;
-    const scanWGSL = `const ROWS: u32 = ${rows}u;
+    const scanWGSL = `${SPATIAL_STATISTICS_COUNTS_WGSL}
+const ROWS: u32 = ${rows}u;
 const BLOCK_COUNT: u32 = ${blockCount}u;
 const BLOCK_CHUNK: u32 = ${blockChunk}u;
 const REVERSE: bool = ${reverse};
@@ -448,7 +485,7 @@ fn getStepValue(r: u32, key: u32, tested: u32, m: u32, scale: f32) -> f32 {
     return IDENTITY;
   }
   let p = bitcast<f32>(key);
-  ${isMaximumScan ? 'return f32(m - r) * p;' : 'return ((p * f32(m)) / f32(r + 1u)) * scale;'}
+  ${isMaximumScan ? 'return multiplyBySpatialCount(p, m - r);' : 'return divideBySpatialCount(multiplyBySpatialCount(p, m), r + 1u) * scale;'}
 }
 
 // Hillis-Steele inclusive scan of scanValues across the workgroup. Every invocation must call it.

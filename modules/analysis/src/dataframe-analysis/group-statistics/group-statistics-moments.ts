@@ -8,7 +8,7 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {createGroupStatisticsKernelNode} from './group-statistics-kernel';
 import {getFixedPointWGSL, ORDERED_KEY_WGSL} from '../../analysis-core/cell-key-wgsl';
 import {
   FIXED_POINT_WGSL,
@@ -21,7 +21,8 @@ import {
   GROUP_NONE,
   GROUP_VALUE_KEY_WGSL,
   readBinding,
-  writeBinding
+  writeBinding,
+  type GroupValueChunk
 } from './group-statistics-common';
 import type {GroupStructure} from './group-statistics-sort';
 
@@ -136,17 +137,22 @@ export function getColumnReductionNodes<Parameters>(
     id: string;
     operation: string;
     structure: GroupStructure;
-    valueBits: GraphDataView<'uint32'>;
+    valueChunks: readonly GroupValueChunk[];
     needs: GroupColumnReductionNeeds;
     variance: 'sample' | 'population';
     sumScale: number;
     output: GroupColumnReductionOutput;
+    /** Tiled moments retain the global shift mean but never allocate a global row tree. */
+    getMomentNodes?: (
+      means: GraphDataView<'float32'>,
+      output: GraphDataView<'float32'>
+    ) => GPUCommandNode<Parameters>[];
   }
 ): {
   nodes: GPUCommandNode<Parameters>[];
   finiteCounts: GraphDataView<'uint32'>;
 } {
-  const {id, operation, structure, valueBits, needs, output} = props;
+  const {id, operation, structure, valueChunks, needs, output} = props;
   const {capacity, rowCount} = structure;
   const nodes: GPUCommandNode<Parameters>[] = [];
   const u32 = (name: string, length: number) =>
@@ -181,7 +187,7 @@ ${FIXED_POINT_WGSL}`;
 
   // 1. Clear accumulators.
   nodes.push(
-    createWGSLKernelNode<Parameters>(graph, {
+    createGroupStatisticsKernelNode<Parameters>(graph, {
       id: `${id}-clear`,
       operation,
       variant: 'clear',
@@ -214,27 +220,28 @@ ${FIXED_POINT_WGSL}`;
   // (the same predicate), one `atomicMax` per workgroup. Excluded rows (a masked sentinel such as
   // 1e30) do not raise the unit.
   if (sumWords) {
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-sum-scale`,
-        operation,
-        variant: 'sum-scale',
-        bindings: [
-          readBinding('rowGroups', structure.rowGroups),
-          readBinding('valueBits', valueBits),
-          atomicBinding('sumWords', sumWords)
-        ],
-        invocationCount: rowCount,
-        guardIndex: false,
-        workgroupSize: ACCUMULATE_WORKGROUP_SIZE,
-        declarations: `${fixedPointDeclarations}
+    for (const [chunkIndex, {valueBits, rowOffset, rowGroups}] of valueChunks.entries()) {
+      nodes.push(
+        createGroupStatisticsKernelNode<Parameters>(graph, {
+          id: valueChunks.length === 1 ? `${id}-sum-scale` : `${id}-sum-scale-${chunkIndex}`,
+          operation,
+          variant: 'sum-scale',
+          bindings: [
+            readBinding('rowGroups', rowGroups ?? structure.rowGroups),
+            readBinding('valueBits', valueBits),
+            atomicBinding('sumWords', sumWords)
+          ],
+          invocationCount: valueBits.length,
+          rowOffset,
+          guardIndex: false,
+          declarations: `${fixedPointDeclarations}
 var<workgroup> workgroupExponentBits: atomic<u32>;`,
-        // No early return: every invocation of a workgroup must reach the barriers.
-        body: `if (localInvocationIndex == 0u) {
+          // No early return: every invocation of a workgroup must reach the barriers.
+          body: `if (localInvocationIndex == 0u) {
     atomicStore(&workgroupExponentBits, 0u);
   }
   workgroupBarrier();
-  if (index < INVOCATION_COUNT && rowGroups[rowGroupsOffset + index] != ${GROUP_NONE}u) {
+  if (index < INVOCATION_COUNT && rowGroups[rowGroupsOffset + index + GROUP_ROW_OFFSET] != ${GROUP_NONE}u) {
     // 0 for zero and for non-finite values, which step 3 skips.
     let exponentBits = getFixedPointExponentBits(bitcast<f32>(valueBits[valueBitsOffset + index]));
     if (exponentBits != 0u) {
@@ -248,8 +255,9 @@ var<workgroup> workgroupExponentBits: atomic<u32>;`,
       atomicMax(&sumWords[sumWordsOffset + SUM_SCALE_INDEX], workgroupMaximum);
     }
   }`
-      })
-    );
+        })
+      );
+    }
   }
 
   // 3. Accumulate with integer atomics, one invocation per source row.
@@ -264,29 +272,30 @@ fn getSumUnitExponent() -> i32 {
   );
 }`
     : '';
-  nodes.push(
-    createWGSLKernelNode<Parameters>(graph, {
-      id: `${id}-accumulate`,
-      operation,
-      variant: 'accumulate',
-      bindings: [
-        readBinding('rowGroups', structure.rowGroups),
-        readBinding('valueBits', valueBits),
-        atomicBinding('finiteCounts', finiteCounts),
-        ...(sumWords ? [atomicBinding('sumWords', sumWords)] : []),
-        ...(sums ? [atomicBinding('sums', sums)] : []),
-        ...(minimumKeys ? [atomicBinding('minimumKeys', minimumKeys)] : []),
-        ...(maximumKeys ? [atomicBinding('maximumKeys', maximumKeys)] : [])
-      ],
-      invocationCount: rowCount,
-      // Few groups make every row contend on the same handful of global counters, so each
-      // workgroup first accumulates into workgroup-private tables and flushes once per group.
-      // Integer adds, mins and maxes are associative, so the result is unchanged and exact.
-      ...(isPrivatized
-        ? {
-            guardIndex: false,
-            workgroupSize: ACCUMULATE_WORKGROUP_SIZE,
-            declarations: `${getFixedPointWGSL(props.sumScale)}
+  for (const [chunkIndex, {valueBits, rowOffset, rowGroups}] of valueChunks.entries()) {
+    nodes.push(
+      createGroupStatisticsKernelNode<Parameters>(graph, {
+        id: valueChunks.length === 1 ? `${id}-accumulate` : `${id}-accumulate-${chunkIndex}`,
+        operation,
+        variant: 'accumulate',
+        bindings: [
+          readBinding('rowGroups', rowGroups ?? structure.rowGroups),
+          readBinding('valueBits', valueBits),
+          atomicBinding('finiteCounts', finiteCounts),
+          ...(sumWords ? [atomicBinding('sumWords', sumWords)] : []),
+          ...(sums ? [atomicBinding('sums', sums)] : []),
+          ...(minimumKeys ? [atomicBinding('minimumKeys', minimumKeys)] : []),
+          ...(maximumKeys ? [atomicBinding('maximumKeys', maximumKeys)] : [])
+        ],
+        invocationCount: valueBits.length,
+        rowOffset,
+        // Few groups make every row contend on the same handful of global counters, so each
+        // workgroup first accumulates into workgroup-private tables and flushes once per group.
+        // Integer adds, mins and maxes are associative, so the result is unchanged and exact.
+        ...(isPrivatized
+          ? {
+              guardIndex: false,
+              declarations: `${getFixedPointWGSL(props.sumScale)}
 ${GROUP_VALUE_KEY_WGSL}
 ${sumWordsDeclarations}
 const GROUP_CAPACITY: u32 = ${capacity}u;
@@ -301,8 +310,8 @@ ${getFixedPointAtomicAddWGSL('localWords')}`
 ${sums ? `var<workgroup> localSums: array<atomic<u32>, ${2 * capacity}>;` : ''}
 ${minimumKeys ? `var<workgroup> localMinimums: array<atomic<u32>, ${capacity}>;` : ''}
 ${maximumKeys ? `var<workgroup> localMaximums: array<atomic<u32>, ${capacity}>;` : ''}`,
-            // No early return: every invocation of a workgroup must reach the barriers.
-            body: `for (var slot = localInvocationIndex; slot < GROUP_CAPACITY; slot += ${ACCUMULATE_WORKGROUP_SIZE}u) {
+              // No early return: every invocation of a workgroup must reach the barriers.
+              body: `for (var slot = localInvocationIndex; slot < GROUP_CAPACITY; slot += ${ACCUMULATE_WORKGROUP_SIZE}u) {
     atomicStore(&localCounts[slot], 0u);
     ${
       sumWords
@@ -317,7 +326,7 @@ ${maximumKeys ? `var<workgroup> localMaximums: array<atomic<u32>, ${capacity}>;`
   }
   workgroupBarrier();
   if (index < INVOCATION_COUNT) {
-    let group = rowGroups[rowGroupsOffset + index];
+    let group = rowGroups[rowGroupsOffset + index + GROUP_ROW_OFFSET];
     let bits = valueBits[valueBitsOffset + index];
     if (group != ${GROUP_NONE}u && isFiniteBits(bits)) {
       atomicAdd(&localCounts[group], 1u);
@@ -368,12 +377,12 @@ ${maximumKeys ? `var<workgroup> localMaximums: array<atomic<u32>, ${capacity}>;`
       ${maximumKeys ? 'atomicMax(&maximumKeys[maximumKeysOffset + slot], atomicLoad(&localMaximums[slot]));' : ''}
     }
   }`
-          }
-        : {
-            declarations: `${getFixedPointWGSL(props.sumScale)}
+            }
+          : {
+              declarations: `${getFixedPointWGSL(props.sumScale)}
 ${GROUP_VALUE_KEY_WGSL}
 ${sumWordsDeclarations}`,
-            body: `let group = rowGroups[rowGroupsOffset + index];
+              body: `let group = rowGroups[rowGroupsOffset + index + GROUP_ROW_OFFSET];
   if (group == ${GROUP_NONE}u) {
     return;
   }
@@ -399,14 +408,15 @@ ${sumWordsDeclarations}`,
   }
   ${minimumKeys ? 'atomicMin(&minimumKeys[minimumKeysOffset + group], getValueKey(bits));' : ''}
   ${maximumKeys ? 'atomicMax(&maximumKeys[maximumKeysOffset + group], getValueKey(bits));' : ''}`
-          })
-    })
-  );
+            })
+      })
+    );
+  }
 
   // 4. Counts, sums and means per group. Groups past the count have no finite values.
   if (output.counts || sumWords) {
     nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
+      createGroupStatisticsKernelNode<Parameters>(graph, {
         id: `${id}-finish-sums`,
         operation,
         variant: 'finish-sums',
@@ -460,7 +470,7 @@ ${sumWords ? fixedPointDeclarations : ''}`,
   // 5. Extremes (NaN for groups without finite values).
   if (output.minimums || output.maximums) {
     nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
+      createGroupStatisticsKernelNode<Parameters>(graph, {
         id: `${id}-finish-extremes`,
         operation,
         variant: 'finish-extremes',
@@ -488,20 +498,22 @@ ${sumWords ? fixedPointDeclarations : ''}`,
   // read momentSums: the finishing and z-score kernels test their finite count first.
   const momentSums = f32('moment-sums', 4 * capacity);
   nodes.push(
-    ...getGroupMomentTreeNodes(graph, {
-      id,
-      operation,
-      structure,
-      valueBits,
-      means: meanScratch,
-      output: momentSums
-    })
+    ...(props.getMomentNodes
+      ? props.getMomentNodes(meanScratch, momentSums)
+      : getGroupMomentTreeNodes(graph, {
+          id,
+          operation,
+          structure,
+          valueChunks,
+          means: meanScratch,
+          output: momentSums
+        }))
   );
 
   // 7. Variance, standard deviation, skewness and kurtosis.
   if (output.variances || output.standardDeviations || output.skewness || output.kurtosis) {
     nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
+      createGroupStatisticsKernelNode<Parameters>(graph, {
         id: `${id}-finish-moments`,
         operation,
         variant: 'finish-moments',
@@ -545,26 +557,28 @@ ${getMomentWGSL(props.variance)}`,
 
   // 8. Per-row z-scores in source row order.
   if (output.zScores) {
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-z-scores`,
-        operation,
-        variant: 'z-scores',
-        bindings: [
-          readBinding('rowGroups', structure.rowGroups),
-          readBinding('valueBits', valueBits),
-          readBinding('means', meanScratch, 'f32'),
-          readBinding('finiteCounts', finiteCounts),
-          readBinding('momentSums', momentSums, 'f32'),
-          writeBinding('zScoresOut', output.zScores, 'f32')
-        ],
-        invocationCount: rowCount,
-        declarations: `${ORDERED_KEY_WGSL}
+    for (const [chunkIndex, {valueBits, rowOffset, rowGroups}] of valueChunks.entries()) {
+      nodes.push(
+        createGroupStatisticsKernelNode<Parameters>(graph, {
+          id: valueChunks.length === 1 ? `${id}-z-scores` : `${id}-z-scores-${chunkIndex}`,
+          operation,
+          variant: 'z-scores',
+          bindings: [
+            readBinding('rowGroups', rowGroups ?? structure.rowGroups),
+            readBinding('valueBits', valueBits),
+            readBinding('means', meanScratch, 'f32'),
+            readBinding('finiteCounts', finiteCounts),
+            readBinding('momentSums', momentSums, 'f32'),
+            writeBinding('zScoresOut', output.zScores, 'f32')
+          ],
+          invocationCount: valueBits.length,
+          rowOffset,
+          declarations: `${ORDERED_KEY_WGSL}
 ${getMomentWGSL(props.variance)}
 fn isFiniteBits(bits: u32) -> bool {
   return (bits & 0x7f800000u) != 0x7f800000u;
 }`,
-        body: `let group = rowGroups[rowGroupsOffset + index];
+          body: `let group = rowGroups[rowGroupsOffset + index + GROUP_ROW_OFFSET];
   let bits = valueBits[valueBitsOffset + index];
   var z = getNaN();
   if (group != ${GROUP_NONE}u && isFiniteBits(bits)) {
@@ -592,9 +606,10 @@ fn isFiniteBits(bits: u32) -> bool {
     let centered = deviation - delta;
     z = select(centered / sqrt(variance), 0.0, m2 == 0.0 || !(variance > 0.0));
   }
-  zScoresOut[zScoresOutOffset + index] = z;`
-      })
-    );
+  zScoresOut[zScoresOutOffset + index + GROUP_ROW_OFFSET] = z;`
+        })
+      );
+    }
   }
   return {nodes, finiteCounts};
 }

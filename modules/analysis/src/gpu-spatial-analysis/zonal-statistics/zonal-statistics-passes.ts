@@ -13,10 +13,18 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {
   createWGSLKernelNode,
-  type WGSLKernelBinding
+  type WGSLKernelBinding,
+  type WGSLKernelProps
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  planGraphChunkDispatch,
+  createGraphChunkDispatchParameters,
+  validateGraphChunkDispatchBindings
+} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {createCellRowKernelNode} from '../cell-aggregation/cell-row-kernel';
 import {getGraphViewChunks} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {SCALED_QUOTIENT_WGSL} from '../../analysis-core/kernels/scaled-quotient-wgsl';
 
 const OPERATION = 'GPUZonalStatistics';
 
@@ -139,6 +147,15 @@ const FINITE_HELPERS = /* wgsl */ `
 const FLOAT32_MAXIMUM: f32 = 3.402823466e+38;
 ${IS_FINITE_VALUE_WGSL}`;
 
+const QUOTIENT_HELPERS = /* wgsl */ `${FINITE_HELPERS}
+${SCALED_QUOTIENT_WGSL}
+fn getZonalQuotient(numerator: f32, denominator: f32) -> f32 {
+  if (isFiniteValue(numerator) && isFiniteValue(denominator) && denominator != 0.0) {
+    return getScaledQuotient(numerator, denominator, 1.0, 0);
+  }
+  return numerator / denominator;
+}`;
+
 /** Rows produced by the per-point prepare kernels. @internal */
 export type ZonalStatisticsPreparedRows = {
   /** 1 when the row has a finite value (and finite weight when weights are given). */
@@ -170,6 +187,20 @@ export function createZonalStatisticsPrepareNodes<Parameters>(
     ? getGraphViewChunks(props.weightContributions)
     : [];
   const isVector = props.values instanceof GraphVectorView;
+  const chunkPlan = isVector
+    ? planGraphChunkDispatch(props.id, {
+        values: props.values,
+        weights: props.weights,
+        valueMask: props.valueMask,
+        sumContributions: props.sumContributions,
+        weightContributions: props.weightContributions
+      })
+    : undefined;
+  if (chunkPlan) validateGraphChunkDispatchBindings(graph, props.id, chunkPlan);
+  const parameters = chunkPlan
+    ? createGraphChunkDispatchParameters(graph, {id: `${props.id}-prepare-chunks`, plan: chunkPlan})
+    : undefined;
+  nodes.push(...(parameters?.nodes ?? []));
   for (const [chunkIndex, valueChunk] of valueChunks.entries()) {
     if (valueChunk.length === 0) {
       continue;
@@ -200,8 +231,21 @@ export function createZonalStatisticsPrepareNodes<Parameters>(
         access: 'read_write'
       });
     }
+    const createNode = (nodeProps: WGSLKernelProps<Parameters>) =>
+      parameters
+        ? createCellRowKernelNode(graph, {
+            id: nodeProps.id,
+            operation: OPERATION,
+            variant: 'prepare',
+            length: valueChunk.length,
+            parameters: parameters.slots[chunkIndex],
+            bindings: bindings.map(binding => ({...binding, components: 1})),
+            declarations: nodeProps.declarations,
+            body: nodeProps.body
+          })
+        : createWGSLKernelNode<Parameters>(graph, nodeProps);
     nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
+      createNode({
         id: isVector ? `${props.id}-prepare-chunk-${chunkIndex}` : `${props.id}-prepare`,
         operation: OPERATION,
         variant: 'prepare',
@@ -346,17 +390,18 @@ export function createZonalStatisticsMeanNode<Parameters>(
     variant: 'means',
     bindings,
     invocationCount: props.featureCount,
+    declarations: QUOTIENT_HELPERS,
     body: weighted
       ? `let weightSum = weightSums[weightSumsOffset + index];
   var mean = ${ZONAL_STATISTICS_NAN_BITS};
   if (weightSum != 0.0) {
-    mean = bitcast<u32>(sums[sumsOffset + index] / weightSum);
+    mean = bitcast<u32>(getZonalQuotient(sums[sumsOffset + index], weightSum));
   }
   means[meansOffset + index] = mean;`
       : `let valueCount = valueCounts[valueCountsOffset + index];
   var mean = ${ZONAL_STATISTICS_NAN_BITS};
   if (valueCount != 0u) {
-    mean = bitcast<u32>(sums[sumsOffset + index] / f32(valueCount));
+    mean = bitcast<u32>(getZonalQuotient(sums[sumsOffset + index], f32(valueCount)));
   }
   means[meansOffset + index] = mean;`
   });
@@ -383,11 +428,11 @@ export function createZonalStatisticsDensityNode<Parameters>(
       {name: 'densities', view: props.densities, type: 'u32', access: 'read_write'}
     ],
     invocationCount: props.featureCount,
-    declarations: FINITE_HELPERS,
+    declarations: QUOTIENT_HELPERS,
     body: `let area = areas[areasOffset + index];
   var density = ${ZONAL_STATISTICS_NAN_BITS};
   if (isFiniteValue(area) && area > 0.0) {
-    density = bitcast<u32>(f32(counts[countsOffset + index]) / area);
+    density = bitcast<u32>(getZonalQuotient(f32(counts[countsOffset + index]), area));
   }
   densities[densitiesOffset + index] = density;`
   });
@@ -479,11 +524,11 @@ export function createZonalStatisticsWeightedDensityNode<Parameters>(
       {name: 'densities', view: props.weightedDensities, type: 'u32', access: 'read_write'}
     ],
     invocationCount: props.featureCount,
-    declarations: FINITE_HELPERS,
+    declarations: QUOTIENT_HELPERS,
     body: `let area = areas[areasOffset + index];
   var density = ${ZONAL_STATISTICS_NAN_BITS};
   if (isFiniteValue(area) && area > 0.0) {
-    density = bitcast<u32>(weightSums[weightSumsOffset + index] / area);
+    density = bitcast<u32>(getZonalQuotient(weightSums[weightSumsOffset + index], area));
   }
   densities[densitiesOffset + index] = density;`
   });
@@ -593,6 +638,7 @@ export function createZonalStatisticsVarianceNode<Parameters>(
     variant: weighted ? 'variances-weighted' : 'variances',
     bindings,
     invocationCount: props.featureCount,
+    declarations: QUOTIENT_HELPERS,
     body: `let valueCount = valueCounts[valueCountsOffset + index];
   var variance = ${ZONAL_STATISTICS_NAN_BITS};
   var deviation = ${ZONAL_STATISTICS_NAN_BITS};
@@ -601,12 +647,12 @@ export function createZonalStatisticsVarianceNode<Parameters>(
     weighted
       ? `let weightSum = weightSums[weightSumsOffset + index];
   if (weightSum != 0.0) {
-    denominator = weightSum - weightSquareSums[weightSquareSumsOffset + index] / weightSum;
+    denominator = weightSum - getZonalQuotient(weightSquareSums[weightSquareSumsOffset + index], weightSum);
   }`
       : 'denominator = f32(valueCount) - 1.0;'
   }
   if (valueCount >= 2u && denominator > 0.0) {
-    let result = squaredDeviationSums[squaredDeviationSumsOffset + index] / denominator;
+    let result = getZonalQuotient(squaredDeviationSums[squaredDeviationSumsOffset + index], denominator);
     variance = bitcast<u32>(result);
     deviation = bitcast<u32>(sqrt(result));
   }

@@ -161,11 +161,18 @@ it.each([
       edgeCounts: view('uint32', 3),
       pentagons: view('uint32', 3)
     };
-    for (const output of [
+    for (const [outputIndex, output] of [
       outputs,
       ...Object.entries(outputs).map(([name, value]) => ({[name]: value}))
-    ]) {
-      const contributor = new GPUCellMeasures({family, cells, maximumEdgeCount: 10, output});
+    ].entries()) {
+      // Each declaration now owns its chunk-parameter resource in this shared graph.
+      const contributor = new GPUCellMeasures({
+        id: `cell-measures-${family}-${outputIndex}`,
+        family,
+        cells,
+        maximumEdgeCount: 10,
+        output
+      });
       expect(contributor.maximumEdgeCount).toBe(10);
       expect(contributor.measures.lengthModel).toBe(
         family === 's2' ? 'great-circle' : 'sphere-parallel-meridian'
@@ -173,7 +180,11 @@ it.each([
       expect(contributor.measures.areaModel).toBe(
         family === 's2' ? 'sphere-polygon' : 'sphere-rectangle'
       );
-      for (const kernel of getGPUCommandNodeKernelSources(contributor.getCommandNodes(graph))) {
+      const nodes = contributor.getCommandNodes(graph);
+      for (const node of nodes) graph.add(node);
+      const kernels = getGPUCommandNodeKernelSources(nodes);
+      expect(kernels).toHaveLength(1);
+      for (const kernel of kernels) {
         expect(() => new WgslReflect(kernel.source)).not.toThrow();
         expect(auditWGSLModule(kernel.source, kernel.constants)).toEqual([]);
       }

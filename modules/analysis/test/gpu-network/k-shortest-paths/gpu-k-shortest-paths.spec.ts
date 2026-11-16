@@ -324,3 +324,41 @@ it('an overlong one-slot path cannot corrupt an adjacent invalid-endpoint query'
     expect(Array.from(gpu[name]), name).toEqual(Array.from(cpu[name]));
   checkPadding(gpu, 2, 1);
 });
+
+it('shares round shaders across independently exhausted queries', async () => {
+  // Three parallel edges yield costs 1, 2, 3. Identity and invalid queries finish before them.
+  const rows = await run(
+    {
+      topology: {
+        offsets: Uint32Array.of(0, 3, 3),
+        neighbors: Uint32Array.of(1, 1, 1),
+        weights: Float32Array.of(3, 1, 2)
+      },
+      sources: Uint32Array.of(0, 0, 9),
+      targets: Uint32Array.of(1, 0, 1)
+    },
+    {routeCount: 4, maximumPathLength: 2}
+  );
+  expect(Array.from(rows['counts'])).toEqual([3, 1, 0]);
+  expect(Array.from(rows['costs'])).toEqual([
+    1,
+    2,
+    3,
+    Infinity,
+    0,
+    Infinity,
+    Infinity,
+    Infinity,
+    Infinity,
+    Infinity,
+    Infinity,
+    Infinity
+  ]);
+  expect(Array.from(rows['edges'].slice(0, 6))).toEqual([
+    1, 0xffffffff, 2, 0xffffffff, 0, 0xffffffff
+  ]);
+  expect(Array.from(rows['converged'])).toEqual([1]);
+  expect(Array.from(rows['iterationLimitReached'])).toEqual([0]);
+  expect(Array.from(rows['candidateOverflow'])).toEqual([0]);
+  checkPadding(rows, 4, 2);
+});

@@ -432,6 +432,7 @@ it('GPUGroupStatistics refuses row scratch above the device binding limit before
     const contributor = new GPUGroupStatistics({
       ...props,
       keys: createTransientView(graph, 'too-many-keys', 'uint32', rowCount),
+      scratchMode: 'packed',
       columns: []
     });
     expect(() => contributor.getCommandNodes(graph)).toThrow(

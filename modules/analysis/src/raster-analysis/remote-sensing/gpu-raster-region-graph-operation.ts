@@ -14,6 +14,7 @@ export type RasterRegionGraphOperationProps = {
   values: string;
   regionCount: number;
   mergeMode?: 'fixed' | 'adaptive';
+  searchStructure?: 'auto' | 'dense' | 'boruvka';
   mergeThreshold: number;
   maximumIterations: number;
   output: {

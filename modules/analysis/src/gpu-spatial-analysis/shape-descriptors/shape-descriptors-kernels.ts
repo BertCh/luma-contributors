@@ -7,9 +7,15 @@ import {
   createWGSLKernelNode,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {GUARDED_ATAN2_WGSL, IS_NAN_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {
+  GUARDED_ATAN2_WGSL,
+  IS_NAN_BITS_WGSL,
+  IS_FINITE_VALUE_WGSL
+} from '../../analysis-core/kernels/wgsl-common';
 import {EXACT_ORIENTATION_WGSL} from '../../analysis-core/kernels/exact-orientation-wgsl';
 import {ADDITION_ROUNDING_ERROR_WGSL} from '../../analysis-core/kernels/addition-rounding-error-wgsl';
+import {SCALED_QUOTIENT_WGSL} from '../../analysis-core/kernels/scaled-quotient-wgsl';
+import {SHAPE_MOMENT_RANGE_WGSL} from './shape-moment-range-wgsl';
 
 /** Number of float32 elements in a `GPUShapeDescriptors` parameter buffer. */
 export const GPU_SHAPE_DESCRIPTORS_PARAMETER_LENGTH = 4;
@@ -126,6 +132,7 @@ export function createMomentsNode<Parameters>(
     invocationCount: props.featureCount,
     declarations: `${getRingDeclarations(props)}
 ${IS_NAN_BITS_WGSL}
+${SHAPE_MOMENT_RANGE_WGSL}
 
 ${ADDITION_ROUNDING_ERROR_WGSL}
 // accumulator = (sum, compensation). The compensation is the rounding error of each addition,
@@ -157,10 +164,11 @@ fn addNeumaier(accumulator: ptr<function, vec2<f32>>, value: f32) {
         for (var row = rowStart; row < rowEnd; row++) {
           let current = getPosition(row) - centroid;
           let cross = previous.x * current.y - current.x * previous.y;
+          let terms = getShapeMomentTerms(previous, current);
           addNeumaier(&twiceArea, cross);
-          addNeumaier(&ringXX, cross * (previous.x * previous.x + previous.x * current.x + current.x * current.x));
-          addNeumaier(&ringYY, cross * (previous.y * previous.y + previous.y * current.y + current.y * current.y));
-          addNeumaier(&ringXY, cross * (previous.x * current.y + 2.0 * previous.x * previous.y + 2.0 * current.x * current.y + current.x * previous.y));
+          addNeumaier(&ringXX, terms.x);
+          addNeumaier(&ringYY, terms.y);
+          addNeumaier(&ringXY, terms.z);
           previous = current;
         }
       }
@@ -170,9 +178,9 @@ fn addNeumaier(accumulator: ptr<function, vec2<f32>>, value: f32) {
       }
       let factor = select(-1.0, 1.0, isShellRing(ring, ring == ringStart)) * sign(ringTwiceArea);
       totalTwiceArea += factor * ringTwiceArea;
-      addNeumaier(&totalXX, factor * (ringXX.x + ringXX.y) / 12.0);
-      addNeumaier(&totalYY, factor * (ringYY.x + ringYY.y) / 12.0);
-      addNeumaier(&totalXY, factor * (ringXY.x + ringXY.y) / 24.0);
+      addNeumaier(&totalXX, factor * (ringXX.x + ringXX.y));
+      addNeumaier(&totalYY, factor * (ringYY.x + ringYY.y));
+      addNeumaier(&totalXY, factor * (ringXY.x + ringXY.y));
     }
   }
   // Shell rings count positive and holes negative whatever their winding, so the total is
@@ -326,15 +334,19 @@ export function createCompactnessNode<Parameters>(
     variant: 'compactness',
     bindings,
     invocationCount: props.featureCount,
-    declarations: `fn getNan(seed: u32) -> f32 {
+    declarations: `${SCALED_QUOTIENT_WGSL}
+${IS_FINITE_VALUE_WGSL}
+fn getNan(seed: u32) -> f32 {
   // A runtime operand keeps the compiler from folding a constant NaN.
   return bitcast<f32>(0x7fc00000u | (seed & 0u));
 }`,
     body: /* wgsl */ `let area = areas[areasOffset + index];
   let perimeter = perimeters[perimetersOffset + index];
-  let isValid = area > 0.0 && perimeter > 0.0;
-  // Divide by the perimeter twice so a 1e6 m perimeter does not square into f32 trouble.
-  let ratio = 4.0 * 3.14159265358979 * area / perimeter / perimeter;
+  let isValid = area > 0.0 && perimeter > 0.0 && isFiniteValue(area) && isFiniteValue(perimeter);
+  // Split exponents before division: parentheses alone cannot prevent fast-math reassociation
+  // into area / (perimeter * perimeter), whose denominator can overflow for finite inputs.
+  var ratio = getNan(index);
+  if (isValid) { ratio = getScaledQuotient(area, perimeter, perimeter, 0) * (4.0 * 3.14159265358979); }
   ${props.polsbyPopper ? 'polsbyPopper[polsbyPopperOffset + index] = select(getNan(index), ratio, isValid);' : ''}
   ${props.schwartzberg ? 'schwartzberg[schwartzbergOffset + index] = select(getNan(index), sqrt(ratio), isValid);' : ''}
   ${props.sliver ? 'sliver[sliverOffset + index] = select(0u, 1u, perimeter > 0.0 && (area <= 0.0 || ratio < parameters[parametersOffset]));' : ''}`
@@ -386,10 +398,19 @@ fn getNan(seed: u32) -> f32 {
   // A runtime operand keeps the compiler from folding a constant NaN.
   return bitcast<f32>(0x7fc00000u | (seed & 0u));
 }`,
-    body: /* wgsl */ `let xx = moments[momentsOffset + 4u * index];
-  let yy = moments[momentsOffset + 4u * index + 1u];
-  let xy = moments[momentsOffset + 4u * index + 2u];
+    body: /* wgsl */ `let momentXX = moments[momentsOffset + 4u * index];
+  let momentYY = moments[momentsOffset + 4u * index + 1u];
+  let momentXY = moments[momentsOffset + 4u * index + 2u];
   let firstArea = moments[momentsOffset + 4u * index + 3u];
+  // Eigenvalue ratios and angle are invariant under positive scaling. Normalize before squaring
+  // so finite moments of large polygons cannot overflow, and tiny polygons do not underflow.
+  let magnitude = max(max(abs(momentXX), abs(momentYY)), abs(momentXY));
+  // Division by magnitude can lower to multiplication by a subnormal reciprocal, flushed to
+  // zero near the f32 maximum. ldexp changes the exponent without forming that reciprocal.
+  let exponent = frexp(magnitude).exp;
+  let xx = ldexp(momentXX, -exponent);
+  let yy = ldexp(momentYY, -exponent);
+  let xy = ldexp(momentXY, -exponent);
   let mean = 0.5 * (xx + yy);
   let radius = sqrt(0.25 * (xx - yy) * (xx - yy) + xy * xy);
   let major = mean + radius;

@@ -19,6 +19,7 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {getGPUVectorFormatInfo, type GPUVectorFormat} from '@luma.gl/graph/gpu-data';
 import type {GPUCompactOutput} from './gpu-contributor-types';
+import {getCoreDefaultBuffer} from '../network-topology';
 
 /** Scalar formats supported by {@link GPUParameterBuffer}. */
 export type GPUParameterFormat = 'float32' | 'uint32' | 'sint32';
@@ -151,7 +152,7 @@ export function validateGraphViewsBelongToGraph<Parameters>(
 }
 
 /**
- * Throws when any writable view shares a graph buffer with any input view.
+ * Throws when any writable view shares a graph or imported physical buffer with an input.
  *
  * The graph compiler rejects overlapping writable bindings within one node. Contributors whose
  * outputs are written by separate nodes must also validate output-versus-output separation.
@@ -161,11 +162,16 @@ export function validateGraphOutputsDisjointFromInputs(
   outputs: readonly (GraphDataView | GraphVectorView | undefined)[],
   inputs: readonly (GraphDataView | GraphVectorView | undefined)[]
 ): void {
+  const getBufferIdentity = (view: GraphDataView) =>
+    view.buffer.defaultBuffer ? getCoreDefaultBuffer(view.buffer.defaultBuffer) : view.buffer;
   const inputBuffers = new Set(
-    inputs.flatMap(view => (view ? getGraphViewChunks(view).map(chunk => chunk.buffer) : []))
+    inputs.flatMap(view => (view ? getGraphViewChunks(view).map(getBufferIdentity) : []))
   );
   for (const view of outputs) {
-    if (view && getGraphViewChunks(view).some(chunk => inputBuffers.has(chunk.buffer))) {
+    if (
+      view &&
+      getGraphViewChunks(view).some(chunk => inputBuffers.has(getBufferIdentity(chunk)))
+    ) {
       throw new Error(`${id} outputs must not share buffers with inputs`);
     }
   }
@@ -451,7 +457,8 @@ export function getNextPowerOfTwo(value: number): number {
  * Throws when one storage binding of `byteLength` bytes exceeds the device's
  * `maxStorageBufferBindingSize` (128 MiB on default WebGPU devices). Without this check WebGPU
  * rejects the bind group at dispatch with a validation error; call it where row-proportional
- * scratch is sized, with `hint` naming the prop to change.
+ * scratch is sized, with `hint` naming the prop to change. Byte lengths must be nonnegative
+ * safe integers, so NaN, infinity and malformed arithmetic cannot bypass the size guard.
  *
  * @param device Device whose limit applies.
  * @param id Contributor ID, for the message.
@@ -466,6 +473,11 @@ export function validateGPUStorageBindingByteLength(
   byteLength: number,
   hint: string
 ): void {
+  validateRequirement(
+    id,
+    Number.isSafeInteger(byteLength) && byteLength >= 0,
+    `${name} byteLength must be a nonnegative safe integer, received ${byteLength}`
+  );
   const limit = device.limits.maxStorageBufferBindingSize;
   if (byteLength > limit) {
     throw new Error(

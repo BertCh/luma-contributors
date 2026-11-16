@@ -20,3 +20,13 @@ export type {
 } from './cpu-network-centrality-operation';
 export {GPUNetworkCentralityOperation} from './gpu-network-centrality-operation';
 export type {NetworkCentralityOperationProps} from './gpu-network-centrality-operation';
+export {
+  GPUNetworkCentralityScheduleStep,
+  planNetworkCentralitySchedule
+} from './gpu-network-centrality-schedule-step';
+export type {
+  GPUNetworkCentralityScheduleStepProps,
+  NetworkCentralityScheduleStep
+} from './gpu-network-centrality-schedule-step';
+export {createNetworkCentralityContinuation} from './network-centrality-continuation';
+export type {NetworkCentralityContinuationProps} from './network-centrality-continuation';

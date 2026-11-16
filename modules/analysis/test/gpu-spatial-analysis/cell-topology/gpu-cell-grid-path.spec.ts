@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {Buffer, Device} from '@luma.gl/core';
+import {Buffer, type Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
@@ -17,8 +17,15 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
-import {h3ToBigInt, joinCellKey, splitCellKey} from '../cell-aggregation/cell-aggregation-oracle';
+import {
+  h3ToBigInt,
+  joinCellKey,
+  splitCellKey,
+  quadbinTileToCell
+} from '../cell-aggregation/cell-aggregation-oracle';
 import {H3_GRID_PATH_FIXTURES} from './h3-grid-path-fixtures';
+import {getS2TopologyCell, getS2TopologyRowOnCPU} from './s2-topology-oracle';
+import type {GPUCellFamily} from '../../../src/gpu-spatial-analysis/cell-indexing/cell-index-families';
 import {requireTestDevice} from '../../utils/require-test-device';
 
 /** Pairs H3 rejects or the kernel must reject: resolution mismatch, zero cell, masked row. */
@@ -40,12 +47,15 @@ async function runGridPath(
   device: Device,
   pairs: {origin: bigint; destination: bigint; isMasked?: boolean}[],
   maximumPathLength: number,
-  wordOrder: 'little-endian' | 'high-low' = 'little-endian'
+  wordOrder: 'little-endian' | 'high-low' = 'little-endian',
+  family: GPUCellFamily = 'h3',
+  maximumSearchRadius?: number,
+  packedSubviews = false
 ): Promise<Run> {
   const rows = pairs.length;
   const buffers: Buffer[] = [];
   const track = (buffer: Buffer) => {
-    buffers.push(buffer);
+    if (!buffers.includes(buffer)) buffers.push(buffer);
     return buffer;
   };
   const graph = new GPUCommandGraph(device, {id: 'cell-grid-path-graph'});
@@ -57,42 +67,87 @@ async function runGridPath(
     });
     return array;
   };
-  const originsBuffer = track(createInputBuffer(device, words('origin')));
-  const destinationsBuffer = track(createInputBuffer(device, words('destination')));
-  const maskBuffer = track(
-    createInputBuffer(
-      device,
-      Uint32Array.from(pairs, pair => (pair.isMasked ? 0 : 1))
-    )
-  );
-  const distancesBuffer = track(createOutputBuffer(device, rows));
-  const cellsBuffer = track(createOutputBuffer(device, 2 * rows * Math.max(maximumPathLength, 1)));
-  const countsBuffer = track(createOutputBuffer(device, rows));
+  const input = (values: Uint32Array) => {
+    if (!packedSubviews) return createInputBuffer(device, values);
+    const prefixed = new Uint32Array(values.length + 1);
+    prefixed[0] = 0xdeadbeef;
+    prefixed.set(values, 1);
+    return device.createBuffer({data: prefixed, usage: Buffer.STORAGE});
+  };
+  const originsBuffer = track(input(words('origin')));
+  const destinationsBuffer = track(input(words('destination')));
+  const maskBuffer = track(input(Uint32Array.from(pairs, pair => (pair.isMasked ? 0 : 1))));
+  const cellWordLength = 2 * rows * Math.max(maximumPathLength, 1);
+  const distancesByteOffset = packedSubviews ? 4 : 0;
+  const cellsByteOffset = packedSubviews ? Math.ceil((4 + rows * 4) / 256) * 256 + 4 : 0;
+  const countsByteOffset = packedSubviews
+    ? Math.ceil((cellsByteOffset + cellWordLength * 4) / 256) * 256 + 4
+    : 0;
+  const packed = packedSubviews
+    ? track(
+        device.createBuffer({
+          byteLength: countsByteOffset + rows * 4,
+          usage: Buffer.STORAGE | Buffer.COPY_SRC
+        })
+      )
+    : undefined;
+  const packedHandle = packed
+    ? importGraphBuffer(graph, 'packed-output', packed, 'uint32').buffer
+    : undefined;
+  const distancesBuffer = track(packed ?? createOutputBuffer(device, rows));
+  const cellsBuffer = track(packed ?? createOutputBuffer(device, cellWordLength));
+  const countsBuffer = track(packed ?? createOutputBuffer(device, rows));
+  const inputView = <Format extends 'uint32' | 'uint32x2'>(
+    name: string,
+    buffer: Buffer,
+    format: Format,
+    length: number
+  ) => {
+    const view = importGraphBuffer(graph, name, buffer, format, length);
+    return packedSubviews
+      ? graph.createDataView(view.buffer, {format, length, byteOffset: 4})
+      : view;
+  };
+  const outputView = <Format extends 'uint32' | 'uint32x2'>(
+    name: string,
+    buffer: Buffer,
+    format: Format,
+    length: number,
+    byteOffset: number
+  ) =>
+    packedHandle
+      ? graph.createDataView(packedHandle, {format, length, byteOffset})
+      : importGraphBuffer(graph, name, buffer, format, length);
   graph.add(
     new GPUCellGridPath({
-      family: 'h3',
-      origins: importGraphBuffer(graph, 'origins', originsBuffer, 'uint32x2', rows),
-      destinations: importGraphBuffer(graph, 'destinations', destinationsBuffer, 'uint32x2', rows),
+      family,
+      maximumSearchRadius,
+      origins: inputView('origins', originsBuffer, 'uint32x2', rows),
+      destinations: inputView('destinations', destinationsBuffer, 'uint32x2', rows),
       wordOrder,
-      mask: importGraphBuffer(graph, 'mask', maskBuffer, 'uint32', rows),
+      mask: inputView('mask', maskBuffer, 'uint32', rows),
       maximumPathLength: maximumPathLength || undefined,
       output: {
-        distances: importGraphBuffer(graph, 'distances', distancesBuffer, 'uint32', rows),
+        distances: outputView('distances', distancesBuffer, 'uint32', rows, distancesByteOffset),
         cells: maximumPathLength
-          ? importGraphBuffer(graph, 'cells', cellsBuffer, 'uint32x2', rows * maximumPathLength)
+          ? outputView('cells', cellsBuffer, 'uint32x2', rows * maximumPathLength, cellsByteOffset)
           : undefined,
         counts: maximumPathLength
-          ? importGraphBuffer(graph, 'counts', countsBuffer, 'uint32', rows)
+          ? outputView('counts', countsBuffer, 'uint32', rows, countsByteOffset)
           : undefined
       }
     })
   );
   const compiled = graph.compile();
   submitGraph(device, compiled, undefined);
+  const read = async (buffer: Buffer, length: number, byteOffset: number) =>
+    packedSubviews
+      ? (await readUint32(buffer)).slice(byteOffset / 4, byteOffset / 4 + length)
+      : readUint32(buffer, length);
   const result = {
-    distances: await readUint32(distancesBuffer, rows),
-    cells: await readUint32(cellsBuffer, 2 * rows * Math.max(maximumPathLength, 1)),
-    counts: await readUint32(countsBuffer, rows)
+    distances: await read(distancesBuffer, rows, distancesByteOffset),
+    cells: await read(cellsBuffer, cellWordLength, cellsByteOffset),
+    counts: await read(countsBuffer, rows, countsByteOffset)
   };
   compiled.destroy();
   buffers.forEach(buffer => buffer.destroy());
@@ -228,7 +283,9 @@ it('GPUCellGridPath validates its properties', async () => {
   const origins = importGraphBuffer(graph, 'origins', buffer, 'uint32x2', 2);
   const distances = importGraphBuffer(graph, 'distances', outBuffer, 'uint32', 2);
   const base = {family: 'h3' as const, origins, destinations: origins, output: {distances}};
-  expect(() => new GPUCellGridPath({...base, output: {}})).toThrow(/needs output/);
+  expect(() => new GPUCellGridPath({...base, output: {}})).toThrow(
+    /output needs distances or cells/
+  );
   expect(
     () =>
       new GPUCellGridPath({
@@ -236,9 +293,162 @@ it('GPUCellGridPath validates its properties', async () => {
         output: {cells: importGraphBuffer(graph, 'cells', buffer, 'uint32x2', 2)}
       })
   ).toThrow(/maximumPathLength/);
-  expect(() => new GPUCellGridPath({...base, family: 'quadbin' as unknown as 'h3'})).toThrow(
-    /family/
-  );
+  expect(() => new GPUCellGridPath({...base, family: 'bad' as unknown as 'h3'})).toThrow(/family/);
   buffer.destroy();
   outBuffer.destroy();
+});
+
+it('Quadbin distances use wrapped Chebyshev steps, including level 26, masks and truncated paths', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const level of [3, 26]) {
+    const size = 2 ** level;
+    const pairs = [
+      {origin: quadbinTileToCell(0, 3, level), destination: quadbinTileToCell(size - 1, 6, level)},
+      {origin: quadbinTileToCell(2, 2, level), destination: quadbinTileToCell(2, 2, level)},
+      {origin: 0n, destination: quadbinTileToCell(0, 0, level)},
+      {
+        origin: quadbinTileToCell(0, 3, level),
+        destination: quadbinTileToCell(0, 3, level),
+        isMasked: true
+      }
+    ];
+    for (const wordOrder of ['little-endian', 'high-low'] as const) {
+      const run = await runGridPath(device, pairs, 3, wordOrder, 'quadbin');
+      expect(run.distances).toEqual([
+        3,
+        0,
+        GPU_CELL_GRID_DISTANCE_UNDEFINED,
+        GPU_CELL_GRID_DISTANCE_UNDEFINED
+      ]);
+      expect(run.counts).toEqual([4, 1, 0, 0]);
+      expect(getPathRow(run, 0, 3, wordOrder)).toEqual(
+        [
+          quadbinTileToCell(0, 3, level),
+          quadbinTileToCell(size - 1, 4, level),
+          quadbinTileToCell(size - 1, 5, level)
+        ].map(cell => cell.toString(16))
+      );
+      expect(getPathRow(run, 1, 3, wordOrder)).toEqual([pairs[1].origin.toString(16), '', '']);
+    }
+  }
+  device.destroy();
+});
+
+it('S2 distance unfolds level-30 opposite and adjacent faces without uint32 overflow', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const size = 2 ** 30;
+  const cell = (face: number, column: number, row: number) =>
+    getS2TopologyCell({face, ij: [column, row], level: 30});
+  const pairs = [
+    // Opposite face centers with matching physical tangent coordinates: one full face plus
+    // the two equal distances to its nearest edge and two seam crossings.
+    {origin: cell(0, size / 2, size / 2), destination: cell(3, size / 2 - 1, size / 2 - 1)},
+    {origin: cell(0, 0, 0), destination: cell(3, size - 1, size - 1)},
+    // Adjacent far corners require two complete boundary approaches and a seam-tangent span.
+    {origin: cell(0, 0, 0), destination: cell(1, size - 1, size - 1)}
+  ];
+  const expected = [2 * size - 1, size + 1, 3 * size - 2];
+  const result = await runGridPath(device, pairs, 2, 'high-low', 's2');
+  expect(result.distances).toEqual(expected);
+  expect(result.counts).toEqual(expected.map(distance => distance + 1));
+  for (let row = 0; row < pairs.length; row++)
+    expect(getPathRow(result, row, 2, 'high-low')[0]).toBe(pairs[row].origin.toString(16));
+  const bounded = await runGridPath(device, pairs, 2, 'little-endian', 's2', 8);
+  expect(bounded.distances).toEqual(pairs.map(() => GPU_CELL_GRID_DISTANCE_UNDEFINED));
+  expect(bounded.counts).toEqual([0, 0, 0]);
+  expect(bounded.cells.every(word => word === 0)).toBe(true);
+  device.destroy();
+});
+
+it('S2 grid distances match independent graph BFS through cube corners and level 30', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const pairs: {origin: bigint; destination: bigint}[] = [];
+  const expected: number[] = [];
+  for (let face = 0; face < 6; face++) {
+    const origin = getS2TopologyCell({face, ij: [0, 0], level: 2});
+    const disk = getS2TopologyRowOnCPU({type: 'disk', k: 16}, origin);
+    for (let index = 0; index < disk.cells.length; index++) {
+      pairs.push({origin, destination: disk.cells[index]});
+      expected.push(disk.distances[index]);
+    }
+  }
+  const fine = getS2TopologyCell({face: 3, ij: [10000, 10000], level: 30});
+  for (const [column, row] of [
+    [10003, 10002],
+    [10004, 10004],
+    [10005, 10004]
+  ]) {
+    pairs.push({
+      origin: fine,
+      destination: getS2TopologyCell({face: 3, ij: [column, row], level: 30})
+    });
+    const distance = Math.abs(column - 10000) + Math.abs(row - 10000);
+    expected.push(distance);
+  }
+  for (const stride of [3, 10]) {
+    const run = await runGridPath(device, pairs, stride, 'little-endian', 's2');
+    expect(run.distances).toEqual(expected);
+    expect(run.counts).toEqual(
+      expected.map(distance => (distance === GPU_CELL_GRID_DISTANCE_UNDEFINED ? 0 : distance + 1))
+    );
+    for (let row = 0; row < pairs.length; row++) {
+      const stored = getPathRow(run, row, stride)
+        .filter(Boolean)
+        .map(value => BigInt(`0x${value}`));
+      if (expected[row] === GPU_CELL_GRID_DISTANCE_UNDEFINED) {
+        expect(stored).toEqual([]);
+        continue;
+      }
+      expect(stored[0]).toBe(pairs[row].origin);
+      if (stored.length === expected[row] + 1) expect(stored.at(-1)).toBe(pairs[row].destination);
+      for (let step = 1; step < stored.length; step++)
+        expect(getS2TopologyRowOnCPU({type: 'ring', k: 1}, stored[step - 1]).cells).toContain(
+          stored[step]
+        );
+    }
+  }
+  device.destroy();
+});
+
+it('regular-grid paths preserve every key word, row boundary and zero tail in packed nonaligned layouts', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const family of ['quadbin', 's2'] as const) {
+    const same =
+      family === 's2'
+        ? getS2TopologyCell({face: 5, ij: [0, 0], level: 0})
+        : quadbinTileToCell(2, 2, 26);
+    const stepCell = (step: number) =>
+      family === 's2'
+        ? getS2TopologyCell({face: 3, ij: [10000 + step, 10000], level: 30})
+        : quadbinTileToCell(10000 + step, 10000, 26);
+    const pairs = [
+      {origin: same, destination: same},
+      {origin: stepCell(0), destination: stepCell(3)},
+      {origin: stepCell(0), destination: stepCell(3), isMasked: true},
+      {origin: 0n, destination: stepCell(0)}
+    ];
+    for (const stride of [1, 3, 5])
+      for (const wordOrder of ['little-endian', 'high-low'] as const) {
+        const result = await runGridPath(device, pairs, stride, wordOrder, family, undefined, true);
+        expect(result.distances).toEqual([0, 3, 0xffffffff, 0xffffffff]);
+        expect(result.counts).toEqual([1, 4, 0, 0]);
+        const expected = Array.from({length: pairs.length * stride}, (_, index) => {
+          const row = Math.floor(index / stride);
+          const slot = index % stride;
+          if (row === 0) return slot === 0 ? same : 0n;
+          if (row === 1 && slot <= 3) return stepCell(slot);
+          return 0n;
+        });
+        const words = expected.flatMap(cell => {
+          const [low, high] = splitCellKey(cell);
+          return wordOrder === 'high-low' ? [high, low] : [low, high];
+        });
+        expect(result.cells).toEqual(words);
+      }
+  }
+  device.destroy();
 });

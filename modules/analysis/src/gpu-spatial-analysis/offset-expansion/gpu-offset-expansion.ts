@@ -10,7 +10,6 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -18,6 +17,8 @@ import {
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import type {GPUCardinalityPort, GPUOverflowStatusPort} from '../../analysis-core/contracts/index';
+
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 
 const OPERATION = 'GPUOffsetExpansion';
 
@@ -145,15 +146,21 @@ export class GPUOffsetExpansion implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
     const {output} = props;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.offsets,
-      props.ownerMap,
-      output.owners,
-      output.localIndex,
-      output.status.count,
-      output.status.overflow,
-      output.status.requiredCount
-    ]);
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(
+        [
+          props.offsets,
+          props.ownerMap,
+          output.owners,
+          output.localIndex,
+          output.status.count,
+          output.status.overflow,
+          output.status.requiredCount
+        ].map((view, index) => [String(index), view])
+      )
+    );
     const ownerCount = props.offsets.length - 1;
     const bindings: WGSLKernelBinding[] = [
       {name: 'offsets', view: props.offsets, type: 'u32', access: 'read'},

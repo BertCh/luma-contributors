@@ -8,6 +8,23 @@ import type {KernelAuditRejection} from './kernel-audit-rejection-type';
 export const DATAFRAME_REJECTIONS: readonly KernelAuditRejection[] = [
   {
     exportName: 'GPUColumnProfile',
+    name: 'numeric rows one above the storage binding maximum',
+    kind: 'binding',
+    limit: 134217728,
+    rejects:
+      /^Error: column-profile columns\[0\]\.values chunk 0 needs 134217732 bytes in one binding \(limit 134217728\); reduce the chunk row count or output capacity$/
+  },
+  {
+    exportName: 'GPUColumnProfile',
+    name: 'row metadata one above uint32 addressing',
+    kind: 'binding',
+    limit: 4294967295,
+    rejects:
+      /^Error: column-profile columns\[0\] length must be at most 4294967295: row indices and counts use uint32$/
+  },
+
+  {
+    exportName: 'GPUColumnProfile',
     name: 'category total one above the maximum, 16 columns',
     kind: 'binding',
     limit: 33554432,
@@ -44,8 +61,7 @@ export const DATAFRAME_REJECTIONS: readonly KernelAuditRejection[] = [
   },
   ...[
     ['GPUColumnQuantiles', 'column-quantiles', 'values length'],
-    ['GPUClassBreaks', 'class-breaks', 'values length'],
-    ['GPUColumnProfile', 'column-profile', 'columns\\[0\\] length']
+    ['GPUClassBreaks', 'class-breaks', 'values length']
   ].map(
     ([exportName, id, property]): KernelAuditRejection => ({
       exportName,

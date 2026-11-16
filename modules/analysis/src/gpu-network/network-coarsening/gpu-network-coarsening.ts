@@ -6,19 +6,23 @@ import type {Device} from '@luma.gl/core';
 import {
   createTransientView,
   GPUScan,
-  GPUSort,
+  GPUUint32Gather,
+  doGraphDataViewsOverlap,
+  getViewBindingRange,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCompactOutput} from '../../analysis-core/kernels/gpu-contributor-types';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
+import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {
   createFillNode,
   createWGSLKernelNode,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {getSortKeyBits} from '../../analysis-core/kernels/sorted-segment-sums';
+import {createStableLexicographicIndexSortNodes} from '../../analysis-core/kernels/stable-lexicographic-index-sort';
 import {
   FIXED_POINT_WGSL,
   getFixedPointHeadroomBits
@@ -31,10 +35,13 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateCompactOutput,
-  validatePowerOfTwo
+  validatePowerOfTwo,
+  validateRequirement,
+  validateGPUStorageBindingByteLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPUNetworkAdjacency} from '../../analysis-core/network-topology';
 import {
+  getCoreDefaultBuffer,
   getGPUNetworkTopologyViews,
   validateGPUNetworkTopology
 } from '../../analysis-core/network-topology';
@@ -49,18 +56,23 @@ import {
 } from '../network-workgroup-counters';
 
 /**
- * Largest supported `groupCapacity`. A superedge key `source * groupCapacity + target` must stay
- * below `2^32`, and `65535^2 + 1` does.
+ * Largest group capacity whose ten-word per-group accumulator can be addressed with uint32.
+ * The device storage binding limit usually imposes a smaller capacity.
  */
-export const GPU_NETWORK_COARSENING_MAXIMUM_GROUP_CAPACITY = 65535;
+export const GPU_NETWORK_COARSENING_MAXIMUM_GROUP_CAPACITY = Math.floor(0xffffffff / 10);
 
 /**
  * Largest superedge capacity (`output.edges.ids` rows) of {@link GPUNetworkCoarsening} with
  * `output.edgeWeights` on `device`: the 64-bit fixed-point weight accumulators hold 8 bytes per
- * superedge slot in one storage binding, so 16777216 on a default device (128 MiB bindings).
+ * superedge slot in one storage binding and buffer with uint32 word addressing, so 16777216 on a default device
+ * (128 MiB bindings and 256 MiB buffers).
  */
 export function getGPUNetworkCoarseningMaximumWeightedEdgeCapacity(device: Device): number {
-  return getStorageBindingElementLimit(device, 8);
+  return Math.min(
+    GPU_NETWORK_COARSENING_MAXIMUM_WEIGHTED_EDGE_CAPACITY,
+    getStorageBindingElementLimit(device, 8),
+    Math.floor(device.limits.maxBufferSize / 8)
+  );
 }
 
 /** Number of words of the optional `summary` view. */
@@ -155,7 +167,7 @@ export type GPUNetworkCoarseningProps = {
   /** Optional per-node finite `float32` value column summed per group. */
   nodeValues?: GraphDataView<'float32'>;
   /**
-   * Compile-time number of dense groups, `1..65535`. Every `groupXxx` output has exactly this many
+   * Compile-time number of dense groups, up to {@link GPU_NETWORK_COARSENING_MAXIMUM_GROUP_CAPACITY}, subject to device storage binding limits. Every `groupXxx` output has exactly this many
    * rows. A live node with a label at or above it is excluded and raises `output.edges.overflow`.
    */
   groupCapacity: number;
@@ -202,6 +214,15 @@ export type GPUNetworkCoarseningOutput = {
   /** Optional {@link GPU_NETWORK_COARSENING_SUMMARY_LENGTH}-word diagnostic view. */
   summary?: GraphDataView<'uint32'>;
 };
+
+/** Counts and segment scans use uint32; no total can exceed the number of CSR slots. */
+const GPU_NETWORK_COARSENING_MAXIMUM_SLOT_COUNT = 0xffffffff;
+/** CSR offsets include one terminal row, and shader array lengths are represented as uint32. */
+const GPU_NETWORK_COARSENING_MAXIMUM_NODE_COUNT = 0xfffffffe;
+/** The superedge capacity is emitted as a uint32 shader literal. */
+const GPU_NETWORK_COARSENING_MAXIMUM_EDGE_CAPACITY = 0xffffffff;
+/** Each weighted superedge owns two uint32 words in one shader-addressable accumulator array. */
+const GPU_NETWORK_COARSENING_MAXIMUM_WEIGHTED_EDGE_CAPACITY = Math.floor(0xffffffff / 2);
 
 const OPERATION = 'GPUNetworkCoarsening';
 const GROUP_ACC_STRIDE = 10;
@@ -281,7 +302,7 @@ function getFixedPointAddSource(array: string, index: string, quantized: string)
  * plus a bounded list of superedges (source group, target group, edge count, summed weight).
  *
  * Labels. Labels are arbitrary `uint32`, but the group ID is the label itself and must be below
- * the compile-time `groupCapacity` (at most 65535). A live node with a larger label is excluded
+ * the compile-time `groupCapacity` (also bounded by the device storage binding size). A live node with a larger label is excluded
  * from every group and superedge, edges touching it are counted in `droppedEdgeCount`, and
  * `edges.overflow` is set. A GPU-side dense relabel was rejected: first-come hash slot assignment
  * is nondeterministic across runs, and a deterministic rank needs a sort of the vertices plus a
@@ -307,8 +328,8 @@ function getFixedPointAddSource(array: string, index: string, quantized: string)
  * decoded sum by the count. Bounds use ordered-integer `atomicMin`/`atomicMax`, so they are
  * exact. NaN inputs add nothing; with a data-derived unit infinite inputs add nothing either.
  *
- * Superedges use sort-and-segment: each counted inter-group slot gets the key `a * groupCapacity +
- * b` (`a < b` for undirected edges), keys sort with the stable radix `GPUSort`, a scan numbers the
+ * Superedges use sort-and-segment: each counted inter-group slot gets separate source and target
+ * columns (`a < b` for undirected edges), a stable lexicographic sort orders them, a scan numbers the
  * segments, and counts and fixed-point weight sums accumulate per segment. The output order, the
  * kept prefix on overflow, the counts and the weights are all deterministic. A bounded hash table
  * was rejected because a full table drops keys depending on atomic race order.
@@ -335,8 +356,22 @@ export class GPUNetworkCoarsening implements GPUCommandNodeProducer {
     const {output} = props;
     const topologyShape = validateGPUNetworkTopology(id, props.topology);
     validateSinglePackedView(props.labels, ['uint32'], `${id} labels`);
+    validateCapacity(
+      id,
+      'topology.neighbors.length',
+      topologyShape.edgeCount,
+      0,
+      GPU_NETWORK_COARSENING_MAXIMUM_SLOT_COUNT
+    );
     this.nodeCount = topologyShape.nodeCount;
     const {nodeCount} = this;
+    validateCapacity(
+      id,
+      'topology node count',
+      nodeCount,
+      1,
+      GPU_NETWORK_COARSENING_MAXIMUM_NODE_COUNT
+    );
     if (topologyShape.edgeCount < 1) {
       throw new Error(`${id} topology.neighbors must contain at least one slot`);
     }
@@ -352,7 +387,12 @@ export class GPUNetworkCoarsening implements GPUCommandNodeProducer {
     if (props.fixedPointScale !== undefined) {
       validatePowerOfTwo(id, 'fixedPointScale', props.fixedPointScale, 1, 2 ** 24);
     }
-    const rowChecks: [string, GraphDataView | undefined, number, readonly string[]][] = [
+    const rowChecks: [
+      string,
+      GraphDataView | undefined,
+      number,
+      readonly GraphDataView['format'][]
+    ][] = [
       ['nodeMask', props.nodeMask, nodeCount, ['uint32']],
       ['labels', props.labels, nodeCount, ['uint32']],
       ['nodeValues', props.nodeValues, nodeCount, ['float32']],
@@ -368,7 +408,7 @@ export class GPUNetworkCoarsening implements GPUCommandNodeProducer {
       if (!view) {
         continue;
       }
-      validateSinglePackedView(view, formats as any, `${id} ${name}`);
+      validateSinglePackedView(view, formats, `${id} ${name}`);
       if (view.length !== length) {
         throw new Error(`${id} ${name} must contain exactly ${length} rows`);
       }
@@ -386,6 +426,13 @@ export class GPUNetworkCoarsening implements GPUCommandNodeProducer {
     if (this.edgeCapacity < 1) {
       throw new Error(`${id} output.edges.ids must contain at least one row`);
     }
+    validateCapacity(
+      id,
+      'output.edges.ids rows',
+      this.edgeCapacity,
+      1,
+      GPU_NETWORK_COARSENING_MAXIMUM_EDGE_CAPACITY
+    );
     for (const [name, view, formats] of [
       ['output.edgeTargetGroups', output.edgeTargetGroups, ['uint32']],
       ['output.edgeCounts', output.edgeCounts, ['uint32']],
@@ -394,7 +441,7 @@ export class GPUNetworkCoarsening implements GPUCommandNodeProducer {
       if (!view) {
         continue;
       }
-      validateSinglePackedView(view, formats as any, `${id} ${name}`);
+      validateSinglePackedView(view, formats, `${id} ${name}`);
       if (view.length !== this.edgeCapacity) {
         throw new Error(`${id} ${name} must match output.edges.ids length`);
       }
@@ -408,6 +455,51 @@ export class GPUNetworkCoarsening implements GPUCommandNodeProducer {
       }
     }
     validateGraphOutputsDisjointFromInputs(id, this.getOutputs(), this.getInputs());
+    const outputs = this.getOutputs().filter((view): view is GraphDataView => Boolean(view));
+    const inputCoreBuffers = new Set(
+      this.getInputs().flatMap(view =>
+        view?.buffer.defaultBuffer ? [getCoreDefaultBuffer(view.buffer.defaultBuffer)] : []
+      )
+    );
+    for (const view of outputs) {
+      validateRequirement(
+        id,
+        !view.buffer.defaultBuffer ||
+          !inputCoreBuffers.has(getCoreDefaultBuffer(view.buffer.defaultBuffer)),
+        'outputs must not share buffers with inputs'
+      );
+    }
+    for (const [index, first] of outputs.entries()) {
+      for (const second of outputs.slice(index + 1)) {
+        validateRequirement(
+          id,
+          first.buffer === second.buffer ||
+            !first.buffer.defaultBuffer ||
+            !second.buffer.defaultBuffer ||
+            getCoreDefaultBuffer(first.buffer.defaultBuffer) !==
+              getCoreDefaultBuffer(second.buffer.defaultBuffer),
+          'outputs sharing physical storage must use one graph buffer handle'
+        );
+        validateRequirement(
+          id,
+          !doGraphDataViewsOverlap(first, second),
+          'output writable byte ranges must not overlap'
+        );
+      }
+    }
+    const outputBindingGroups: (GraphDataView | undefined)[][] = [
+      [output.edges.ids, output.edgeTargetGroups, output.edgeCounts],
+      [output.groupNodeCount, output.groupCentroid, output.groupBounds, output.groupValueSum],
+      [output.groupIntraEdgeCount, output.groupIntraWeight],
+      [output.edges.status.count, output.edges.status.overflow, output.edges.status.requiredCount]
+    ];
+    for (const group of outputBindingGroups) {
+      validateDisjointWritableViews(
+        id,
+        Object.fromEntries(group.map((view, index) => [`output[${index}]`, view])),
+        {strictAlignedBindings: true}
+      );
+    }
   }
 
   private getInputs(): (GraphDataView | undefined)[] {
@@ -455,6 +547,44 @@ export class GPUNetworkCoarsening implements GPUCommandNodeProducer {
       );
     }
     const slotCount = props.topology.neighbors.length;
+    for (const view of [...this.getInputs(), ...this.getOutputs()]) {
+      if (view) {
+        validateMaximumCount(
+          id,
+          'packed view buffer byteLength',
+          view.buffer.byteLength,
+          graph.device.limits.maxBufferSize
+        );
+        validateGPUStorageBindingByteLength(
+          graph.device,
+          id,
+          'packed view',
+          getViewBindingRange(view).size,
+          'reduce the packed view length'
+        );
+      }
+    }
+    for (const [name, bytes] of [
+      ['row scratch', Math.max(nodeCount, slotCount, 1) * 4],
+      ['group accumulator', groupCapacity * GROUP_ACC_STRIDE * 4],
+      [
+        'intra accumulator',
+        props.output.groupIntraEdgeCount || props.output.groupIntraWeight
+          ? groupCapacity * 3 * 4
+          : 0
+      ],
+      ['edge weight accumulator', props.output.edgeWeights ? edgeCapacity * 8 : 0],
+      ['statistics', STATISTICS_LENGTH * 4]
+    ] as const) {
+      validateMaximumCount(id, `${name} byteLength`, bytes, graph.device.limits.maxBufferSize);
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        name,
+        bytes,
+        'reduce groupCapacity, topology size or output capacity'
+      );
+    }
     const directed = Boolean(props.directed);
     // Unit of the fixed-point sums. Without `fixedPointScale` it follows the data: the largest
     // exponent of the terms that are summed is reduced on the GPU into a scale word. With
@@ -485,7 +615,7 @@ export class GPUNetworkCoarsening implements GPUCommandNodeProducer {
         props.topology.neighbors.length,
         statsAccess
       );
-    const sentinelKey = groupCapacity * groupCapacity;
+    const sentinelKey = groupCapacity;
     const hasPositions = Boolean(props.topology.nodePositions);
     const hasValues = Boolean(props.nodeValues);
     const hasIntra = Boolean(props.output.groupIntraEdgeCount || props.output.groupIntraWeight);
@@ -503,8 +633,7 @@ export class GPUNetworkCoarsening implements GPUCommandNodeProducer {
     const stats = u32('stats', STATISTICS_LENGTH);
     const sortKeys = u32('sort-keys', slotCount);
     const sortIndices = u32('sort-indices', slotCount);
-    const sortedKeys = u32('sorted-keys', slotCount);
-    const sortedIndices = u32('sorted-indices', slotCount);
+    const targetKeys = u32('target-keys', slotCount);
     const flags = u32('segment-flags', slotCount);
     const segmentScan = u32('segment-scan', slotCount);
     const segmentTotal = u32('segment-total', 1);
@@ -542,6 +671,7 @@ export class GPUNetworkCoarsening implements GPUCommandNodeProducer {
     // They take the sentinel key and sort last; otherwise stale words (transients alias) would
     // enter the sort as superedges (review B-09, library rule 11).
     fill('clear-sort-keys', sortKeys, 'u32', `${sentinelKey}u`);
+    fill('clear-target-keys', targetKeys, 'u32', `${sentinelKey}u`);
 
     // Initialise the per-group accumulator: sums are 0, bound minima are the largest ordered key.
     nodes.push(
@@ -809,10 +939,34 @@ ${weightScaleCounters.declarations}`,
       );
     }
 
+    // Folding the optional edge mask into neighbors keeps source and target keys in separate
+    // scalar bindings without exceeding eight storage bindings when intra weights are requested.
+    let classifiedNeighbors = props.topology.neighbors;
+    if (props.edgeMask) {
+      classifiedNeighbors = u32('classified-neighbors', slotCount);
+      nodes.push(
+        createWGSLKernelNode(graph, {
+          id: `${id}-mask-neighbors`,
+          operation: OPERATION,
+          invocationCount: slotCount,
+          bindings: [
+            {name: 'neighbors', view: props.topology.neighbors, type: 'u32', access: 'read'},
+            {name: 'edgeMask', view: props.edgeMask, type: 'u32', access: 'read'},
+            {
+              name: 'classifiedNeighbors',
+              view: classifiedNeighbors,
+              type: 'u32',
+              access: 'read_write'
+            }
+          ],
+          body: `classifiedNeighbors[classifiedNeighborsOffset + index] = select(0xffffffffu, neighbors[neighborsOffset + index], edgeMask[edgeMaskOffset + index] != 0u);`
+        })
+      );
+    }
     // Slots: classify each counted slot, count intra-group edges and emit inter-group keys.
     const slotBindings: WGSLKernelBinding[] = [
       {name: 'offsets', view: props.topology.offsets, type: 'u32', access: 'read'},
-      {name: 'neighbors', view: props.topology.neighbors, type: 'u32', access: 'read'},
+      {name: 'neighbors', view: classifiedNeighbors, type: 'u32', access: 'read'},
       {
         name: 'effectiveLabels',
         view: effectiveLabels,
@@ -820,14 +974,6 @@ ${weightScaleCounters.declarations}`,
         access: 'read'
       }
     ];
-    if (props.edgeMask) {
-      slotBindings.push({
-        name: 'edgeMask',
-        view: props.edgeMask,
-        type: 'u32',
-        access: 'read'
-      });
-    }
     if (props.topology.weights && hasIntraWeight) {
       slotBindings.push({
         name: 'weights',
@@ -842,6 +988,7 @@ ${weightScaleCounters.declarations}`,
       type: 'u32',
       access: 'read_write'
     });
+    slotBindings.push({name: 'targetKeys', view: targetKeys, type: 'u32', access: 'read_write'});
     if (intraAcc) {
       slotBindings.push({
         name: 'intraAcc',
@@ -856,9 +1003,6 @@ ${weightScaleCounters.declarations}`,
       type: 'atomic<u32>',
       access: 'read_write'
     });
-    const pairKey = directed
-      ? 'sourceLabel * GROUP_CAPACITY + targetLabel'
-      : 'min(sourceLabel, targetLabel) * GROUP_CAPACITY + max(sourceLabel, targetLabel)';
     const slotCounters = getWorkgroupCounterKernelSource({
       counters: [
         {target: 'stats', word: WORD.countedEdgeCount},
@@ -879,11 +1023,11 @@ ${weightScaleCounters.declarations}`,
   ${hasIntraWeight ? `let weightUnitExponent = ${getWeightUnitExponentSource('atomic')};` : ''}
   for (var slot = rowBegin; slot < rowEnd; slot++) {
     var key = SENTINEL_KEY;
+    var destinationKey = SENTINEL_KEY;
     let targetVertex = neighbors[neighborsOffset + slot];
     if (sourceLabel != DEAD && targetVertex < NODE_COUNT) {
       let targetLabel = effectiveLabels[effectiveLabelsOffset + targetVertex];
       var live = targetLabel != DEAD;
-      ${props.edgeMask ? 'if (live) { live = edgeMask[edgeMaskOffset + slot] != 0u; }' : ''}
       ${directed ? '' : 'live = live && index <= targetVertex;'}
       if (live) {
         counted++;
@@ -901,11 +1045,13 @@ ${weightScaleCounters.declarations}`,
           }
         } else {
           inter++;
-          key = ${pairKey};
+          key = ${directed ? 'sourceLabel' : 'min(sourceLabel, targetLabel)'};
+          destinationKey = ${directed ? 'targetLabel' : 'max(sourceLabel, targetLabel)'};
         }
       }
     }
     sortKeys[sortKeysOffset + slot] = key;
+    targetKeys[targetKeysOffset + slot] = destinationKey;
   }
   ${
     intraAcc
@@ -967,14 +1113,27 @@ ${slotCounters.declarations}`,
         body: 'sortIndices[sortIndicesOffset + index] = index;'
       })
     );
+    const sorted = createStableLexicographicIndexSortNodes(graph, {
+      id: `${id}-sort`,
+      operation: OPERATION,
+      indices: sortIndices,
+      indicesAreIdentity: true,
+      packKeys: false,
+      keys: [
+        {view: sortKeys, keyBits: getSortKeyBits(groupCapacity)},
+        {view: targetKeys, keyBits: getSortKeyBits(groupCapacity)}
+      ]
+    });
+    nodes.push(...sorted.nodes);
+    const sortedKeys = sorted.sortedPrimaryKeys;
+    const sortedIndices = sorted.sortedIndices;
+    const sortedTargets = u32('sorted-targets', slotCount);
     nodes.push(
-      ...new GPUSort({
-        id: `${id}-sort`,
-        keys: sortKeys,
-        values: sortIndices,
-        outputKeys: sortedKeys,
-        outputValues: sortedIndices,
-        keyBits: getSortKeyBits(sentinelKey)
+      ...new GPUUint32Gather({
+        id: `${id}-target-gather`,
+        source: targetKeys,
+        indices: sortedIndices,
+        output: sortedTargets
       }).getCommandNodes(graph)
     );
     nodes.push(
@@ -984,6 +1143,7 @@ ${slotCounters.declarations}`,
         variant: 'flags',
         bindings: [
           {name: 'sortedKeys', view: sortedKeys, type: 'u32', access: 'read'},
+          {name: 'sortedTargets', view: sortedTargets, type: 'u32', access: 'read'},
           {name: 'flags', view: flags, type: 'u32', access: 'read_write'}
         ],
         invocationCount: slotCount,
@@ -991,7 +1151,7 @@ ${slotCounters.declarations}`,
         body: `let key = sortedKeys[sortedKeysOffset + index];
   var isStart = key != SENTINEL_KEY;
   if (isStart && index > 0u) {
-    isStart = sortedKeys[sortedKeysOffset + index - 1u] != key;
+    isStart = sortedKeys[sortedKeysOffset + index - 1u] != key || sortedTargets[sortedTargetsOffset + index - 1u] != sortedTargets[sortedTargetsOffset + index];
   }
   flags[flagsOffset + index] = select(0u, 1u, isStart);`
       })
@@ -1042,6 +1202,7 @@ ${slotCounters.declarations}`,
     );
     const segmentBindings: WGSLKernelBinding[] = [
       {name: 'sortedKeys', view: sortedKeys, type: 'u32', access: 'read'},
+      {name: 'sortedTargets', view: sortedTargets, type: 'u32', access: 'read'},
       {name: 'segmentScan', view: segmentScan, type: 'u32', access: 'read'},
       {
         name: 'edgeIds',
@@ -1074,7 +1235,7 @@ ${slotCounters.declarations}`,
       addSlot: string
     ) =>
       `let first = index * ${SEGMENT_RUN_LENGTH}u;
-  let last = min(first + ${SEGMENT_RUN_LENGTH}u, SLOT_COUNT);
+  let last = first + min(${SEGMENT_RUN_LENGTH}u, SLOT_COUNT - first);
   var runSegment = 0xffffffffu;
   var runCount = 0u;
   ${declareRun}
@@ -1085,7 +1246,7 @@ ${slotCounters.declarations}`,
     }
     var isStart = true;
     if (position > 0u) {
-      isStart = sortedKeys[sortedKeysOffset + position - 1u] != key;
+      isStart = sortedKeys[sortedKeysOffset + position - 1u] != key || sortedTargets[sortedTargetsOffset + position - 1u] != sortedTargets[sortedTargetsOffset + position];
     }
     let segment = segmentScan[segmentScanOffset + position] + select(0u, 1u, isStart) - 1u;
     if (segment != runSegment) {
@@ -1122,8 +1283,8 @@ const SLOT_COUNT: u32 = ${slotCount}u;`;
           '',
           'atomicAdd(&edgeCounts[edgeCountsOffset + runSegment], runCount);',
           `if (isStart) {
-      edgeIds[edgeIdsOffset + segment] = key / GROUP_CAPACITY;
-      edgeTargets[edgeTargetsOffset + segment] = key % GROUP_CAPACITY;
+      edgeIds[edgeIdsOffset + segment] = key;
+      edgeTargets[edgeTargetsOffset + segment] = sortedTargets[sortedTargetsOffset + position];
     }`
         )
       })
@@ -1131,6 +1292,7 @@ const SLOT_COUNT: u32 = ${slotCount}u;`;
     if (segmentWeightAcc && props.output.edgeWeights) {
       const segmentWeightBindings: WGSLKernelBinding[] = [
         {name: 'sortedKeys', view: sortedKeys, type: 'u32', access: 'read'},
+        {name: 'sortedTargets', view: sortedTargets, type: 'u32', access: 'read'},
         {name: 'segmentScan', view: segmentScan, type: 'u32', access: 'read'},
         {
           name: 'segmentWeightAcc',

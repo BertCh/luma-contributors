@@ -106,6 +106,14 @@ import {
   type GPUSpatialLogDeterminantMode
 } from './spatial-exact-log-determinant';
 
+import {
+  getSpatialErrorLikelihoodAllocationLengths,
+  validateRegressionAllocations
+} from './spatial-likelihood-allocations';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+
+import {validateRegressionOutputDispatches} from './regression-output-dispatches';
+
 const OPERATION = 'GPUSpatialErrorMaximumLikelihood';
 const MAXIMUM_DEFAULT_TILE_COUNT = 4096;
 const MINIMUM_DEFAULT_TILE_ROWS = 64;
@@ -380,6 +388,18 @@ export class GPUSpatialErrorMaximumLikelihood implements GPUCommandNodeProducer 
       Math.max(MINIMUM_DEFAULT_TILE_ROWS, Math.ceil(rows / MAXIMUM_DEFAULT_TILE_COUNT));
     // Tiles never span chunks; a whole CSR has ceil(rows / tileRowCount) tiles.
     this.tileCount = getGPUSpatialWeightsTilePlan(props.weights, this.tileRowCount).tileCount;
+    validateRegressionOutputDispatches(
+      id,
+      {
+        table: output.table,
+        summary: output.summary,
+        code: output.status.code,
+        converged: output.status.converged,
+        residuals: output.residuals,
+        powerTraceStandardErrors: output.powerTraceStandardErrors
+      },
+      [['table', 'summary', 'code', 'converged']]
+    );
     validateGraphOutputsDisjointFromInputs(
       id,
       [
@@ -390,7 +410,13 @@ export class GPUSpatialErrorMaximumLikelihood implements GPUCommandNodeProducer 
         output.residuals,
         output.powerTraceStandardErrors
       ],
-      [props.predictors, props.response, ...getGPUSpatialWeightsOrChunksViews(props.weights)]
+      [
+        props.predictors,
+        props.response,
+        props.eigenvalues,
+        props.traceParameters,
+        ...getGPUSpatialWeightsOrChunksViews(getLikelihoodWeightsWithoutDistances(props.weights))
+      ]
     );
   }
 
@@ -403,6 +429,41 @@ export class GPUSpatialErrorMaximumLikelihood implements GPUCommandNodeProducer 
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, rowCount, tileRowCount, tileCount, maximumPower, tailExtrapolation} = this;
+    validateGraphChunkBindingRanges(graph, id, {
+      predictors: props.predictors,
+      response: props.response,
+      eigenvalues: props.eigenvalues,
+      traceParameters: props.traceParameters,
+      ...Object.fromEntries(
+        getGPUSpatialWeightsOrChunksViews(getLikelihoodWeightsWithoutDistances(props.weights)).map(
+          (view, index) => [`weights ${index}`, view]
+        )
+      ),
+      table: props.output.table,
+      summary: props.output.summary,
+      residuals: props.output.residuals,
+      code: props.output.status.code,
+      converged: props.output.status.converged,
+      powerTraceStandardErrors: props.output.powerTraceStandardErrors
+    });
+    const traceTileRowCount = Math.max(32, Math.ceil(rowCount / 1024));
+    const traceTileCount = getGPUSpatialWeightsTilePlan(props.weights, traceTileRowCount).tileCount;
+    const weightPlan = getGPUSpatialWeightsTilePlan(props.weights, tileRowCount);
+    const edgeCount = Math.max(
+      ...weightPlan.dispatches.map(dispatch => dispatch.weights.weights.length),
+      0
+    );
+    validateRegressionAllocations(
+      graph.device,
+      id,
+      getSpatialErrorLikelihoodAllocationLengths({
+        ...props,
+        rowCount,
+        edgeCount,
+        tileCount,
+        traceTileCount
+      })
+    );
     const tailWGSL = tailExtrapolation ? getSpatialSeriesTailWGSL(maximumPower, 'powerTraces') : '';
     const exact = this.exactLogDeterminant;
     const exactWGSL = getExactLogDeterminantWGSL('eigenvalues', rowCount);
@@ -420,7 +481,8 @@ export class GPUSpatialErrorMaximumLikelihood implements GPUCommandNodeProducer 
     const traceOnlyWGSL = exact
       ? exactWGSL
       : `${getTraceSeriesWGSL(maximumPower, 'powerTraces', 'infinityNorm[infinityNormOffset]', tailExtrapolation)}${tailWGSL}`;
-    const {weights, output, predictorCount: k} = props;
+    const {output, predictorCount: k} = props;
+    const weights = getLikelihoodWeightsWithoutDistances(props.weights);
     validateGraphViewsBelongToGraph(id, graph, [
       props.predictors,
       props.response,
@@ -1241,4 +1303,20 @@ fn finish() {
 ${hasConverged ? '  convergedOut[convergedOutOffset] = select(0u, 1u, !atBoundary);' : ''}
 }
 `;
+}
+
+/** Distances are optional weights metadata, never a binding of this likelihood or its traces. */
+function getLikelihoodWeightsWithoutDistances(
+  weights: GPUSpatialWeights | GPUChunkedSpatialWeights
+): GPUSpatialWeights | GPUChunkedSpatialWeights {
+  if ('chunks' in weights) {
+    return {
+      ...weights,
+      chunks: weights.chunks.map(chunk => ({
+        ...chunk,
+        weights: {...chunk.weights, distances: undefined}
+      }))
+    };
+  }
+  return {...weights, distances: undefined};
 }

@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  validateNetworkOptimizationBindings,
+  validateNetworkOptimizationInputOutputBuffers
+} from './network-optimization-bindings';
+
+import {getViewBindingRange} from '@luma.gl/graph/gpu-core';
 import type {
   GPUCommandGraph,
   GPUCommandNode,
@@ -13,6 +19,15 @@ import type {
   GPUIterationStatusPort
 } from '../../analysis-core/contracts/status';
 import {
+  getGPUNetworkTopologyViews,
+  type GPUNetworkAdjacency
+} from '../../analysis-core/network-topology';
+import {
+  estimateParallelNetworkFlowNodes,
+  getParallelNetworkFlowNodes,
+  validateParallelNetworkFlow
+} from './network-flow-parallel';
+import {
   createNetworkOptimizationStatusNodes,
   getNetworkOptimizationStatusViews,
   validateNetworkOptimizationStatus
@@ -22,8 +37,7 @@ import {
   validateCapacity,
   validateSinglePackedView,
   validateRequirement,
-  validateGraphViewsBelongToGraph,
-  validateGraphOutputsDisjointFromInputs
+  validateGPUStorageBindingByteLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 
 /** Largest vertex count: the kernel keeps per-vertex distances in private arrays. */
@@ -53,17 +67,19 @@ export const GPU_NETWORK_FLOW_WORD = {
 
 /**
  * Directed integral flow, parallel/antiparallel edges preserved in input order.
- * At most 128 nodes and 1024 edges; intended for small exact scenarios.
+ * All routes preserve feasibility after every committed batch. Path tie-breaking and batch
+ * counts can differ; maximum value and integral minimum cost agree on convergence.
  */
 export type GPUNetworkFlowOutput = {
   flow: GraphDataView<'uint32'>;
-  /** Residual source-reachable vertices, one word per node. */
+  /** Residual source-reachable vertices, one word per node. An unfinished forward cut search
+   * publishes its reached subset and leaves cutCertified zero. */
   cut: GraphDataView<'uint32'>;
   /** Eight words, indexed by GPU_NETWORK_FLOW_WORD; cost is f32 bits. */
   summary: GraphDataView<'uint32'>;
   /** Optional exact unsigned integer objective [low32,high32]. Summary cost remains f32. */
   exactCost?: GraphDataView<'uint32x2'>;
-  /** invalidCount is 1 for a rejected problem; iterationCount counts augmentations.
+  /** invalidCount is 1 for a rejected problem; iterationCount counts feasible batches (one path for successive-shortest-path/reference routes).
    * Convergence includes a fully solved infeasible finite request; inspect summary.unserved.
    * Invalid problems set neither converged nor iterationLimitReached.
    */
@@ -77,36 +93,113 @@ export type GPUNetworkFlowProps = {
   capacities: GraphDataView<'uint32'>;
   /** Nonnegative integer original-edge costs. Omit for maximum flow. */
   costs?: GraphDataView<'uint32'>;
+  /** Optional shared CSR in original-edge order. The parallel route validates its connectivity
+   * against edges on the GPU, then builds a residual CSR containing both arc directions.
+   * Omit to build the residual CSR directly from the existing edge list. Weights are ignored.
+   */
+  topology?: GPUNetworkAdjacency;
+  /** auto (default) selects parallel above the reference limits or with topology, mode or maximumCostPhases.
+   * reference preserves the original exact small-graph solver; parallel explicitly opts in.
+   */
+  solver?: 'auto' | 'reference' | 'parallel';
+  /** Costed parallel route. Defaults to successive-shortest-path, preserving the existing
+   * maximumAugmentations budget. Explicit primal-dual batches shortest admissible paths.
+   * Setting maximumCostPhases with mode omitted also opts into primal-dual.
+   * Requires costs and solver parallel (auto selects parallel when mode is supplied). */
+  mode?: 'primal-dual' | 'successive-shortest-path';
+  /** Primal-dual route: maximum feasible shortest-path preflow batches (default 3, maximum 4096,
+   * additionally bounded by the command budget). One batch may send many paths. When mode is
+   * omitted, supplying this prop opts into primal-dual; incompatible with successive-shortest-path. */
+  maximumCostPhases?: number;
   /** Source, sink, required flow; 0xffffffff required flow means maximize. */
   parameters: GraphDataView<'uint32'>;
+  /** Default: 1024 for reference, 8 for successive-shortest-path mode. Primal-dual and uncosted
+   * parallel ignore this prop and use maximumCostPhases and maximumRelabels respectively. */
   maximumAugmentations?: number;
+  /** Parallel route only: BFS or Bellman-Ford sweeps per search, including the final unchanged
+   * sweep; also bounds forward/return discharge rounds in each preflow phase.
+   * Defaults to min(nodeCount, 1024). An unfinished solve publishes the
+   * already feasible flow with complete=0, converged=0 and iterationLimitReached=1, unless the
+   * finite request was already optimally served (a cut search cannot revoke that convergence).
+   */
+  maximumRelaxationRounds?: number;
+  /** Uncosted parallel route: maximum global BFS relabel phases (default 3, maximum 4096,
+   * additionally bounded by the shared command budget). Each phase fixes global BFS heights,
+   * runs synchronous vertex discharges, then returns stranded excess along the phase DAG
+   * before committing a feasible batch. There is a final relabel and source-side cut search.
+   * maximumAugmentations is used only by reference and successive-shortest-path solvers. */
+  maximumRelabels?: number;
   output: GPUNetworkFlowOutput;
 };
 
 /**
- * Successive shortest augmenting paths with explicit reverse arcs. Computation stays on the
- * graph; no submission/readback. The sequential bounded solver is a correctness baseline,
- * not a scalable push/relabel implementation. Each augmentation preserves feasibility.
- * Total capacities must be <= 0x00ffffff; costs <= 32767. Invalid input has valid=0.
- * Exhaustion has complete=0, never a claim of infeasibility or optimality.
+ * Integral flow with explicit reverse arcs. Computation stays on the graph; no submission/readback.
+ * Each committed batch preserves feasibility, including on budget
+ * exhaustion. The parallel max-flow route uses global BFS relabelling and parallel preflow
+ * pushes with bounded excess returns before committing feasible batches. Heights stay fixed
+ * within each phase; all relabelling is global between phases. The costed primal-dual route uses
+ * reverse Bellman-Ford labels (integer cost, then hop count), and pushes only along tight arcs
+ * decreasing that immutable hop count. Every committed batch is a sum of shortest residual
+ * paths, preserving integral minimum cost at its value; zero-cost cycles cannot enter the DAG.
+ * Excess returns undo only that batch's pushes. Recomputing labels updates the dual between
+ * batches. Equal-cost/equal-hop paths are sent together. Graphs with many distinct shortest-path
+ * costs or hop lengths can still exhaust maximumCostPhases; this is a bounded solver.
+ * Explicit mode successive-shortest-path retains parallel pointer doubling for one-path updates.
+ * Total capacities must be <= 0x00ffffff for reference or 0xffffffff for parallel; costs <= 32767.
+ * Invalid input has valid=0.
+ * Budget exhaustion has complete=0 unless a finite request was already optimally served.
  *
- * Reference tier (contributor contract rule 2): the solver is one GPU invocation
+ * Reference route (contributor contract rule 2): the solver is one GPU invocation
  * (`invocationCount: 1`) and every augmentation is a Bellman-Ford pass over all arcs, O(V * E).
  * The maximum size is enforced at construction: 128 nodes, 1,024 edges and 65,536 augmentations
- * (default 1,024), about 8.6e9 serial operations at the limits. A push-relabel or cost-scaling
- * formulation on a CSR would replace it for larger networks.
- * Compile-time: node/edge counts, optional cost/exact-cost/status views and maximumAugmentations.
+ * (default 1,024), about 8.6e9 serial operations at the limits. Auto retains reference behaviour
+ * for existing small inputs; larger inputs use parallel (3 uncosted relabel phases or 8 costed
+ * augmentations). Primal-dual requires an explicit mode or maximumCostPhases; its default is 3 phases.
+ * The 100k-vertex fan with 99,998 unit-capacity paths completes in one preflow phase; larger
+ * diameters/cut structures require explicit budgets. The full source-side cut uses a final BFS. The parallel route accepts up
+ * to 30 million vertices/edges subject to device binding sizes and the command-node budget.
+ * Its signed distance bound requires costs <= min(32767, floor(2147483646 / nodeCount)); invalid
+ * contents set valid=0. Costs and total capacities remain integral; objective arithmetic is exact
+ * in exactCost; summary.cost uses the shared uint64-to-f32 conversion (within two f32 spacings).
+ * Per-edge flows can differ among equal-cost optima between routes.
+ * Compile-time: node/edge counts, topology, solver, optional cost/exact-cost/status views,
+ * mode, maximumCostPhases, maximumAugmentations, maximumRelabels and maximumRelaxationRounds.
  * Per-frame: edge, capacity, cost and parameter contents. Every encoding rewrites the outputs.
  */
 export class GPUNetworkFlow implements GPUCommandNodeProducer {
   readonly id: string;
   readonly props: GPUNetworkFlowProps;
+  readonly solver: 'reference' | 'parallel';
+  readonly estimatedCommandNodeCount: number;
   constructor(props: GPUNetworkFlowProps) {
     this.props = props;
     this.id = props.id ?? 'network-flow';
     const {id} = this;
-    validateCapacity(id, 'nodeCount', props.nodeCount, 2, MAXIMUM_NODE_COUNT);
-    validateCapacity(id, 'edges rows', props.edges.length, 0, MAXIMUM_EDGE_COUNT);
+    validateRequirement(
+      id,
+      props.solver === undefined || ['auto', 'reference', 'parallel'].includes(props.solver),
+      'solver must be auto, reference or parallel'
+    );
+    validateRequirement(
+      id,
+      props.mode === undefined || ['primal-dual', 'successive-shortest-path'].includes(props.mode),
+      'mode must be primal-dual or successive-shortest-path'
+    );
+    validateRequirement(
+      id,
+      props.mode === undefined || Boolean(props.costs),
+      'mode requires costs'
+    );
+    this.solver =
+      props.solver === 'parallel' ||
+      ((props.solver ?? 'auto') === 'auto' &&
+        (props.mode !== undefined ||
+          props.maximumCostPhases !== undefined ||
+          props.topology !== undefined ||
+          props.nodeCount > MAXIMUM_NODE_COUNT ||
+          props.edges.length > MAXIMUM_EDGE_COUNT))
+        ? 'parallel'
+        : 'reference';
     validateCapacity(
       id,
       'maximumAugmentations',
@@ -114,6 +207,24 @@ export class GPUNetworkFlow implements GPUCommandNodeProducer {
       0,
       MAXIMUM_AUGMENTATIONS
     );
+    this.estimatedCommandNodeCount =
+      this.solver === 'parallel'
+        ? estimateParallelNetworkFlowNodes(props)
+        : 1 + Number(getNetworkOptimizationStatusViews(props.output.status).length > 0);
+    if (this.solver === 'parallel') {
+      validateParallelNetworkFlow(id, props, this.estimatedCommandNodeCount);
+    } else {
+      validateCapacity(id, 'nodeCount', props.nodeCount, 2, MAXIMUM_NODE_COUNT);
+      validateCapacity(id, 'edges rows', props.edges.length, 0, MAXIMUM_EDGE_COUNT);
+      validateRequirement(
+        id,
+        props.maximumRelaxationRounds === undefined &&
+          props.maximumRelabels === undefined &&
+          props.mode === undefined &&
+          props.maximumCostPhases === undefined,
+        'maximumRelaxationRounds, maximumRelabels, mode and maximumCostPhases require solver parallel'
+      );
+    }
     validateSinglePackedView(props.edges, ['uint32x2'], this.id);
     for (const view of [
       props.capacities,
@@ -173,11 +284,12 @@ export class GPUNetworkFlow implements GPUCommandNodeProducer {
       ],
       props.output.status
     );
-    validateGraphOutputsDisjointFromInputs(this.id, getFlowOutputViews(props.output), [
+    validateNetworkOptimizationInputOutputBuffers(this.id, getFlowOutputViews(props.output), [
       props.edges,
       props.capacities,
       props.costs,
-      props.parameters
+      props.parameters,
+      ...(props.topology ? getGPUNetworkTopologyViews(props.topology) : [])
     ]);
   }
 
@@ -185,46 +297,80 @@ export class GPUNetworkFlow implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
-    validateGraphViewsBelongToGraph(id, graph, [
+    for (const [index, view] of [
       props.edges,
       props.capacities,
       props.costs,
       props.parameters,
+      ...(props.topology ? getGPUNetworkTopologyViews(props.topology) : []),
       ...getFlowOutputViews(props.output)
-    ]);
-    const nodes = [
-      createWGSLKernelNode<Parameters>(graph, {
-        id,
-        operation: 'GPUNetworkFlow',
-        variant: props.costs ? 'minimum-cost' : 'maximum-flow',
-        invocationCount: 1,
-        workgroupSize: 2,
-        bindings: [
-          {name: 'edges', view: props.edges, type: 'u32', access: 'read'},
-          {name: 'capacities', view: props.capacities, type: 'u32', access: 'read'},
-          ...(props.costs
-            ? [{name: 'costs', view: props.costs, type: 'u32' as const, access: 'read' as const}]
-            : []),
-          {name: 'parameters', view: props.parameters, type: 'u32', access: 'read'},
-          {name: 'flow', view: props.output.flow, type: 'u32', access: 'read_write'},
-          {name: 'cut', view: props.output.cut, type: 'u32', access: 'read_write'},
-          {name: 'summary', view: props.output.summary, type: 'u32', access: 'read_write'},
-          ...(props.output.exactCost
-            ? [
-                {
-                  name: 'exactCost',
-                  view: props.output.exactCost,
-                  type: 'u32' as const,
-                  access: 'read_write' as const
-                }
-              ]
-            : [])
-        ],
-        declarations: `const NODE_COUNT: u32 = ${props.nodeCount}u;
+    ].entries()) {
+      if (view)
+        validateGPUStorageBindingByteLength(
+          graph.device,
+          id,
+          `view ${index} aligned binding range`,
+          getViewBindingRange(view).size,
+          'reduce the view length or its alignment prefix'
+        );
+    }
+    validateNetworkOptimizationBindings(
+      graph,
+      id,
+      Object.fromEntries(
+        [
+          props.edges,
+          props.capacities,
+          props.costs,
+          props.parameters,
+          ...(props.topology ? getGPUNetworkTopologyViews(props.topology) : []),
+          ...getFlowOutputViews(props.output)
+        ].map((view, index) => [`view ${index}`, view])
+      )
+    );
+    const nodes =
+      this.solver === 'parallel'
+        ? getParallelNetworkFlowNodes(graph, id, props)
+        : [
+            createWGSLKernelNode<Parameters>(graph, {
+              id,
+              operation: 'GPUNetworkFlow',
+              variant: props.costs ? 'minimum-cost' : 'maximum-flow',
+              invocationCount: 1,
+              workgroupSize: 2,
+              bindings: [
+                {name: 'edges', view: props.edges, type: 'u32', access: 'read'},
+                {name: 'capacities', view: props.capacities, type: 'u32', access: 'read'},
+                ...(props.costs
+                  ? [
+                      {
+                        name: 'costs',
+                        view: props.costs,
+                        type: 'u32' as const,
+                        access: 'read' as const
+                      }
+                    ]
+                  : []),
+                {name: 'parameters', view: props.parameters, type: 'u32', access: 'read'},
+                {name: 'flow', view: props.output.flow, type: 'u32', access: 'read_write'},
+                {name: 'cut', view: props.output.cut, type: 'u32', access: 'read_write'},
+                {name: 'summary', view: props.output.summary, type: 'u32', access: 'read_write'},
+                ...(props.output.exactCost
+                  ? [
+                      {
+                        name: 'exactCost',
+                        view: props.output.exactCost,
+                        type: 'u32' as const,
+                        access: 'read_write' as const
+                      }
+                    ]
+                  : [])
+              ],
+              declarations: `const NODE_COUNT: u32 = ${props.nodeCount}u;
 const EDGE_COUNT: u32 = ${props.edges.length}u;
 const MAXIMUM_AUGMENTATIONS: u32 = ${props.maximumAugmentations ?? 1024}u;
 fn edgeCost(edge: u32) -> i32 { return ${props.costs ? 'i32(costs[costsOffset + edge])' : '0'}; }`,
-        body: `${props.output.exactCost ? 'exactCost[exactCostOffset] = 0u; exactCost[exactCostOffset + 1u] = 0u;' : ''}
+              body: `${props.output.exactCost ? 'exactCost[exactCostOffset] = 0u; exactCost[exactCostOffset + 1u] = 0u;' : ''}
 for (var word = 0u; word < 8u; word++) { summary[summaryOffset + word] = 0u; }
 for (var edge = 0u; edge < EDGE_COUNT; edge++) { flow[flowOffset + edge] = 0u; }
 for (var vertex = 0u; vertex < NODE_COUNT; vertex++) { cut[cutOffset + vertex] = 0u; }
@@ -322,8 +468,8 @@ summary[summaryOffset + 4u] = augmentations;
 summary[summaryOffset + 5u] = bitcast<u32>(cost);
 summary[summaryOffset + 6u] = cutCapacity;
 summary[summaryOffset + 7u] = select(0u, 1u, exhausted && cutCapacity == value);`
-      })
-    ];
+            })
+          ];
     nodes.push(
       ...createNetworkOptimizationStatusNodes(
         graph,

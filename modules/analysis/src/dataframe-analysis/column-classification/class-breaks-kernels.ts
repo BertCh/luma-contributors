@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {createClassificationKernelNode as createWGSLKernelNode} from './classification-kernel-node';
 import {
   createTransientView,
   getBoundedDispatchLayout,
@@ -11,10 +12,7 @@ import {
   type GraphBufferUse,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {
-  createWGSLKernelNode,
-  type WGSLKernelBinding
-} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import type {WGSLKernelBinding} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {COLUMN_ORDERED_KEY_WGSL} from './column-classification-shared';
 
 /** Workgroup size of the fixed-order moment kernels. */
@@ -224,9 +222,9 @@ export function getClassBreaksMomentNodes<Parameters>(
     bindings: [...inputBindings, {name: 'origin', view: origin, type: 'f32', access: 'read_write'}],
     invocationCount: MOMENT_WORKGROUP_SIZE,
     workgroupSize: MOMENT_WORKGROUP_SIZE,
-    guardIndex: false,
+    workgroupCollective: true,
     ...indirectGates?.merge,
-    declarations: `const ROW_COUNT: u32 = ${rowCount}u;
+    declarations: `fn getMomentRowCount() -> u32 { return arrayLength(&values) - valuesOffset; }
 ${COLUMN_ORDERED_KEY_WGSL}
 var<workgroup> firstRows: array<u32, ${MOMENT_WORKGROUP_SIZE}>;
 var<workgroup> gateShared: u32;`,
@@ -238,8 +236,8 @@ var<workgroup> gateShared: u32;`,
     return;
   }
   ${headTail ? `let thresholdKey = headTail[headTailOffset + ${CLASS_BREAKS_HEAD_TAIL.thresholdKey}u];` : ''}
-  var firstRow = ROW_COUNT;
-  for (var row = local; row < ROW_COUNT; row += ${MOMENT_WORKGROUP_SIZE}u) {
+  var firstRow = getMomentRowCount();
+  for (var row = local; row < getMomentRowCount(); row += ${MOMENT_WORKGROUP_SIZE}u) {
     let value = values[valuesOffset + row];
     var include = (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u;
     ${mask ? 'include = include && rowMask[rowMaskOffset + row] != 0u;' : ''}
@@ -258,7 +256,7 @@ var<workgroup> gateShared: u32;`,
   }
   if (local == 0u) {
     var pivot = 0.0;
-    if (firstRows[0] < ROW_COUNT) {
+    if (firstRows[0] < getMomentRowCount()) {
       pivot = values[valuesOffset + firstRows[0]];
     }
     origin[originOffset] = pivot;
@@ -279,9 +277,9 @@ var<workgroup> gateShared: u32;`,
     bindings: tileBindings,
     invocationCount: tileCount * MOMENT_WORKGROUP_SIZE,
     workgroupSize: MOMENT_WORKGROUP_SIZE,
-    guardIndex: false,
+    workgroupCollective: true,
     ...indirectGates?.tile,
-    declarations: `const ROW_COUNT: u32 = ${rowCount}u;
+    declarations: `fn getMomentRowCount() -> u32 { return arrayLength(&values) - valuesOffset; }
 const TILE_SIZE: u32 = ${MOMENT_TILE_SIZE}u;
 const ROWS_PER_INVOCATION: u32 = ${MOMENT_ROWS_PER_INVOCATION}u;
 ${COLUMN_ORDERED_KEY_WGSL}
@@ -300,8 +298,8 @@ var<workgroup> centeredValueBits: array<u32, ${MOMENT_TILE_SIZE}>;`,
   for (var step = 0u; step < ROWS_PER_INVOCATION; step = step + 1u) {
     // Uniform trip count: rows past the end are skipped by a predicate, never by a break, so
     // the barriers after the loop stay in uniform control flow.
-    let row = min(tile * TILE_SIZE + step * ${MOMENT_WORKGROUP_SIZE}u + local, ROW_COUNT - 1u);
-    let inRange = tile * TILE_SIZE + step * ${MOMENT_WORKGROUP_SIZE}u + local < ROW_COUNT;
+    let row = min(tile * TILE_SIZE + step * ${MOMENT_WORKGROUP_SIZE}u + local, getMomentRowCount() - 1u);
+    let inRange = tile * TILE_SIZE + step * ${MOMENT_WORKGROUP_SIZE}u + local < getMomentRowCount();
     let value = values[valuesOffset + row];
     var include = inRange && (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u;
     ${mask ? 'include = include && rowMask[rowMaskOffset + row] != 0u;' : ''}
@@ -349,10 +347,10 @@ var<workgroup> centeredValueBits: array<u32, ${MOMENT_TILE_SIZE}>;`,
     bindings: mergeBindings,
     invocationCount: MOMENT_WORKGROUP_SIZE,
     workgroupSize: MOMENT_WORKGROUP_SIZE,
-    guardIndex: false,
+    workgroupCollective: true,
     ...indirectGates?.merge,
-    declarations: `const TILE_COUNT: u32 = ${tileCount}u;
-const STEP_COUNT: u32 = ${Math.ceil(tileCount / MOMENT_WORKGROUP_SIZE)}u;
+    declarations: `fn getMomentTileCount() -> u32 { return (arrayLength(&partials) - partialsOffset) / ${MOMENT_STRIDE}u; }
+fn getMomentStepCount() -> u32 { return (getMomentTileCount() + ${MOMENT_WORKGROUP_SIZE - 1}u) / ${MOMENT_WORKGROUP_SIZE}u; }
 ${MOMENTS_WGSL}`,
     body: `let local = localInvocationIndex;
   if (local == 0u) {
@@ -362,9 +360,9 @@ ${MOMENTS_WGSL}`,
     return;
   }
   var accumulated = emptyMoments();
-  for (var step = 0u; step < STEP_COUNT; step = step + 1u) {
+  for (var step = 0u; step < getMomentStepCount(); step = step + 1u) {
     let tile = step * ${MOMENT_WORKGROUP_SIZE}u + local;
-    if (tile < TILE_COUNT) {
+    if (tile < getMomentTileCount()) {
       let base = partialsOffset + tile * ${MOMENT_STRIDE}u;
       accumulated = mergeMoments(
         accumulated,

@@ -16,12 +16,12 @@ export const GPU_FOREST_INFERENCE_MAXIMUM_FEATURE_COUNT = 256;
 export const GPU_FOREST_INFERENCE_MAXIMUM_OUTPUT_COUNT = 32;
 /** Sparse nodes occupy 24 MiB at this cap; dense trees are never materialized. */
 export const GPU_FOREST_INFERENCE_MAXIMUM_NODE_COUNT = 1048576;
-/** Limits one run's worst-case traversal plus score accumulation work; split larger inputs. */
+/** Limits each row batch's worst-case traversal plus score accumulation work; split larger batches. */
 export const GPU_FOREST_INFERENCE_MAXIMUM_WORK = 5000000000;
-/** Buffer-stack preparation emits at most 16 dispatches, followed by inference and publication. */
+/** Each row batch emits at most 16 band-preparation dispatches, then inference and publication. */
 export const GPU_FOREST_INFERENCE_MAXIMUM_RASTER_BAND_COUNT = 16;
-/** Exact unsigned indexing of source rows, before device binding checks. */
-export const GPU_FOREST_INFERENCE_MAXIMUM_ROW_COUNT = 16777216;
+/** Total rows use uint32 chunk bases; per-batch elements, traversal work and bindings are checked separately. */
+export const GPU_FOREST_INFERENCE_MAXIMUM_ROW_COUNT = 0xffffffff;
 /**
  * [feature, left, right, threshold bits, flags, original leaf id]. Leaf feature is 0xffffffff.
  * Flags: bit 0 default-left; bit 1 accepts missing; bit 2 zero (abs <= 1e-35) is missing;

@@ -83,9 +83,9 @@ for (const method of METHODS) {
   });
 }
 
-it('GPUMultipleTestingAdjustment at the documented maximum row count binds within maxStorageBufferBindingSize', () => {
-  // Rows are below 2^24, so one float32 view is at most 64 MiB: below the 128 MiB binding limit.
-  const rows = GPU_MULTIPLE_TESTING_MAXIMUM_ROWS - 1;
+it('GPUMultipleTestingAdjustment at the device binding row limit fits maxStorageBufferBindingSize', () => {
+  // uint32 ranks permit the full 128 MiB binding: one word per row, with no f32 rank cap.
+  const rows = 2 ** 25;
   for (const method of METHODS) {
     const {device, nodes} = build(method, rows);
     expect(getLargestResourceBytes(nodes), method).toBeGreaterThanOrEqual(rows * 4);

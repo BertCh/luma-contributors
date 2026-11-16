@@ -2,22 +2,26 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {createStorageTopKNode} from '../../analysis-core/kernels/storage-backed-top-k';
+
 import {
   createTransientView,
+  GPUSort,
   type GPUBVH,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {
-  createWGSLKernelNode,
   getWGSLFloatLiteral,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import type {GPUFloat32Positions} from '@luma.gl/graph/geospatial';
 import {
   getGraphViewChunks,
-  validateGPUStorageBindingByteLength
+  validateGPUStorageBindingByteLength,
+  validateCommandNodeBudget
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   NEAREST_COMMON_WGSL,
@@ -34,6 +38,9 @@ import type {GPUSpatialJoinPrepared} from './gpu-spatial-join-prepared';
 import type {GPUSpatialJoinOnAttribute} from './spatial-join-types';
 import {
   createSpatialJoinBoundsNode,
+  QUANTIZE_AXIS_WGSL,
+  HILBERT_INDEX_WGSL,
+  SPATIAL_JOIN_WGSL_HELPERS,
   getChunkNodeId,
   getHilbertQueryOrderNodes,
   getSortedFeatureBVHNodes,
@@ -48,11 +55,38 @@ import type {
 /** u32 words per `(query, slot)` of the foot-point scratch: foot x/y, segment, query-point x/y. */
 const EXTRA_WORDS = 5;
 
-/**
- * Queries per scratch chunk are a multiple of this, so a chunk's scratch rows start at the same
- * element residue and kernels of different chunks share one pipeline (rule 12).
- */
-const SCRATCH_CHUNK_ALIGNMENT = 64;
+/** Scratch batches reuse row zero, so even one query is a valid aligned storage binding. */
+const MINIMUM_SCRATCH_QUERY_COUNT = 1;
+
+/** Covers published BVH construction, radix sorting, rings, bounds and fixed status passes. */
+const NEAREST_BUILD_COMMAND_NODE_ALLOWANCE = 4096;
+/** One scratch chunk needs at most clear, traversal, feet, two column passes and cursor nodes. */
+const NEAREST_SCRATCH_COMMAND_NODE_ALLOWANCE = 8;
+/** Covers two shared radix sorts, their scans and optional geometry-center passes. */
+const NEAREST_QUERY_SORT_COMMAND_NODE_ALLOWANCE = 1024;
+
+/** Conservative command count including device-sized scratch chunks. @internal */
+export function getNearestEstimatedCommandNodeCount(
+  queryCount: number,
+  capacity: number,
+  needsFootPass: boolean,
+  queryChunkCount: number,
+  bindingLimitBytes: number,
+  forcedScratchRows?: number,
+  querySort = false
+): number {
+  const wordsPerQuery = Math.max(
+    NEAREST_HEADER_WORDS + capacity * 2,
+    needsFootPass ? capacity * EXTRA_WORDS : 0
+  );
+  const scratchRows =
+    forcedScratchRows ?? Math.max(1, Math.floor((bindingLimitBytes / 4 - 3) / wordsPerQuery));
+  return (
+    NEAREST_BUILD_COMMAND_NODE_ALLOWANCE +
+    (querySort ? NEAREST_QUERY_SORT_COMMAND_NODE_ALLOWANCE : 0) +
+    NEAREST_SCRATCH_COMMAND_NODE_ALLOWANCE * (Math.ceil(queryCount / scratchRows) + queryChunkCount)
+  );
+}
 
 /** Query side of the k-nearest mode: chunked points or one geometry set. @internal */
 export type NearestQuerySource =
@@ -114,9 +148,9 @@ export type NearestNeighborNodeProps = {
    */
   writeFeatureRows?: boolean;
   /**
-   * Queries per scratch chunk, a positive multiple of 64. By default the per-query scratch
+   * Queries per scratch batch, a positive integer. By default the per-query scratch
    * (`topk` and, with foot-point outputs, `extras`) is one binding for every query while that
-   * fits `maxStorageBufferBindingSize`, and otherwise the largest 64-aligned chunk that fits.
+   * fits `maxStorageBufferBindingSize`, and otherwise the largest batch that fits.
    * Setting it forces chunking once `queryCount` exceeds it, which lets specs exercise the
    * chunked path with few queries.
    */
@@ -206,7 +240,7 @@ function createPolygonRingsNode<Parameters>(
   geometry: Extract<GPUNearestFeatureGeometry, {kind: 'polygons'}>,
   featureRings: GraphDataView<'uint32x2'>
 ): GPUCommandNode<Parameters> {
-  return createWGSLKernelNode<Parameters>(graph, {
+  return createStorageTopKNode<Parameters>(graph, {
     id,
     operation,
     variant: 'polygon-rings',
@@ -326,6 +360,253 @@ export function getNearestBVHNodes<Parameters>(
   return {bvh: built.bvh, nodes};
 }
 
+/** Validates all storage ranges before nearest nodes or resources are declared. @internal */
+export function validateNearestNeighborBindings<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: NearestNeighborNodeProps
+) {
+  const {id, capacity, queryCount, featureCount} = props;
+  const stride = NEAREST_HEADER_WORDS + 2 * capacity;
+  const needsFootPass = Boolean(
+    props.neighborFootPoints || props.neighborQueryPoints || props.neighborSegmentIndices
+  );
+
+  // The per-query scratch is `topk` (stride words) and, with foot-point outputs, `extras`
+  // (capacity x EXTRA_WORDS words). When one binding cannot hold every query, the scratch holds a
+  // fixed chunk of queries and each chunk of the query side reuses it in turn.
+  const bindingLimitWords = Math.floor(graph.device.limits.maxStorageBufferBindingSize / 4);
+  const scratchWordsPerQuery = Math.max(stride, needsFootPass ? capacity * EXTRA_WORDS : 0);
+  const forcedChunkQueryCount = props.scratchChunkQueryCount;
+  if (
+    forcedChunkQueryCount !== undefined &&
+    (!Number.isSafeInteger(forcedChunkQueryCount) ||
+      forcedChunkQueryCount < MINIMUM_SCRATCH_QUERY_COUNT)
+  ) {
+    throw new Error(
+      `${id} scratchChunkQueryCount must be an integer at least MINIMUM_SCRATCH_QUERY_COUNT (1)`
+    );
+  }
+  // Three tail words hold the cursor, dispatch first row and query count. Each batch starts
+  // at scratch row zero; its row count need not be a multiple of a workgroup or binding alignment.
+  const maximumScratchQueryCount = Math.floor((bindingLimitWords - 3) / scratchWordsPerQuery);
+  const scratchQueryCount = Math.min(
+    Math.max(queryCount, 1),
+    forcedChunkQueryCount ?? maximumScratchQueryCount,
+    maximumScratchQueryCount
+  );
+  const isChunked = queryCount > scratchQueryCount;
+  if (scratchQueryCount < 1) {
+    throw new Error(`${id} needs more scratch per query than one binding holds; reduce k`);
+  }
+  // Word of `topk` that holds the first query (relative to the current query-side chunk) of the
+  // scratch chunk being processed. A 1-thread node advances it, so the chunk index never reaches
+  // the WGSL text or the pipeline constants.
+  const cursorWord = scratchQueryCount * stride;
+  const dispatchWord = cursorWord + 1;
+  validateGPUStorageBindingByteLength(
+    graph.device,
+    id,
+    'topk',
+    (scratchQueryCount * stride + 3) * 4,
+    'reduce the query count or k'
+  );
+
+  const queryViews =
+    props.queries.kind === 'points'
+      ? getGraphViewChunks(props.queries.points)
+      : getNearestGeometryViews(props.queries.geometry);
+  const boundViews = [
+    ...queryViews,
+    ...getNearestGeometryViews(props.features),
+    props.featureIds,
+    props.maxDistance,
+    props.queryIds,
+    props.onAttribute?.left,
+    props.onAttribute?.right,
+    props.neighborIds,
+    props.neighborCounts,
+    props.neighborDistances,
+    props.neighborFootPoints,
+    props.neighborQueryPoints,
+    props.neighborSegmentIndices,
+    props.overflow,
+    ...(props.prepared ? Object.values(props.prepared.storage) : [])
+  ];
+  validateGraphChunkBindingRanges(
+    graph,
+    id,
+    Object.fromEntries(
+      boundViews
+        .filter((view): view is GraphDataView =>
+          Boolean(view && typeof view === 'object' && 'rowByteLength' in view)
+        )
+        .map((view, index) => [`nearest view ${index}`, view])
+    )
+  );
+  const nodeCount = 2 * props.leafCapacity - 1;
+  const hasFilter = Boolean(props.exclusive || props.onAttribute);
+  for (const [name, words] of [
+    [
+      'nodeData',
+      nodeCount * NEAREST_NODE_WORDS + 2 * queryCount + (hasFilter ? 2 * featureCount : 0)
+    ],
+    ['BVH node bounds and children', nodeCount * 2],
+    ['feature bounds and sorting scratch', featureCount * 2],
+    ['query sorting scratch and bounds', props.querySort ? queryCount * 2 : 0],
+    ['extras', needsFootPass ? scratchQueryCount * capacity * EXTRA_WORDS : 0],
+    ['feature rings', props.features.kind === 'polygons' ? featureCount * 2 : 0],
+    [
+      'query rings',
+      props.queries.kind === 'geometry' && props.queries.geometry.kind === 'polygons'
+        ? queryCount * 2
+        : 0
+    ],
+    [
+      'query metadata',
+      props.querySort &&
+      props.queries.kind === 'geometry' &&
+      props.queries.geometry.kind === 'polygons'
+        ? queryCount * 2 + props.queries.geometry.ringOffsets.length
+        : 0
+    ]
+  ] as const) {
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      name,
+      words * 4,
+      'reduce feature count, query count or neighborCapacity'
+    );
+  }
+  validateCommandNodeBudget(
+    id,
+    getNearestEstimatedCommandNodeCount(
+      queryCount,
+      capacity,
+      needsFootPass,
+      props.queries.kind === 'points' ? getGraphViewChunks(props.queries.points).length : 1,
+      graph.device.limits.maxStorageBufferBindingSize,
+      props.scratchChunkQueryCount,
+      props.querySort
+    )
+  );
+  return {stride, needsFootPass, scratchQueryCount, isChunked, cursorWord, dispatchWord};
+}
+
+/**
+ * Classify each actual point chunk, sort all rows by Hilbert key, then stably group that order by
+ * input chunk. Chunk slices of the final permutation contain global rows in Hilbert order without
+ * padding short input chunks or compiling a different sort pipeline for every chunk length.
+ */
+function getNearestPointQueryOrderNodes<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  id: string,
+  operation: string,
+  chunks: readonly GraphDataView<'float32x2'>[],
+  queryCount: number,
+  bvh: NearestBVH
+): {nodes: GPUCommandNode<Parameters>[]; order: GraphDataView<'uint32'>} {
+  const keys = createTransientView(graph, `${id}-query-order-keys`, 'uint32', queryCount);
+  const rows = createTransientView(graph, `${id}-query-order-rows`, 'uint32', queryCount);
+  const chunkIds = createTransientView(graph, `${id}-query-order-chunks`, 'uint32', queryCount);
+  const sortedKeys = createTransientView(
+    graph,
+    `${id}-query-order-sorted-keys`,
+    'uint32',
+    queryCount
+  );
+  const sortedRows = createTransientView(
+    graph,
+    `${id}-query-order-sorted-rows`,
+    'uint32',
+    queryCount
+  );
+  const groupKeys = createTransientView(
+    graph,
+    `${id}-query-order-group-keys`,
+    'uint32',
+    queryCount
+  );
+  const outputKeys = createTransientView(
+    graph,
+    `${id}-query-order-output-keys`,
+    'uint32',
+    queryCount
+  );
+  const order = createTransientView(graph, `${id}-query-order`, 'uint32', queryCount);
+  const nodes: GPUCommandNode<Parameters>[] = [];
+  let firstRow = 0;
+  for (const [chunkIndex, points] of chunks.entries()) {
+    if (points.length)
+      nodes.push(
+        createStorageTopKNode(graph, {
+          id: `${id}-query-keys-${chunkIndex}`,
+          operation,
+          variant: 'query-keys-hilbert',
+          firstRow,
+          batchIndex: chunkIndex,
+          invocationCount: points.length,
+          bindings: [
+            {name: 'points', view: points, type: 'f32', access: 'read'},
+            {name: 'nodeMinima', view: bvh.nodeMinima, type: 'f32', access: 'read'},
+            {name: 'nodeMaxima', view: bvh.nodeMaxima, type: 'f32', access: 'read'},
+            {name: 'keys', view: keys, type: 'u32', access: 'read_write'},
+            {name: 'rows', view: rows, type: 'u32', access: 'read_write'},
+            {name: 'chunkIds', view: chunkIds, type: 'u32', access: 'read_write'}
+          ],
+          declarations: `${SPATIAL_JOIN_WGSL_HELPERS}${QUANTIZE_AXIS_WGSL}${HILBERT_INDEX_WGSL}`,
+          body: `let row = batchFirstRow + index;
+  rows[rowsOffset + row] = row;
+  chunkIds[chunkIdsOffset + row] = batchIndex;
+  let point = vec2f(points[pointsOffset + index * 2u], points[pointsOffset + index * 2u + 1u]);
+  var key = 0xffffffffu;
+  if (isFiniteValue(point.x) && isFiniteValue(point.y)) {
+    let column = quantizeAxis(point.x, nodeMinima[nodeMinimaOffset], nodeMaxima[nodeMaximaOffset]);
+    let rasterRow = quantizeAxis(point.y, nodeMinima[nodeMinimaOffset + 1u], nodeMaxima[nodeMaximaOffset + 1u]);
+    key = getHilbertIndex(column, rasterRow);
+  }
+  keys[keysOffset + row] = key;`
+        })
+      );
+    firstRow += points.length;
+  }
+  nodes.push(
+    ...new GPUSort({
+      id: `${id}-query-hilbert-sort`,
+      keys,
+      values: rows,
+      outputKeys: sortedKeys,
+      outputValues: sortedRows,
+      algorithm: 'radix'
+    }).getCommandNodes(graph)
+  );
+  nodes.push(
+    createStorageTopKNode(graph, {
+      id: `${id}-query-chunk-keys`,
+      operation,
+      variant: 'query-chunk-keys',
+      invocationCount: queryCount,
+      bindings: [
+        {name: 'sortedRows', view: sortedRows, type: 'u32', access: 'read'},
+        {name: 'chunkIds', view: chunkIds, type: 'u32', access: 'read'},
+        {name: 'groupKeys', view: groupKeys, type: 'u32', access: 'read_write'}
+      ],
+      body: 'groupKeys[groupKeysOffset + index] = chunkIds[chunkIdsOffset + sortedRows[sortedRowsOffset + index]];'
+    })
+  );
+  nodes.push(
+    ...new GPUSort({
+      id: `${id}-query-chunk-sort`,
+      keys: groupKeys,
+      values: sortedRows,
+      outputKeys,
+      outputValues: order,
+      algorithm: 'radix'
+    }).getCommandNodes(graph)
+  );
+  return {nodes, order};
+}
+
 /**
  * Builds the best-first k-nearest pipeline: bounds, BVH, packed node table, polygon ring ranges,
  * header clear, one traversal per query chunk, optional foot-point pass, and column writes.
@@ -340,6 +621,8 @@ export function getNearestNeighborNodes<Parameters>(
   props: NearestNeighborNodeProps
 ): {nodes: GPUCommandNode<Parameters>[]; bvh: NearestBVH} {
   const {id, operation, features, featureCount, queryCount, k, capacity, sphereRadius} = props;
+  const {stride, needsFootPass, scratchQueryCount, isChunked, cursorWord, dispatchWord} =
+    validateNearestNeighborBindings(graph, props);
   const greatCircle = sphereRadius !== undefined;
   const sphereRadiusLiteral = greatCircle ? getWGSLFloatLiteral(Math.fround(sphereRadius)) : '';
   const nodes: GPUCommandNode<Parameters>[] = [];
@@ -369,7 +652,7 @@ export function getNearestNeighborNodes<Parameters>(
     featureFilterBase + (hasFilter ? 2 * featureCount : 0)
   );
   nodes.push(
-    createWGSLKernelNode<Parameters>(graph, {
+    createStorageTopKNode<Parameters>(graph, {
       id: `${id}-node-data`,
       operation,
       variant: 'node-data',
@@ -411,7 +694,7 @@ const NO_FEATURE: u32 = 0xffffffffu;`,
         ? `${name}[${name}Offset + index]`
         : fallback;
     nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
+      createStorageTopKNode<Parameters>(graph, {
         id: `${id}-filter`,
         operation,
         variant: 'filter',
@@ -456,57 +739,7 @@ const FEATURE_COUNT: u32 = ${featureCount}u;`,
     }
   }
 
-  const stride = NEAREST_HEADER_WORDS + 2 * capacity;
-  const needsFootPass = Boolean(
-    props.neighborFootPoints || props.neighborQueryPoints || props.neighborSegmentIndices
-  );
-
-  // The per-query scratch is `topk` (stride words) and, with foot-point outputs, `extras`
-  // (capacity x EXTRA_WORDS words). When one binding cannot hold every query, the scratch holds a
-  // fixed chunk of queries and each chunk of the query side reuses it in turn.
-  const bindingLimitWords = Math.floor(graph.device.limits.maxStorageBufferBindingSize / 4);
-  const scratchWordsPerQuery = Math.max(stride, needsFootPass ? capacity * EXTRA_WORDS : 0);
-  const forcedChunkQueryCount = props.scratchChunkQueryCount;
-  if (
-    forcedChunkQueryCount !== undefined &&
-    (!Number.isSafeInteger(forcedChunkQueryCount) ||
-      forcedChunkQueryCount < SCRATCH_CHUNK_ALIGNMENT ||
-      forcedChunkQueryCount % SCRATCH_CHUNK_ALIGNMENT !== 0)
-  ) {
-    throw new Error(`${id} scratchChunkQueryCount must be a positive multiple of 64`);
-  }
-  const isChunked =
-    forcedChunkQueryCount !== undefined
-      ? queryCount > forcedChunkQueryCount
-      : queryCount * scratchWordsPerQuery > bindingLimitWords;
-  // One extra `topk` word holds the chunk cursor (see below), so it is not a separate binding:
-  // a polygon/polygon traversal already uses eight storage buffers.
-  const scratchQueryCount = isChunked
-    ? (forcedChunkQueryCount ??
-      Math.floor(
-        Math.floor((bindingLimitWords - 1) / scratchWordsPerQuery) / SCRATCH_CHUNK_ALIGNMENT
-      ) * SCRATCH_CHUNK_ALIGNMENT)
-    : Math.max(queryCount, 1);
-  if (scratchQueryCount < 1) {
-    throw new Error(`${id} needs more scratch per query than one binding holds; reduce k`);
-  }
-  // Word of `topk` that holds the first query (relative to the current query-side chunk) of the
-  // scratch chunk being processed. A 1-thread node advances it, so the chunk index never reaches
-  // the WGSL text or the pipeline constants.
-  const cursorWord = scratchQueryCount * stride;
-  validateGPUStorageBindingByteLength(
-    graph.device,
-    id,
-    'topk',
-    (scratchQueryCount * stride + (isChunked ? 1 : 0)) * 4,
-    'reduce the query count or k'
-  );
-  const topk = createTransientView(
-    graph,
-    `${id}-topk`,
-    'uint32',
-    scratchQueryCount * stride + (isChunked ? 1 : 0)
-  );
+  const topk = createTransientView(graph, `${id}-topk`, 'uint32', scratchQueryCount * stride + 3);
   const clearBindings: WGSLKernelBinding[] = [
     {name: 'topk', view: topk, type: 'u32', access: 'read_write'},
     {name: 'overflow', view: props.overflow, type: 'u32', access: 'read_write'},
@@ -536,7 +769,7 @@ const STRIDE: u32 = ${stride}u;${greatCircle ? `\nconst SPHERE_RADIUS: f32 = ${s
   if (isChunked) {
     // The overflow flag is initialized once; the per-chunk clears below only reset the scratch.
     nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
+      createStorageTopKNode<Parameters>(graph, {
         id: `${id}-clear-overflow`,
         operation,
         variant: 'clear-overflow',
@@ -547,7 +780,7 @@ const STRIDE: u32 = ${stride}u;${greatCircle ? `\nconst SPHERE_RADIUS: f32 = ${s
     );
   } else {
     nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
+      createStorageTopKNode<Parameters>(graph, {
         id: `${id}-clear`,
         operation,
         variant: greatCircle ? 'clear-great-circle' : 'clear',
@@ -577,21 +810,23 @@ const QUERY_COUNT: u32 = ${queryCount}u;`,
   };
   const dispatches: QueryDispatch[] = [];
   if (props.queries.kind === 'points') {
+    const queryChunks = getGraphViewChunks(props.queries.points);
+    const ordered =
+      props.querySort && queryCount > 1
+        ? getNearestPointQueryOrderNodes(graph, id, operation, queryChunks, queryCount, bvh)
+        : undefined;
+    if (ordered) nodes.push(...ordered.nodes);
     let firstRow = 0;
-    for (const [chunkIndex, chunk] of getGraphViewChunks(props.queries.points).entries()) {
+    for (const [chunkIndex, chunk] of queryChunks.entries()) {
       if (chunk.length > 0) {
         const geometry = {kind: 'points', positions: chunk} as const;
-        let order: GraphDataView<'uint32'> | undefined;
-        if (props.querySort && chunk.length >= 2) {
-          const ordered = getHilbertQueryOrderNodes<Parameters>(graph, {
-            id: `${getChunkNodeId(id, props.queries.points, chunkIndex)}-order`,
-            operation,
-            points: chunk,
-            bvh
-          });
-          nodes.push(...ordered.nodes);
-          order = ordered.order;
-        }
+        const order = ordered
+          ? graph.createDataView(ordered.order.buffer, {
+              format: 'uint32',
+              byteOffset: firstRow * 4,
+              length: chunk.length
+            })
+          : undefined;
         dispatches.push({
           chunkId: getChunkNodeId(id, props.queries.points, chunkIndex),
           side: {prefix: 'q', kind: 'points', vertexCount: chunk.length},
@@ -632,7 +867,7 @@ const QUERY_COUNT: u32 = ${queryCount}u;`,
           ringOffsetsBase + geometry.ringOffsets.length
         );
         nodes.push(
-          createWGSLKernelNode<Parameters>(graph, {
+          createStorageTopKNode<Parameters>(graph, {
             id: `${id}-query-metadata`,
             operation,
             variant: 'query-metadata',
@@ -668,7 +903,7 @@ const QUERY_COUNT: u32 = ${queryCount}u;`,
           minima,
           maxima
         ),
-        createWGSLKernelNode<Parameters>(graph, {
+        createStorageTopKNode<Parameters>(graph, {
           id: `${id}-query-centers`,
           operation,
           variant: 'query-centers',
@@ -745,7 +980,7 @@ const QUERY_COUNT: u32 = ${queryCount}u;`,
 
   // Column writes: IDs, distances, counts, overflow flag. `prologue` defines `query` (scratch row),
   // `slot`, `row` (global query row) and `outputIndex` (flat output slot); `queryGuard` skips the
-  // invocations past the end of a chunk. `constants` are the chunk's pipeline overrides.
+  // invocations past the end of a chunk. GPU words carry each dispatch range.
   const addColumnNodes = (
     nodeIdPrefix: string,
     queryCountInChunk: number,
@@ -785,7 +1020,7 @@ const QUERY_COUNT: u32 = ${queryCount}u;`,
   let slot = index % CAPACITY;
   let position = topk[topkOffset + CURSOR_WORD] + query;
   if (position >= CHUNK_QUERY_COUNT) { return; }
-  let localQuery = ${chunkOrder ? 'queryOrder[queryOrderOffset + position]' : 'position'};
+  let localQuery = ${chunkOrder ? 'queryOrder[queryOrderOffset + position] - CHUNK_FIRST_ROW' : 'position'};
   let row = CHUNK_FIRST_ROW + localQuery;
   let outputIndex = row * CAPACITY + slot;`
       : `let query = index / CAPACITY;
@@ -793,7 +1028,7 @@ const QUERY_COUNT: u32 = ${queryCount}u;`,
   let row = query;
   let outputIndex = index;`;
     nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
+      createStorageTopKNode<Parameters>(graph, {
         id: `${nodeIdPrefix}-columns`,
         operation,
         variant: `${greatCircle ? 'columns-great-circle' : 'columns'}${chunkOrder ? '-ordered' : ''}`,
@@ -804,14 +1039,13 @@ const STRIDE: u32 = ${stride}u;
 const NO_FEATURE: u32 = 0xffffffffu;${greatCircle ? `\nconst SPHERE_RADIUS: f32 = ${sphereRadiusLiteral};` : ''}${
           chunk
             ? `\nconst CURSOR_WORD: u32 = ${cursorWord}u;
-override CHUNK_FIRST_ROW: u32;
-override CHUNK_QUERY_COUNT: u32;`
+`
             : ''
         }`,
-        ...(chunk
-          ? {constants: {CHUNK_FIRST_ROW: chunk.firstRow, CHUNK_QUERY_COUNT: chunk.queryCount}}
-          : {}),
-        body: `${prologue}
+
+        body: `let CHUNK_FIRST_ROW = topk[topkOffset + ${dispatchWord}u];
+  let CHUNK_QUERY_COUNT = topk[topkOffset + ${dispatchWord + 1}u];
+  ${prologue}
   let header = topkOffset + query * STRIDE;
   let count = topk[header];
   if (slot == 0u) {
@@ -859,7 +1093,7 @@ override CHUNK_QUERY_COUNT: u32;`
         });
       }
       nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
+        createStorageTopKNode<Parameters>(graph, {
           id: `${nodeIdPrefix}-foot-columns`,
           operation,
           variant: chunkOrder ? 'foot-columns-ordered' : 'foot-columns',
@@ -870,14 +1104,13 @@ const STRIDE: u32 = ${stride}u;
 const NO_SEGMENT: u32 = 0xffffffffu;${
             chunk
               ? `\nconst CURSOR_WORD: u32 = ${cursorWord}u;
-override CHUNK_FIRST_ROW: u32;
-override CHUNK_QUERY_COUNT: u32;`
+`
               : ''
           }`,
-          ...(chunk
-            ? {constants: {CHUNK_FIRST_ROW: chunk.firstRow, CHUNK_QUERY_COUNT: chunk.queryCount}}
-            : {}),
-          body: `${prologue}
+
+          body: `let CHUNK_FIRST_ROW = topk[topkOffset + ${dispatchWord}u];
+  let CHUNK_QUERY_COUNT = topk[topkOffset + ${dispatchWord + 1}u];
+  ${prologue}
   let valid = slot < topk[topkOffset + query * STRIDE];
   let source = extrasOffset + index * ${EXTRA_WORDS}u;
   ${
@@ -917,7 +1150,7 @@ override CHUNK_QUERY_COUNT: u32;`
       featureCount,
       internalNodeCount: bvh.internalNodeCount,
       stackSize,
-      chunkFirstRow: dispatch.firstRow,
+      dispatchWord,
       scratchChunk: chunk ? {cursorWord} : undefined,
       queryOrder: Boolean(dispatch.order),
       queryKind: dispatch.kind,
@@ -932,11 +1165,9 @@ override CHUNK_QUERY_COUNT: u32;`
         : undefined
     });
     const sideWGSL = `${greatCircle ? NEAREST_GEODESIC_WGSL : NEAREST_COMMON_WGSL}${getNearestSideWGSL(dispatch.side)}${getNearestSideWGSL(featureSide)}${getNearestPairWGSL(dispatch.side, featureSide)}`;
-    const chunkConstants = chunk
-      ? {CHUNK_FIRST_ROW: chunk.firstRow, CHUNK_QUERY_COUNT: chunk.queryCount}
-      : undefined;
+
     nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
+      createStorageTopKNode<Parameters>(graph, {
         id: `${nodeIdPrefix}-traverse`,
         operation,
         variant: `traverse-${dispatch.kind}-${features.kind}${greatCircle ? '-great-circle' : ''}${dispatch.order ? '-ordered' : ''}`,
@@ -949,13 +1180,13 @@ override CHUNK_QUERY_COUNT: u32;`
         ],
         invocationCount: queryCountInChunk,
         declarations: `${sideWGSL}${traversal.declarations}`,
-        ...(chunkConstants ? {constants: chunkConstants} : {}),
+
         body: traversal.body
       })
     );
     if (extras) {
       nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
+        createStorageTopKNode<Parameters>(graph, {
           id: `${nodeIdPrefix}-foot-points`,
           operation,
           variant: `foot-${dispatch.kind}-${features.kind}${greatCircle ? '-great-circle' : ''}${chunk && dispatch.order ? '-ordered' : ''}`,
@@ -973,19 +1204,22 @@ const CAPACITY: u32 = ${capacity}u;
 const STRIDE: u32 = ${stride}u;${
             chunk
               ? `\nconst CURSOR_WORD: u32 = ${cursorWord}u;
-override CHUNK_QUERY_COUNT: u32;`
-              : `\nconst CHUNK_FIRST_ROW: u32 = ${dispatch.firstRow}u;`
+`
+              : ''
           }`,
-          ...(chunk ? {constants: {CHUNK_QUERY_COUNT: chunk.queryCount}} : {}),
-          body: `${
-            chunk
-              ? `let position = topk[topkOffset + CURSOR_WORD] + index;
+
+          body: `let CHUNK_FIRST_ROW = topk[topkOffset + ${dispatchWord}u];
+  let CHUNK_QUERY_COUNT = topk[topkOffset + ${dispatchWord + 1}u];
+  ${
+    chunk
+      ? `let position = topk[topkOffset + CURSOR_WORD] + index;
   if (position >= CHUNK_QUERY_COUNT) { return; }
-  let localQuery = ${dispatch.order ? 'queryOrder[queryOrderOffset + position]' : 'position'};
+  let localQuery = ${dispatch.order ? 'queryOrder[queryOrderOffset + position] - CHUNK_FIRST_ROW' : 'position'};
   let row = index;`
-              : `let localQuery = index;
+      : `if (index >= CHUNK_QUERY_COUNT) { return; }
+  let localQuery = index;
   let row = CHUNK_FIRST_ROW + localQuery;`
-          }
+  }
   let header = topkOffset + row * STRIDE;
   let count = topk[header];
   for (var slot = 0u; slot < count; slot++) {
@@ -1002,8 +1236,44 @@ override CHUNK_QUERY_COUNT: u32;`
     }
   };
 
+  nodes.push(
+    createStorageTopKNode(graph, {
+      id: `${id}-initialize-dispatch`,
+      operation,
+      variant: 'initialize-dispatch',
+      bindings: [topkBinding('read_write')],
+      invocationCount: 1,
+      body: `topk[topkOffset + ${dispatchWord}u] = 0u;
+  topk[topkOffset + ${dispatchWord + 1}u] = 0u;`
+    })
+  );
+  const addDispatchNode = (dispatch: QueryDispatch) => {
+    const countView =
+      props.queries.kind === 'points'
+        ? dispatch.bindings[0].view
+        : props.queries.geometry.kind === 'lines'
+          ? props.queries.geometry.lineOffsets
+          : props.queries.geometry.featureOffsets;
+    const components = props.queries.kind === 'points' ? 2 : 1;
+    const sentinel = props.queries.kind === 'points' ? 0 : 1;
+    nodes.push(
+      createStorageTopKNode(graph, {
+        id: `${dispatch.chunkId}-dispatch`,
+        operation,
+        variant: 'dispatch-parameters',
+        bindings: [
+          topkBinding('read_write'),
+          {name: 'queryShape', view: countView, type: 'u32', access: 'read'}
+        ],
+        invocationCount: 1,
+        body: `topk[topkOffset + ${dispatchWord}u] += topk[topkOffset + ${dispatchWord + 1}u];
+  topk[topkOffset + ${dispatchWord + 1}u] = (arrayLength(&queryShape) - queryShapeOffset) / ${components}u - ${sentinel}u;`
+      })
+    );
+  };
   if (!isChunked) {
     for (const dispatch of dispatches) {
+      addDispatchNode(dispatch);
       addTraversalNodes(dispatch, dispatch.chunkId, dispatch.count);
     }
     if (queryCount > 0) {
@@ -1015,11 +1285,11 @@ override CHUNK_QUERY_COUNT: u32;`
   // Chunked scratch: every query-side chunk is processed `scratchQueryCount` queries at a time.
   // All chunks of one dispatch run the same kernels; the cursor word selects the queries.
   for (const dispatch of dispatches) {
+    addDispatchNode(dispatch);
     const chunkCount = Math.ceil(dispatch.count / scratchQueryCount);
-    const queryCountInChunk = Math.min(dispatch.count, scratchQueryCount);
     const chunk = {firstRow: dispatch.firstRow, queryCount: dispatch.count};
     nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
+      createStorageTopKNode<Parameters>(graph, {
         id: `${dispatch.chunkId}-reset-cursor`,
         operation,
         variant: 'reset-cursor',
@@ -1030,9 +1300,13 @@ override CHUNK_QUERY_COUNT: u32;`
       })
     );
     for (let scratchChunk = 0; scratchChunk < chunkCount; scratchChunk++) {
+      const queryCountInChunk = Math.min(
+        scratchQueryCount,
+        dispatch.count - scratchChunk * scratchQueryCount
+      );
       const nodeIdPrefix = `${dispatch.chunkId}-scratch-${scratchChunk}`;
       nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
+        createStorageTopKNode<Parameters>(graph, {
           id: `${nodeIdPrefix}-clear`,
           operation,
           variant: greatCircle ? 'clear-chunk-great-circle' : 'clear-chunk',
@@ -1042,9 +1316,9 @@ override CHUNK_QUERY_COUNT: u32;`
           invocationCount: queryCountInChunk,
           declarations: `${clearDeclarations}
 const CURSOR_WORD: u32 = ${cursorWord}u;
-override CHUNK_QUERY_COUNT: u32;`,
-          constants: {CHUNK_QUERY_COUNT: dispatch.count},
-          body: `if (topk[topkOffset + CURSOR_WORD] + index < CHUNK_QUERY_COUNT) {
+`,
+          body: `let CHUNK_QUERY_COUNT = topk[topkOffset + ${dispatchWord + 1}u];
+  if (topk[topkOffset + CURSOR_WORD] + index < CHUNK_QUERY_COUNT) {
     let header = topkOffset + index * STRIDE;
     ${clearBoundWGSL}
   }`
@@ -1054,7 +1328,7 @@ override CHUNK_QUERY_COUNT: u32;`,
       addColumnNodes(nodeIdPrefix, queryCountInChunk, chunk, dispatch.order);
       if (scratchChunk < chunkCount - 1) {
         nodes.push(
-          createWGSLKernelNode<Parameters>(graph, {
+          createStorageTopKNode<Parameters>(graph, {
             id: `${nodeIdPrefix}-advance-cursor`,
             operation,
             variant: 'advance-cursor',

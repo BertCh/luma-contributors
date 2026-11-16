@@ -22,8 +22,12 @@ export type GPUIsolinesSettings = {
   /** Number of active leading rows of the `levels` view. Clamped by the contributor to its maximum. */
   levelCount: number;
   /**
-   * World extent `[minX, minY, maxX, maxY]` of the raster. Sample `(column, row)` sits at the
-   * centre of its cell, `minX + (column + 0.5) * cellWidth`; row 0 is at `minY`.
+   * Outer world extent `[minX, minY, maxX, maxY]`. Sample `(column, row)` is at
+   * `(minX + (column + 0.5) * cellWidth, minY + (row + 0.5) * cellHeight)`, with cell sizes
+   * `(maxX - minX) / grid.width` and `(maxY - minY) / grid.height`. Row zero is half a cell
+   * above the lower edge. Contours interpolate between sample centers, so their domain ends
+   * at the outermost centers, half a cell inside the extent. This placement ignores grid.affine
+   * and pixelInterpretation; neither changes the row order.
    */
   extent: readonly [number, number, number, number];
   /**

@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateNetworkViewBindings, validateNetworkWritableViews} from '../network-view-utils';
+
 import {createSaturatedScanTotalNodes} from '../../analysis-core/kernels/scan-total';
 import {
   createTransientView,
@@ -19,7 +21,6 @@ import {
 import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
@@ -27,6 +28,8 @@ import {
   createWGSLKernelNode,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
+
+import {SCALED_QUOTIENT_WGSL} from '../../analysis-core/kernels/scaled-quotient-wgsl';
 
 const OPERATION = 'GPUNetworkCostWeights';
 
@@ -213,6 +216,17 @@ export class GPUNetworkCostWeights implements GPUCommandNodeProducer {
     const id = props.id ?? 'network-cost-weights';
     this.id = id;
     this.props = props;
+    validateNetworkWritableViews(this.id, props.output, [
+      {
+        outputs: {
+          neighbors: props.output.neighbors,
+          weights: props.output.weights,
+          distances: props.output.distances
+        },
+        inputs: {offsets: props.output.offsets}
+      },
+      {outputs: {offsets: props.output.offsets, status: props.output.status}}
+    ]);
     this.orientation = props.orientation ?? 'rows';
     if (this.orientation !== 'rows' && this.orientation !== 'columns') {
       throw new Error(`${id} orientation must be 'rows' or 'columns'`);
@@ -287,7 +301,8 @@ export class GPUNetworkCostWeights implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
     const {output} = props;
-    validateGraphViewsBelongToGraph(id, graph, [...getInputs(props), ...getOutputs(props)]);
+    validateNetworkViewBindings(id, graph, [...getInputs(props), ...getOutputs(props)]);
+    validateNetworkViewBindings(id, graph, [], {rowCounts: (this.weightsRowCount + 1) * 4});
     const counts = createTransientView(
       graph,
       `${id}-row-counts`,
@@ -374,6 +389,7 @@ var<workgroup> partials: array<u32, ${size}>;`,
       invocationCount: this.weightsRowCount * size,
       guardIndex: false,
       declarations: `${declarations}
+${SCALED_QUOTIENT_WGSL}
 var<workgroup> prefix: array<u32, ${size}>;
 fn getDecayWeight(cost: f32, costLimit: f32, decay: u32, beta: f32, minimumCost: f32) -> f32 {
   if (decay == 1u) {
@@ -383,7 +399,7 @@ fn getDecayWeight(cost: f32, costLimit: f32, decay: u32, beta: f32, minimumCost:
     return pow(max(cost, minimumCost), -beta);
   }
   if (decay == 3u) {
-    let ratio = cost / costLimit;
+    let ratio = getScaledQuotient(cost, costLimit, 1.0, 0);
     let edge = exp(-0.5);
     return max((exp(-0.5 * ratio * ratio) - edge) / (1.0 - edge), 0.0);
   }

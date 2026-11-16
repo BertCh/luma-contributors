@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateSpatialStatisticsWritableDispatches} from './spatial-statistics-writable-dispatches';
+import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import type {GPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
 import type {GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
@@ -264,12 +266,26 @@ export type GPUSpatialWeightsOutput = GPUSpatialWeights & {
  *
  * @param id Contributor ID used in error messages.
  * @param output Output to validate.
+ * @param writableDispatches Optional co-bound writable field groups for a producer with separate stages.
  */
 export function validateGPUSpatialWeightsOutput(
   id: string,
-  output: GPUSpatialWeightsOutput
+  output: GPUSpatialWeightsOutput,
+  writableDispatches?: readonly (readonly string[])[]
 ): number {
   const rowCount = validateGPUSpatialWeights(id, output, 'output');
+  const writableFields = {
+    offsets: output.offsets,
+    neighbors: output.neighbors,
+    weights: output.weights,
+    distances: output.distances,
+    overflow: output.status?.overflow,
+    requiredCount: output.status?.requiredCount,
+    candidateOverflow: output.status?.candidateOverflow
+  };
+  if (writableDispatches)
+    validateSpatialStatisticsWritableDispatches(id, writableFields, writableDispatches);
+  else validateDisjointWritableViews(id, writableFields);
   if (!output.status?.overflow) {
     throw new Error(`${id} output.status.overflow is required`);
   }

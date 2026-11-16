@@ -91,3 +91,36 @@ export function getInstrumentalVariablesCovarianceCommandNodeEstimate(
     ? INSTRUMENTAL_VARIABLES_COVARIANCE_SORT_NODE_ALLOWANCE + 4 * (coefficientCount + 2)
     : INSTRUMENTAL_VARIABLES_COVARIANCE_FIXED_NODE_ALLOWANCE;
 }
+
+/** All HC/HAC/cluster scratch shapes, reusable before a composing fit declares its inputs. */
+export function getInstrumentalVariablesCovarianceAllocationLengths(
+  rows: number,
+  columns: number,
+  instruments: number,
+  options: {clusterCount?: number; kernel?: unknown} = {}
+): Readonly<Record<string, number>> {
+  const coefficients = columns + 1;
+  const tileCount = Math.ceil(rows / Math.max(64, Math.ceil(rows / 4096)));
+  const meatRows = options.clusterCount ?? rows;
+  const meatTileCount = Math.ceil(meatRows / Math.max(64, Math.ceil(meatRows / 4096)));
+  const momentCount = (instruments * (instruments + 1)) / 2 + instruments * columns + columns;
+  const meatCount = coefficients ** 2;
+  return {
+    'covariance workspace': columns + instruments + 1 + momentCount + meatCount + 3,
+    'covariance projection': 2 * columns * instruments,
+    'covariance score rows': rows * coefficients,
+    'covariance row status/contributions/sort scratch': rows,
+    'covariance sum partials': tileCount * (columns + instruments + 1),
+    'covariance moment partials': tileCount * momentCount,
+    'covariance leverage partials': tileCount,
+    'covariance meat partials': meatTileCount * (meatCount + (options.kernel ? 1 : 0)),
+    ...(options.clusterCount
+      ? {
+          'cluster scores': meatRows * coefficients,
+          'cluster totals': meatRows,
+          'cluster segment offsets': meatRows + 1,
+          'cluster occupied partials': meatTileCount
+        }
+      : {})
+  };
+}

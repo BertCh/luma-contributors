@@ -161,7 +161,7 @@ it('generates one kernel per chunk for the rate, Geary and quantile LISA consume
   graph.device.destroy();
 });
 
-it('keeps whole-CSR kernels free of a chunk row offset', () => {
+it('shares one runtime-offset rate kernel between whole CSR and a single CSR chunk', () => {
   const {graph, view} = createGraph();
   const nodes = new GPUSpatialEmpiricalBayesRates({
     id: 'eb',
@@ -175,6 +175,23 @@ it('keeps whole-CSR kernels free of a chunk row offset', () => {
   );
   expect(kernels).toHaveLength(1);
   expect(kernels[0].id).toBe('eb-smooth');
-  expect(kernels[0].source).not.toContain('WEIGHTS_ROW_START');
+  expect(kernels[0].source).toContain('var<private> WEIGHTS_ROW_START: u32;');
+  expect(kernels[0].source).not.toMatch(/(?:const|override) WEIGHTS_ROW_START/);
+  const chunked = new GPUSpatialEmpiricalBayesRates({
+    id: 'eb-chunk',
+    weights: {
+      rowCount: ROWS,
+      chunks: [{rowStart: 0, rowCount: ROWS, weights: createWhole(graph, 'chunk', ROWS)}]
+    },
+    events: view('chunk-events', 'float32'),
+    populations: view('chunk-populations', 'float32'),
+    output: {spatialRates: view('chunk-rates', 'float32')}
+  }).getCommandNodes(graph);
+  const chunkKernels = getGPUCommandNodeKernelSources(chunked).filter(kernel =>
+    kernel.id.includes('smooth')
+  );
+  expect(chunkKernels).toHaveLength(1);
+  expect(chunkKernels[0].source).toBe(kernels[0].source);
+  expect(chunkKernels[0].constants).toEqual(kernels[0].constants);
   graph.device.destroy();
 });

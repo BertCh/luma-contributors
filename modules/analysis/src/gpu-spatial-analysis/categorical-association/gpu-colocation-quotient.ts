@@ -33,6 +33,9 @@ import {
 } from '../spatial-weights/spatial-weights';
 import {GPU_CATEGORY_PAIR_COUNTS_MAXIMUM_CATEGORY_COUNT} from '../spatial-entropy/gpu-category-pair-counts';
 
+import {validateSpatialStatisticsBindings} from '../spatial-weights/spatial-statistics-bindings';
+import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
+
 const OPERATION = 'GPUColocationQuotient';
 
 /**
@@ -163,6 +166,7 @@ export class GPUColocationQuotient implements GPUCommandNodeProducer {
         'output.categoryRowCounts must hold categoryCount entries'
       );
     }
+    validateDisjointWritableViews(id, props.output);
     validateGraphOutputsDisjointFromInputs(
       id,
       [props.output.globalQuotients, props.output.localQuotients, props.output.categoryRowCounts],
@@ -175,6 +179,10 @@ export class GPUColocationQuotient implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, rowCount} = this;
+    validateSpatialStatisticsBindings(graph, id, props, {
+      'category counters': props.categoryCount * 4,
+      'share accumulators': props.categoryCount ** 2 * FIXED_POINT_WORD_COUNT * 4
+    });
     const {weights, output, categoryCount} = props;
     validateGraphViewsBelongToGraph(id, graph, [
       props.categories,

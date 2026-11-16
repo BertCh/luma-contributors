@@ -94,3 +94,7 @@ export type {
   GPUAdaptiveBandwidthKernelDensityProps,
   GPUAdaptiveBandwidthKernelDensitySettings
 } from './gpu-adaptive-bandwidth-kernel-density';
+
+export {GPU_POINT_DENSITY_MAXIMUM_POINT_COUNT} from './gpu-point-density';
+
+export {GPU_KERNEL_DENSITY_MAXIMUM_POINT_COUNT} from './gpu-kernel-density';

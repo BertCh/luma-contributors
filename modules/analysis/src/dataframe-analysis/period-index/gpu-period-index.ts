@@ -3,10 +3,17 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  createGraphChunkGroupKernelNode,
+  validateGraphChunkGroupKernelSupport
+} from '../../analysis-core/kernels/graph-chunk-groups';
+
+import {
+  getBoundedDispatchLayout,
+  GraphDataView,
+  type GraphVectorView,
   type GPUCommandGraph,
   type GPUCommandNode,
-  type GPUCommandNodeProducer,
-  type GraphDataView
+  type GPUCommandNodeProducer
 } from '@luma.gl/graph/gpu-core';
 import {
   resolveGPUTemporalContext,
@@ -21,15 +28,21 @@ import {
 import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
-  validateGPUStorageBindingByteLength,
+  getGraphViewChunks,
+  validateCommandNodeBudget,
   validateSinglePackedView,
   validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
+  planGraphChunkDispatch,
+  validateDisjointWritableViews,
+  validateGraphChunkBindingRanges,
+  validateGraphChunkDispatchBindings,
+  type GraphChunkDispatchPlan
+} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {
   createFillNode,
-  createWGSLKernelNode,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {TEMPORAL_REDUCTION_WORD_DIVISION_WGSL} from '../temporal-reduction/temporal-reduction-word-division';
@@ -41,6 +54,8 @@ import {
 } from './period-index-calendar';
 
 const OPERATION = 'GPUPeriodIndex';
+/** Fixed workgroup size keeps all row chunks on the same pipeline specialization. */
+const WORKGROUP_SIZE = 256;
 /** The calendar columns are decoded from Unix-epoch Int64 words, and fixed widths count from the Unix epoch. */
 const TEMPORAL_CONTEXT_SUPPORT: GPUTemporalContextSupport = Object.freeze({
   encodings: Object.freeze(['int64-words'] as const),
@@ -49,6 +64,11 @@ const TEMPORAL_CONTEXT_SUPPORT: GPUTemporalContextSupport = Object.freeze({
 const CALENDAR_UNITS = ['year', 'quarter', 'month', 'week', 'day', 'hour'] as const;
 const INT64_MAXIMUM = (1n << 63n) - 1n;
 const INT64_MINIMUM = -(1n << 63n);
+/** Calendar indices and division operands use signed 32-bit WGSL arithmetic. */
+const MINIMUM_CALENDAR_STEP_INDEX = -0x80000000;
+const MAXIMUM_CALENDAR_STEP_INDEX = 0x7fffffff;
+/** The positive divisor, including seven days per week, must fit a WGSL i32 literal. */
+const MAXIMUM_CALENDAR_STEPS_PER_PERIOD = 0x7fffffff;
 
 /** Period written for a row with no usable time: masked, or an invalid calendar decode. */
 export const GPU_PERIOD_INDEX_INVALID = 0xffffffff;
@@ -57,17 +77,25 @@ export const GPU_PERIOD_INDEX_OUT_OF_RANGE = 0xfffffffe;
 /** Largest `count`: the two sentinels above are not periods. */
 export const GPU_PERIOD_INDEX_MAXIMUM_COUNT = 0xfffffffd;
 
+/** Preserves packed row types by default and the caller's chunked view kind when requested. */
+type GPUPeriodIndexRowView<
+  Format extends GraphDataView['format'],
+  Rows extends GraphDataView | GraphVectorView
+> = Rows extends GraphVectorView ? GraphVectorView<Format> : GraphDataView<Format>;
+
 /**
  * Calendar columns of the row times, the outputs of `GPUCalendarBuckets`. A step needs `year`;
  * `month` for every step but `'year'`; `dayOfMonth` for `'week'`, `'day'` and `'hour'`; `hour` for
  * `'hour'`. Extra columns are ignored.
  */
-export type GPUPeriodIndexCalendarColumns = {
+export type GPUPeriodIndexCalendarColumns<
+  Rows extends GraphDataView | GraphVectorView = GraphDataView
+> = {
   /** Year, `-2^31` for an invalid row. */
-  year: GraphDataView<'sint32'>;
-  month?: GraphDataView<'uint32'>;
-  dayOfMonth?: GraphDataView<'uint32'>;
-  hour?: GraphDataView<'uint32'>;
+  year: GPUPeriodIndexRowView<'sint32', Rows>;
+  month?: GPUPeriodIndexRowView<'uint32', Rows>;
+  dayOfMonth?: GPUPeriodIndexRowView<'uint32', Rows>;
+  hour?: GPUPeriodIndexRowView<'uint32', Rows>;
 };
 
 /**
@@ -77,9 +105,12 @@ export type GPUPeriodIndexCalendarColumns = {
  */
 export type GPUPeriodIndexCalendarPeriods = {
   kind: 'calendar';
-  /** `calendarUnit` and a positive integer `interval` (default 1) of calendar units per period. */
+  /**
+   * `calendarUnit` and a positive integer `interval` (default 1). The divisor in whole steps
+   * (seven days per week) must not exceed MAXIMUM_CALENDAR_STEPS_PER_PERIOD (2^31 - 1).
+   */
   step: GPUTemporalCalendarStep;
-  /** Start of period 0 in the local calendar of `columns`. */
+  /** Start of period 0; its whole-step index must fit MINIMUM_CALENDAR_STEP_INDEX..MAXIMUM_CALENDAR_STEP_INDEX (i32). */
   origin: GPUPeriodIndexCalendarFields;
   /** Number of periods. */
   count: number;
@@ -105,8 +136,8 @@ export type GPUPeriodIndexFixedPeriods = {
  * `periods` has one `uint32` row per input row: the period, `GPU_PERIOD_INDEX_OUT_OF_RANGE` for a
  * valid time outside the periods, or `GPU_PERIOD_INDEX_INVALID` for a masked or undecodable row.
  */
-export type GPUPeriodIndexOutput = {
-  periods: GraphDataView<'uint32'>;
+export type GPUPeriodIndexOutput<Rows extends GraphDataView | GraphVectorView = GraphDataView> = {
+  periods: GPUPeriodIndexRowView<'uint32', Rows>;
   /**
    * Cleared on every encoding. `invalidCount` is the number of skipped rows: valid times that fall
    * before the origin or past the last period. Masked and undecodable rows are not counted, they
@@ -123,7 +154,7 @@ export type GPUPeriodIndexOutput = {
  * which calendar columns are present, whether `mask` and the status are present. The period axis
  * is compile-time because it fixes the size of the cube the periods index.
  */
-export type GPUPeriodIndexProps = {
+export type GPUPeriodIndexProps<Rows extends GraphDataView | GraphVectorView = GraphDataView> = {
   /** Prefix for generated node IDs. Defaults to `'period-index'`. */
   id?: string;
   /**
@@ -135,13 +166,13 @@ export type GPUPeriodIndexProps = {
   /** The period axis: calendar steps or a fixed width. */
   periods: GPUPeriodIndexCalendarPeriods | GPUPeriodIndexFixedPeriods;
   /** Calendar columns, required by (and only read for) `periods.kind === 'calendar'`. */
-  columns?: GPUPeriodIndexCalendarColumns;
+  columns?: GPUPeriodIndexCalendarColumns<Rows>;
   /** Int64 words, `(low, high)` per row, required by (and only read for) `periods.kind === 'fixed'`. */
-  timestamps?: GraphDataView<'uint32x2'>;
+  timestamps?: GPUPeriodIndexRowView<'uint32x2', Rows>;
   /** Optional packed `uint32` row mask; zero writes `GPU_PERIOD_INDEX_INVALID`. */
-  mask?: GraphDataView<'uint32'>;
+  mask?: GPUPeriodIndexRowView<'uint32', Rows>;
   /** Caller-owned outputs. */
-  output: GPUPeriodIndexOutput;
+  output: GPUPeriodIndexOutput<Rows>;
 };
 
 /**
@@ -161,21 +192,28 @@ export type GPUPeriodIndexProps = {
  * integer `atomicAdd`.
  *
  * Limits: `count` at most `GPU_PERIOD_INDEX_MAXIMUM_COUNT`; the `uint32x2` timestamps of a fixed
- * axis must fit one storage binding (16,777,216 rows on a default device).
+ * axis must fit one storage binding per chunk. Row inputs and outputs may be chunked with
+ * matching ordered chunk lengths; total rows fit the shared uint32 chunk limit. Status stays packed.
  */
-export class GPUPeriodIndex implements GPUCommandNodeProducer {
+export class GPUPeriodIndex<
+  Props extends GPUPeriodIndexProps<GraphDataView | GraphVectorView> = GPUPeriodIndexProps
+> implements GPUCommandNodeProducer
+{
   /** Prefix for every node ID. */
   readonly id: string;
   /** Validated properties. */
-  readonly props: GPUPeriodIndexProps;
+  readonly props: Props & GPUPeriodIndexProps<Props['output']['periods']>;
   /** Number of input rows. */
   readonly rowCount: number;
   /** Validated temporal context of the row times. */
   readonly temporalContext: GPUTemporalContext;
 
-  constructor(props: GPUPeriodIndexProps) {
+  readonly estimatedCommandNodeCount: number;
+  private readonly chunkPlan: GraphChunkDispatchPlan;
+
+  constructor(props: Props) {
     this.id = props.id ?? 'period-index';
-    this.props = props;
+    this.props = props as Props & GPUPeriodIndexProps<Props['output']['periods']>;
     const id = this.id;
     const {periods, output} = props;
     this.temporalContext = resolveGPUTemporalContext(
@@ -193,10 +231,12 @@ export class GPUPeriodIndex implements GPUCommandNodeProducer {
       throw new Error(`${id} needs at least one row`);
     }
     if (props.mask) {
-      validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
+      for (const chunk of getGraphViewChunks(props.mask))
+        validateSinglePackedView(chunk, ['uint32'], `${id} mask`);
       validateViewLength(id, 'mask', props.mask, this.rowCount);
     }
-    validateSinglePackedView(output.periods, ['uint32'], `${id} output.periods`);
+    for (const chunk of getGraphViewChunks(output.periods))
+      validateSinglePackedView(chunk, ['uint32'], `${id} output.periods`);
     validateRequirement(
       id,
       output.periods.length >= this.rowCount,
@@ -204,28 +244,66 @@ export class GPUPeriodIndex implements GPUCommandNodeProducer {
     );
     validateGPUStatusPort(id, {invalidCount: output.status?.invalidCount});
     validateGraphOutputsDisjointFromInputs(id, this.getOutputViews(), this.getInputViews());
-    if (
-      output.status?.invalidCount &&
-      output.status.invalidCount.buffer === output.periods.buffer
-    ) {
-      throw new Error(`${id} outputs must not share buffers with each other`);
-    }
+    const periodRows =
+      output.periods instanceof GraphDataView && output.periods.length > this.rowCount
+        ? new GraphDataView(output.periods.buffer, {...output.periods, length: this.rowCount})
+        : output.periods;
+    validateDisjointWritableViews(id, {
+      periods: periodRows,
+      invalidCount: output.status?.invalidCount
+    });
+    const calendarUnit = periods.kind === 'calendar' ? periods.step.calendarUnit : undefined;
+    this.chunkPlan = planGraphChunkDispatch(id, {
+      ...(periods.kind === 'fixed'
+        ? {timestamps: props.timestamps}
+        : {
+            calendarYear: props.columns!.year,
+            calendarMonth: calendarUnit !== 'year' ? props.columns!.month : undefined,
+            calendarDay: ['week', 'day', 'hour'].includes(calendarUnit!)
+              ? props.columns!.dayOfMonth
+              : undefined,
+            calendarHour: calendarUnit === 'hour' ? props.columns!.hour : undefined
+          }),
+      rowMask: props.mask,
+      periodsOut: periodRows
+    });
+    this.estimatedCommandNodeCount =
+      Number(Boolean(output.status?.invalidCount)) + this.chunkPlan.nonemptyChunkCount;
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
   }
 
   /** Returns the optional status clear, then the one period kernel. */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {props, id, rowCount} = this;
+    const {props, id, chunkPlan} = this;
     const {periods, output} = props;
-    validateGraphViewsBelongToGraph(id, graph, [...this.getInputViews(), ...this.getOutputViews()]);
-    validateGPUStorageBindingByteLength(
-      graph.device,
+    validateGraphChunkDispatchBindings(graph, id, chunkPlan);
+    validateGraphChunkBindingRanges(graph, id, {invalidCount: output.status?.invalidCount});
+    validateGraphChunkGroupKernelSupport(
+      graph,
       id,
-      'output.periods',
-      output.periods.length * 4,
-      'split the rows over several graphs'
+      1 +
+        Number(Boolean(props.mask)) +
+        Number(Boolean(output.status?.invalidCount)) +
+        (periods.kind === 'fixed'
+          ? 1
+          : 1 +
+            Number(periods.step.calendarUnit !== 'year') +
+            Number(['week', 'day', 'hour'].includes(periods.step.calendarUnit)) +
+            Number(periods.step.calendarUnit === 'hour')),
+      WORKGROUP_SIZE
     );
+    for (const chunk of chunkPlan.chunks) {
+      if (chunk.length > 0)
+        getBoundedDispatchLayout(
+          id,
+          chunk.length,
+          WORKGROUP_SIZE,
+          graph.device.limits.maxComputeWorkgroupsPerDimension
+        );
+    }
+
     const nodes: GPUCommandNode<Parameters>[] = [];
     const invalidCount = output.status?.invalidCount;
     if (invalidCount) {
@@ -245,42 +323,43 @@ export class GPUPeriodIndex implements GPUCommandNodeProducer {
       type,
       access: 'read'
     });
-    const bindings: WGSLKernelBinding[] = [];
-    let declarations: string;
-    let periodSource: string;
-    if (periods.kind === 'calendar') {
-      const columns = props.columns as GPUPeriodIndexCalendarColumns;
-      const {calendarUnit} = periods.step;
-      const needsMonth = calendarUnit !== 'year';
-      const needsDay = ['week', 'day', 'hour'].includes(calendarUnit);
-      const needsHour = calendarUnit === 'hour';
-      bindings.push(read('calendarYear', columns.year, 'i32'));
-      if (needsMonth) {
-        bindings.push(read('calendarMonth', columns.month as GraphDataView, 'u32'));
-      }
-      if (needsDay) {
-        bindings.push(read('calendarDay', columns.dayOfMonth as GraphDataView, 'u32'));
-      }
-      if (needsHour) {
-        bindings.push(read('calendarHour', columns.hour as GraphDataView, 'u32'));
-      }
-      const stepExpression = {
-        year: 'year',
-        quarter: 'year * 4 + (month - 1) / 3',
-        month: 'year * 12 + month - 1',
-        week: 'daysFromCivil(year, month, day)',
-        day: 'daysFromCivil(year, month, day)',
-        hour: 'daysFromCivil(year, month, day) * 24 + hour'
-      }[calendarUnit];
-      const originStep = getGPUPeriodIndexStepIndex(calendarUnit, periods.origin);
-      declarations = CALENDAR_WGSL;
-      periodSource = `let year = calendarYear[calendarYearOffset + index];
-  ${needsMonth ? 'let month = i32(calendarMonth[calendarMonthOffset + index]);' : ''}
-  ${needsDay ? 'let day = i32(calendarDay[calendarDayOffset + index]);' : ''}
-  ${needsHour ? 'let hour = i32(calendarHour[calendarHourOffset + index]);' : ''}
+    for (const chunk of chunkPlan.chunks) {
+      if (chunk.length === 0) continue;
+      const bindings: WGSLKernelBinding[] = [];
+      let declarations: string;
+      let periodSource: string;
+      if (periods.kind === 'calendar') {
+        const {calendarUnit} = periods.step;
+        const needsMonth = calendarUnit !== 'year';
+        const needsDay = ['week', 'day', 'hour'].includes(calendarUnit);
+        const needsHour = calendarUnit === 'hour';
+        bindings.push(read('calendarYear', chunk.views['calendarYear'], 'i32'));
+        if (needsMonth) {
+          bindings.push(read('calendarMonth', chunk.views['calendarMonth'], 'u32'));
+        }
+        if (needsDay) {
+          bindings.push(read('calendarDay', chunk.views['calendarDay'], 'u32'));
+        }
+        if (needsHour) {
+          bindings.push(read('calendarHour', chunk.views['calendarHour'], 'u32'));
+        }
+        const stepExpression = {
+          year: 'year',
+          quarter: 'year * 4 + (month - 1) / 3',
+          month: 'year * 12 + month - 1',
+          week: 'daysFromCivil(year, month, day)',
+          day: 'daysFromCivil(year, month, day)',
+          hour: 'daysFromCivil(year, month, day) * 24 + hour'
+        }[calendarUnit];
+        const originStep = getGPUPeriodIndexStepIndex(calendarUnit, periods.origin);
+        declarations = CALENDAR_WGSL;
+        periodSource = `let year = calendarYear[calendarYearBase + index];
+  ${needsMonth ? 'let month = i32(calendarMonth[calendarMonthBase + index]);' : ''}
+  ${needsDay ? 'let day = i32(calendarDay[calendarDayBase + index]);' : ''}
+  ${needsHour ? 'let hour = i32(calendarHour[calendarHourBase + index]);' : ''}
   let isTimeValid = year != bitcast<i32>(0x80000000u);
   var period = ${GPU_PERIOD_INDEX_INVALID}u;
-  if (isTimeValid${props.mask ? ' && rowMask[rowMaskOffset + index] != 0u' : ''}) {
+  if (isTimeValid${props.mask ? ' && rowMask[rowMaskBase + index] != 0u' : ''}) {
     let stepOffset = ${stepExpression} - (${originStep});
     let candidate = stepOffset / ${getGPUPeriodIndexStepsPerPeriod(periods.step)};
     if (stepOffset >= 0 && candidate < ${Math.min(periods.count, 0x7fffffff)}) {
@@ -289,24 +368,16 @@ export class GPUPeriodIndex implements GPUCommandNodeProducer {
       period = ${GPU_PERIOD_INDEX_OUT_OF_RANGE}u;
     }
   }`;
-    } else {
-      const timestamps = props.timestamps as GraphDataView<'uint32x2'>;
-      validateGPUStorageBindingByteLength(
-        graph.device,
-        id,
-        'timestamps',
-        timestamps.length * 8,
-        'split the rows over several graphs'
-      );
-      const [originLow, originHigh] = getWords(periods.origin);
-      const [widthLow, widthHigh] = getWords(BigInt(periods.width));
-      bindings.push(read('timestamps', timestamps, 'u32'));
-      declarations = `${TIME_WORDS_WGSL}\n${TEMPORAL_REDUCTION_WORD_DIVISION_WGSL}
+      } else {
+        const [originLow, originHigh] = getWords(periods.origin);
+        const [widthLow, widthHigh] = getWords(BigInt(periods.width));
+        bindings.push(read('timestamps', chunk.views['timestamps'], 'u32'));
+        declarations = `${TIME_WORDS_WGSL}\n${TEMPORAL_REDUCTION_WORD_DIVISION_WGSL}
 const ORIGIN_WORDS = vec2<u32>(${originLow}u, ${originHigh}u);
 const WIDTH_WORDS = vec2<u32>(${widthLow}u, ${widthHigh}u);`;
-      periodSource = `let time = vec2<u32>(timestamps[timestampsOffset + 2u * index], timestamps[timestampsOffset + 2u * index + 1u]);
+        periodSource = `let time = vec2<u32>(timestamps[timestampsBase + 2u * index], timestamps[timestampsBase + 2u * index + 1u]);
   var period = ${GPU_PERIOD_INDEX_INVALID}u;
-  if (${props.mask ? 'rowMask[rowMaskOffset + index] != 0u' : 'true'}) {
+  if (${props.mask ? 'rowMask[rowMaskBase + index] != 0u' : 'true'}) {
     period = ${GPU_PERIOD_INDEX_OUT_OF_RANGE}u;
     if (timeWordsCompare(time, ORIGIN_WORDS) >= 0i) {
       // time >= origin, so the unsigned 64-bit difference is exact even beyond 2^63.
@@ -316,29 +387,43 @@ const WIDTH_WORDS = vec2<u32>(${widthLow}u, ${widthHigh}u);`;
       }
     }
   }`;
-    }
-    if (props.mask) {
-      bindings.push(read('rowMask', props.mask, 'u32'));
-    }
-    bindings.push({name: 'periodsOut', view: output.periods, type: 'u32', access: 'read_write'});
-    if (invalidCount) {
+      }
+      if (props.mask) {
+        bindings.push(read('rowMask', chunk.views['rowMask'], 'u32'));
+      }
       bindings.push({
-        name: 'invalidCountOut',
-        view: invalidCount,
-        type: 'atomic<u32>',
+        name: 'periodsOut',
+        view: chunk.views['periodsOut'],
+        type: 'u32',
         access: 'read_write'
       });
-    }
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-periods`,
-        operation: OPERATION,
-        variant: periods.kind,
-        bindings,
-        invocationCount: rowCount,
-        declarations,
-        body: `${periodSource}
-  periodsOut[periodsOutOffset + index] = period;${
+      if (invalidCount) {
+        bindings.push({
+          name: 'invalidCountOut',
+          view: invalidCount,
+          type: 'atomic<u32>',
+          access: 'read_write'
+        });
+      }
+      nodes.push(
+        createGraphChunkGroupKernelNode<Parameters>(graph, {
+          id: `${id}-periods-chunk-${chunk.chunkIndex}`,
+          operation: OPERATION,
+          variant: periods.kind,
+          bindings: bindings,
+          invocationCount: chunk.length,
+          workgroupSize: WORKGROUP_SIZE,
+          declarations,
+          body: `if (index >= getChunkParameter(1u)) { return; }
+  ${bindings
+    .filter(binding => !['invalidCountOut', 'chunkParameters'].includes(binding.name))
+    .map(
+      binding =>
+        `let ${binding.name}Base = arrayLength(&${binding.name}) - ${binding.name === 'timestamps' ? '2u * ' : ''}getChunkParameter(1u);`
+    )
+    .join('\n  ')}
+  ${periodSource}
+  periodsOut[periodsOutBase + index] = period;${
     invalidCount
       ? `
   if (period == ${GPU_PERIOD_INDEX_OUT_OF_RANGE}u) {
@@ -346,8 +431,9 @@ const WIDTH_WORDS = vec2<u32>(${widthLow}u, ${widthHigh}u);`;
   }`
       : ''
   }`
-      })
-    );
+        })
+      );
+    }
     return nodes;
   }
 
@@ -360,6 +446,13 @@ const WIDTH_WORDS = vec2<u32>(${widthLow}u, ${widthHigh}u);`;
       CALENDAR_UNITS.includes(calendarUnit) && Number.isInteger(interval) && interval >= 1,
       'periods.step needs a calendar unit and a positive integer interval'
     );
+    validateCapacity(
+      id,
+      'periods.step steps per period (MAXIMUM_CALENDAR_STEPS_PER_PERIOD)',
+      getGPUPeriodIndexStepsPerPeriod(periods.step),
+      1,
+      MAXIMUM_CALENDAR_STEPS_PER_PERIOD
+    );
     validateRequirement(id, columns !== undefined, 'calendar periods need columns');
     const required = {
       year: true,
@@ -367,17 +460,19 @@ const WIDTH_WORDS = vec2<u32>(${widthLow}u, ${widthHigh}u);`;
       dayOfMonth: ['week', 'day', 'hour'].includes(calendarUnit),
       hour: calendarUnit === 'hour'
     };
-    validateSinglePackedView(columns!.year, ['sint32'], `${id} columns.year`);
+    for (const chunk of getGraphViewChunks(columns!.year))
+      validateSinglePackedView(chunk, ['sint32'], `${id} columns.year`);
     const rowCount = columns!.year.length;
     for (const name of ['month', 'dayOfMonth', 'hour'] as const) {
-      const view: GraphDataView | undefined = columns![name];
+      const view: GraphDataView | GraphVectorView | undefined = columns![name];
       if (required[name]) {
         validateRequirement(
           id,
           view !== undefined,
           `columns.${name} is required for a ${calendarUnit} step`
         );
-        validateSinglePackedView(view!, ['uint32'], `${id} columns.${name}`);
+        for (const chunk of getGraphViewChunks(view!))
+          validateSinglePackedView(chunk, ['uint32'], `${id} columns.${name}`);
         validateViewLength(id, `columns.${name}`, view!, rowCount);
       }
     }
@@ -394,6 +489,13 @@ const WIDTH_WORDS = vec2<u32>(${widthLow}u, ${widthHigh}u);`;
         `periods.origin.${name} must be an integer in ${minimum}..${maximum}`
       );
     }
+    validateCapacity(
+      id,
+      'periods.origin step index (MINIMUM_CALENDAR_STEP_INDEX..MAXIMUM_CALENDAR_STEP_INDEX)',
+      getGPUPeriodIndexStepIndex(calendarUnit, origin),
+      MINIMUM_CALENDAR_STEP_INDEX,
+      MAXIMUM_CALENDAR_STEP_INDEX
+    );
     return rowCount;
   }
 
@@ -402,7 +504,8 @@ const WIDTH_WORDS = vec2<u32>(${widthLow}u, ${widthHigh}u);`;
     const {timestamps} = this.props;
     const {width, origin} = periods;
     validateRequirement(id, timestamps !== undefined, 'fixed periods need timestamps');
-    validateSinglePackedView(timestamps!, ['uint32x2'], `${id} timestamps`);
+    for (const chunk of getGraphViewChunks(timestamps!))
+      validateSinglePackedView(chunk, ['uint32x2'], `${id} timestamps`);
     validateRequirement(
       id,
       (typeof width === 'bigint' || Number.isSafeInteger(width)) &&
@@ -418,7 +521,7 @@ const WIDTH_WORDS = vec2<u32>(${widthLow}u, ${widthHigh}u);`;
     return timestamps!.length;
   }
 
-  private getInputViews(): GraphDataView[] {
+  private getInputViews(): (GraphDataView | GraphVectorView)[] {
     const {props} = this;
     const {columns} = props;
     return [
@@ -428,14 +531,15 @@ const WIDTH_WORDS = vec2<u32>(${widthLow}u, ${widthHigh}u);`;
       columns?.month,
       columns?.dayOfMonth,
       columns?.hour
-    ].filter(view => Boolean(view)) as GraphDataView[];
+    ].filter(view => Boolean(view)) as (GraphDataView | GraphVectorView)[];
   }
 
-  private getOutputViews(): GraphDataView[] {
+  private getOutputViews(): (GraphDataView | GraphVectorView)[] {
     const {output} = this.props;
-    return [output.periods, output.status?.invalidCount].filter(view =>
-      Boolean(view)
-    ) as GraphDataView[];
+    return [output.periods, output.status?.invalidCount].filter(view => Boolean(view)) as (
+      | GraphDataView
+      | GraphVectorView
+    )[];
   }
 }
 

@@ -17,7 +17,6 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
-  validateGraphViewsBelongToGraph,
   validateMaximumCount,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -40,6 +39,14 @@ import {
   resolveGPUSecondarySpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
+
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {
+  getGeometrySortScratchByteLengths,
+  validateGeometryScratchByteLengths
+} from '../geometry-edit/geometry-storage-validation';
+
+import {validateSegmentIntersectionScratch} from '../segment-intersection/segment-storage-validation';
 
 const OPERATION = 'GPUGeometryPredicates';
 
@@ -311,7 +318,9 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
     const {props} = this;
     return [
       ...getPredicateGeometryViews(props.geometry),
-      ...(props.other ? getPredicateGeometryViews(props.other) : []),
+      ...((props.output.equalsExact || props.output.equalsIdentical) && props.other
+        ? getPredicateGeometryViews(props.other)
+        : []),
       props.output.isSimple,
       props.output.isRing,
       props.output.isClosed,
@@ -320,9 +329,10 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
       props.output.numCoordinates,
       props.output.numInteriorRings,
       props.output.numGeometries,
-      props.output.status?.overflow,
-      props.output.status?.intersectionCount,
-      props.parameters,
+      ...(props.geometry.kind !== 'points' && (props.output.isSimple || props.output.isRing)
+        ? [props.output.status?.overflow, props.output.status?.intersectionCount]
+        : []),
+      props.output.equalsExact ? props.parameters : undefined,
       props.output.equalsExact,
       props.output.equalsIdentical,
       props.output.uniquePositions,
@@ -335,7 +345,11 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, featureCount} = this;
-    validateGraphViewsBelongToGraph(id, graph, this.getViews());
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(this.getViews().map((view, index) => [String(index), view]))
+    );
     if (props.output.isSimple || props.output.isRing) {
       // The simplicity and ring tests build a segment table over every vertex.
       validateMaximumCount(
@@ -345,6 +359,20 @@ export class GPUGeometryPredicates implements GPUCommandNodeProducer {
         getGPUSegmentIntersectionMaximumVertexCount(graph.device)
       );
     }
+    if ((props.output.isSimple || props.output.isRing) && props.geometry.kind !== 'points')
+      validateSegmentIntersectionScratch(
+        graph,
+        id,
+        this.vertexCount,
+        this.vertexCount,
+        props.intersectionCapacity as number,
+        props.leafCapacity
+      );
+    validateGeometryScratchByteLengths(graph, id, {
+      featureColumns:
+        featureCount * (props.output.equalsExact || props.output.equalsIdentical ? 12 : 4),
+      ...(props.output.uniquePositions ? getGeometrySortScratchByteLengths(this.vertexCount) : {})
+    });
     const {geometry} = props;
     const nodes: GPUCommandNode<Parameters>[] = [];
     const geometryBindings = getPredicateGeometryBindings('g', geometry);

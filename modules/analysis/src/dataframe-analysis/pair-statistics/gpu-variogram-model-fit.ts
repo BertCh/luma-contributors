@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import type {
   GPUCommandGraph,
   GPUCommandNode,
@@ -10,12 +11,24 @@ import type {
 } from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
+  validateCommandNodeBudget,
+  validateRequirement,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {getParallelVariogramModelFitNodes} from './variogram-model-fit-nodes';
+import {CRESSIE_ROUND_COUNT, getParallelVariogramModelFitNodes} from './variogram-model-fit-nodes';
+
 import type {VariogramModelType, VariogramModelWeighting} from './variogram-model';
+
+/** The ladder is evaluated per model and retained in one bounded search scratch table. */
+const MAXIMUM_RANGE_STEPS = 1024;
+/** Golden-section refinement remains ordered within each cooperative model workgroup. */
+const MAXIMUM_ITERATIONS = 64;
+/** Five supported covariance shapes bound the model workgroups and output records. */
+const MAXIMUM_MODEL_COUNT = 5;
+/** The 64-lane cooperative bin stride must terminate without wrapping a uint32 index. */
+const MAXIMUM_BIN_COUNT = 0xffffffc0;
 
 /** GPU-resident empirical-bin model search; output row order follows models. */
 export type GPUVariogramModelFitProps = {
@@ -47,7 +60,8 @@ export type GPUVariogramModelFitProps = {
  * is returned with status 3 rather than claimed to be an identified range. Nonpositive-count,
  * nonfinite, nonpositive-distance bins are skipped. Range candidates run in parallel. Each model's
  * refinement reduces bins cooperatively, while refinement steps and Cressie rounds remain ordered
- * on the GPU. Floating reductions preserve the fitting tolerance, not serial bit identity. Only
+ * on the GPU. Round flags live in aligned parameter slots; every round uses the same candidate
+ * and refinement pipelines. Floating reductions preserve the fitting tolerance, not serial bit identity. Only
  * public diagnostics need readback. Compare model AIC only for the same empirical bins, and note
  * it is an unweighted Gaussian residual diagnostic, not a spatial likelihood.
  *
@@ -64,6 +78,8 @@ export class GPUVariogramModelFit implements GPUCommandNodeProducer {
   readonly models: readonly VariogramModelType[];
   readonly rangeSteps: number;
   readonly maximumIterations: number;
+  /** Includes the parameter upload, preparation, and two dispatches per fitting round. */
+  readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPUVariogramModelFitProps) {
     this.props = props;
@@ -71,45 +87,42 @@ export class GPUVariogramModelFit implements GPUCommandNodeProducer {
     this.models = props.models ?? ['spherical', 'exponential', 'gaussian'];
     this.rangeSteps = props.rangeSteps ?? 200;
     this.maximumIterations = props.maximumIterations ?? 32;
-    validateCapacity(this.id, 'rangeSteps', this.rangeSteps, 3);
-    validateCapacity(this.id, 'maximumIterations', this.maximumIterations, 0);
+    validateCapacity(this.id, 'distances length', props.distances.length, 0, MAXIMUM_BIN_COUNT);
+    validateCapacity(this.id, 'rangeSteps', this.rangeSteps, 3, MAXIMUM_RANGE_STEPS);
+    validateCapacity(this.id, 'maximumIterations', this.maximumIterations, 0, MAXIMUM_ITERATIONS);
+    validateCapacity(this.id, 'models length', this.models.length, 1, MAXIMUM_MODEL_COUNT);
     if (
-      !this.models.length ||
-      this.models.length > 5 ||
       this.models.some(
         model =>
           !['spherical', 'exponential', 'gaussian', 'matern-3/2', 'matern-5/2'].includes(model)
       ) ||
       !['pairs', 'none', 'cressie'].includes(props.weighting ?? 'cressie') ||
-      this.rangeSteps > 1024 ||
-      this.maximumIterations > 64 ||
       props.distances.length !== props.semivariances.length ||
       props.distances.length !== props.pairCounts.length
     ) {
       throw new Error(`${this.id} invalid model or bin topology`);
     }
-    for (const view of [
-      props.distances,
-      props.semivariances,
-      props.pairCounts,
-      props.output.parameters,
-      props.output.diagnostics,
-      props.output.status
-    ]) {
-      validateSinglePackedView(view, [view.format], this.id);
+    for (const [name, view, format] of [
+      ['distances', props.distances, 'float32'],
+      ['semivariances', props.semivariances, 'float32'],
+      ['pairCounts', props.pairCounts, 'uint32'],
+      ['output.parameters', props.output.parameters, 'float32x4'],
+      ['output.diagnostics', props.output.diagnostics, 'float32x4'],
+      ['output.status', props.output.status, 'uint32']
+    ] as const) {
+      validateSinglePackedView(view, [format], `${this.id} ${name}`);
     }
-    if (
-      [props.output.parameters, props.output.diagnostics, props.output.status].some(
-        view => view.length < this.models.length
-      ) ||
-      new Set([
-        props.output.parameters.buffer,
-        props.output.diagnostics.buffer,
-        props.output.status.buffer
-      ]).size !== 3
-    ) {
-      throw new Error(`${this.id} invalid output topology`);
+    for (const [name, view] of Object.entries(props.output)) {
+      validateRequirement(
+        this.id,
+        view.length >= this.models.length,
+        `output.${name} length must be at least models length (${this.models.length})`
+      );
     }
+    this.estimatedCommandNodeCount =
+      2 + 2 * ((props.weighting ?? 'cressie') === 'cressie' ? CRESSIE_ROUND_COUNT : 1);
+    validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
+    validateDisjointWritableViews(this.id, props.output);
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
       props.distances,
       props.semivariances,

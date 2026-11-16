@@ -74,7 +74,7 @@ it('materialized stopping gates materialization, every weight chunk, and sums be
       expect(() => new WgslReflect(parseable), kernel.id).not.toThrow();
     }
     const materialize = kernels.find(kernel => kernel.id.endsWith('-batch-0-materialize'))!;
-    expect(materialize.source).toContain('+ 1u + slot');
+    expect(materialize.source).toContain('+ getChunkParameter(36u) + slot');
     expect(kernels.find(kernel => kernel.id.endsWith('-sequential-init'))!.source).toContain(
       'stateOffset + 8u'
     );

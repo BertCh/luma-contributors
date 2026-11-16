@@ -2,18 +2,23 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRasterStorageBindings} from '../raster-grid/raster-storage-preflight';
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
   createWGSLKernelNode,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
-import {validateGraphViewsBelongToGraph} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  validateGraphViewsBelongToGraph,
+  getGraphOutputViews as getRasterPreflightOutputViews
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getRasterAlgebraInputNodes,
   getRasterAlgebraInputViews,
   isRasterAlgebraBand,
-  validateRasterAlgebraInput
+  validateRasterAlgebraInput,
+  validateRasterAlgebraInputBindings
 } from '../raster-algebra/raster-algebra-input';
 import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {GPU_RASTER_SAMPLING_PARAMETER_LENGTH} from './raster-sampling-parameters';
@@ -155,6 +160,16 @@ export class GPURasterSampling implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    const storageProps = this.props;
+    validateRasterAlgebraInputBindings(graph, this.id, [storageProps.values], storageProps.grid);
+    validateRasterStorageBindings(graph, this.id, [
+      storageProps.mask,
+      storageProps.positions,
+      storageProps.pointCount,
+      storageProps.parameters,
+      ...getRasterPreflightOutputViews(storageProps.output)
+    ]);
+
     const {id, props} = this;
     const {output} = props;
     validateGraphViewsBelongToGraph(id, graph, [

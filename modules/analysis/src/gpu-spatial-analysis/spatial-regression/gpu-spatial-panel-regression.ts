@@ -2,6 +2,14 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getGPUSpatialTwoStageLeastSquaresMaximumPredictorCount} from './spatial-two-stage-least-squares-parameters';
+import {validateRegressionOutputDispatches} from './regression-output-dispatches';
+
+import {getRegressionTwoStageAllocationLengths} from './regression-binding-plans';
+import {validateRegressionAllocations} from './spatial-likelihood-allocations';
+
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -15,13 +23,21 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView,
-  validateGPUStorageBindingByteLength
+  validateCapacity,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {validateGPUSpatialWeights, type GPUSpatialWeights} from '../spatial-weights/index';
 import {
   GPUSpatialTwoStageLeastSquares,
   type GPUSpatialTwoStageLeastSquaresOutput
 } from './gpu-spatial-two-stage-least-squares';
+
+/** The serial reference within transform visits each period of one entity. */
+const PANEL_REGRESSION_MAXIMUM_PERIOD_COUNT = 1024;
+/** Preserve the existing strictly-below-2^24 capacity for exact float32 row counts. */
+const PANEL_REGRESSION_MAXIMUM_ROW_COUNT = 2 ** 24 - 1;
+/** Expanded CSR offsets and edge indices are uint32. */
+const PANEL_REGRESSION_MAXIMUM_EDGE_COUNT = 0xffffffff;
 
 /** Balanced period-major spatial lag panel, pooled or with unit fixed effects. */
 export type GPUSpatialPanelRegressionProps = {
@@ -59,14 +75,55 @@ export class GPUSpatialPanelRegression implements GPUCommandNodeProducer {
     if (props.effects !== undefined && props.effects !== 'pooled' && props.effects !== 'unit') {
       throw new Error(`${this.id}: unsupported panel effects`);
     }
-    if (
-      !Number.isInteger(props.periodCount) ||
-      props.periodCount < 2 ||
-      props.periodCount > 1024 ||
-      entities * props.periodCount >= 16777216 ||
-      props.weights.neighbors.length * props.periodCount > 0xffffffff
-    )
-      throw new Error(`${this.id}: invalid panel shape`);
+    validateCapacity(
+      this.id,
+      'periodCount',
+      props.periodCount,
+      2,
+      PANEL_REGRESSION_MAXIMUM_PERIOD_COUNT
+    );
+    validateCapacity(
+      this.id,
+      'entityCount * periodCount',
+      entities * props.periodCount,
+      1,
+      PANEL_REGRESSION_MAXIMUM_ROW_COUNT
+    );
+    validateCapacity(
+      this.id,
+      'expanded edgeCount',
+      props.weights.neighbors.length * props.periodCount,
+      0,
+      PANEL_REGRESSION_MAXIMUM_EDGE_COUNT
+    );
+    validateRequirement(
+      this.id,
+      props.instrumentOrder === undefined ||
+        props.instrumentOrder === 1 ||
+        props.instrumentOrder === 2,
+      'instrumentOrder must be 1 or 2'
+    );
+    validateCapacity(
+      this.id,
+      'predictorCount',
+      props.predictorCount,
+      1,
+      getGPUSpatialTwoStageLeastSquaresMaximumPredictorCount(props.instrumentOrder ?? 1)
+    );
+    for (const [name, view, format, minimum] of [
+      ['table', props.output.table, 'float32', (props.predictorCount + 2) * 4],
+      ['summary', props.output.summary, 'float32', 16],
+      ['status.code', props.output.status.code, 'uint32', 1],
+      ['residuals', props.output.residuals, 'float32', entities * props.periodCount]
+    ] as const) {
+      if (!view) continue;
+      validateSinglePackedView(view, [format], this.id);
+      validateRequirement(
+        this.id,
+        view.length >= minimum,
+        `output.${name} length must be at least ${minimum}`
+      );
+    }
     validateSinglePackedView(props.predictors, ['float32'], this.id);
     validateSinglePackedView(props.response, ['float32'], this.id);
     if (
@@ -74,6 +131,11 @@ export class GPUSpatialPanelRegression implements GPUCommandNodeProducer {
       props.predictors.length !== props.response.length * props.predictorCount
     )
       throw new Error(`${this.id}: panel must be balanced and period-major`);
+    validateRegressionOutputDispatches(
+      this.id,
+      {...props.output, status: undefined, code: props.output.status.code},
+      [['table', 'summary', 'code']]
+    );
     validateGraphOutputsDisjointFromInputs(
       this.id,
       [props.output.table, props.output.summary, props.output.residuals, props.output.status.code],
@@ -94,15 +156,34 @@ export class GPUSpatialPanelRegression implements GPUCommandNodeProducer {
     const entities = props.weights.offsets.length - 1;
     const rows = entities * props.periodCount;
     const capacity = props.weights.neighbors.length;
-    if (props.effects === 'unit') {
-      validateGPUStorageBindingByteLength(
-        graph.device,
-        id,
-        'unitMeans',
-        entities * (props.predictorCount + 1) * 4,
-        'reduce the entity count or predictorCount'
-      );
-    }
+    validateGraphChunkBindingRanges(graph, id, {
+      predictors: props.predictors,
+      response: props.response,
+      offsets: props.weights.offsets,
+      neighbors: props.weights.neighbors,
+      weights: props.weights.weights,
+      overflow: props.weights.status?.overflow,
+      ...props.output,
+      status: undefined,
+      code: props.output.status.code
+    });
+    validateRegressionAllocations(graph.device, id, {
+      ...getRegressionTwoStageAllocationLengths(
+        rows,
+        props.predictorCount,
+        capacity * props.periodCount,
+        props.instrumentOrder ?? 1
+      ),
+      'expanded offsets': rows + 1,
+      'expanded edges': capacity * props.periodCount,
+      'panel row scratch': rows,
+      ...(props.effects === 'unit'
+        ? {
+            'within predictors': props.predictors.length,
+            'unit means': entities * (props.predictorCount + 1)
+          }
+        : {})
+    });
     const offsets = createTransientView(graph, `${id}-offsets`, 'uint32', rows + 1);
     const neighbors = createTransientView(
       graph,

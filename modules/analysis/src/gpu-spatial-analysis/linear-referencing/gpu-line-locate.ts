@@ -7,16 +7,27 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GPUCommandNode,
+  type GraphVectorView,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateGraphOutputsDisjointFromInputs,
   getStorageBindingElementLimit,
-  validateGraphViewsBelongToGraph,
+  getGraphViewChunks,
+  validateGPUStorageBindingByteLength,
+  validateCommandNodeBudget,
   validateMaximumCount,
+  validateNonZeroFiniteNumber,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  planGraphChunkDispatch,
+  validateDisjointWritableViews,
+  validateGraphChunkBindingRanges,
+  type GraphChunkDispatchPlan
+} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateGraphChunkGroupKernelSupport} from '../../analysis-core/kernels/graph-chunk-groups';
 import {
   getGPUSphereRadius,
   GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
@@ -40,8 +51,8 @@ const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
 });
 
 /**
- * Largest `eventLineIndices` row count of {@link GPULineLocate} on `device`: the packed result
- * table holds 6 `uint32` words (24 bytes) per event in one storage binding, so 5592405 on a default
+ * Largest per-chunk `eventLineIndices` row count of {@link GPULineLocate} on `device`: the packed result
+ * table holds 6 `uint32` words (24 bytes) per event in one storage binding, so 5592405 per chunk on a default
  * device (128 MiB bindings).
  */
 export function getGPULineLocateMaximumEventCount(device: Device): number {
@@ -90,22 +101,34 @@ export type GPULineLocateCoordinateSystem = 'planar' | 'spherical';
  * Per-event outputs of {@link GPULineLocate}; `eventLineIndices.length` rows each. There is no
  * `status.count`: every row is one event, and `statuses` reports each event individually.
  */
-export type GPULineLocateOutput = {
+export type GPULineLocateOutput<
+  PositionRows extends
+    | GraphDataView<'float32x2'>
+    | GraphVectorView<'float32x2'> = GraphDataView<'float32x2'>,
+  SegmentRows extends GraphDataView<'uint32'> | GraphVectorView<'uint32'> = GraphDataView<'uint32'>,
+  TangentRows extends
+    | GraphDataView<'float32x2'>
+    | GraphVectorView<'float32x2'> = GraphDataView<'float32x2'>,
+  AngleRows extends
+    | GraphDataView<'float32'>
+    | GraphVectorView<'float32'> = GraphDataView<'float32'>,
+  StatusRows extends GraphDataView<'uint32'> | GraphVectorView<'uint32'> = GraphDataView<'uint32'>
+> = {
   /** Located (and laterally offset) positions; NaN for invalid events. */
-  positions: GraphDataView<'float32x2'>;
+  positions: PositionRows;
   /** Segment index within the line, or `0xffffffff` for invalid events. */
-  segmentIndices?: GraphDataView<'uint32'>;
+  segmentIndices?: SegmentRows;
   /**
    * Unit direction of the segment (`(east, north)` compass components at the located point for
    * `'spherical'`), `(0, 0)` on single-vertex lines and zero-length segments. */
-  tangents?: GraphDataView<'float32x2'>;
+  tangents?: TangentRows;
   /**
    * Segment direction in degrees counter-clockwise from the +x axis (deck.gl `getAngle`
    * convention for planar or Web Mercator-like coordinates); `0` where the tangent is `(0, 0)`.
    */
-  angles?: GraphDataView<'float32'>;
+  angles?: AngleRows;
   /** `GPU_LINE_LOCATE_STATUS` code per event. */
-  statuses?: GraphDataView<'uint32'>;
+  statuses?: StatusRows;
   /** Optional per-vertex cumulative line measure, `positions.length` rows. */
   vertexMeasures?: GraphDataView<'float32'>;
 };
@@ -116,7 +139,26 @@ export type GPULineLocateOutput = {
  * Per-frame (no recompile): the contents of `parameters` and of every input buffer. Compile-time:
  * view lengths, the line and event counts, `measureMode`, and which optional views are present.
  */
-export type GPULineLocateProps = GPULineGeometryFields & {
+export type GPULineLocateProps<
+  PositionRows extends
+    | GraphDataView<'float32x2'>
+    | GraphVectorView<'float32x2'> = GraphDataView<'float32x2'>,
+  SegmentRows extends GraphDataView<'uint32'> | GraphVectorView<'uint32'> = GraphDataView<'uint32'>,
+  TangentRows extends
+    | GraphDataView<'float32x2'>
+    | GraphVectorView<'float32x2'> = GraphDataView<'float32x2'>,
+  AngleRows extends
+    | GraphDataView<'float32'>
+    | GraphVectorView<'float32'> = GraphDataView<'float32'>,
+  StatusRows extends GraphDataView<'uint32'> | GraphVectorView<'uint32'> = GraphDataView<'uint32'>,
+  EventRows extends GraphDataView<'uint32'> | GraphVectorView<'uint32'> = GraphDataView<'uint32'>,
+  MeasureRows extends
+    | GraphDataView<'float32'>
+    | GraphVectorView<'float32'> = GraphDataView<'float32'>,
+  OffsetRows extends
+    | GraphDataView<'float32'>
+    | GraphVectorView<'float32'> = GraphDataView<'float32'>
+> = GPULineGeometryFields & {
   /** Prefix for generated node and transient IDs. Defaults to `'line-locate'`. */
   id?: string;
   /**
@@ -127,12 +169,12 @@ export type GPULineLocateProps = GPULineGeometryFields & {
    * `sphereRadius` props.
    */
   spatialContext?: GPUSpatialContext;
-  /** Line index of each event, at most {@link getGPULineLocateMaximumEventCount} rows (5592405 on a default device). */
-  eventLineIndices: GraphDataView<'uint32'>;
+  /** Packed or chunked line indices; each chunk has at most {@link getGPULineLocateMaximumEventCount} rows (5592405 on a default device). */
+  eventLineIndices: EventRows;
   /** Measure of each event: a distance from the line start, or a fraction of the line length. */
-  eventMeasures: GraphDataView<'float32'>;
+  eventMeasures: MeasureRows;
   /** Optional lateral offset of each event, positive to the left of the line direction. */
-  eventOffsets?: GraphDataView<'float32'>;
+  eventOffsets?: OffsetRows;
   /** `'distance'` (default) or `'fraction'` of each line's length (turf `along` vs. `ST_LineInterpolatePoint`). */
   measureMode?: 'distance' | 'fraction';
   /**
@@ -141,7 +183,7 @@ export type GPULineLocateProps = GPULineGeometryFields & {
    */
   parameters?: GraphDataView<'float32'>;
   /** Per-event outputs. */
-  output: GPULineLocateOutput;
+  output: GPULineLocateOutput<PositionRows, SegmentRows, TangentRows, AngleRows, StatusRows>;
 };
 
 /**
@@ -162,13 +204,47 @@ export type GPULineLocateProps = GPULineGeometryFields & {
  * left compass bearing, and `angles` follow the same CCW-from-east convention. `measureMode:
  * 'fraction'` is shapely `line_interpolate_point(normalized=True)`. Precision is f32 (about 1 m).
  *
- * Planar by default: measures are Euclidean in position units.
+ * Planar by default: measures are Euclidean in position units. Event inputs and row outputs
+ * may be chunked with matching ordered lengths. Geometry and vertex measures stay packed; the
+ * shared measure prefix runs once. Each chunk dispatches its own workgroup count with runtime
+ * lengths and binding offsets. Scratch is bounded by the largest chunk, not the total events.
  */
-export class GPULineLocate implements GPUCommandNodeProducer {
+export class GPULineLocate<
+  PositionRows extends
+    | GraphDataView<'float32x2'>
+    | GraphVectorView<'float32x2'> = GraphDataView<'float32x2'>,
+  SegmentRows extends GraphDataView<'uint32'> | GraphVectorView<'uint32'> = GraphDataView<'uint32'>,
+  TangentRows extends
+    | GraphDataView<'float32x2'>
+    | GraphVectorView<'float32x2'> = GraphDataView<'float32x2'>,
+  AngleRows extends
+    | GraphDataView<'float32'>
+    | GraphVectorView<'float32'> = GraphDataView<'float32'>,
+  StatusRows extends GraphDataView<'uint32'> | GraphVectorView<'uint32'> = GraphDataView<'uint32'>,
+  EventRows extends GraphDataView<'uint32'> | GraphVectorView<'uint32'> = GraphDataView<'uint32'>,
+  MeasureRows extends
+    | GraphDataView<'float32'>
+    | GraphVectorView<'float32'> = GraphDataView<'float32'>,
+  OffsetRows extends
+    | GraphDataView<'float32'>
+    | GraphVectorView<'float32'> = GraphDataView<'float32'>
+> implements GPUCommandNodeProducer
+{
   /** Prefix for every node and transient ID. */
   readonly id: string;
+  readonly estimatedCommandNodeCount: number;
+  private readonly chunkPlan: GraphChunkDispatchPlan;
   /** Validated properties. */
-  readonly props: GPULineLocateProps;
+  readonly props: GPULineLocateProps<
+    PositionRows,
+    SegmentRows,
+    TangentRows,
+    AngleRows,
+    StatusRows,
+    EventRows,
+    MeasureRows,
+    OffsetRows
+  >;
   /** Resolved measure mode. */
   readonly measureMode: 'distance' | 'fraction';
   /** Resolved spatial context (planar unless given). */
@@ -178,7 +254,18 @@ export class GPULineLocate implements GPUCommandNodeProducer {
   /** Resolved sphere radius in the context's length unit (1 for planar). */
   private readonly sphereRadius: number;
 
-  constructor(props: GPULineLocateProps) {
+  constructor(
+    props: GPULineLocateProps<
+      PositionRows,
+      SegmentRows,
+      TangentRows,
+      AngleRows,
+      StatusRows,
+      EventRows,
+      MeasureRows,
+      OffsetRows
+    >
+  ) {
     this.id = props.id ?? 'line-locate';
     this.props = props;
     this.measureMode = props.measureMode ?? 'distance';
@@ -191,6 +278,7 @@ export class GPULineLocate implements GPUCommandNodeProducer {
       this.spatialContext.coordinateSpace === 'longitude-latitude' ? 'spherical' : 'planar';
     this.sphereRadius =
       this.coordinateSystem === 'spherical' ? getGPUSphereRadius(this.spatialContext) : 1;
+    validateNonZeroFiniteNumber(this.id, 'spatialContext.sphereRadius', this.sphereRadius);
     const {id} = this;
     const {output} = props;
     if (this.measureMode !== 'distance' && this.measureMode !== 'fraction') {
@@ -204,7 +292,8 @@ export class GPULineLocate implements GPUCommandNodeProducer {
     if (props.lineOffsets.length < 2) {
       throw new Error(`${id} lineOffsets needs two rows`);
     }
-    validateSinglePackedView(props.eventLineIndices, ['uint32'], `${id} eventLineIndices`);
+    for (const chunk of getGraphViewChunks(props.eventLineIndices))
+      validateSinglePackedView(chunk, ['uint32'], `${id} eventLineIndices`);
     const eventCount = props.eventLineIndices.length;
     if (eventCount < 1) {
       throw new Error(`${id} needs at least one event`);
@@ -214,7 +303,8 @@ export class GPULineLocate implements GPUCommandNodeProducer {
       ['eventOffsets', props.eventOffsets]
     ] as const) {
       if (view) {
-        validateSinglePackedView(view, ['float32'], `${id} ${name}`);
+        for (const chunk of getGraphViewChunks(view))
+          validateSinglePackedView(chunk, ['float32'], `${id} ${name}`);
         if (view.length !== eventCount) {
           throw new Error(`${id} ${name} length must equal eventLineIndices length`);
         }
@@ -238,7 +328,7 @@ export class GPULineLocate implements GPUCommandNodeProducer {
     } as const;
     for (const [name, view] of Object.entries(output) as [
       keyof typeof formats,
-      GraphDataView | undefined
+      GraphDataView | GraphVectorView | undefined
     ][]) {
       if (!view) {
         continue;
@@ -246,12 +336,30 @@ export class GPULineLocate implements GPUCommandNodeProducer {
       if (!(name in formats)) {
         throw new Error(`${id} output.${name} is not a line-locate column`);
       }
-      validateSinglePackedView(view, [formats[name]], `${id} output.${name}`);
+      if (name === 'vertexMeasures')
+        validateSinglePackedView(view, ['float32'], `${id} output.vertexMeasures`);
+      else
+        for (const chunk of getGraphViewChunks(view))
+          validateSinglePackedView(chunk, [formats[name]], `${id} output.${name}`);
       const length = name === 'vertexMeasures' ? props.positions.length : eventCount;
       if (view.length !== length) {
         throw new Error(`${id} output.${name} must hold ${length} rows`);
       }
     }
+    const {vertexMeasures: _sharedVertexMeasures, ...rowOutputs} = output;
+    this.chunkPlan = planGraphChunkDispatch(id, {
+      eventLineIndices: props.eventLineIndices,
+      eventMeasures: props.eventMeasures,
+      eventOffsets: props.eventOffsets,
+      outputPositions: rowOutputs.positions,
+      segmentIndices: rowOutputs.segmentIndices,
+      tangents: rowOutputs.tangents,
+      angles: rowOutputs.angles,
+      statuses: rowOutputs.statuses
+    });
+    validateDisjointWritableViews(id, output);
+    this.estimatedCommandNodeCount = 1 + 2 * this.chunkPlan.nonemptyChunkCount;
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     validateGraphOutputsDisjointFromInputs(id, Object.values(output), [
       props.positions,
       props.lineOffsets,
@@ -268,21 +376,48 @@ export class GPULineLocate implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
     const {output} = props;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.positions,
-      props.lineOffsets,
-      props.eventLineIndices,
-      props.eventMeasures,
-      props.eventOffsets,
-      props.parameters,
-      ...Object.values(output)
-    ]);
-    const eventCount = props.eventLineIndices.length;
+    validateGraphChunkBindingRanges(graph, id, {
+      positions: props.positions,
+      lineOffsets: props.lineOffsets,
+      eventLineIndices: props.eventLineIndices,
+      eventMeasures: props.eventMeasures,
+      eventOffsets: props.eventOffsets,
+      parameters: props.parameters,
+      outputPositions: output.positions,
+      segmentIndices: output.segmentIndices,
+      tangents: output.tangents,
+      angles: output.angles,
+      statuses: output.statuses,
+      vertexMeasures: output.vertexMeasures
+    });
+    validateGraphChunkGroupKernelSupport(
+      graph,
+      id,
+      6 + Number(Boolean(props.eventOffsets)) + Number(Boolean(props.parameters))
+    );
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'vertexMeasures scratch',
+      props.positions.length * 4,
+      'reduce the packed geometry row count'
+    );
+    const maximumChunkLength = this.chunkPlan.chunks.reduce(
+      (maximum, chunk) => Math.max(maximum, chunk.length),
+      0
+    );
     validateMaximumCount(
       id,
-      'eventLineIndices rows',
-      eventCount,
+      'eventLineIndices chunk rows',
+      maximumChunkLength,
       getGPULineLocateMaximumEventCount(graph.device)
+    );
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'results scratch',
+      maximumChunkLength * LINE_LOCATE_RESULT_STRIDE * 4,
+      'reduce the event chunk row count'
     );
     const vertexMeasures =
       output.vertexMeasures ??
@@ -291,9 +426,9 @@ export class GPULineLocate implements GPUCommandNodeProducer {
       graph,
       `${id}-results`,
       'uint32',
-      eventCount * LINE_LOCATE_RESULT_STRIDE
+      maximumChunkLength * LINE_LOCATE_RESULT_STRIDE
     );
-    return [
+    const nodes: GPUCommandNode<Parameters>[] = [
       createLinePrefixNode<Parameters>(graph, {
         id: `${id}-vertex-measures`,
         operation: OPERATION,
@@ -302,54 +437,59 @@ export class GPULineLocate implements GPUCommandNodeProducer {
         coordinateSystem: this.coordinateSystem,
         radius: this.coordinateSystem === 'spherical' ? this.sphereRadius : 1,
         rowMeasures: vertexMeasures
-      }),
-      createLineLocateNode<Parameters>(graph, {
-        id: `${id}-locate`,
-        operation: OPERATION,
-        positions: props.positions,
-        lineOffsets: props.lineOffsets,
-        vertexMeasures,
-        eventLineIndices: props.eventLineIndices,
-        eventMeasures: props.eventMeasures,
-        eventOffsets: props.eventOffsets,
-        parameters: props.parameters,
-        measureMode: this.measureMode,
-        coordinateSystem: this.coordinateSystem,
-        sphereRadius: this.sphereRadius,
-        results
-      }),
-      ...createPackedScatterNodes<Parameters>(graph, {
-        id: `${id}-output`,
-        operation: OPERATION,
-        rowCount: eventCount,
-        stride: LINE_LOCATE_RESULT_STRIDE,
-        results,
-        columns: [
-          {
-            name: 'positions',
-            view: output.positions,
-            type: 'f32',
-            statement: `positions[positionsOffset + 2u * index] = bitcast<f32>(results[base]);
+      })
+    ];
+    for (const chunk of this.chunkPlan.chunks) {
+      if (chunk.length === 0) continue;
+      const suffix = this.chunkPlan.chunks.length === 1 ? '' : `-chunk-${chunk.chunkIndex}`;
+      nodes.push(
+        createLineLocateNode<Parameters>(graph, {
+          id: `${id}${suffix}-locate`,
+          operation: OPERATION,
+          positions: props.positions,
+          lineOffsets: props.lineOffsets,
+          vertexMeasures,
+          eventLineIndices: chunk.views['eventLineIndices'] as GraphDataView<'uint32'>,
+          eventMeasures: chunk.views['eventMeasures'] as GraphDataView<'float32'>,
+          eventOffsets: chunk.views['eventOffsets'] as GraphDataView<'float32'> | undefined,
+          parameters: props.parameters,
+          measureMode: this.measureMode,
+          coordinateSystem: this.coordinateSystem,
+          sphereRadius: this.sphereRadius,
+          results
+        }),
+        ...createPackedScatterNodes<Parameters>(graph, {
+          id: `${id}${suffix}-output`,
+          operation: OPERATION,
+          rowCount: chunk.length,
+          stride: LINE_LOCATE_RESULT_STRIDE,
+          results,
+          columns: [
+            {
+              name: 'positions',
+              view: chunk.views['outputPositions'] as GraphDataView<'float32x2'> | undefined,
+              type: 'f32',
+              statement: `positions[positionsOffset + 2u * index] = bitcast<f32>(results[base]);
   positions[positionsOffset + 2u * index + 1u] = bitcast<f32>(results[base + 1u]);`
-          },
-          {
-            name: 'segmentIndices',
-            view: output.segmentIndices,
-            type: 'u32',
-            statement: 'segmentIndices[segmentIndicesOffset + index] = results[base + 2u];'
-          },
-          {
-            name: 'tangents',
-            view: output.tangents,
-            type: 'f32',
-            statement: `tangents[tangentsOffset + 2u * index] = bitcast<f32>(results[base + 3u]);
+            },
+            {
+              name: 'segmentIndices',
+              view: chunk.views['segmentIndices'] as GraphDataView<'uint32'> | undefined,
+              type: 'u32',
+              statement: 'segmentIndices[segmentIndicesOffset + index] = results[base + 2u];'
+            },
+            {
+              name: 'tangents',
+              view: chunk.views['tangents'] as GraphDataView<'float32x2'> | undefined,
+              type: 'f32',
+              statement: `tangents[tangentsOffset + 2u * index] = bitcast<f32>(results[base + 3u]);
   tangents[tangentsOffset + 2u * index + 1u] = bitcast<f32>(results[base + 4u]);`
-          },
-          {
-            name: 'angles',
-            view: output.angles,
-            type: 'f32',
-            statement: `{
+            },
+            {
+              name: 'angles',
+              view: chunk.views['angles'] as GraphDataView<'float32'> | undefined,
+              type: 'f32',
+              statement: `{
     let tangent = vec2<f32>(bitcast<f32>(results[base + 3u]), bitcast<f32>(results[base + 4u]));
     // atan2(0, 0) is undefined in WGSL: degenerate tangents report angle 0.
     angles[anglesOffset + index] = select(
@@ -358,15 +498,17 @@ export class GPULineLocate implements GPUCommandNodeProducer {
       tangent.x == 0.0 && tangent.y == 0.0
     );
   }`
-          },
-          {
-            name: 'statuses',
-            view: output.statuses,
-            type: 'u32',
-            statement: 'statuses[statusesOffset + index] = results[base + 5u];'
-          }
-        ]
-      })
-    ];
+            },
+            {
+              name: 'statuses',
+              view: chunk.views['statuses'] as GraphDataView<'uint32'> | undefined,
+              type: 'u32',
+              statement: 'statuses[statusesOffset + index] = results[base + 5u];'
+            }
+          ]
+        })
+      );
+    }
+    return nodes;
   }
 }

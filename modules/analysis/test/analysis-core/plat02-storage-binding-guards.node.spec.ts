@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {describe, expect, it} from 'vitest';
+import {describe, expect, it, vi} from 'vitest';
 import {GPUCalendarBuckets} from '../../src/dataframe-analysis/calendar-buckets/index';
 import {GPUTemporalReduction} from '../../src/dataframe-analysis/temporal-reduction/index';
 import {GPUCellAggregation} from '../../src/gpu-spatial-analysis/cell-aggregation/index';
@@ -111,7 +111,7 @@ describe('single-view temporal and cell contributors check the storage binding s
     expect(() => accepted.getCommandNodes(context.graph)).not.toThrow();
     const oversized = createCalendarBuckets(context, MAXIMUM_EIGHT_BYTE_ROWS + 1);
     expect(() => oversized.getCommandNodes(context.graph)).toThrow(
-      /^calendar-buckets timestamps needs 134217736 bytes in one binding \(limit 134217728\)/
+      /^calendar-buckets timestamps chunk 0 needs 134217736 bytes in one binding \(limit 134217728\)/
     );
     context.device.destroy();
   });
@@ -119,9 +119,15 @@ describe('single-view temporal and cell contributors check the storage binding s
   it('GPUTemporalReduction rejects word timestamps beyond one binding', () => {
     const context = createContext();
     const oversized = createTemporalReduction(context, MAXIMUM_EIGHT_BYTE_ROWS + 1);
+    const allocate = vi.spyOn(context.graph, 'createTransientBuffer');
+    const declareView = vi.spyOn(context.graph, 'createDataView');
     expect(() => oversized.getCommandNodes(context.graph)).toThrow(
-      /timestamps needs 134217736 bytes in one binding \(limit 134217728\)/
+      /^temporal-reduction timestamps chunk 0 needs 134217736 bytes in one binding \(limit 134217728\)/
     );
+    expect(allocate).not.toHaveBeenCalled();
+    expect(declareView).not.toHaveBeenCalled();
+    allocate.mockRestore();
+    declareView.mockRestore();
     expect(() =>
       createTemporalReduction(context, MAXIMUM_EIGHT_BYTE_ROWS).getCommandNodes(context.graph)
     ).not.toThrow();
@@ -131,9 +137,12 @@ describe('single-view temporal and cell contributors check the storage binding s
   it('GPUCellAggregation rejects positions beyond one binding', () => {
     const context = createContext();
     const oversized = createCellAggregation(context, MAXIMUM_EIGHT_BYTE_ROWS + 1);
+    const allocate = vi.spyOn(context.graph, 'createTransientBuffer');
     expect(() => oversized.getCommandNodes(context.graph)).toThrow(
-      /positions needs 134217736 bytes in one binding \(limit 134217728\)/
+      /^cell-aggregation input\/output field 0 chunk 0 needs 134217736 bytes in one binding \(limit 134217728\)/
     );
+    expect(allocate).not.toHaveBeenCalled();
+    allocate.mockRestore();
     expect(() =>
       createCellAggregation(context, MAXIMUM_EIGHT_BYTE_ROWS).getCommandNodes(context.graph)
     ).not.toThrow();

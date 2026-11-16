@@ -3,6 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  getSpatialAnalysisPackedKernelNodes,
+  validateSpatialAnalysisPackedOutputAllocations
+} from './spatial-analysis-packed-kernel';
+import {
   createTransientView,
   GPUSort,
   type GPUCommandGraph,
@@ -10,19 +14,20 @@ import {
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {
-  createWGSLKernelNode,
-  type WGSLKernelBinding
-} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {type WGSLKernelBinding} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {getSortedSegmentOffsetNodes} from '../../analysis-core/kernels/sorted-segment-offsets';
 import {getSortKeyBits} from '../../analysis-core/kernels/sorted-segment-sums';
 import {GUARDED_ATAN2_WGSL, IS_FINITE_FLOAT_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {SCALED_QUOTIENT_WGSL} from '../../analysis-core/kernels/scaled-quotient-wgsl';
 import {
   validateCapacity,
-  validateGraphOutputsDisjointFromInputs,
+  validateGPUStorageBindingByteLength,
+  validateMaximumCount,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateGeographicDistributionViews} from './geographic-distribution-validation';
 import type {GPUCircularStatisticsContract} from '../../analysis-core/contracts/index';
 import {
   resolveGPUSpatialContext,
@@ -31,6 +36,15 @@ import {
 
 /** Lanes of the workgroup that owns one group. */
 const ROSE_WORKGROUP_SIZE = 256;
+
+/** Bounds bin-owner loops and the caller's group-by-bin storage. */
+const ROSE_MAXIMUM_BIN_COUNT = 360;
+/** Input row IDs and counts use uint32; the tile loop stops before its increment can wrap. */
+const ROSE_MAXIMUM_ROW_COUNT = 0xffffffff;
+/** Bound resident workgroups; each cooperatively walks more groups when necessary. */
+const ROSE_MAXIMUM_DISPATCH_GROUP_COUNT = 65535;
+/** Every output element is addressed by a uint32 index. */
+const ROSE_MAXIMUM_OUTPUT_ELEMENT_COUNT = 0xffffffff;
 
 /** Five float32 values per group written by {@link GPURoseStatistic}. */
 export const GPU_ROSE_STATISTIC_SUMMARY_STRIDE = 5;
@@ -70,15 +84,22 @@ export type GPURoseStatisticProps = {
   groupIds?: GraphDataView<'uint32'>;
   groupCount?: number;
   mask?: GraphDataView<'uint32'>;
-  circular: GPUCircularStatisticsContract;
+  /** Angular units and origin affect meanAngle and bins; moments are computed in radians. */
+  circular: Omit<GPUCircularStatisticsContract, 'angleUnit' | 'origin'> & {
+    angleUnit: 'radians' | 'degrees';
+    origin: 'positive-x-counter-clockwise' | 'positive-y-clockwise';
+  };
   /** Caller-owned outputs. */
   output: GPURoseStatisticOutput;
 };
 
 /**
  * Directional or axial Rose statistic for planar line segments. Directional angles cover
- * `[0, 2 pi)`; axial angles identify opposite directions and cover `[0, pi)`. Equal-width bins
- * use a left-closed/right-open convention. The mean is weighted by `weights` (one by default),
+ * `[0, 2 pi)` (or `[0, 360)` degrees); axial angles identify opposite directions and cover
+ * `[0, pi)` (or `[0, 180)`). The positive-y clockwise origin reports planar compass bearings.
+ * Equal-width bins
+ * use a left-closed/right-open convention; computed bin coordinates within four float32 ULPs
+ * of an integer boundary snap to that boundary. The mean is weighted by `weights` (one by default),
  * zero-length/non-finite lines are excluded, and bins add 256-row tile partials in source-row
  * order. The angular moment sums use a fixed 256-lane tree order (deterministic, not row order).
  *
@@ -121,18 +142,31 @@ export class GPURoseStatistic implements GPUCommandNodeProducer {
       if (view.length !== props.starts.length)
         throw new Error(`${id} ${name} length must equal starts length`);
     }
+    validateCapacity(id, 'starts.length', props.starts.length, 0, ROSE_MAXIMUM_ROW_COUNT);
     validateCapacity(id, 'groupCount', groupCount);
+    validateMaximumCount(
+      id,
+      'groupCount * summary stride',
+      groupCount * GPU_ROSE_STATISTIC_SUMMARY_STRIDE,
+      ROSE_MAXIMUM_OUTPUT_ELEMENT_COUNT
+    );
+    validateMaximumCount(
+      id,
+      'groupCount * circular.binCount',
+      groupCount * props.circular.binCount,
+      ROSE_MAXIMUM_OUTPUT_ELEMENT_COUNT
+    );
     if (!props.groupIds && groupCount !== 1)
       throw new Error(`${id} groupIds are required for multiple groups`);
     if (props.circular.mode !== 'directional' && props.circular.mode !== 'axial')
       throw new Error(`${id} circular.mode is invalid`);
     if (
-      props.circular.angleUnit !== 'radians' ||
-      props.circular.origin !== 'positive-x-counter-clockwise'
+      !['radians', 'degrees'].includes(props.circular.angleUnit) ||
+      !['positive-x-counter-clockwise', 'positive-y-clockwise'].includes(props.circular.origin)
     ) {
       throw new Error(`${id} circular angle convention is unsupported`);
     }
-    validateCapacity(id, 'circular.binCount', props.circular.binCount, 2, 360);
+    validateCapacity(id, 'circular.binCount', props.circular.binCount, 2, ROSE_MAXIMUM_BIN_COUNT);
     const {summary, bins} = props.output;
     validateSinglePackedView(summary, ['float32'], `${id} output.summary`);
     validateSinglePackedView(bins, ['float32'], `${id} output.bins`);
@@ -140,17 +174,31 @@ export class GPURoseStatistic implements GPUCommandNodeProducer {
       throw new Error(`${id} output.summary is too short`);
     if (bins.length < groupCount * props.circular.binCount)
       throw new Error(`${id} output.bins are too short`);
-    validateGraphOutputsDisjointFromInputs(
-      id,
-      [summary, bins],
-      [props.starts, props.ends, props.weights, props.groupIds, props.mask]
-    );
+    const inputs = {
+      starts: props.starts,
+      ends: props.ends,
+      weights: props.weights,
+      groupIds: props.groupIds,
+      mask: props.mask
+    };
+    const segmented = Boolean(props.groupIds) && groupCount > 1;
+    validateGeographicDistributionViews(id, inputs, props.output, [
+      {
+        reads: {
+          ...inputs,
+          groupIds: segmented ? undefined : props.groupIds,
+          mask: segmented ? undefined : props.mask
+        },
+        writes: props.output
+      }
+    ]);
   }
 
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, groupCount} = this;
+    validateSpatialAnalysisPackedOutputAllocations(graph, id, props.output);
     validateGraphViewsBelongToGraph(id, graph, [
       props.starts,
       props.ends,
@@ -160,10 +208,34 @@ export class GPURoseStatistic implements GPUCommandNodeProducer {
       props.output.summary,
       props.output.bins
     ]);
+    validateGraphChunkBindingRanges(graph, id, {
+      starts: props.starts,
+      ends: props.ends,
+      weights: props.weights,
+      groupIds: props.groupIds,
+      mask: props.mask,
+      ...props.output
+    });
+    if (props.groupIds && groupCount > 1) {
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        'group sort scratch',
+        props.starts.length * 4,
+        'reduce starts length'
+      );
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        'group offsets scratch',
+        (groupCount + 1) * 4,
+        'reduce groupCount'
+      );
+    }
     const rowCount = props.starts.length;
     // Sorted segments only pay off when there is more than one group to separate.
     const segmented = Boolean(props.groupIds) && groupCount > 1;
-    const nodes: GPUCommandNode<Parameters>[] = [];
+    const nodes: (GPUCommandNode<Parameters> | GPUCommandNode<Parameters>[])[] = [];
     let segmentBindings: WGSLKernelBinding[] = [];
     if (segmented) {
       const sortKeys = createTransientView(graph, `${id}-group-sort-keys`, 'uint32', rowCount);
@@ -182,7 +254,7 @@ export class GPURoseStatistic implements GPUCommandNodeProducer {
         groupCount + 1
       );
       nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
+        getSpatialAnalysisPackedKernelNodes<Parameters>(graph, {
           id: `${id}-group-sort-prepare`,
           operation: 'GPURoseStatistic',
           variant: 'group-sort-prepare',
@@ -265,16 +337,16 @@ export class GPURoseStatistic implements GPUCommandNodeProducer {
   }
   let beginPosition = workgroupUniformLoad(&segmentBegin);
   let endPosition = workgroupUniformLoad(&segmentEnd);
-  for (var tile = beginPosition; tile < endPosition; tile += LANES) {
+  for (var tile = beginPosition; tile < endPosition;) {
     let position = tile + lane;
-    let hasRow = position < endPosition;
+    let hasRow = lane < endPosition - tile;
     var row = 0u;
     if (hasRow) { row = sortedRows[sortedRowsOffset + position]; }`
-      : `for (var tile = 0u; tile < ROWS; tile += LANES) {
+      : `for (var tile = 0u; tile < ROWS;) {
     let row = tile + lane;
-    let hasRow = isActiveGroup && row < ROWS;`;
+    let hasRow = isActiveGroup && lane < ROWS - tile;`;
     nodes.push(
-      createWGSLKernelNode(graph, {
+      getSpatialAnalysisPackedKernelNodes(graph, {
         id: `${id}-reduce`,
         operation: 'GPURoseStatistic',
         variant: segmented ? `${props.circular.mode}-segmented` : props.circular.mode,
@@ -282,10 +354,12 @@ export class GPURoseStatistic implements GPUCommandNodeProducer {
         // does the expensive atan2/sin/cos of its own row, then bin-owner lanes add the tile's
         // weights in row order, so bins keep source-row order. The moment sums use a fixed tree.
         workgroupSize: ROSE_WORKGROUP_SIZE,
-        invocationCount: groupCount * ROSE_WORKGROUP_SIZE,
+        invocationCount:
+          Math.min(groupCount, ROSE_MAXIMUM_DISPATCH_GROUP_COUNT) * ROSE_WORKGROUP_SIZE,
         guardIndex: false,
         bindings,
         declarations: `const ROWS: u32 = ${rowCount}u;\nconst GROUP_COUNT: u32 = ${groupCount}u;\nconst LANES: u32 = ${ROSE_WORKGROUP_SIZE}u;\nconst BIN_COUNT: u32 = ${props.circular.binCount}u;\nconst PI: f32 = 3.141592653589793;\nconst PERIOD: f32 = ${axial ? 'PI' : '2.0 * PI'};\n${IS_FINITE_FLOAT_WGSL}\n${GUARDED_ATAN2_WGSL}
+${SCALED_QUOTIENT_WGSL}
 var<workgroup> tileBin: array<u32, ${ROSE_WORKGROUP_SIZE}>;
 var<workgroup> tileWeight: array<f32, ${ROSE_WORKGROUP_SIZE}>;
 var<workgroup> sharedCount: array<u32, ${ROSE_WORKGROUP_SIZE}>;
@@ -296,8 +370,8 @@ var<workgroup> sharedDirectionCosine: array<f32, ${ROSE_WORKGROUP_SIZE}>;
 var<workgroup> sharedDirectionSine: array<f32, ${ROSE_WORKGROUP_SIZE}>;${
           segmented ? '\nvar<workgroup> segmentBegin: u32;\nvar<workgroup> segmentEnd: u32;' : ''
         }`,
-        body: `let group = index / LANES;
-  let lane = localInvocationIndex;
+        body: `let lane = localInvocationIndex;
+for(var group=workgroupIndex;group<GROUP_COUNT;group+=INVOCATION_COUNT / LANES){
   let isActiveGroup = group < GROUP_COUNT;
   let binBase = binsOffset + group * BIN_COUNT;
   if (isActiveGroup) {
@@ -320,20 +394,29 @@ var<workgroup> sharedDirectionSine: array<f32, ${ROSE_WORKGROUP_SIZE}>;${
         let lengthSquared = dot(delta, delta);
         let weight = ${props.weights ? 'weights[weightsOffset + row]' : '1.0'};
         if (lengthSquared > 0.0 && weight > 0.0 && isFiniteFloat(lengthSquared) && isFiniteFloat(weight)) {
-          // delta.x is a coordinate difference and can be -0.0 (contract section 11).
-          var angle = guardedAtan2(delta.y, delta.x);
+          // Transform the vector, rather than a rounded atan2 result. Opposite axial vectors
+          // now reach atan2 with identical bits, including signed-zero cardinal components.
+          var direction = ${props.circular.origin === 'positive-y-clockwise' ? 'delta.yx' : 'delta'};
+          ${axial ? 'if(direction.y<0.0||(direction.y==0.0&&direction.x<0.0)){direction=-direction;}' : ''}
+          direction=select(direction,vec2<f32>(0.0),direction==vec2<f32>(0.0));
+          var angle = guardedAtan2(direction.y, direction.x);
           if (angle < 0.0) { angle += 2.0 * PI; }
-          ${axial ? 'if (angle >= PI) { angle -= PI; }' : ''}
+          // Curated formula binding: phi is the doubled axial angle, with a 2*pi period.
           let circularAngle = ${axial ? '2.0 * angle' : 'angle'};
-          let cosineAngle = cos(circularAngle);
-          let sineAngle = sin(circularAngle);
+          let unitDirection=direction/sqrt(lengthSquared);
+          let cosineAngle = ${axial ? '(unitDirection.x-unitDirection.y)*(unitDirection.x+unitDirection.y)' : 'unitDirection.x'};
+          let sineAngle = ${axial ? '2.0*unitDirection.x*unitDirection.y' : 'unitDirection.y'};
           cosine += weight * cosineAngle;
           sine += weight * sineAngle;
           directionCosine += cosineAngle;
           directionSine += sineAngle;
           weightTotal += weight;
           count++;
-          rowBin = min(u32(floor(angle * f32(BIN_COUNT) / PERIOD + 1e-6)), BIN_COUNT - 1u);
+          var binPosition = (circularAngle / (2.0 * PI)) * f32(BIN_COUNT);
+          let nearestBoundary=round(binPosition);
+          // Snap only the f32 uncertainty interval around an integer bin boundary (four ULPs).
+          if(abs(binPosition-nearestBoundary)<=4.76837158203125e-7*max(1.0,abs(binPosition))){binPosition=nearestBoundary;}
+          rowBin = u32(floor(binPosition)) % BIN_COUNT;
           rowWeight = weight;
         }
       }
@@ -351,6 +434,8 @@ var<workgroup> sharedDirectionSine: array<f32, ${ROSE_WORKGROUP_SIZE}>;${
       }
     }
     workgroupBarrier();
+    if(${segmented ? 'endPosition' : 'ROWS'}-tile<=LANES){break;}
+    tile+=LANES;
   }
   sharedCount[lane] = count;
   sharedWeight[lane] = weightTotal;
@@ -373,13 +458,16 @@ var<workgroup> sharedDirectionSine: array<f32, ${ROSE_WORKGROUP_SIZE}>;${
   if (lane == 0u && isActiveGroup) {
     let base = summaryOffset + group * ${GPU_ROSE_STATISTIC_SUMMARY_STRIDE}u;
     summary[base] = f32(sharedCount[0]);
-    if (sharedWeight[0] > 0.0) {
+    if (sharedWeight[0] > 0.0 && isFiniteFloat(sharedWeight[0])) {
       let totalWeight = sharedWeight[0];
-      var meanAngle = atan2(sharedSine[0], sharedCosine[0]);
+      let meanCosine = getScaledQuotient(sharedCosine[0],totalWeight,1.0,0);
+      let meanSine = getScaledQuotient(sharedSine[0],totalWeight,1.0,0);
+      var meanAngle = guardedAtan2(meanSine, meanCosine);
       if (meanAngle < 0.0) { meanAngle += 2.0 * PI; }
       ${axial ? 'meanAngle *= 0.5;' : ''}
-      let resultant = sqrt(sharedCosine[0] * sharedCosine[0] + sharedSine[0] * sharedSine[0]) / totalWeight;
-      summary[base + 1u] = meanAngle;
+      let resultant = length(vec2<f32>(meanCosine,meanSine));
+      let outputMean = ${props.circular.angleUnit === 'degrees' ? 'meanAngle * (180.0 / PI)' : 'meanAngle'};
+      summary[base + 1u] = select(outputMean,0.0,outputMean>=${props.circular.angleUnit === 'degrees' ? (axial ? '180.0' : '360.0') : 'PERIOD'});
       summary[base + 2u] = resultant;
       summary[base + 3u] = 1.0 - resultant;
       let validCount = f32(sharedCount[0]);
@@ -390,9 +478,12 @@ var<workgroup> sharedDirectionSine: array<f32, ${ROSE_WORKGROUP_SIZE}>;${
       let nan = bitcast<f32>(0x7fc00000u | (group & 0u));
       for (var slot = 1u; slot < ${GPU_ROSE_STATISTIC_SUMMARY_STRIDE}u; slot++) { summary[base + slot] = nan; }
     }
-  }`
+  }
+  // Lane zero must finish consuming shared moments before the next group reuses them.
+  workgroupBarrier();
+}`
       })
     );
-    return nodes;
+    return nodes.flat();
   }
 }

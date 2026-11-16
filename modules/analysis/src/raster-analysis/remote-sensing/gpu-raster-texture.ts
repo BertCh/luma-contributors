@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPURasterHaloStage, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import {SCALED_QUOTIENT_WGSL} from '../../analysis-core/kernels/scaled-quotient-wgsl';
 import {validateRasterGrid} from '../raster-band-utils';
 import type {
   GraphDataView,
@@ -10,7 +11,10 @@ import type {
   GPUCommandNode,
   GPUCommandNodeProducer
 } from '@luma.gl/graph/gpu-core';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  createWGSLKernelNode,
+  getWGSLFloatLiteral
+} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
   validateRequirement
@@ -64,7 +68,7 @@ export class GPURasterTexture implements GPUCommandNodeProducer, GPURasterHaloSt
     validateRequirement(
       this.id,
       props.range.every(value => Number.isFinite(Math.fround(value))) &&
-        props.range[1] > props.range[0] &&
+        Math.fround(props.range[1]) > Math.fround(props.range[0]) &&
         Number.isFinite(Math.fround(props.range[1] - props.range[0])),
       'range must be finite float32 values with range[1] > range[0]'
     );
@@ -114,7 +118,8 @@ export class GPURasterTexture implements GPUCommandNodeProducer, GPURasterHaloSt
           rasterBinding('pairCount', props.pairCount, true)
         ],
         declarations: `${RASTER_FINITE_WGSL}
-fn quantize(value: f32) -> u32 { return u32(clamp(floor((value - ${props.range[0]}) / ${props.range[1] - props.range[0]} * ${props.levels}.0), 0.0, ${props.levels - 1}.0)); }`,
+${SCALED_QUOTIENT_WGSL}
+fn quantize(value: f32) -> u32 { return u32(clamp(floor(getScaledQuotient(value - ${getWGSLFloatLiteral(props.range[0])}, ${getWGSLFloatLiteral(props.range[1] - props.range[0])}, 1.0, 0) * ${props.levels}.0), 0.0, ${props.levels - 1}.0)); }`,
         body: `var histogram: array<u32, ${props.levels * props.levels}>;
 let center = vec2<i32>(i32(index % ${props.grid.width}u), i32(index / ${props.grid.width}u));
 let lower = max(center - vec2<i32>(${props.radius}), vec2<i32>(0));

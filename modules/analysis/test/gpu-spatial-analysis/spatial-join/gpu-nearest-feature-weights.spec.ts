@@ -9,6 +9,7 @@ import {GPUNearestFeatureWeights} from '../../../src/gpu-spatial-analysis/spatia
 import {readUint32} from '../../utils/gpu-contributor-test-utils';
 import {WeightsRig} from '../spatial-weights/spatial-weights-harness';
 import {assertValidCSR} from '../spatial-weights/spatial-weights-oracle';
+import {assertValidCrossWeights} from './nearest-feature-weights-oracle';
 import {createRandom} from './spatial-join-oracle';
 import {requireTestDevice} from '../../utils/require-test-device';
 
@@ -175,6 +176,26 @@ it('GPUNearestFeatureWeights supports cross weights (queries to other features)'
   if (!result) return;
   const oracle = computeKnnOracle(queries, features, 5, {selfJoin: false});
   expectMatchesOracle(result.csr, oracle, false);
+  assertValidCrossWeights(result.csr, queries.length, features.length, 'cross-knn');
+});
+
+it('cross weights retain matching numeric query and feature IDs', async () => {
+  const queries: Point[] = [
+    [0, 0],
+    [2, 0]
+  ];
+  const features: Point[] = [
+    [0, 0],
+    [2, 0],
+    [10, 0]
+  ];
+  const result = await runAdapter(queries, features, {k: 1, selfJoin: false});
+  expect(result.csr.offsets).toEqual([0, 1, 2]);
+  expect(result.csr.neighbors).toEqual([0, 1]);
+  expect(result.csr.distances).toEqual([0, 0]);
+  expect(result.csr.weights).toEqual([1, 1]);
+  expect(result.overflow).toBe(0);
+  assertValidCrossWeights(result.csr, queries.length, features.length, 'cross-numeric-ids');
 });
 
 /** libpysal 4.15.0 `KNN.from_array` and `Graph.build_knn` (k = 4): 24 random points, identical neighbor sets. */
@@ -277,4 +298,63 @@ it('GPUNearestFeatureWeights validates its props', () => {
         output: {} as never
       })
   ).toThrow(/slotCapacity/);
+});
+
+it.each([
+  64, 65, 256, 1024
+])('nearest weights storage sorting matches a CPU oracle at %i slots', async k => {
+  // Reversed feature rows force the adapter to reorder the join's distance order into ID order.
+  const features: Point[] = Array.from({length: 1100}, (_, row) => [1100 - row, row % 3]);
+  const queries: Point[] = [
+    [0, 0],
+    [17, 0]
+  ];
+  for (const weightType of ['binary', 'inverse-distance'] as const) {
+    const result = await runAdapter(queries, features, {k, selfJoin: false, weightType});
+    const expected = computeKnnOracle(queries, features, k, {selfJoin: false});
+    expectMatchesOracle(result.csr, expected, weightType === 'inverse-distance');
+    expect(result.overflow).toBe(0);
+    assertValidCrossWeights(result.csr, queries.length, features.length, 'storage-knn');
+  }
+});
+
+it('weights batches exclude self and padding, keep k below slotCapacity, and sort before clipping a row', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const rig = new WeightsRig(device);
+  const slotCapacity = 80;
+  const ids = new Uint32Array(3 * slotCapacity).fill(0xffffffff);
+  ids.set([0, ...Array.from({length: 79}, (_, row) => 79 - row)]);
+  ids.set([1, 7, 3, 5], slotCapacity);
+  ids.set([2, 70, 9, 8, 7, 6], 2 * slotCapacity);
+  const distances = Float32Array.from({length: ids.length}, (_, slot) => slot % slotCapacity);
+  const output = rig.weightsOutput(3, 71, true);
+  const overflow = rig.output('uint32', 1);
+  try {
+    rig.run(
+      new GPUNearestFeatureWeights({
+        slotCapacity,
+        k: 65,
+        excludeSelf: true,
+        scratchChunkRowCount: 1,
+        weightType: 'inverse-distance',
+        neighborIds: rig.input(ids, 'uint32', ids.length),
+        neighborCounts: rig.input(Uint32Array.of(80, 5, 6), 'uint32', 3),
+        neighborDistances: rig.input(distances, 'float32', distances.length),
+        output: {...output.spatialWeights, status: {overflow: overflow.view}}
+      })
+    );
+    const actual = await output.read();
+    expect(actual.offsets).toEqual([0, 65, 68, 71]);
+    const expectedIds = [...Array.from({length: 65}, (_, row) => row + 15), 3, 5, 7, 6, 7, 8];
+    const expectedDistances = [...Array.from({length: 65}, (_, row) => 65 - row), 2, 3, 1, 5, 4, 3];
+    expect(actual.neighbors).toEqual(expectedIds);
+    expect(actual.distances).toEqual(expectedDistances);
+    actual.weights.forEach((weight, slot) =>
+      expect(weight).toBeCloseTo(1 / expectedDistances[slot], 6)
+    );
+    expect((await readUint32(overflow.buffer, 1))[0]).toBe(1);
+  } finally {
+    rig.destroy();
+  }
 });

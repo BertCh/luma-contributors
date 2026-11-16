@@ -9,6 +9,7 @@ import {
   type GPUCommandNode,
   type GPUCommandNodeProducer
 } from '@luma.gl/graph/gpu-core';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {createFillNode, createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   FIXED_POINT_WGSL,
@@ -16,13 +17,13 @@ import {
 } from '../../analysis-core/kernels/fixed-point-accumulator';
 import {
   validateCapacity,
+  validateGPUStorageBindingByteLength,
   validateFiniteNumber,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   RASTER_FINITE_WGSL,
   rasterBinding,
-  validateRasterGraph,
   validateRasterViews,
   type RasterScalarView
 } from '../remote-sensing/raster-kernel-utils';
@@ -169,7 +170,10 @@ export class GPURasterEmbeddingZoneMean implements GPUCommandNodeProducer {
       Math.max(props.maximumComponentMagnitude ?? 1, 1),
       props.tuples ? props.tuples.zoneIds.length : pixelCount
     );
-    validateRasterViews(id, this.getInputs(), this.getOutputs());
+    validateRasterViews(id, this.getInputs(), this.getOutputs(), [
+      {inputs: [], outputs: [output.means, ...(output.weights ? [output.weights] : [])]},
+      {inputs: [], outputs: [output.means, ...(output.meanLengths ? [output.meanLengths] : [])]}
+    ]);
   }
 
   private getInputs(): RasterScalarView[] {
@@ -192,9 +196,35 @@ export class GPURasterEmbeddingZoneMean implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, unitExponent} = this;
     const {pixelCount, dimensions, zoneCount, output, tuples, zoneRaster} = props;
-    validateRasterGraph(id, graph, this.getInputs(), this.getOutputs());
-    const operation = 'GPURasterEmbeddingZoneMean';
     const entryCount = zoneCount * (dimensions + 1);
+    validateGraphChunkBindingRanges(graph, id, {
+      vectors: props.vectors,
+      mask: props.mask,
+      zoneRaster,
+      'tuples.zoneIds': tuples?.zoneIds,
+      'tuples.cellIds': tuples?.cellIds,
+      'tuples.fractions': tuples?.fractions,
+      'tuples.status.count': tuples?.status.count,
+      'output.means': output.means,
+      'output.weights': output.weights,
+      'output.meanLengths': output.meanLengths
+    });
+    // Both derived storage views start at byte zero; createTransientView requires Buffer.STORAGE.
+    for (const [name, elementCount] of Object.entries({
+      'accumulator scratch': entryCount * 3,
+      'usable scratch': pixelCount
+    })) {
+      const byteLength = elementCount * Uint32Array.BYTES_PER_ELEMENT;
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        name,
+        byteLength,
+        'reduce zoneCount, dimensions or pixelCount'
+      );
+      validateCapacity(id, `${name} byteLength`, byteLength, 1, graph.device.limits.maxBufferSize);
+    }
+    const operation = 'GPURasterEmbeddingZoneMean';
     const accumulator = createTransientView(graph, `${id}-sums`, 'uint32', entryCount * 3);
     const {usable, node: usableNode} = createRasterEmbeddingUsableMask(graph, {
       id,

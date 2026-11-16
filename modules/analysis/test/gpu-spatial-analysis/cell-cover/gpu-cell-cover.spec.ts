@@ -40,6 +40,10 @@ import {
   type CoverResult
 } from './cell-cover-oracle';
 import {isCellInsideFeature} from './cell-cover-core-oracle';
+import {coverS2OnCPU} from './cell-cover-s2-oracle';
+import {getS2TopologyCell} from '../cell-topology/s2-topology-oracle';
+import {s2CellToCenter, s2CellToBoundary} from '../cell-indexing/cell-indexing-oracle';
+import {isInsideRingsExact} from '../segment-intersection/exact-geometry-reference';
 import {requireTestDevice} from '../../utils/require-test-device';
 
 type CoverRun = CoverResult & {
@@ -58,7 +62,7 @@ async function runCover(
   device: Device,
   features: CoverFeature[],
   options: {
-    family: 'quadbin' | 'h3';
+    family: 'quadbin' | 'h3' | 's2';
     resolution: number;
     containment?: GPUCellCoverContainment;
     candidateCapacity: number;
@@ -724,4 +728,123 @@ it('GPUCellCover rejects unsplit transmeridian Fiji', async () => {
   expect(result.invalidCount).toBe(1);
   expect(result.candidateCount).toBe(0);
   expect(result.count).toBe(0);
+});
+
+it('S2 center covering matches independently enumerated native keys for holes, poles and split seam polygons', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const features: CoverFeature[] = [
+    [
+      [
+        createRectangleRing([-25.25, -10.25, 23.75, 12.75]),
+        createRectangleRing([-5.25, -4.25, 4.75, 3.75])
+      ]
+    ],
+    [[createRectangleRing([35.25, 60.25, 80.75, 85.75])]],
+    [
+      [createRectangleRing([172.1, -30.1, 179.8, -15.2])],
+      [createRectangleRing([-179.8, -30.1, -170.2, -15.2])]
+    ],
+    [[createRectangleRing([-105.25, -8.25, -74.75, 7.75])]],
+    [[createRectangleRing([35.25, -85.75, 80.75, -60.25])]]
+  ];
+  for (const resolution of [2, 3, 4]) {
+    const expected = coverS2OnCPU(features, resolution);
+    expect(expected.cells.length).toBeGreaterThan(0);
+    const result = await runCover(device, features, {
+      family: 's2',
+      resolution,
+      candidateCapacity: 4096,
+      outputCapacity: 4096
+    });
+    expect(result.cells).toEqual(expected.cells);
+    expect(result.featureRows).toEqual(expected.featureRows);
+    expect(result).toMatchObject({
+      count: expected.cells.length,
+      total: expected.cells.length,
+      overflow: 0,
+      candidateOverflow: 0,
+      invalidCount: 0,
+      uncertainCount: 0
+    });
+    for (let row = 0; row < result.count; row++)
+      if (result.core[row] !== 0) {
+        const feature = features[result.featureRows[row]];
+        for (const corner of s2CellToBoundary(result.cells[row]))
+          expect(
+            feature.some(polygon => isInsideRingsExact(polygon as [number, number][][], corner))
+          ).toBe(true);
+      }
+    const truncated = await runCover(device, features, {
+      family: 's2',
+      resolution,
+      candidateCapacity: 4096,
+      outputCapacity: 1,
+      featureIds: [700, 900, 1100, 1300, 1500]
+    });
+    expect(truncated.cells).toEqual(expected.cells.slice(0, 1));
+    expect(truncated.featureRows).toEqual(
+      expected.featureRows.slice(0, 1).map(feature => [700, 900, 1100, 1300, 1500][feature])
+    );
+    expect(truncated).toMatchObject({
+      count: 1,
+      total: expected.cells.length,
+      candidateOverflow: 0,
+      overflow: Number(expected.cells.length > 1)
+    });
+  }
+  const exhausted = await runCover(device, features, {
+    family: 's2',
+    resolution: 4,
+    candidateCapacity: 8,
+    outputCapacity: 8
+  });
+  expect(exhausted.candidateOverflow).toBe(1);
+  const complete = coverS2OnCPU(features, 4);
+  expect(exhausted.count).toBeLessThanOrEqual(8);
+  for (let row = 0; row < exhausted.count; row++)
+    expect(
+      complete.cells.some(
+        (cell, index) =>
+          cell === exhausted.cells[row] &&
+          complete.featureRows[index] === exhausted.featureRows[row]
+      )
+    ).toBe(true);
+  device.destroy();
+});
+
+it('S2 center covering refines small polygons through levels 10 and 15 without enumerating the globe', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const resolution of [10, 15]) {
+    const cell = getS2TopologyCell({
+      face: 0,
+      ij: resolution === 10 ? [600, 550] : [17000, 16000],
+      level: resolution
+    });
+    const [longitude, latitude] = s2CellToCenter(cell);
+    const margin = resolution === 10 ? 0.001 : 0.00005;
+    const features: CoverFeature[] = [
+      [
+        [
+          createRectangleRing([
+            longitude - margin,
+            latitude - margin,
+            longitude + margin,
+            latitude + margin
+          ])
+        ]
+      ]
+    ];
+    const result = await runCover(device, features, {
+      family: 's2',
+      resolution,
+      candidateCapacity: 512,
+      outputCapacity: 16
+    });
+    expect(result.cells).toEqual([cell]);
+    expect(result).toMatchObject({count: 1, total: 1, overflow: 0, candidateOverflow: 0});
+    expect(result.candidateCount).toBeLessThanOrEqual(512);
+  }
+  device.destroy();
 });

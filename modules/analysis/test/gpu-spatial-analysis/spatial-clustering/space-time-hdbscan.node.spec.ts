@@ -151,7 +151,7 @@ it('catalogues the existing contributor as planar scaled space-time HDBSCAN with
   expect(operator?.tier).toBe('scale');
   expect(operator?.limits).toEqual(
     expect.arrayContaining([
-      expect.objectContaining({name: 'positions.length', maximum: 1048576}),
+      expect.objectContaining({name: 'positions.length', maximum: 4194304}),
       expect.objectContaining({name: 'minimumSamples', maximum: 32})
     ])
   );

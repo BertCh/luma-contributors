@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+/** Node-side shader binding metadata; WGSL resource names may differ from host names. */
+export type WGSLDeclaredBinding = {name: string; group?: number; location?: number};
+
 /**
  * Static checks over generated WGSL that `wgsl_reflect` does not make, for the library-wide kernel
  * audit (quality rule 16 plus the compile traps of BRIEF rule 6). Every check here caught, or would
@@ -533,6 +536,77 @@ export function findUndeclaredCalls(code: string): WGSLFinding[] {
   return [...findings.values()];
 }
 
+/**
+ * Finds resource declarations without an identifier reference elsewhere in the module. Auto
+ * pipeline layouts omit unused resources, even when the node's explicit binding record has them.
+ * This is a syntactic check, not entry-point reachability or complete WGSL name resolution.
+ * Comments, declaration text, longer identifiers and member names do not count as references.
+ * With a node binding list, unused module-only declarations that the node never binds are valid.
+ */
+export function findUnusedBindings(
+  source: string,
+  declaredBindings?: readonly WGSLDeclaredBinding[],
+  pipelineConstants: Readonly<Record<string, number>> = {}
+): WGSLFinding[] {
+  const code = stripWGSLComments(source);
+  const identifier = String.raw`[_\p{XID_Start}][\p{XID_Continue}]*`;
+  const declarations = new RegExp(
+    String.raw`((?:@${identifier}\s*\([^;{}]*?\)\s*)+)var(?:\s*<[^;{}>]*>)?\s+(${identifier})\s*:[^;]*;`,
+    'gu'
+  );
+  const bindings: {name: string; attributes: string}[] = [];
+  const body = code.replace(
+    declarations,
+    (declaration: string, attributes: string, name: string) => {
+      if (!/@binding\s*\(/.test(attributes) || !/@group\s*\(/.test(attributes)) return declaration;
+      bindings.push({name, attributes: attributes.trim().replace(/\s+/g, ' ')});
+      return ' ';
+    }
+  );
+  if (bindings.length === 0) return [];
+  const references = new Set<string>();
+  for (const match of body.matchAll(
+    new RegExp(String.raw`(?<![\p{XID_Continue}])${identifier}`, 'gu')
+  )) {
+    let previous = match.index - 1;
+    while (previous >= 0 && /\s/.test(body[previous])) previous--;
+    if (body[previous] === '.') continue;
+    // A struct field or typed local declaration is not a reference to a global resource.
+    let next = match.index + match[0].length;
+    while (next < body.length && /\s/.test(body[next])) next++;
+    if (body[next] === ':') continue;
+    references.add(match[0]);
+  }
+  const constants = declaredBindings
+    ? getWGSLConstantValues(code, pipelineConstants)
+    : new Map<string, number>();
+  const getAttributeValue = (attributes: string, name: string): number | undefined => {
+    const attribute = new RegExp(`@${name}\\s*\\(`).exec(attributes);
+    if (!attribute) return undefined;
+    const first = attribute.index + attribute[0].length;
+    let depth = 1;
+    for (let index = first; index < attributes.length; index++) {
+      if (attributes[index] === '(') depth++;
+      if (attributes[index] === ')') depth--;
+      if (depth === 0) return evaluateIntegerExpression(attributes.slice(first, index), constants);
+    }
+    return undefined;
+  };
+  return bindings
+    .filter(({name, attributes}) => {
+      if (references.has(name)) return false;
+      if (!declaredBindings) return true;
+      const group = getAttributeValue(attributes, 'group');
+      const location = getAttributeValue(attributes, 'binding');
+      return declaredBindings.some(binding =>
+        binding.location !== undefined && group !== undefined && location !== undefined
+          ? (binding.group ?? 0) === group && binding.location === location
+          : binding.name === name
+      );
+    })
+    .map(({name, attributes}) => ({check: 'unused binding', detail: `${name} (${attributes})`}));
+}
+
 // Memory and binding accounting.
 
 /** Values of module `const` and `override` declarations, with pipeline constants applied. */
@@ -805,14 +879,16 @@ export const CORE_SHADER_LIMITS = {
 /** Every static finding of one module: compile traps plus core-limit violations. */
 export function auditWGSLModule(
   source: string,
-  pipelineConstants: Readonly<Record<string, number>> = {}
+  pipelineConstants: Readonly<Record<string, number>> = {},
+  declaredBindings?: readonly WGSLDeclaredBinding[]
 ): WGSLFinding[] {
   const code = stripWGSLComments(source);
   const findings = [
     ...findReservedIdentifiers(code),
     ...findSelfCompares(code),
     ...findConstantNonFiniteBitcasts(code),
-    ...findUndeclaredCalls(code)
+    ...findUndeclaredCalls(code),
+    ...findUnusedBindings(code, declaredBindings, pipelineConstants)
   ];
   const usage = getWGSLModuleUsage(code, pipelineConstants);
   const limits = CORE_SHADER_LIMITS;

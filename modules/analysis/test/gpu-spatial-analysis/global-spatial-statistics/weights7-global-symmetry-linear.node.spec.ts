@@ -31,6 +31,7 @@ function countNodes(chunkCount: number, symmetryStrategy: 'auto' | 'transpose' |
     }))
   };
   const nodes = new GPUGlobalSpatialStatistics({
+    mode: 'reference',
     weights,
     symmetryStrategy,
     values: createTransientView(graph, `values-${serial}`, 'float32', rowCount),

@@ -23,6 +23,6 @@ export const VALUE_CUBE_REJECTIONS: readonly KernelAuditRejection[] = [
     kind: 'binding',
     limit: BINDING_BYTES,
     rejects:
-      /^Error: cell-period-keys cells needs 134217736 bytes in one binding \(limit 134217728\); split the rows over several graphs$/
+      /^Error: cell-period-keys cells chunk 0 needs 134217736 bytes in one binding \(limit 134217728\); reduce the chunk row count or output capacity$/
   }
 ];

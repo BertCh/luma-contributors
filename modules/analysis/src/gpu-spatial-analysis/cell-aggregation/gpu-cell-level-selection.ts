@@ -11,7 +11,12 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import type {GPUCardinalityPort} from '../../analysis-core/contracts/index';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {validateGraphViewsBelongToGraph} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  validateCapacity,
+  validateGraphOutputsDisjointFromInputs
+} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {createSpatialStatisticsParameterNodes} from '../../analysis-core/kernels/spatial-statistics-parameter-nodes';
+import {validateCellViewBindingRanges, validateCellWritableViews} from './cell-validation';
 
 /** Caller-owned outputs of {@link GPUCellLevelSelection}. */
 export type GPUCellLevelSelectionOutput = {
@@ -60,6 +65,7 @@ export class GPUCellLevelSelection implements GPUCommandNodeProducer {
     validatePackedUint32View(props.levelCounts, `${id} levelCounts`);
     validatePackedUint32View(props.activeLevel, `${id} activeLevel`);
     validatePackedUint32View(props.output.status.count, `${id} output.status.count`);
+    validateCapacity(id, 'output.status.count rows', props.output.status.count.length);
     if (props.levelCounts.length < 1 || props.activeLevel.length < 1) {
       throw new Error(`${id} levelCounts and activeLevel must hold at least one row`);
     }
@@ -73,6 +79,7 @@ export class GPUCellLevelSelection implements GPUCommandNodeProducer {
     }
     if (props.output.firstRow) {
       validatePackedUint32View(props.output.firstRow, `${id} output.firstRow`);
+      validateCapacity(id, 'output.firstRow rows', props.output.firstRow.length);
     }
     if (props.output.drawArguments) {
       validatePackedUint32View(props.output.drawArguments, `${id} output.drawArguments`);
@@ -80,28 +87,65 @@ export class GPUCellLevelSelection implements GPUCommandNodeProducer {
         throw new Error(`${id} output.drawArguments must hold 4 uint32 values`);
       }
     }
+    validateCellWritableViews(id, [
+      ['output.status.count', props.output.status.count],
+      ['output.firstRow', props.output.firstRow],
+      ['output.drawArguments', props.output.drawArguments]
+    ]);
+    validateGraphOutputsDisjointFromInputs(
+      id,
+      [props.output.status.count, props.output.firstRow, props.output.drawArguments],
+      [props.levelCounts, props.activeLevel]
+    );
   }
 
-  /** Returns one single-invocation node. */
+  /** Returns an optional first-row parameter upload and one selection node. */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
     const {output} = props;
-    validateGraphViewsBelongToGraph(id, graph, [
+    validateCellViewBindingRanges(graph, id, [
       props.levelCounts,
       props.activeLevel,
       output.status.count,
       output.firstRow,
       output.drawArguments
     ]);
-    const levelCount = props.levelCounts.length;
-    const firstRows = props.levelFirstRows ?? new Array<number>(levelCount).fill(0);
+    if (props.levelFirstRows) {
+      validateCapacity(
+        id,
+        'levelFirstRows parameter byteLength',
+        props.levelFirstRows.length * Uint32Array.BYTES_PER_ELEMENT,
+        0,
+        graph.device.limits.maxBufferSize
+      );
+    }
+    // The first-row parameter binding is packed with the same word count as levelCounts,
+    // whose actual aligned range was checked above. No resource exists before that preflight.
+    const firstRows = props.levelFirstRows
+      ? createSpatialStatisticsParameterNodes(
+          graph,
+          `${id}-first-rows`,
+          Uint32Array.from(props.levelFirstRows)
+        )
+      : undefined;
     return [
+      ...(firstRows?.nodes ?? []),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-select`,
         operation: 'GPUCellLevelSelection',
         bindings: [
+          ...(firstRows
+            ? [
+                {
+                  name: 'firstRows',
+                  view: firstRows.parameters,
+                  type: 'u32',
+                  access: 'read'
+                } as const
+              ]
+            : []),
           {
             name: 'levelCounts',
             view: props.levelCounts,
@@ -142,11 +186,10 @@ export class GPUCellLevelSelection implements GPUCommandNodeProducer {
             : [])
         ],
         invocationCount: 1,
-        declarations: `const LEVEL_FIRST_ROWS = array<u32, ${levelCount}>(${firstRows.map(row => `${row}u`).join(', ')});`,
-        body: `let level = min(activeLevel[activeLevelOffset], ${levelCount - 1}u);
+        body: `let levelCount = arrayLength(&levelCounts) - levelCountsOffset;
+  let level = min(activeLevel[activeLevelOffset], levelCount - 1u);
   let count = levelCounts[levelCountsOffset + level];
-  var firstRows = LEVEL_FIRST_ROWS;
-  let firstRow = firstRows[level];
+  let firstRow = ${firstRows ? 'firstRows[firstRowsOffset + level]' : '0u'};
   countOut[countOutOffset] = count;
   ${output.firstRow ? 'firstRowOut[firstRowOutOffset] = firstRow;' : ''}
   ${

@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRasterStorageBindings} from '../raster-grid/raster-storage-preflight';
+import {RING_SHELL_RECORD_WORDS} from '../../analysis-core/ring-assembly/ring-shell-index';
+import {validateRasterAlgebraInputBindings} from '../raster-algebra/raster-algebra-input';
 import type {Device} from '@luma.gl/core';
 import {
   createTransientView,
@@ -17,9 +20,10 @@ import {
 import {
   getStorageBindingElementLimit,
   validateCapacity,
-  validateMaximumCount
+  validateMaximumCount,
+  getGraphOutputViews as getRasterPreflightOutputViews
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {GPUIsobands} from './gpu-isobands';
 
 /**
@@ -73,8 +77,8 @@ export type GPUIsobandRingsProps = {
   id?: string;
   /** Raster grid: its width and height (each at least 2) size the kernels. */
   grid: GPURasterMetadata;
-  /** Packed row-major float32 raster. */
-  values: GraphDataView<'float32'>;
+  /** Published band with validity, native nodata and calibration, or legacy packed float32 values. */
+  values: GraphDataView<'float32'> | GPURasterBand;
   /** Optional input row filter over the raster: nonzero keeps the cell, zero marks no-data. */
   mask?: GraphDataView<'uint32'>;
   /** Optional finite nodata sentinel compared exactly against sample values. */
@@ -126,7 +130,7 @@ export type GPUIsobandRingsProps = {
  * edge and ring capacities are compile-time; the `overflow` and `status.edgeOverflow` words say when they
  * were too small.
  *
- * Row direction: row 0 of the raster is placed at `minY` of the per-frame extent and rows advance
+ * Row direction: row-zero sample centers are half a cell above `minY` of the outer extent; rows advance
  * toward larger y. Only the width and height of `grid` are read; `grid.affine` is not, and nothing
  * is checked at construction. A north-up grid (row 0 at the top, the default of
  * `makeGPURasterMetadata`) therefore comes out mirrored north to south unless the caller reverses
@@ -171,6 +175,35 @@ export class GPUIsobandRings implements GPUCommandNodeProducer {
         getGPUIsobandRingsMaximumRingCapacity(graph.device)
       );
     }
+    const storageProps = this.props;
+    validateRasterAlgebraInputBindings(graph, this.id, [storageProps.values], storageProps.grid);
+    const storageRingCapacity = storageProps.output.ringOffsets.length - 1;
+    const storageNeedsShells = Boolean(
+      storageProps.output.ringShells || storageProps.output.polygons
+    );
+    const storageLeafCapacity = 2 ** Math.ceil(Math.log2(Math.max(1, storageRingCapacity)));
+    validateRasterStorageBindings(
+      graph,
+      this.id,
+      [
+        storageProps.mask,
+        storageProps.breaks,
+        storageProps.parameters,
+        ...getRasterPreflightOutputViews(storageProps.output),
+        ...getRasterPreflightOutputViews(storageProps.output.polygons ?? {})
+      ],
+      {
+        'boundary edges': storageProps.edgeCapacity * 16,
+        'cell counts and offsets':
+          (storageProps.grid.width - 1) * (storageProps.grid.height - 1) * 4,
+        'ring scalar planes': storageRingCapacity * 4,
+        'ring counters': 24,
+        'shell records': storageNeedsShells ? storageRingCapacity * RING_SHELL_RECORD_WORDS * 4 : 0,
+        'shell bounds': storageNeedsShells ? storageRingCapacity * 16 : 0,
+        'shell BVH nodes': storageNeedsShells ? (2 * storageLeafCapacity - 1) * 8 : 0
+      }
+    );
+
     const edges = createTransientView(graph, `${id}-edges`, 'float32x4', props.edgeCapacity);
     const edgeBands = createTransientView(graph, `${id}-edge-bands`, 'uint32', props.edgeCapacity);
     const edgeCount =

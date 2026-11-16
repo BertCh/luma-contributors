@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {
+  validateOverlayScratchByteLengths,
+  getOverlayOutputViews
+} from '../polygon-overlay/overlay-storage-validation';
+import {validateOverlayFeatureSourceOutput} from '../polygon-overlay/overlay-feature-sources';
 import {
   createTransientView,
   GPUScan,
@@ -17,7 +23,9 @@ import {
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
   validateSinglePackedView,
-  validatePowerOfTwo
+  validatePowerOfTwo,
+  validateFiniteNumber,
+  validateGPUStorageBindingByteLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {
   GPULineGeometryPort,
@@ -56,6 +64,10 @@ const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
 } as const);
 
 const OPERATION = 'GPUBufferSurface';
+/** Positive overlay thresholds must survive WebGPU subnormal flushing. */
+const MINIMUM_VERTEX_TOLERANCE = 2 ** -126;
+/** Nested snap rounding rounds up to a power-of-two cell, at most 2^127 in f32. */
+const MAXIMUM_VERTEX_TOLERANCE = 2 ** 127;
 
 /**
  * Largest sum of boundary rows and `capacity.intersections` of {@link GPUBufferSurface} on
@@ -144,8 +156,9 @@ export type GPUBufferSurfaceProps = {
  *
  * Every feature is buffered into one dissolved surface, so an output polygon can cover several
  * input features and has no single source row, and `output.geometry` has no `sourceIds` (see
- * `GPUPolygonOverlayOutput`). A per-feature buffer with source rows needs group labels through the
- * overlay (roadmap STD-08).
+ * `GPUPolygonOverlayOutput`). Optional `output.featureSources` reports a representative input
+ * feature row among the retained boundary edges, and flags mixed boundary provenance. It uses
+ * original feature rows (line rows for line buffers), independently of optional stable source IDs.
  */
 export class GPUBufferSurface implements GPUCommandNodeProducer {
   readonly id: string;
@@ -165,6 +178,21 @@ export class GPUBufferSurface implements GPUCommandNodeProducer {
       SPATIAL_CONTEXT_SUPPORT
     );
     this.props = props;
+    validateFiniteNumber(
+      this.id,
+      'vertexTolerance',
+      props.vertexTolerance,
+      0,
+      MAXIMUM_VERTEX_TOLERANCE
+    );
+    validateFiniteNumber(
+      this.id,
+      'vertexTolerance converted to float32',
+      Math.fround(props.vertexTolerance),
+      MINIMUM_VERTEX_TOLERANCE,
+      MAXIMUM_VERTEX_TOLERANCE
+    );
+    validateOverlayFeatureSourceOutput(this.id, props.output);
     this.joinStyle = props.joinStyle ?? 'round';
     this.capStyle = props.capStyle ?? 'round';
     this.quadSegments = props.quadSegments ?? 8;
@@ -233,6 +261,55 @@ export class GPUBufferSurface implements GPUCommandNodeProducer {
     ]);
     const capRows =
       this.capStyle === 'round' ? 2 * this.quadSegments - 1 : this.capStyle === 'square' ? 2 : 0;
+    const {props, id} = this;
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(
+        [
+          geometry.positions,
+          props.parameters,
+          ...(geometry.kind === 'lines'
+            ? [geometry.lineOffsets]
+            : [geometry.featureOffsets, geometry.polygonOffsets, geometry.ringOffsets]),
+          ...getOverlayOutputViews(props.output)
+        ].map((view, index) => [`binding.${index}`, view])
+      )
+    );
+    const inputBoundaryCount =
+      (geometry.kind === 'lines' ? geometry.lineOffsets : geometry.ringOffsets).length - 1;
+    const rawRingCount = geometry.kind === 'lines' ? inputBoundaryCount : inputBoundaryCount * 3;
+    const rawRowCount =
+      geometry.kind === 'lines'
+        ? 2 * this.rowsPerVertex * geometry.positions.length + 2 * capRows * inputBoundaryCount
+        : (1 + 2 * this.rowsPerVertex) * geometry.positions.length;
+    for (const [name, bytes] of Object.entries({
+      inputCompaction: geometry.positions.length * 8,
+      rowFlagsAndScan: geometry.positions.length * 4,
+      boundaryOffsets: (rawRingCount + 1) * 4,
+      sidePositions: this.rowsPerVertex * geometry.positions.length * 8,
+      rawPositions: rawRowCount * 8
+    })) {
+      const byteLength = Math.max(4, bytes);
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        name,
+        byteLength,
+        'split the input or reduce quadSegments'
+      );
+      validateCapacity(id, `${name} byteLength`, byteLength, 4, graph.device.limits.maxBufferSize);
+    }
+    validateOverlayScratchByteLengths(graph, id, {
+      expandedVertexCount: rawRowCount + rawRingCount,
+      inputRingCount: rawRingCount,
+      intersections: props.capacity.intersections,
+      nodedSegments: props.capacity.nodedSegments,
+      boundaryCapacity: props.output.boundary.endpoints.length,
+      outputRingCapacity: props.output.geometry.ringOffsets.length - 1,
+      outputVertexCapacity: props.output.geometry.positions.length,
+      leafCapacity: props.leafCapacity
+    });
     validateMaximumCount(
       this.id,
       'boundary rows',

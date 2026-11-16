@@ -16,13 +16,19 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
+  validateGPUStorageBindingByteLength,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateSpatialOutputViews} from '../spatial-clustering/spatial-output-validation';
 
 const OPERATION = 'GPUClassificationFit';
 /** Lanes of the per-class statistics workgroup. */
 const STATISTICS_WORKGROUP_SIZE = 256;
 const MAXIMUM_CLASS_COUNT = 256;
+/** Published auto sort uses local bitonic through 256 rows, then 16-bucket radix histograms. */
+const CLASSIFICATION_FIT_SORT_WORKGROUP_SIZE = 256;
+const CLASSIFICATION_FIT_SORT_BUCKET_COUNT = 16;
 
 /** Rows of the optional `summary` output of {@link GPUClassificationFit}. */
 export const GPU_CLASSIFICATION_FIT_SUMMARY_LENGTH = 5;
@@ -169,6 +175,12 @@ export class GPUClassificationFit implements GPUCommandNodeProducer {
       ],
       [values, classes, mask]
     );
+    validateSpatialOutputViews(id, output, [
+      [output.counts, output.medians, output.absoluteDeviations, output.squaredDeviations],
+      ...(output.summary
+        ? [{read: [output.absoluteDeviations, output.squaredDeviations], write: [output.summary]}]
+        : [])
+    ]);
   }
 
   /**
@@ -191,6 +203,19 @@ export class GPUClassificationFit implements GPUCommandNodeProducer {
       output.summary
     ]);
     const rows = values.length;
+    validateGraphChunkBindingRanges(graph, id, {values, classes, mask, ...output});
+    for (const [name, byteLength] of [
+      ['sorted row scratch', rows * 4],
+      [
+        'sort histogram',
+        rows > CLASSIFICATION_FIT_SORT_WORKGROUP_SIZE
+          ? Math.ceil(rows / CLASSIFICATION_FIT_SORT_WORKGROUP_SIZE) *
+            CLASSIFICATION_FIT_SORT_BUCKET_COUNT *
+            4
+          : 0
+      ]
+    ] as const)
+      validateGPUStorageBindingByteLength(graph.device, id, name, byteLength, 'reduce values rows');
     const valueKeys = createTransientView(graph, `${id}-value-keys`, 'uint32', rows);
     const rowIds = createTransientView(graph, `${id}-row-ids`, 'uint32', rows);
     const sortedValueKeys = createTransientView(graph, `${id}-sorted-value-keys`, 'uint32', rows);

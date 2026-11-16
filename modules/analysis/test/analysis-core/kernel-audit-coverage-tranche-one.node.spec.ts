@@ -10,7 +10,10 @@ registerKernelAudit('coverage-tranche-one', COVERAGE_TRANCHE_ONE_CASES);
 import {expect, it} from 'vitest';
 import {createKernelAuditContext} from './kernel-audit/kernel-audit-context';
 import {GPURasterFractionalZonalDistribution} from '../../src/raster-analysis/gpu-raster-fractional-zonal-distribution';
-import {GPURasterFractionalCategoricalStatistics} from '../../src/raster-analysis/gpu-raster-fractional-categorical-statistics';
+import {
+  GPURasterFractionalCategoricalStatistics,
+  type GPURasterFractionalCategoricalStatisticsProps
+} from '../../src/raster-analysis/gpu-raster-fractional-categorical-statistics';
 import {GPURasterFocalPairs} from '../../src/raster-analysis/focal-pairs/index';
 import {GPURasterSAVI} from '../../src/raster-analysis/gpu-raster-spectral-indices';
 import {addDasymetricRedistributionRecipe} from '../../src/gpu-spatial-analysis/recipes/dasymetric-redistribution-recipe';
@@ -77,33 +80,57 @@ it('coverage tranche one refuses documented scalar and capacity bounds one step 
       [2, 21846, 1],
       [1, 1, 1048577]
     ]) {
+      const props: GPURasterFractionalCategoricalStatisticsProps = {
+        id: `categorical-boundary-${categoryCapacity}-${zoneCount}-${tupleCount}`,
+        grid,
+        input: {
+          id: 'categories',
+          format: 'uint32',
+          storage: {kind: 'buffer', values: view('uint32', 2)}
+        },
+        zoneCount,
+        categoryCapacity,
+        coverage: coverage(tupleCount, zoneCount),
+        output: {
+          coverageSums: view('float32', zoneCount * categoryCapacity),
+          classAreas: view('float32', zoneCount * categoryCapacity),
+          proportions: view('float32', zoneCount * categoryCapacity),
+          coveredArea: view('float32', zoneCount),
+          validArea: view('float32', zoneCount),
+          missingArea: view('float32', zoneCount),
+          majority: view('uint32', zoneCount),
+          minority: view('uint32', zoneCount),
+          validity: view('uint32', zoneCount)
+        }
+      };
+      const label = `categorical categories=${categoryCapacity} zones=${zoneCount} tuples=${tupleCount}`;
+      // The opt-in reference route retains every historical scalar and capacity bound.
       expect(
-        () =>
-          new GPURasterFractionalCategoricalStatistics({
-            grid,
-            input: {
-              id: 'categories',
-              format: 'uint32',
-              storage: {kind: 'buffer', values: view('uint32', 2)}
-            },
-            zoneCount,
-            categoryCapacity,
-            coverage: coverage(tupleCount, zoneCount),
-            output: {
-              coverageSums: view('float32', zoneCount * categoryCapacity),
-              classAreas: view('float32', zoneCount * categoryCapacity),
-              proportions: view('float32', zoneCount * categoryCapacity),
-              coveredArea: view('float32', zoneCount),
-              validArea: view('float32', zoneCount),
-              missingArea: view('float32', zoneCount),
-              majority: view('uint32', zoneCount),
-              minority: view('uint32', zoneCount),
-              validity: view('uint32', zoneCount)
-            }
-          }),
-        `categorical categories=${categoryCapacity} zones=${zoneCount} tuples=${tupleCount}`
-      ).toThrow();
+        () => new GPURasterFractionalCategoricalStatistics({...props, mode: 'exact'}),
+        `${label} exact`
+      ).toThrow(
+        tupleCount > 1048576
+          ? /coverage.zoneIds length in exact mode.*1048576/
+          : /zoneCount times.*65535/
+      );
+      if (categoryCapacity === 65535) {
+        expect(() => new GPURasterFractionalCategoricalStatistics(props), label).toThrow(
+          /categoryCapacity.*65534/
+        );
+      } else {
+        // Tiled accumulation deliberately lifts the old group and tuple caps. Build the graph
+        // too, so acceptance includes derived scratch and the declared command budget.
+        const contributor = new GPURasterFractionalCategoricalStatistics(props);
+        const nodes = contributor.getCommandNodes(context.graph);
+        expect(nodes.length, label).toBeGreaterThan(0);
+        expect(nodes.length, label).toBeLessThanOrEqual(contributor.estimatedCommandNodeCount);
+        expect(
+          nodes.every(node => node.id.startsWith(props.id!)),
+          label
+        ).toBe(true);
+      }
     }
+
     for (const options of [
       {radius: 9, minimumCount: 2},
       {radius: 8, minimumCount: 290}

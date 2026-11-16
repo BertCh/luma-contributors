@@ -4,6 +4,7 @@
 
 import {
   createTransientView,
+  getViewBindingRange,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -11,6 +12,7 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {
   createWGSLKernelNode,
+  createWGSLDispatchGate,
   type WGSLDispatchGate,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
@@ -24,6 +26,7 @@ import {
   validateGraphViewsBelongToGraph,
   validateSinglePackedView,
   validateCapacity,
+  validateMaximumCount,
   validateCommandNodeBudget,
   validateFiniteNumber,
   validateGPUStorageBindingByteLength,
@@ -39,8 +42,10 @@ import {
 import {
   createGridIndexNodes,
   getRingNeighborDistancesWGSL,
+  getDefaultGWRGridSize,
   type GridIndexViews
 } from './gwr-grid-index';
+import {getGWRGridScratchSizes} from './gwr-scalability-utils';
 import {getGeneralizedSelectionNodes} from './generalized-gwr-selection';
 import type {GPUIterationStatusPort} from '../../analysis-core/contracts/status';
 import {
@@ -51,7 +56,13 @@ import {
   GENERALIZED_GWR_SEPARATION_ERROR_UNIT,
   GENERALIZED_GWR_MAXIMUM_NEIGHBOR_COUNT,
   LOCAL_REGRESSION_MAXIMUM_ITERATIONS,
-  LOCAL_REGRESSION_MAXIMUM_GRID_CELL_COUNT
+  LOCAL_REGRESSION_MAXIMUM_GRID_CELL_COUNT,
+  GENERALIZED_GWR_FOCUS_BATCH_ROWS,
+  GENERALIZED_GWR_MAXIMUM_INDEXED_ROW_COUNT,
+  GENERALIZED_GWR_FOCUS_WORKGROUP_SIZE,
+  GENERALIZED_GWR_MAXIMUM_SHADER_FLOAT,
+  GENERALIZED_GWR_MAXIMUM_FINAL_SCORE_TILES,
+  getGeneralizedGWRScoreMergeLayout
 } from './generalized-gwr-limits';
 import {getCholeskyWGSL} from './spatial-regression-solve';
 import {
@@ -70,10 +81,8 @@ import {
 export const GPU_LOCAL_REGRESSION_MAXIMUM_PREDICTOR_COUNT = 24;
 /** Largest row count of an iterative local regression without a grid index (dense neighborhood scan). */
 export const GPU_LOCAL_REGRESSION_MAXIMUM_ROW_COUNT = 65536;
-/** Largest row count with an `indexGridSize` grid index. */
+/** Shared reference limit for multiscale fits and indexed, untruncated Gaussian GGWR. */
 export const GPU_LOCAL_REGRESSION_MAXIMUM_INDEXED_ROW_COUNT = 1048576;
-/** Default `maxStorageBufferBindingSize`; the per-focus fit state is tiled to stay below it. */
-const MAXIMUM_STATE_BYTES = 134217728;
 
 /** Iterative regression status shared by the bounded generalized and multiscale fits. */
 export const GPU_ITERATIVE_REGRESSION_STATUS = {
@@ -118,14 +127,16 @@ export type GPUGeneralizedGeographicallyWeightedRegressionProps = {
   leaveOneOut?: boolean;
   /**
    * Dimensions `[columns, rows]` of an internal `GPUGridIndex` over the training rows, or omitted
-   * for none (the default: dense scan of every row per focus). Opt-in, compile-time, planar only.
+   * for an automatic grid above 65,536 rows with planar finite-support kernels.
+   * `false` keeps the bounded dense reference route. Compile-time, planar only.
    * Bisquare kernels (fixed or adaptive bandwidth), and Gaussian kernels with a `gaussianCutoff`,
    * then visit only the grid cells covering the bandwidth; the exact Gaussian kernel is unbounded
    * and still visits every row. Adaptive neighbor selection walks grid cells in rings around the
-   * focus instead of scanning every row. Lifts the row limit from 65,536 to 1,048,576. The grid
-   * sums rows in cell order, so results differ from the dense scan in float32 rounding only.
+   * focus instead of scanning every row. Finite-support indexed fits accept up to 16,777,216 rows,
+   * subject to device binding limits; untruncated Gaussian retains its 1,048,576-row reference cap.
+   * The grid sums rows in cell order, so results differ from the dense scan in float32 rounding only.
    */
-  indexGridSize?: readonly [number, number];
+  indexGridSize?: readonly [number, number] | false;
   /**
    * Opt-in truncation radius, in bandwidths, of the Gaussian kernel: weights of rows farther than
    * `gaussianCutoff * bandwidth` are exactly 0, which lets the Gaussian kernel use `indexGridSize`
@@ -206,11 +217,16 @@ export type GPUGeneralizedGeographicallyWeightedRegressionProps = {
  * the current finite iterate with status 3; other failed/excluded outputs remain NaN.
  * Per-frame: parameters, data/mask/offset values and golden-section selection parameters.
  * Compile-time: family, kernel, bandwidthMode, capacities, iteration budgets, selection method,
- * grid dimensions, gaussianCutoff and optional views. AICc selection is capped at 4,096 rows.
+ * grid dimensions, gaussianCutoff and optional views. Dense/untruncated-Gaussian AICc selection
+ * is capped at 4,096 rows; finite-support indexed selection scores all training rows together.
+ * Scores sum increasing rows within 256-row tiles, adjacent tiles within 256-tile groups when
+ * needed, then groups in order. No invocation sums more than 256 partials.
  * Poisson linear predictors outside [-30,30] are numerical failure
- * rather than silently changing the likelihood. Bounded to 65,536 rows (1,048,576 with `indexGridSize`), 1–24 predictors and 128
- * iterations; dense neighborhood traversal has quadratic work and must be benchmarked by callers. The per-focus state is
- * tiled over focal rows when it would exceed one storage binding.
+ * rather than silently changing the likelihood. Limits: 65,536 dense rows, 16,777,216 indexed
+ * finite-support rows (subject to binding limits), 1,048,576 indexed untruncated-Gaussian rows,
+ * 1–24 predictors and 128 iterations. Dense traversal has quadratic work.
+ * At most 65,536 focal states are reused across tiles and bandwidth candidates. Public inputs
+ * and outputs remain single packed views; large coefficient surfaces can require a larger device binding limit.
  */
 export class GPUGeneralizedGeographicallyWeightedRegression implements GPUCommandNodeProducer {
   readonly id: string;
@@ -219,7 +235,11 @@ export class GPUGeneralizedGeographicallyWeightedRegression implements GPUComman
   readonly estimatedCommandNodeCount: number;
   /** Sphere radius of great-circle distances, or null for planar distances. */
   readonly sphereRadius: number | null;
-  constructor(readonly props: GPUGeneralizedGeographicallyWeightedRegressionProps) {
+  readonly props: Omit<GPUGeneralizedGeographicallyWeightedRegressionProps, 'indexGridSize'> & {
+    indexGridSize?: readonly [number, number];
+  };
+  constructor(inputProps: GPUGeneralizedGeographicallyWeightedRegressionProps) {
+    const props = {...inputProps, indexGridSize: inputProps.indexGridSize || undefined};
     this.id = props.id ?? 'generalized-geographically-weighted-regression';
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext, {
       ...GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
@@ -229,7 +249,35 @@ export class GPUGeneralizedGeographicallyWeightedRegression implements GPUComman
       this.spatialContext.metric === 'great-circle'
         ? getGPUSphereRadius(this.spatialContext)
         : null;
-    validateRegressionInputs(this.id, props, this.sphereRadius !== null);
+    if (this.sphereRadius !== null) {
+      validateFiniteNumber(
+        this.id,
+        'spatialContext.sphereRadius',
+        this.sphereRadius,
+        Number.MIN_VALUE,
+        GENERALIZED_GWR_MAXIMUM_SHADER_FLOAT
+      );
+    }
+    if (
+      inputProps.indexGridSize === undefined &&
+      props.response.length > GPU_LOCAL_REGRESSION_MAXIMUM_ROW_COUNT &&
+      this.sphereRadius === null &&
+      (props.kernel === 'bisquare' || props.gaussianCutoff !== undefined)
+    ) {
+      props.indexGridSize = getDefaultGWRGridSize(props.response.length);
+    }
+    this.props = props;
+    const hasScalableIndex =
+      Boolean(props.indexGridSize) &&
+      (props.kernel === 'bisquare' || props.gaussianCutoff !== undefined);
+    validateRegressionInputs(
+      this.id,
+      props,
+      this.sphereRadius !== null,
+      hasScalableIndex
+        ? GENERALIZED_GWR_MAXIMUM_INDEXED_ROW_COUNT
+        : GPU_LOCAL_REGRESSION_MAXIMUM_INDEXED_ROW_COUNT
+    );
     validateRequirement(
       this.id,
       !props.bandwidthMode || ['fixed', 'adaptive'].includes(props.bandwidthMode),
@@ -300,7 +348,8 @@ export class GPUGeneralizedGeographicallyWeightedRegression implements GPUComman
             this.id,
             `bandwidthSelection.bandwidths[${index}]`,
             value,
-            Number.MIN_VALUE
+            Number.MIN_VALUE,
+            GENERALIZED_GWR_MAXIMUM_SHADER_FLOAT
           );
           if (props.bandwidthMode === 'adaptive') {
             validateCapacity(
@@ -314,7 +363,10 @@ export class GPUGeneralizedGeographicallyWeightedRegression implements GPUComman
         });
         candidateCount = selection.bandwidths.length;
       }
-      if (selection.method === 'golden-section' || selection.criterion === 'aicc') {
+      if (
+        !hasScalableIndex &&
+        (selection.method === 'golden-section' || selection.criterion === 'aicc')
+      ) {
         validateCapacity(
           this.id,
           'bandwidthSelection AICc rows',
@@ -339,14 +391,23 @@ export class GPUGeneralizedGeographicallyWeightedRegression implements GPUComman
         validateViewLength(this.id, `bandwidthSelection.status.${name}`, view, 1);
       }
     }
-    const columns = props.predictorCount + 1;
-    const stride = columns + 3 + (props.inference ? columns + 1 : 0);
-    const tileCount = Math.ceil(rows / Math.floor(MAXIMUM_STATE_BYTES / 4 / stride));
+    if (selection) {
+      validateMaximumCount(
+        this.id,
+        'bandwidthSelection final score partials',
+        getGeneralizedGWRScoreMergeLayout(rows).finalTileCount,
+        GENERALIZED_GWR_MAXIMUM_FINAL_SCORE_TILES
+      );
+    }
+    const tileCount = Math.ceil(rows / GENERALIZED_GWR_FOCUS_BATCH_ROWS);
     const gridAllowance = props.indexGridSize ? GENERALIZED_GWR_GRID_NODE_ALLOWANCE : 0;
+    // Every candidate has an init, three nodes per focus tile, parameter/deviance/score,
+    // at most two score merges, and one search update. Final fit has its own init/tiles.
     this.estimatedCommandNodeCount =
       gridAllowance +
-      2 * tileCount +
-      (selection ? candidateCount * (2 * tileCount + 4) + candidateCount + 8 : 0);
+      1 +
+      3 * tileCount +
+      (selection ? candidateCount * (3 * tileCount + 8) + 8 : 0);
     validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
     if (props.inference) {
       validateSinglePackedView(props.inference.standardErrors, ['float32'], this.id);
@@ -389,13 +450,34 @@ export class GPUGeneralizedGeographicallyWeightedRegression implements GPUComman
     const outputEntries = allOutputEntries.filter(
       (entry): entry is readonly [string, GraphDataView] => entry[1] !== undefined
     );
+    const coBoundGroups = [
+      [
+        ...Object.keys(getOutputColumns(props.output)).map(name => `output.${name}`),
+        ...Object.keys(props.inference ?? {}).map(name => `inference.${name}`)
+      ],
+      ['bandwidthSelection.output.scores', 'bandwidthSelection.output.evaluatedBandwidths'],
+      [
+        'bandwidthSelection.output.scores',
+        'bandwidthSelection.output.bandwidth',
+        'bandwidthSelection.output.status',
+        ...Object.keys(selection?.status ?? {}).map(name => `bandwidthSelection.status.${name}`)
+      ]
+    ];
     for (let first = 0; first < outputEntries.length; first++) {
       const [firstName, firstView] = outputEntries[first];
       for (const [secondName, secondView] of outputEntries.slice(first + 1)) {
+        const coBound = coBoundGroups.some(
+          group => group.includes(firstName) && group.includes(secondName)
+        );
+        const firstRange = getViewBindingRange(firstView);
+        const secondRange = getViewBindingRange(secondView);
         const overlaps =
           firstView.buffer === secondView.buffer &&
-          firstView.byteOffset < secondView.byteOffset + secondView.length * 4 &&
-          secondView.byteOffset < firstView.byteOffset + firstView.length * 4;
+          (coBound
+            ? firstRange.offset < secondRange.offset + secondRange.size &&
+              secondRange.offset < firstRange.offset + firstRange.size
+            : firstView.byteOffset < secondView.byteOffset + secondView.length * 4 &&
+              secondView.byteOffset < firstView.byteOffset + firstView.length * 4);
         validateRequirement(
           this.id,
           !overlaps,
@@ -420,53 +502,68 @@ export class GPUGeneralizedGeographicallyWeightedRegression implements GPUComman
     options: {
       gridSetup?: ReturnType<typeof createLocalRegressionGrid<Parameters>>;
       gate?: WGSLDispatchGate<Parameters>;
+      fits?: GraphDataView<'float32'>;
+      focusGate?: WGSLDispatchGate<Parameters>;
     } = {}
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    // Check all row-proportional scratch before constructing any command nodes.
+    const rows = props.response.length;
     const columns = props.predictorCount + 1;
-    const stateStride = 2 * columns + 4;
-    const stateRows = Math.min(
-      props.response.length,
-      Math.floor(MAXIMUM_STATE_BYTES / 4 / stateStride)
-    );
-    for (const [name, length] of [
-      ['fit state', stateRows * stateStride],
-      ['coefficients', props.response.length * (props.predictorCount + 1)],
-      ['selection tile scores', Math.ceil(props.response.length / 256) * 4],
-      [
-        'grid cellOffsets',
-        props.indexGridSize ? props.indexGridSize[0] * props.indexGridSize[1] + 1 : 1
-      ]
-    ] as const) {
+    const iterations = props.maximumIterations ?? 32;
+    const stride = columns + 3 + (props.inference ? columns + 1 : 0);
+    const tileRows = Math.min(rows, GENERALIZED_GWR_FOCUS_BATCH_ROWS);
+    const tileCount = Math.ceil(rows / tileRows);
+    const selection = props.bandwidthSelection;
+    const views = [
+      ...getRegressionBindings(props).map(binding => binding.view),
+      ...Object.values(getOutputColumns(props.output)),
+      ...Object.values(props.inference ?? {}),
+      ...Object.values(selection?.output ?? {}),
+      ...Object.values(selection?.status ?? {}),
+      ...(selection?.method === 'golden-section' ? [selection.parameters] : []),
+      options.fits,
+      options.focusGate?.view,
+      options.gridSetup?.grid?.cellOffsets,
+      options.gridSetup?.grid?.sortedIds
+    ].filter((view): view is GraphDataView => view !== undefined);
+    validateGraphViewsBelongToGraph(id, graph, views);
+    // Binding ranges include the alignment prefix, even for caller subviews.
+    for (const view of views) {
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        'view binding',
+        getViewBindingRange(view).size,
+        'reduce rows or predictorCount'
+      );
+    }
+    // These cover every derived buffer, including published grid/radix/scan scratch. Scan
+    // levels shrink from the cell-offset or radix histogram range checked here.
+    const scratch: (readonly [string, number])[] = [
+      ['fit state', (tileRows * (selection ? 2 * columns + 4 : stride) + 1) * 4],
+      ['focus dispatch', 12]
+    ];
+    if (selection)
+      scratch.push(
+        ['selection coefficients/errors', rows * columns * 4],
+        ['selection fitted/codes/iterations/eligible/influence', rows * 4],
+        ['selection tile scores', getGeneralizedGWRScoreMergeLayout(rows).tileCount * 16],
+        ['selection merged scores', getGeneralizedGWRScoreMergeLayout(rows).mergedTileCount * 16],
+        ['selection parameters/search/gate', 128]
+      );
+    // Use the shared grid's exact aligned extent layout and published primitive scratch bounds.
+    scratch.push(...getGWRGridScratchSizes(rows, props.indexGridSize ?? null));
+    for (const [name, bytes] of scratch)
       validateGPUStorageBindingByteLength(
         graph.device,
         id,
         name,
-        length * 4,
+        bytes,
         'reduce rows, predictorCount or indexGridSize'
       );
-    }
-    if (props.bandwidthSelection) return getGeneralizedSelectionNodes(graph, this);
-    const rows = props.response.length;
-    const iterations = props.maximumIterations ?? 32;
-    const stride = columns + 3 + (props.inference ? columns + 1 : 0);
-    // The fit state of one focal tile must fit one storage binding; larger problems run tiles.
-    const tileRows = Math.min(rows, Math.floor(MAXIMUM_STATE_BYTES / 4 / stride));
-    const tileCount = Math.ceil(rows / tileRows);
-    validateGPUStorageBindingByteLength(
-      graph.device,
-      id,
-      'fits',
-      tileRows * stride * 4,
-      'reduce predictorCount'
-    );
-    const fits = createTransientView(graph, `${id}-fits`, 'float32', tileRows * stride);
-    validateGraphViewsBelongToGraph(id, graph, [
-      ...getRegressionBindings(props).map(binding => binding.view),
-      ...Object.values(getOutputColumns(props.output)),
-      ...Object.values(props.inference ?? {})
-    ]);
+    if (selection) return getGeneralizedSelectionNodes(graph, this);
+    const fits =
+      options.fits ?? createTransientView(graph, `${id}-fits`, 'float32', tileRows * stride + 1);
     const gridSetup =
       options.gridSetup ??
       createLocalRegressionGrid(
@@ -551,21 +648,43 @@ fn logLikelihood(focus: u32, bandwidth: f32, coefficients: ptr<function, array<f
   return likelihood;
 }`;
     const nodes: GPUCommandNode<Parameters>[] = options.gridSetup ? [] : [...gridSetup.nodes];
+    // Only the dispatch record changes between focal tiles, including the partial last tile.
+    // Each candidate finishes with this record disarmed; skipped candidates cannot reuse stale work.
+    const focusGate =
+      options.focusGate ??
+      createWGSLDispatchGate(graph, {
+        id: `${id}-focus-dispatch`,
+        operation: 'GPUGeneralizedGeographicallyWeightedRegression',
+        shapes: [[tileRows, GENERALIZED_GWR_FOCUS_WORKGROUP_SIZE]]
+      });
+    nodes.push(
+      createWGSLKernelNode(graph, {
+        id: `${id}-focus-init`,
+        operation: 'GPUGeneralizedGeographicallyWeightedRegression',
+        invocationCount: 1,
+        ...(options.gate?.getGate(1) ?? {}),
+        bindings: [
+          {name: 'fits', view: fits, type: 'f32', access: 'read_write'},
+          focusGate.binding
+        ],
+        body: `fits[fitsOffset] = 0.0; ${focusGate.armWGSL}`
+      })
+    );
     for (let tile = 0; tile < tileCount; tile++) {
-      const focalStart = tile * tileRows;
-      const focalCount = Math.min(tileRows, rows - focalStart);
       const suffix = tileCount > 1 ? `-tile${tile}` : '';
       nodes.push(
         createWGSLKernelNode(graph, {
           id: `${id}-fit${suffix}`,
           operation: 'GPUGeneralizedGeographicallyWeightedRegression',
           variant: props.family,
-          invocationCount: focalCount,
-          ...(options.gate?.getGate(0) ?? {}),
+          invocationCount: tileRows,
+          workgroupSize: GENERALIZED_GWR_FOCUS_WORKGROUP_SIZE,
+          ...focusGate.getGate(0),
           bindings: [...bindings, {name: 'fits', view: fits, type: 'f32', access: 'read_write'}],
-          declarations: `${common}\nconst FOCAL_START: u32 = ${focalStart}u;`,
-          body: `let focus = index + FOCAL_START;
-let base = fitsOffset + index * ${stride}u;
+          declarations: common,
+          body: `let focus = index + u32(fits[fitsOffset]);
+if (focus >= ROW_COUNT) { return; }
+let base = fitsOffset + 1u + index * ${stride}u;
 for (var column = 0u; column < ${stride}u; column++) { fits[base + column] = getNaN(); }
 fits[base + ${columns + 1}u] = 1.0; fits[base + ${columns + 2}u] = 0.0;
 if (${props.predictExcluded ? '!queryValid(focus)' : '!included(focus) || !responseValid(focus)'}) { return; }
@@ -781,8 +900,9 @@ fits[base + ${columns + 1}u] = f32(state); fits[base + ${columns + 2}u] = f32(co
           id: `${id}-publish${suffix}`,
           operation: 'GPUGeneralizedGeographicallyWeightedRegression',
           variant: 'publish',
-          invocationCount: focalCount,
-          ...(options.gate?.getGate(0) ?? {}),
+          invocationCount: tileRows,
+          workgroupSize: GENERALIZED_GWR_FOCUS_WORKGROUP_SIZE,
+          ...focusGate.getGate(0),
           bindings: [
             {name: 'fits', view: fits, type: 'f32', access: 'read'},
             ...Object.entries(getOutputColumns(props.output)).map(([name, view]) => ({
@@ -799,11 +919,27 @@ fits[base + ${columns + 1}u] = f32(state); fits[base + ${columns + 2}u] = f32(co
               access: 'read_write' as const
             }))
           ],
-          body: `let row = index + ${focalStart}u;
-let base = fitsOffset + index * ${stride}u;
+          body: `let row = index + u32(fits[fitsOffset]);
+if (row >= ${rows}u) { return; }
+let base = fitsOffset + 1u + index * ${stride}u;
 for (var column = 0u; column < ${columns}u; column++) { coefficients[coefficientsOffset + row * ${columns}u + column] = fits[base + column]; }
 fitted[fittedOffset + row] = fits[base + ${columns}u]; status[statusOffset + row] = u32(fits[base + ${columns + 1}u]); iterations[iterationsOffset + row] = u32(fits[base + ${columns + 2}u]);
 ${props.inference ? `for (var column = 0u; column < ${columns}u; column++) { standardErrors[standardErrorsOffset + row * ${columns}u + column] = fits[base + ${columns + 3}u + column]; } influence[influenceOffset + row] = fits[base + ${2 * columns + 3}u];` : ''}`
+        })
+      );
+      nodes.push(
+        createWGSLKernelNode(graph, {
+          id: `${id}-focus-advance${suffix}`,
+          operation: 'GPUGeneralizedGeographicallyWeightedRegression',
+          invocationCount: 1,
+          ...(options.gate?.getGate(1) ?? {}),
+          bindings: [
+            {name: 'fits', view: fits, type: 'f32', access: 'read_write'},
+            focusGate.binding
+          ],
+          body: `fits[fitsOffset] += ${tileRows}.0;
+          let remainingRows = ${rows}u - min(${rows}u, u32(fits[fitsOffset]));
+          dispatch[dispatchOffset] = (min(remainingRows, ${tileRows}u) + ${GENERALIZED_GWR_FOCUS_WORKGROUP_SIZE - 1}u) / ${GENERALIZED_GWR_FOCUS_WORKGROUP_SIZE}u;`
         })
       );
     }
@@ -814,8 +950,8 @@ ${props.inference ? `for (var column = 0u; column < ${columns}u; column++) { sta
 /** Shared bounded input contract for local iterative regression. @internal */
 export type LocalRegressionInputs = Omit<
   GPUGeneralizedGeographicallyWeightedRegressionProps,
-  'family' | 'output' | 'inference' | 'bandwidthSelection' | 'predictExcluded'
->;
+  'family' | 'output' | 'inference' | 'bandwidthSelection' | 'predictExcluded' | 'indexGridSize'
+> & {indexGridSize?: readonly [number, number]};
 
 /** Neighborhood options of {@link getRegressionWGSL}. @internal */
 export type LocalRegressionNeighborhood = {
@@ -908,11 +1044,12 @@ fn isTrainingRow(row: u32) -> bool {
 export function validateRegressionInputs(
   id: string,
   props: LocalRegressionInputs,
-  isGreatCircle = false
+  isGreatCircle = false,
+  maximumIndexedRows = GPU_LOCAL_REGRESSION_MAXIMUM_INDEXED_ROW_COUNT
 ): void {
   const rows = props.response.length;
   const maximumRows = props.indexGridSize
-    ? GPU_LOCAL_REGRESSION_MAXIMUM_INDEXED_ROW_COUNT
+    ? maximumIndexedRows
     : GPU_LOCAL_REGRESSION_MAXIMUM_ROW_COUNT;
   validateCapacity(id, 'response rows', rows, 1, maximumRows);
   validateCapacity(
@@ -955,7 +1092,13 @@ export function validateRegressionInputs(
     'kernel must be gaussian or bisquare'
   );
   if (props.gaussianCutoff !== undefined) {
-    validateFiniteNumber(id, 'gaussianCutoff', props.gaussianCutoff, Number.MIN_VALUE);
+    validateFiniteNumber(
+      id,
+      'gaussianCutoff',
+      props.gaussianCutoff,
+      Number.MIN_VALUE,
+      GENERALIZED_GWR_MAXIMUM_SHADER_FLOAT
+    );
   }
   validateSinglePackedView(props.positions, ['float32x2'], id);
   validateSinglePackedView(props.predictors, ['float32'], id);

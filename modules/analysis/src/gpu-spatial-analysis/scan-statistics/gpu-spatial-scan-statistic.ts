@@ -2,11 +2,16 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  createSaturatedCountScanNodes,
+  SCAN_TOTAL_WGSL
+} from '../../analysis-core/kernels/scan-total';
+import {validateSpatialStatisticsBindings} from '../spatial-weights/spatial-statistics-bindings';
+import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {Buffer} from '@luma.gl/core';
 import {
   createTransientView,
   getBoundedDispatchLayout,
-  GPUScan,
   type GPUCommandGraphNodeCondition,
   type GraphBufferUse,
   type GPUCommandGraph,
@@ -16,9 +21,9 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   createWGSLDispatchGate,
-  createWGSLKernelNode,
   getAutomaticWGSLKernelWorkgroupSize
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {createStatisticsKernelNode as createWGSLKernelNode} from '../spatial-weights/statistics-kernel-node';
 import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
@@ -58,6 +63,9 @@ import {PHILOX_PURPOSES} from '../../analysis-core/kernels/philox-random';
 import {POISSON_OBSERVED_TERM_WGSL} from '../../analysis-core/kernels/wgsl-poisson-observed-term';
 import {createScanNearestZonesKernelNode} from './scan-statistic-nearest-zones';
 
+import {SCAN_DRAW_INTERVAL_WGSL} from './scan-draw-interval';
+import {GET_NAN_WGSL} from '../../analysis-core/kernels/wgsl-common';
+
 const OPERATION = 'GPUSpatialScanStatistic';
 /** Scan windows measure planar or great-circle distances. */
 const SCAN_SPATIAL_CONTEXT_SUPPORT = Object.freeze({
@@ -91,7 +99,9 @@ const MAXIMUM_BATCH_REPLICATES = 4096;
 /** Largest unrolled batch count: each batch adds four graph nodes. */
 const MAXIMUM_BATCHES = 1024;
 /** Words of the `totals` record: cases, baseline bits, weight total, next batch base, batch base. */
-const TOTALS_WORDS = 5;
+const TOTALS_WORDS = 7;
+/** Reserve uint32's largest value as the saturated runtime case/population overflow sentinel. */
+export const GPU_SPATIAL_SCAN_STATISTIC_MAXIMUM_COUNT = 0xfffffffe;
 
 /** Caller-owned outputs of {@link GPUSpatialScanStatistic}. */
 export type GPUSpatialScanStatisticOutput = {
@@ -116,6 +126,8 @@ export type GPUSpatialScanStatisticOutput = {
   summary: GraphDataView<'uint32'>;
   /** Optional caller-owned float32, one row per zone: the best observed LLR of windows centered there. */
   zoneStatistics?: GraphDataView<'float32'>;
+  /** Optional scalar diagnostic: 1 when cases or Bernoulli population exceed MAXIMUM_COUNT. Statistics are NaN and no clusters are published then. */
+  status?: {invalidCount: GraphDataView<'uint32'>};
 };
 
 /**
@@ -474,6 +486,32 @@ export class GPUSpatialScanStatistic implements GPUCommandNodeProducer {
     if (new Set(outputs.map(output => output.buffer)).size !== outputs.length) {
       throw new Error(`${id} outputs must use separate buffers`);
     }
+    if (props.output.status) {
+      validateSinglePackedView(
+        props.output.status.invalidCount,
+        ['uint32'],
+        `${id} output.status.invalidCount`
+      );
+      validateCapacity(
+        id,
+        'output.status.invalidCount.length',
+        props.output.status.invalidCount.length,
+        1
+      );
+      validateGraphOutputsDisjointFromInputs(
+        id,
+        [props.output.status.invalidCount],
+        [props.positions, props.cases, props.baseline, props.controls, props.parameters]
+      );
+    }
+    validateDisjointWritableViews(id, {
+      clusterIndices: props.output.clusterIndices,
+      clusterStatistics: props.output.clusterStatistics,
+      statistics: props.output.statistics,
+      summary: props.output.summary,
+      zoneStatistics: props.output.zoneStatistics,
+      invalidCount: props.output.status?.invalidCount
+    });
   }
 
   /**
@@ -526,6 +564,12 @@ export class GPUSpatialScanStatistic implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, zones, timeBuckets, listLength, usableZones, maximumClusters, model} = this;
+    validateSpatialStatisticsBindings(graph, id, props, {
+      'cell scratch': zones * timeBuckets * 4,
+      'neighbor scratch': zones * listLength * 4,
+      'replicate table': (this.batchReplicates + 1) * zones * timeBuckets * 4,
+      'center records': zones * (CENTER_WORDS + 2) * 4
+    });
     const prospective = this.temporalMode === 'prospective';
     const separation: InterpolationSeparation = {
       context: this.spatialContext,
@@ -669,7 +713,9 @@ export class GPUSpatialScanStatistic implements GPUCommandNodeProducer {
       ]
     });
 
-    const common = /* wgsl */ `
+    const common = /* wgsl */ `${SCAN_TOTAL_WGSL}
+const MAXIMUM_COUNT: u32 = ${GPU_SPATIAL_SCAN_STATISTIC_MAXIMUM_COUNT}u;
+
 const ZONES: u32 = ${zones}u;
 const LIST: u32 = ${listLength}u;
 const USABLE: u32 = ${usableZones}u;
@@ -803,7 +849,7 @@ fn getLogLikelihoodRatio(observed: f32, windowWeight: f32, totalCases: f32, tota
           ],
           invocationCount: cells,
           declarations: common,
-          body: `let cellPopulation = cases[casesOffset + index] + controls[controlsOffset + index];
+          body: `let cellPopulation = getSaturatedScanSum(cases[casesOffset + index], controls[controlsOffset + index]);
   population[populationOffset + index] = cellPopulation;
   weights[weightsOffset + index] = f32(cellPopulation);`
         })
@@ -825,14 +871,14 @@ fn getLogLikelihoodRatio(observed: f32, windowWeight: f32, totalCases: f32, tota
           body: `if (index < ZONES) {
     var zoneSum = 0u;
     for (var bucket = 0u; bucket < BUCKETS; bucket++) {
-      zoneSum += cases[casesOffset + index * BUCKETS + bucket];
+      zoneSum = getSaturatedScanSum(zoneSum, cases[casesOffset + index * BUCKETS + bucket]);
     }
     zoneTotals[zoneTotalsOffset + index] = zoneSum;
   }
   if (index < BUCKETS) {
     var bucketSum = 0u;
     for (var zone = 0u; zone < ZONES; zone++) {
-      bucketSum += cases[casesOffset + zone * BUCKETS + index];
+      bucketSum = getSaturatedScanSum(bucketSum, cases[casesOffset + zone * BUCKETS + index]);
     }
     bucketTotals[bucketTotalsOffset + index] = bucketSum;
   }`
@@ -853,7 +899,7 @@ fn getLogLikelihoodRatio(observed: f32, windowWeight: f32, totalCases: f32, tota
   let bucket = index - zone * BUCKETS;
   var total = 0u;
   for (var other = 0u; other < BUCKETS; other++) {
-    total += bucketTotals[bucketTotalsOffset + other];
+    total = getSaturatedScanSum(total, bucketTotals[bucketTotalsOffset + other]);
   }
   weights[weightsOffset + index] = select(
     0.0,
@@ -879,12 +925,12 @@ fn getLogLikelihoodRatio(observed: f32, windowWeight: f32, totalCases: f32, tota
             // Two serial prefix sums, once per frame; the replicate draws binary-search them.
             body: `var zoneRunning = 0u;
   for (var zone = 0u; zone < ZONES; zone++) {
-    zoneRunning += zoneTotals[zoneTotalsOffset + zone];
+    zoneRunning = getSaturatedScanSum(zoneRunning, zoneTotals[zoneTotalsOffset + zone]);
     zoneCumulative[zoneCumulativeOffset + zone] = zoneRunning;
   }
   var bucketRunning = 0u;
   for (var bucket = 0u; bucket < BUCKETS; bucket++) {
-    bucketRunning += bucketTotals[bucketTotalsOffset + bucket];
+    bucketRunning = getSaturatedScanSum(bucketRunning, bucketTotals[bucketTotalsOffset + bucket]);
     bucketCumulative[bucketCumulativeOffset + bucket] = bucketRunning;
   }`
           })
@@ -910,7 +956,7 @@ fn getLogLikelihoodRatio(observed: f32, windowWeight: f32, totalCases: f32, tota
   let first = index * CELLS_PER_BLOCK;
   for (var cell = first; cell < min(first + CELLS_PER_BLOCK, CELLS); cell++) {
     baselineSum += baseline[baselineOffset + cell];
-    caseSum += cases[casesOffset + cell];
+    caseSum = getSaturatedScanSum(caseSum, cases[casesOffset + cell]);
   }
   blockBaseline[blockBaselineOffset + index] = baselineSum;
   blockCases[blockCasesOffset + index] = caseSum;`
@@ -930,9 +976,11 @@ fn getLogLikelihoodRatio(observed: f32, windowWeight: f32, totalCases: f32, tota
   var caseSum = 0u;
   for (var blockIndex = 0u; blockIndex < BLOCKS; blockIndex++) {
     baselineSum += blockBaseline[blockBaselineOffset + blockIndex];
-    caseSum += blockCases[blockCasesOffset + blockIndex];
+    caseSum = getSaturatedScanSum(caseSum, blockCases[blockCasesOffset + blockIndex]);
   }
-  totals[totalsOffset] = caseSum;
+  totals[totalsOffset + 5u] = u32(caseSum > MAXIMUM_COUNT);
+  totals[totalsOffset + 6u] = caseSum;
+  totals[totalsOffset] = select(caseSum, 0u, caseSum > MAXIMUM_COUNT);
   totals[totalsOffset + 1u] = bitcast<u32>(baselineSum);
   totals[totalsOffset + 2u] = 0u;
   totals[totalsOffset + 3u] = 0u;
@@ -964,12 +1012,27 @@ fn getLogLikelihoodRatio(observed: f32, windowWeight: f32, totalCases: f32, tota
         );
       }
       nodes.push(
-        ...new GPUScan({
+        ...createSaturatedCountScanNodes(graph, {
           id: `${id}-cumulative`,
-          input: cellWeights,
-          output: cumulative,
-          mode: 'inclusive'
-        }).getCommandNodes(graph),
+          operation: OPERATION,
+          counts: cellWeights,
+          offsets: cumulative,
+          total: totals,
+          totalRow: 2,
+          rowCount: cells
+        }),
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-cumulative-inclusive`,
+          operation: OPERATION,
+          variant: 'cumulative-inclusive',
+          invocationCount: cells,
+          bindings: [
+            {name: 'cumulative', view: cumulative, type: 'u32', access: 'read_write'},
+            {name: 'cellWeights', view: cellWeights, type: 'u32', access: 'read'}
+          ],
+          declarations: SCAN_TOTAL_WGSL,
+          body: 'cumulative[cumulativeOffset + index] = getSaturatedScanSum(cumulative[cumulativeOffset + index], cellWeights[cellWeightsOffset + index]);'
+        }),
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-weight-total`,
           operation: OPERATION,
@@ -979,7 +1042,10 @@ fn getLogLikelihoodRatio(observed: f32, windowWeight: f32, totalCases: f32, tota
             {name: 'totals', view: totals, type: 'u32', access: 'read_write'}
           ],
           invocationCount: 1,
-          body: `totals[totalsOffset + 2u] = cumulative[cumulativeOffset + ${cells - 1}u];`
+          declarations: common,
+          body: `let weightTotal = cumulative[cumulativeOffset + ${cells - 1}u];
+  totals[totalsOffset + 2u] = weightTotal;
+  if (weightTotal > MAXIMUM_COUNT) { totals[totalsOffset + 5u] = 1u; totals[totalsOffset] = 0u; }`
         })
       );
     }
@@ -993,13 +1059,16 @@ fn getLogLikelihoodRatio(observed: f32, windowWeight: f32, totalCases: f32, tota
         bindings: [
           {name: 'cases', view: cases, type: 'u32', access: 'read'},
           {name: 'counts', view: counts, type: 'u32', access: 'read_write'},
-          {name: 'statistics', view: statistics, type: 'u32', access: 'read_write'}
+          {name: 'statistics', view: statistics, type: 'u32', access: 'read_write'},
+          {name: 'centerBest', view: centerBest, type: 'u32', access: 'read_write'}
         ],
-        invocationCount: Math.max(cells, statistics.length),
+        invocationCount: Math.max(cells, statistics.length, zones * CENTER_WORDS),
         declarations: `${common}
 const STATISTIC_WORDS: u32 = ${statistics.length}u;`,
         // The same pass zeroes `statistics` (0 bits are 0.0), the target of the evaluate maxima.
-        body: `if (index < CELLS) {
+        body: `// Clear observed records on every encoding, including invalid frames.
+  if (index < ZONES * CENTER_WORDS) { centerBest[centerBestOffset + index] = 0u; }
+  if (index < CELLS) {
     counts[countsOffset + index] = cases[casesOffset + index];
   }
   if (index < STATISTIC_WORDS) {
@@ -1027,6 +1096,7 @@ const STATISTIC_WORDS: u32 = ${statistics.length}u;`,
           ],
           invocationCount: drawInvocationCount,
           declarations: `${PERMUTATION_RANDOM_WGSL}
+${SCAN_DRAW_INTERVAL_WGSL}
 ${withParameters}
 const CASE_BLOCKS: u32 = ${CASE_BLOCKS}u;
 const SCAN_STREAM: u32 = ${SCAN_STREAM}u;`,
@@ -1038,9 +1108,9 @@ const SCAN_STREAM: u32 = ${SCAN_STREAM}u;`,
   if (replicate >= readPermutations() || totalWeight == 0u) {
     return;
   }
-  let chunk = (totalCases + CASE_BLOCKS - 1u) / CASE_BLOCKS;
-  let first = blockIndex * chunk;
-  let stop = min(first + chunk, totalCases);
+  let interval = getScanDrawInterval(totalCases, CASE_BLOCKS, blockIndex);
+  let first = interval.first;
+  let stop = interval.stop;
   var stream = createPhiloxStream(readSeedKey(), replicate, blockIndex, SCAN_STREAM);
   for (var draw = first; draw < stop; draw++) {
     // Multiply-high without rejection on purpose: the f32 weight total differs by an ulp between
@@ -1078,6 +1148,7 @@ const SCAN_STREAM: u32 = ${SCAN_STREAM}u;`,
           guardIndex: false,
           declarations: `${PERMUTATION_RANDOM_WGSL}
 ${getPermutationShuffleWGSL(SCAN_STREAM, PERMUTATION_SHUFFLE_FULL_RANGE_ROUNDS)}
+${SCAN_DRAW_INTERVAL_WGSL}
 ${withParameters}
 const DRAW_BLOCKS: u32 = ${PARALLEL_DRAW_BLOCKS}u;
 const DRAW_SIZE: u32 = ${PARALLEL_DRAW_WORKGROUP_SIZE}u;`,
@@ -1100,10 +1171,10 @@ const DRAW_SIZE: u32 = ${PARALLEL_DRAW_WORKGROUP_SIZE}u;`,
   if (!isLive) {
     return;
   }
-  let chunk = (totalCases + DRAW_BLOCKS - 1u) / DRAW_BLOCKS;
-  let first = block * chunk;
-  let stop = min(first + chunk, totalCases);
-  for (var draw = first + localInvocationIndex; draw < stop; draw += DRAW_SIZE) {
+  let interval = getScanDrawInterval(totalCases, DRAW_BLOCKS, block);
+  // Iterate relative positions: adding a lane or incrementing an absolute draw can wrap at uint32.
+  for (var position = localInvocationIndex; position < interval.stop - interval.first; position += DRAW_SIZE) {
+    let draw = interval.first + position;
     let individual = getSwapOrNotPermutationIndex(draw, totalPopulation);
     var low = 0u;
     var high = CELLS;
@@ -1137,6 +1208,7 @@ const DRAW_SIZE: u32 = ${PARALLEL_DRAW_WORKGROUP_SIZE}u;`,
           guardIndex: false,
           declarations: `${PERMUTATION_RANDOM_WGSL}
 ${getPermutationShuffleWGSL(SCAN_STREAM, PERMUTATION_SHUFFLE_FULL_RANGE_ROUNDS)}
+${SCAN_DRAW_INTERVAL_WGSL}
 ${withParameters}
 const DRAW_BLOCKS: u32 = ${PARALLEL_DRAW_BLOCKS}u;
 const DRAW_SIZE: u32 = ${PARALLEL_DRAW_WORKGROUP_SIZE}u;`,
@@ -1156,10 +1228,10 @@ const DRAW_SIZE: u32 = ${PARALLEL_DRAW_WORKGROUP_SIZE}u;`,
   if (!isLive) {
     return;
   }
-  let chunk = (totalCases + DRAW_BLOCKS - 1u) / DRAW_BLOCKS;
-  let first = block * chunk;
-  let stop = min(first + chunk, totalCases);
-  for (var draw = first + localInvocationIndex; draw < stop; draw += DRAW_SIZE) {
+  let interval = getScanDrawInterval(totalCases, DRAW_BLOCKS, block);
+  // Iterate relative positions: adding a lane or incrementing an absolute draw can wrap at uint32.
+  for (var position = localInvocationIndex; position < interval.stop - interval.first; position += DRAW_SIZE) {
+    let draw = interval.first + position;
     var zoneLow = 0u;
     var zoneHigh = ZONES;
     while (zoneLow < zoneHigh) {
@@ -1398,7 +1470,7 @@ var<workgroup> maxima: array<f32, ${EVALUATE_WORKGROUP_SIZE}>;`,
   let isLive = replicate < readPermutations();`
   }
   var best = 0.0;
-  if (isLive && center < ZONES) {
+  if (isLive && center < ZONES && totals[totalsOffset + 5u] == 0u) {
   let totalCases = f32(totals[totalsOffset]);
   let totalBaseline = bitcast<f32>(totals[totalsOffset + 1u]);
   let maximumBuckets = readMaximumBuckets();
@@ -1416,7 +1488,7 @@ var<workgroup> maxima: array<f32, ${EVALUATE_WORKGROUP_SIZE}>;`,
   for (var slotIndex = 0u; slotIndex < windowSlots; slotIndex++) {
     let zone = neighbors[neighborsOffset + center * LIST + slotIndex];
     for (var bucket = 0u; bucket < BUCKETS; bucket++) {
-      caseSums[bucket] += counts[countsOffset + slotStart + zone * BUCKETS + bucket];
+      caseSums[bucket] = getSaturatedScanSum(caseSums[bucket], counts[countsOffset + slotStart + zone * BUCKETS + bucket]);
       baselineSums[bucket] += baseline[baselineOffset + zone * BUCKETS + bucket];
     }
     // A circle never ends between two zones at the same distance.
@@ -1429,7 +1501,7 @@ var<workgroup> maxima: array<f32, ${EVALUATE_WORKGROUP_SIZE}>;`,
       var windowCases = 0u;
       var windowBaseline = 0.0;
       for (var last = first; last < min(first + maximumBuckets, BUCKETS); last++) {
-        windowCases += caseSums[last];
+        windowCases = getSaturatedScanSum(windowCases, caseSums[last]);
         windowBaseline += baselineSums[last];
         ${prospective ? 'if (last != BUCKETS - 1u) { continue; }' : ''}
         let ratio = getLogLikelihoodRatio(f32(windowCases), windowBaseline, totalCases, totalBaseline, direction);
@@ -1501,7 +1573,7 @@ var<workgroup> maxima: array<f32, ${EVALUATE_WORKGROUP_SIZE}>;`,
           body: `let base = totals[totalsOffset + 3u];
   totals[totalsOffset + 4u] = base;
   totals[totalsOffset + 3u] = base + BATCH_REPLICATES;
-  if (base < readPermutations()) {
+  if (base < readPermutations() && totals[totalsOffset + 5u] == 0u) {
     ${batchGate.armWGSL}
   } else {
     ${batchGate.disarmWGSL}
@@ -1570,6 +1642,26 @@ const CLUSTERS: u32 = ${maximumClusters}u;`,
       clusterStatistics[clusterStatisticsOffset + index * ${GPU_SPATIAL_SCAN_STATISTIC_STATISTIC_WORDS}u + word] = 0.0;
     }
   }`
+      })
+    );
+
+    // Invalid totals cannot arm selection, even if a previous encoding found a cluster.
+    nodes.push(
+      createWGSLKernelNode(graph, {
+        id: `${id}-select-validity`,
+        operation: OPERATION,
+        variant: 'select-validity',
+        invocationCount: zones,
+        bindings: [
+          {name: 'totals', view: totals, type: 'u32', access: 'read'},
+          {name: 'alive', view: alive, type: 'u32', access: 'read_write'},
+          {name: 'state', view: state, type: 'u32', access: 'read_write'},
+          {name: 'roundDispatch', view: roundGate, type: 'u32', access: 'read_write'}
+        ],
+        body: `if (totals[totalsOffset + 5u] != 0u) {
+        alive[aliveOffset + index] = 0u;
+        if (index == 0u) { state[stateOffset + 4u] = 1u; ${disarmRoundGateWGSL} }
+      }`
       })
     );
 
@@ -1728,13 +1820,59 @@ const CLUSTERS: u32 = ${maximumClusters}u;`,
         invocationCount: 1,
         declarations: withParameters,
         body: `summary[summaryOffset] = state[stateOffset];
-  summary[summaryOffset + 1u] = totals[totalsOffset];
+  summary[summaryOffset + 1u] = totals[totalsOffset + 6u];
   summary[summaryOffset + 2u] = readPermutations();
   var overflow = 0u;
   for (var center = 0u; center < ZONES; center++) {
     overflow += centerBest[centerBestOffset + center * CENTER_WORDS + 6u];
   }
   summary[summaryOffset + 3u] = overflow;`
+      })
+    );
+    nodes.push(
+      createWGSLKernelNode(graph, {
+        id: `${id}-invalid-count-status`,
+        operation: OPERATION,
+        variant: 'invalid-count-status',
+        declarations: GET_NAN_WGSL,
+        invocationCount: Math.max(
+          statistics.length,
+          clusterStatistics.length,
+          zoneStatistics?.length ?? 0
+        ),
+        bindings: [
+          {name: 'totals', view: totals, type: 'u32', access: 'read'},
+          {name: 'statistics', view: statistics, type: 'f32', access: 'read_write'},
+          {name: 'clusterStatistics', view: clusterStatistics, type: 'f32', access: 'read_write'},
+          ...(zoneStatistics
+            ? [
+                {
+                  name: 'zoneStatistics',
+                  view: zoneStatistics,
+                  type: 'f32' as const,
+                  access: 'read_write' as const
+                }
+              ]
+            : []),
+          ...(props.output.status
+            ? [
+                {
+                  name: 'invalidCount',
+                  view: props.output.status.invalidCount,
+                  type: 'u32' as const,
+                  access: 'read_write' as const
+                }
+              ]
+            : [])
+        ],
+        body: `let invalid = totals[totalsOffset + 5u] != 0u;
+${props.output.status ? 'if (index == 0u) { invalidCount[invalidCountOffset] = u32(invalid); }' : ''}
+if (invalid) {
+ let missing = getNaN();
+ if (index < ${statistics.length}u) { statistics[statisticsOffset + index] = missing; }
+ if (index < ${clusterStatistics.length}u) { clusterStatistics[clusterStatisticsOffset + index] = missing; }
+ ${zoneStatistics ? `if (index < ${zoneStatistics.length}u) { zoneStatistics[zoneStatisticsOffset + index] = missing; }` : ''}
+}`
       })
     );
     return nodes;

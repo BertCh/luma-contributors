@@ -15,6 +15,7 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
+  validateGraphOutputsDisjointFromInputs,
   validateRequirement,
   validateCommandNodeBudget,
   validateGPUStorageBindingByteLength,
@@ -35,7 +36,8 @@ import {
   validateGTWRBandwidthSearch,
   type GPUGTWRBandwidthSearch
 } from './gtwr-bandwidth-search';
-import {validatePredictionViews} from '../../analysis-core/kernels/gpu-prediction-utils';
+import {validateRegressionOutputDispatches} from './regression-output-dispatches';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {
   GET_NAN_WGSL,
   IS_FINITE_BITS_WGSL,
@@ -45,6 +47,7 @@ import {
   resolveGPUTemporalContext,
   type GPUTemporalContext
 } from '../../analysis-core/contracts/temporal-context';
+import {createGTWRIndexedNodes, validateGTWRIndexedBindings} from './gtwr-indexed-nodes';
 import {getCholeskyWGSL} from './spatial-regression-solve';
 import {
   getEquilibratedCholeskyWGSL,
@@ -59,6 +62,10 @@ import {
 export const GPU_GTWR_MAXIMUM_PREDICTOR_COUNT = 11;
 /** Most rows: every focal row visits every row, `O(rows^2 x predictors^2)`. */
 export const GPU_GTWR_MAXIMUM_ROW_COUNT = 32768;
+/** Indexed fits keep summary row counts exactly representable in float32; bindings may cap rows sooner. */
+export const GPU_GTWR_MAXIMUM_INDEXED_ROW_COUNT = 16777216;
+/** Upper bound for the published grid aggregation, scan and stable radix sort plus fit/statistic passes. */
+export const GPU_GTWR_INDEXED_COMMAND_NODE_ALLOWANCE = 256;
 /** Number of float32 values of the per-frame parameters. */
 export const GPU_GTWR_PARAMETER_LENGTH = 4;
 
@@ -195,6 +202,18 @@ export type GPUGeographicallyTemporallyWeightedRegressionProps = {
   kernel?: 'gaussian' | 'bisquare';
   /** Interpret bandwidth as an integer nearest-neighbour count, including the focal row, at most 128. */
   adaptive?: boolean;
+  /**
+   * Compile-time candidate route. Default `grid` for compact-support kernels, otherwise
+   * `brute-force`. The reference route retains GPU_GTWR_MAXIMUM_ROW_COUNT. Grid requires
+   * no bandwidthSearch; data and per-frame bandwidth/timeScale may change.
+   */
+  searchStructure?: 'grid' | 'brute-force';
+  /**
+   * Compile-time positive finite Gaussian support in bandwidths. Weights are exactly zero for
+   * distance > gaussianCutoff * bandwidth on either route. Omit for the dense Gaussian reference.
+   * This deliberately changes the kernel; it never silently approximates a dense Gaussian fit.
+   */
+  gaussianCutoff?: number;
   /** Nested golden-section profile search, compile-time budget with per-frame bounds. */
   bandwidthSearch?: GPUGTWRBandwidthSearch;
   /** At least 4 float32 values from {@link getGPUGTWRParameterValues}. */
@@ -221,8 +240,17 @@ const STATUS = GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS;
  * are singular. Search bounds/tolerances and fixed settings are per-frame; shapes, kernel,
  * adaptive mode and search budgets are compile-time. This reference-tier exhaustive search
  * assumes a unimodal profile, tests both endpoints, and keeps its best finite AICc at the limit.
- * The fit is exhaustive over rows, float32, deterministic for a given adapter, and the
- * caller's data are never reordered.
+ * Dense Gaussian and profile search use the bounded exhaustive reference.
+ * Bisquare and explicit Gaussian-cutoff fits (fixed or adaptive) default to a stable space-time grid, rebuilding
+ * it each encoding. Focal fits dispatch in parallel; only cells intersecting the support box are
+ * visited, with the original space-time distance rejecting false positives. Adaptive bandwidths
+ * find the exact kth distance by expanding cell shells with a conservative stopping bound. No neighbors are
+ * truncated. Very dense neighborhoods can still require quadratic work. The grid accumulates in
+ * cell order (ascending source row within a cell), so float32 rounding can differ from the dense
+ * reference; compare well-conditioned coefficients at relative/absolute tolerance 1e-4, summaries
+ * at 1e-3. Caller rows and output layouts are preserved. Grid inputs remain single packed views;
+ * the device binding limit applies to each input, output and packed row scratch. Shapes, route
+ * and gaussianCutoff are compile-time; buffer contents and bandwidth/timeScale are per-frame.
  *
  * The summary AICc is the one `GPUGeographicallyWeightedRegression` publishes (the mgwr formula),
  * `-2 llf + 2 n (tr(S) + 1) / (n - tr(S) - 2)`, so a GWR fit and a GTWR fit of the same data are
@@ -238,6 +266,7 @@ export class GPUGeographicallyTemporallyWeightedRegression implements GPUCommand
   readonly id: string;
   readonly rows: number;
   readonly estimatedCommandNodeCount: number;
+  readonly searchStructure: 'grid' | 'brute-force';
   constructor(readonly props: GPUGeographicallyTemporallyWeightedRegressionProps) {
     this.id = props.id ?? 'geographically-temporally-weighted-regression';
     const {id} = this;
@@ -247,13 +276,42 @@ export class GPUGeographicallyTemporallyWeightedRegression implements GPUCommand
       props.bandwidthSearch,
       props.output.status
     );
+    validateRequirement(
+      id,
+      props.kernel === undefined || ['gaussian', 'bisquare'].includes(props.kernel),
+      'kernel must be gaussian or bisquare'
+    );
+    validateRequirement(
+      id,
+      props.searchStructure === undefined ||
+        ['grid', 'brute-force'].includes(props.searchStructure),
+      'searchStructure must be grid or brute-force'
+    );
+    if (props.gaussianCutoff !== undefined) {
+      validateRequirement(
+        id,
+        Number.isFinite(Math.fround(props.gaussianCutoff)) && Math.fround(props.gaussianCutoff) > 0,
+        'gaussianCutoff must be positive and finite in float32'
+      );
+    }
+    const hasCompactSupport = props.kernel === 'bisquare' || props.gaussianCutoff !== undefined;
+    this.searchStructure =
+      props.searchStructure ??
+      (hasCompactSupport && !props.bandwidthSearch ? 'grid' : 'brute-force');
+    validateRequirement(
+      id,
+      this.searchStructure !== 'grid' || (hasCompactSupport && !props.bandwidthSearch),
+      'searchStructure grid requires a compact kernel and no bandwidthSearch'
+    );
     this.estimatedCommandNodeCount =
-      3 +
-      Number(Boolean(props.output.residuals)) +
-      (searchIterations
-        ? getGTWRBandwidthSearchNodeCount(searchIterations, 2) +
-          Number(Boolean(props.output.selectedParameters))
-        : 0);
+      this.searchStructure === 'grid'
+        ? GPU_GTWR_INDEXED_COMMAND_NODE_ALLOWANCE
+        : 3 +
+          Number(Boolean(props.output.residuals)) +
+          (searchIterations
+            ? getGTWRBandwidthSearchNodeCount(searchIterations, 2) +
+              Number(Boolean(props.output.selectedParameters))
+            : 0);
     validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     resolveGPUSpatialContext(id, props.spatialContext, {
       coordinateSpaces: ['planar'],
@@ -264,7 +322,15 @@ export class GPUGeographicallyTemporallyWeightedRegression implements GPUCommand
     resolveGPUTemporalContext(id, props.temporalContext, {encodings: ['float32-relative']});
     validateSinglePackedView(props.response, ['float32'], `${id} response`);
     this.rows = props.response.length;
-    validateCapacity(id, 'rows', this.rows, 2, GPU_GTWR_MAXIMUM_ROW_COUNT);
+    validateCapacity(
+      id,
+      'rows',
+      this.rows,
+      2,
+      this.searchStructure === 'grid'
+        ? GPU_GTWR_MAXIMUM_INDEXED_ROW_COUNT
+        : GPU_GTWR_MAXIMUM_ROW_COUNT
+    );
     validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     validateViewLength(id, 'positions', props.positions, this.rows);
     validateSinglePackedView(props.times, ['float32'], `${id} times`);
@@ -311,7 +377,25 @@ export class GPUGeographicallyTemporallyWeightedRegression implements GPUCommand
         'output.selectedParameters must have at least 2 values'
       );
     }
-    validatePredictionViews(id, this.getInputViews(), this.getOutputViews());
+    validateGraphOutputsDisjointFromInputs(id, this.getOutputViews(), this.getInputViews());
+    validateRegressionOutputDispatches(
+      id,
+      {
+        ...output,
+        status: undefined,
+        ...Object.fromEntries(
+          Object.entries(output.status ?? {}).map(([name, view]) => [`status.${name}`, view])
+        )
+      },
+      [
+        ['coefficients', 'fitted', 'hatDiagonal', 'localStatus'],
+        {read: ['fitted'], write: ['residuals']},
+        ...(this.searchStructure === 'brute-force'
+          ? [{read: ['fitted', 'hatDiagonal', 'localStatus'], write: ['summary']}]
+          : []),
+        Object.keys(output.status ?? {}).map(name => `status.${name}`)
+      ]
+    );
   }
 
   private getInputViews(): GraphDataView[] {
@@ -322,7 +406,7 @@ export class GPUGeographicallyTemporallyWeightedRegression implements GPUCommand
       props.predictors,
       props.response,
       props.mask,
-      props.parameters,
+      props.bandwidthSearch ? undefined : props.parameters,
       props.bandwidthSearch?.parameters
     ];
     return views.filter((view): view is GraphDataView => view !== undefined);
@@ -338,6 +422,25 @@ export class GPUGeographicallyTemporallyWeightedRegression implements GPUCommand
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateGraphViewsBelongToGraph(this.id, graph, [
+      ...this.getInputViews(),
+      ...this.getOutputViews()
+    ]);
+    validateGraphChunkBindingRanges(graph, this.id, {
+      ...Object.fromEntries(this.getInputViews().map((view, index) => [`input[${index}]`, view])),
+      ...Object.fromEntries(this.getOutputViews().map((view, index) => [`output[${index}]`, view]))
+    });
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      this.id,
+      'space-time and coefficient scratch',
+      this.rows * Math.max(3, this.props.predictorCount + 1) * 4,
+      'reduce rows or predictorCount'
+    );
+    if (this.searchStructure === 'grid') {
+      validateGTWRIndexedBindings(graph.device, this.id, this.rows, this.props.predictorCount);
+      return createGTWRIndexedNodes(graph, this.id, this.props);
+    }
     return this.createNodes(graph);
   }
 
@@ -385,6 +488,7 @@ export class GPUGeographicallyTemporallyWeightedRegression implements GPUCommand
             ...props,
             id: evaluationId,
             bandwidthSearch: undefined,
+            searchStructure: 'brute-force',
             parameters,
             output: candidateOutput
           });
@@ -399,6 +503,7 @@ export class GPUGeographicallyTemporallyWeightedRegression implements GPUCommand
         ...props,
         id: `${id}-selected-fit`,
         bandwidthSearch: undefined,
+        searchStructure: 'brute-force',
         parameters: selectedParameters,
         output: fitOutput
       });
@@ -449,7 +554,7 @@ ${IS_FINITE_VALUE_WGSL}
 ${GET_NAN_WGSL}
 ${getCholeskyWGSL(size, size)}
 ${getEquilibratedCholeskyWGSL(size)}
-${getLocalKernelWeightWGSL()}
+${getLocalKernelWeightWGSL(props.gaussianCutoff ?? null)}
 ${props.adaptive ? getGTWRAdaptiveBandwidthWGSL(rows) : ''}`,
         body: `let timeScale = parameters[parametersOffset + 1u];
   let bandwidth = ${props.adaptive ? 'getAdaptiveBandwidth(index, parameters[parametersOffset], timeScale)' : 'parameters[parametersOffset]'};

@@ -61,8 +61,8 @@ writeMoments(base+45u,centre.x);writeMoments(base+46u,centre.y);writeMoments(bas
  */
 export function getPlaneSolveSource(
   loadTransform: string,
-  blocks: number,
-  iteration: number,
+  blocks: number | string,
+  iteration: number | string,
   translationTolerance: number | string,
   rotationTolerance: number | string
 ): string {
@@ -70,12 +70,12 @@ export function getPlaneSolveSource(
   return `${loadTransform}
 for(var entry=0u;entry<17u;entry++){writeNext(entry,readState(entry));}
 var system:array<f32,42>;var count=0.0;var weight=0.0;var residualSum=0.0;var centroid=vec3f(0.0);
-for(var batchIndex=0u;batchIndex<${blocks}u;batchIndex++){
+for(var batchIndex=0u;batchIndex<${typeof blocks === 'number' ? `${blocks}u` : blocks};batchIndex++){
  let base=batchIndex*${words}u;let blockWeight=readMoments(base+1u);if(!(blockWeight>0.0)){continue;}
  count+=readMoments(base);weight+=blockWeight;residualSum+=readMoments(base+2u);
  centroid+=(vec3f(readMoments(base+45u),readMoments(base+46u),readMoments(base+47u))-centroid)*(blockWeight/weight);
 }
-for(var batchIndex=0u;batchIndex<${blocks}u;batchIndex++){
+for(var batchIndex=0u;batchIndex<${typeof blocks === 'number' ? `${blocks}u` : blocks};batchIndex++){
  let base=batchIndex*${words}u;if(!(readMoments(base+1u)>0.0)){continue;}
  let offset=vec3f(readMoments(base+45u),readMoments(base+46u),readMoments(base+47u))-centroid;
  // Row-major skew matrix of the offset: transfer * n = cross(offset, n).
@@ -87,7 +87,7 @@ for(var batchIndex=0u;batchIndex<${blocks}u;batchIndex++){
  for(var row=0u;row<6u;row++){for(var column=0u;column<3u;column++){for(var term=0u;term<3u;term++){blockSystem[row*7u+column]+=blockSystem[row*7u+3u+term]*transfer[column*3u+term];}}}
  for(var entry=0u;entry<42u;entry++){system[entry]+=blockSystem[entry];}
 }
-let residual=sqrt(residualSum/max(weight,1e-30));writeHistory(${iteration}u,vec3f(count,residual,0.0));
+let residual=sqrt(residualSum/max(weight,1e-30));writeHistory(${typeof iteration === 'number' ? `${iteration}u` : iteration},vec3f(count,residual,0.0));
 if(readState(16u)!=1.0){return;}if(count<6.0){writeNext(16u,2.0);return;}
 var scale:array<f32,6>;
 for(var row=0u;row<6u;row++){let diagonal=system[row*7u+row];if(!(diagonal>0.0)){writeNext(16u,3.0);return;}scale[row]=1.0/sqrt(diagonal);}
@@ -115,5 +115,5 @@ for(var column=0u;column<3u;column++){for(var row=0u;row<3u;row++){writeNext(col
 writeNext(12u,updatedTranslation.x);writeNext(13u,updatedTranslation.y);writeNext(14u,updatedTranslation.z);
 let step=length(deltaTranslation);let rotationStep=max(max(length(rotationChange[0]),length(rotationChange[1])),length(rotationChange[2]));
 if(step<=${typeof translationTolerance === 'number' ? Math.fround(translationTolerance) : translationTolerance}&&rotationStep<=${typeof rotationTolerance === 'number' ? Math.fround(rotationTolerance) : rotationTolerance}){writeNext(16u,0.0);}
-writeHistory(${iteration}u,vec3f(count,residual,step));`;
+writeHistory(${typeof iteration === 'number' ? `${iteration}u` : iteration},vec3f(count,residual,step));`;
 }

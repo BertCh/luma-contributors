@@ -3,10 +3,15 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  validateRasterStorageBindings,
+  getRasterIterationSlotByteLength
+} from './raster-grid/raster-storage-preflight';
+import {
   getGraphOutputViews,
   validateCommandNodeBudget,
   validateFiniteNumber,
-  validateRequirement
+  validateRequirement,
+  getGraphOutputViews as getRasterPreflightOutputViews
 } from '../analysis-core/kernels/gpu-contributor-utils';
 import {validateGPUStatusPort, type GPUInvalidStatusPort} from '../analysis-core/contracts/status';
 import {
@@ -240,6 +245,28 @@ export class GPURasterWalkingCost implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    const storageProps = this.props;
+    const storageCellCount = storageProps.grid.width * storageProps.grid.height;
+    validateRasterStorageBindings(
+      graph,
+      this.id,
+      [
+        ...getRasterBandViews(storageProps.elevation),
+        ...getRasterBandViews(storageProps.friction),
+        storageProps.sources,
+        storageProps.parameters,
+        ...getRasterPreflightOutputViews(storageProps.output)
+      ],
+      {
+        'walking surface': storageCellCount * 8,
+        'canonical band and cost planes': storageCellCount * 4,
+        'iteration state': 16,
+        'iteration gates': getRasterIterationSlotByteLength(
+          (storageProps.maximumIterations ?? DEFAULT_MAXIMUM_ITERATIONS) + 1
+        )
+      }
+    );
+
     const {id, props} = this;
     const {grid, output} = props;
     const count = grid.width * grid.height;

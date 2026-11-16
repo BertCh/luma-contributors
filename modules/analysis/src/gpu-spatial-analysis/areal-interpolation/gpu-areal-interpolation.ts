@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  validateInterpolationOutputsDisjointFromInputs,
+  validateInterpolationOutputPasses
+} from '../spatial-interpolation/interpolation-view-validation';
+
 import type {Device} from '@luma.gl/core';
 import {
   createTransientView,
@@ -16,10 +21,10 @@ import {
   getStorageBindingElementLimit,
   validateCapacity,
   validateMaximumCount,
-  validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
+  validateGPUStorageBindingByteLength,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {
   createSegmentSumNode,
   getSortedSegmentSumNodes
@@ -76,6 +81,8 @@ const SUPPORT: GPUSpatialContextSupport = Object.freeze({
 const INVALID = `${KEY_PAIR_INVALID}u`;
 /** Consecutive cells folded into runs by one zone-count thread. */
 const ZONE_COUNT_CHUNK = 8;
+/** Category segment keys reserve the last uint32 value for rows outside all target categories. */
+const MAXIMUM_CATEGORY_SHARE_COUNT = 0xfffffffe;
 
 /** Normalization of the area-share weights. */
 export type GPUArealInterpolationKind = 'extensive' | 'intensive';
@@ -302,7 +309,8 @@ export type GPUArealInterpolationProps = {
  * pair run (one workgroup per pair), a lower-bound search for the CSR offsets, and the same sorted
  * segmented reduction per zone for `A_s` and `B_t`. Cost is a few radix sorts over the cell count;
  * rows are ordered by target and slots by source, so the CSR invariants hold exactly. Tied cells
- * keep ascending cell order.
+ * keep ascending cell order. Category areas use the same fixed-tree segmented reduction;
+ * their float32 rounding can differ from a serial area sum.
  *
  * Outputs: the CSR `output.weights`, optionally the raw `areas` per slot (explain column),
  * `alternateWeights` (the other normalization) and `categoryShares`. Transfer variables with
@@ -429,6 +437,12 @@ export class GPUArealInterpolation implements GPUCommandNodeProducer {
       const {categoryShares} = output;
       validateSinglePackedView(sourceCategories, ['uint32'], `${id} categories.sourceCategories`);
       validateCapacity(id, 'categories.categoryCount', categoryCount);
+      validateMaximumCount(
+        id,
+        'targetZoneCount * categories.categoryCount',
+        targetCount * categoryCount,
+        MAXIMUM_CATEGORY_SHARE_COUNT
+      );
       if (sourceCategories.length !== sourceCount) {
         throw new Error(`${id} categories.sourceCategories must have sourceZoneCount rows`);
       }
@@ -444,7 +458,33 @@ export class GPUArealInterpolation implements GPUCommandNodeProducer {
     } else if (output.categoryShares) {
       throw new Error(`${id} output.categoryShares needs categories`);
     }
-    validateGraphOutputsDisjointFromInputs(id, this.getOutputViews(), this.getInputViews());
+    const fastPath =
+      !props.cellWeights &&
+      props.unweightedFastPath !== false &&
+      this.spatialContext.coordinateSpace !== 'longitude-latitude';
+    validateInterpolationOutputPasses(id, this.getOutputBindings(), [
+      {
+        write: {
+          sourceAreas: output.sourceAreas,
+          fractions: output.sourceTransferredFractions,
+          invalidCount: output.status.invalidCount
+        }
+      },
+      {write: {neighbors: output.weights.neighbors, areas: fastPath ? output.areas : undefined}},
+      {
+        write: {
+          offsets: output.weights.offsets,
+          overflow: output.status.overflow,
+          requiredPairCount: output.status.requiredPairCount
+        }
+      },
+      {
+        read: {neighbors: output.weights.neighbors, areas: output.areas},
+        write: {weights: output.weights.weights, alternateWeights: output.alternateWeights}
+      },
+      {write: {categoryShares: output.categoryShares}}
+    ]);
+    validateInterpolationOutputsDisjointFromInputs(id, this.getOutputViews(), this.getInputViews());
   }
 
   private getInputViews(): (GraphDataView | undefined)[] {
@@ -460,21 +500,24 @@ export class GPUArealInterpolation implements GPUCommandNodeProducer {
   }
 
   private getOutputViews(): (GraphDataView | undefined)[] {
+    return Object.values(this.getOutputBindings());
+  }
+
+  private getOutputBindings(): Record<string, GraphDataView | undefined> {
     const {output} = this.props;
-    return [
-      output.weights.offsets,
-      output.weights.neighbors,
-      output.weights.weights,
-      output.weights.distances,
-      output.alternateWeights,
-      output.areas,
-      output.status.overflow,
-      output.status.requiredPairCount,
-      output.status.invalidCount,
-      output.sourceAreas,
-      output.sourceTransferredFractions,
-      output.categoryShares
-    ];
+    return {
+      'output.weights.offsets': output.weights.offsets,
+      'output.weights.neighbors': output.weights.neighbors,
+      'output.weights.weights': output.weights.weights,
+      'output.alternateWeights': output.alternateWeights,
+      'output.areas': output.areas,
+      'output.status.overflow': output.status.overflow,
+      'output.status.requiredPairCount': output.status.requiredPairCount,
+      'output.status.invalidCount': output.status.invalidCount,
+      'output.sourceAreas': output.sourceAreas,
+      'output.sourceTransferredFractions': output.sourceTransferredFractions,
+      'output.categoryShares': output.categoryShares
+    };
   }
 
   /** Returns the pair, total, weight and category nodes in dependency order. */
@@ -482,7 +525,15 @@ export class GPUArealInterpolation implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    validateGraphViewsBelongToGraph(id, graph, [...this.getInputViews(), ...this.getOutputViews()]);
+    validateGraphChunkBindingRanges(graph, id, {
+      sourceZones: props.sourceZones,
+      targetZones: props.targetZones,
+      cellWeights: props.cellWeights,
+      parameters: props.parameters,
+      sourceAnchorCells: props.sourceAnchorCells,
+      sourceCategories: props.categories?.sourceCategories,
+      ...this.getOutputBindings()
+    });
     validateMaximumCount(
       id,
       'sourceZones rows',
@@ -501,6 +552,28 @@ export class GPUArealInterpolation implements GPUCommandNodeProducer {
     const needSourceKey = extensiveOverlap || Boolean(output.sourceTransferredFractions);
     const needTargetKey = intensiveOverlap;
     const needOverlapKeys = needSourceKey || needTargetKey;
+    const weighted = geographic || Boolean(props.cellWeights) || props.unweightedFastPath === false;
+    // Every cell/pair/zone scratch buffer is scalar; grouping and weighted totals add one offset.
+    // These cover the family helpers too, before anchoring, sorting or reduction declares resources.
+    for (const [name, length] of Object.entries({
+      cellScratch: cellCount,
+      groupStarts: cellCount + 1,
+      pairScratch: capacity,
+      sourceTotals: sourceCount,
+      targetTotals: targetCount,
+      sourceSegmentOffsets: weighted ? sourceCount + 1 : 0,
+      targetSegmentOffsets: weighted ? targetCount + 1 : 0,
+      categorySegmentOffsets: props.categories
+        ? targetCount * props.categories.categoryCount + 1
+        : 0
+    }))
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        name,
+        length * Uint32Array.BYTES_PER_ELEMENT,
+        'reduce the grid, pair capacity or zone counts'
+      );
 
     const nodes: GPUCommandNode<Parameters>[] = [];
 
@@ -1001,36 +1074,81 @@ const TARGET_COUNT: u32 = ${targetCount}u;`,
 
     if (props.categories && output.categoryShares) {
       const {sourceCategories, categoryCount} = props.categories;
+      const categoryShareCount = targetCount * categoryCount;
+      const categoryKeys = createTransientView(graph, `${id}-category-keys`, 'uint32', slotCount);
+      const categoryAreas = createTransientView(
+        graph,
+        `${id}-category-areas`,
+        'float32',
+        slotCount
+      );
+      const coveredAreas = createTransientView(
+        graph,
+        `${id}-covered-areas`,
+        'float32',
+        targetCount
+      );
       nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-category-keys`,
+          operation: OPERATION,
+          variant: 'category-keys',
+          bindings: [
+            {name: 'pairTarget', view: pairTarget, type: 'u32', access: 'read'},
+            {name: 'neighbors', view: weights.neighbors, type: 'u32', access: 'read'},
+            {name: 'areas', view: areas, type: 'f32', access: 'read'},
+            {name: 'sourceCategories', view: sourceCategories, type: 'u32', access: 'read'},
+            {name: 'categoryKeys', view: categoryKeys, type: 'u32', access: 'read_write'},
+            {name: 'categoryAreas', view: categoryAreas, type: 'f32', access: 'read_write'}
+          ],
+          invocationCount: slotCount,
+          declarations: `const SOURCE_COUNT: u32 = ${sourceCount}u;
+const TARGET_COUNT: u32 = ${targetCount}u;
+const CATEGORY_COUNT: u32 = ${categoryCount}u;
+const CATEGORY_SHARE_COUNT: u32 = ${categoryShareCount}u;`,
+          body: `let source = neighbors[neighborsOffset + index];
+  let targetRow = pairTarget[pairTargetOffset + index];
+  var key = CATEGORY_SHARE_COUNT;
+  var area = 0.0;
+  if (source < SOURCE_COUNT && targetRow < TARGET_COUNT) {
+    let category = sourceCategories[sourceCategoriesOffset + source];
+    if (category < CATEGORY_COUNT) {
+      key = targetRow * CATEGORY_COUNT + category;
+      area = areas[areasOffset + index];
+    }
+  }
+  categoryKeys[categoryKeysOffset + index] = key;
+  categoryAreas[categoryAreasOffset + index] = area;`
+        }),
+        // CSR offsets include only retained pairs; invalid categories still contribute coverage.
+        createSegmentSumNode<Parameters>(graph, {
+          id: `${id}-category-coverage`,
+          operation: OPERATION,
+          segmentCount: targetCount,
+          input: areas,
+          segmentOffsets: weights.offsets,
+          output: coveredAreas
+        }),
+        ...getSortedSegmentSumNodes<Parameters>(graph, {
+          id: `${id}-category-totals`,
+          operation: OPERATION,
+          segmentCount: categoryShareCount,
+          segmentKeys: categoryKeys,
+          sumContributions: categoryAreas,
+          sums: output.categoryShares
+        }),
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-category-shares`,
           operation: OPERATION,
           variant: 'category-shares',
           bindings: [
-            {name: 'offsets', view: weights.offsets, type: 'u32', access: 'read'},
-            {name: 'neighbors', view: weights.neighbors, type: 'u32', access: 'read'},
-            {name: 'areas', view: areas, type: 'f32', access: 'read'},
-            {name: 'sourceCategories', view: sourceCategories, type: 'u32', access: 'read'},
+            {name: 'coveredAreas', view: coveredAreas, type: 'f32', access: 'read'},
             {name: 'output', view: output.categoryShares, type: 'f32', access: 'read_write'}
           ],
-          invocationCount: targetCount * categoryCount,
-          declarations: `const SOURCE_COUNT: u32 = ${sourceCount}u;
-const CATEGORY_COUNT: u32 = ${categoryCount}u;`,
-          body: `let targetRow = index / CATEGORY_COUNT;
-  let category = index % CATEGORY_COUNT;
-  var covered = 0.0;
-  var inCategory = 0.0;
-  for (var slot = offsets[offsetsOffset + targetRow]; slot < offsets[offsetsOffset + targetRow + 1u]; slot++) {
-    let source = neighbors[neighborsOffset + slot];
-    if (source < SOURCE_COUNT) {
-      let area = areas[areasOffset + slot];
-      covered += area;
-      if (sourceCategories[sourceCategoriesOffset + source] == category) {
-        inCategory += area;
-      }
-    }
-  }
-  output[outputOffset + index] = select(0.0, inCategory / covered, covered > 0.0);`
+          invocationCount: categoryShareCount,
+          declarations: `const CATEGORY_COUNT: u32 = ${categoryCount}u;`,
+          body: `let covered = coveredAreas[coveredAreasOffset + index / CATEGORY_COUNT];
+  output[outputOffset + index] = select(0.0, output[outputOffset + index] / covered, covered > 0.0);`
         })
       );
     }

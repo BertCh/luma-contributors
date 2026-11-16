@@ -21,7 +21,6 @@ import {createPublishNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
   validateCommandNodeBudget,
   validateCompactOutput,
   validateSinglePackedView
@@ -50,6 +49,9 @@ import {
   type VisvalingamScratch
 } from './visvalingam-kernels';
 import type {GPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
+
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateGeometryScratchByteLengths} from '../geometry-edit/geometry-storage-validation';
 
 const OPERATION = 'GPULineSimplification';
 
@@ -508,22 +510,33 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
     const {selection, status} = getOutputParts(props);
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.positions,
-      props.lineOffsets,
-      props.timestamps,
-      props.importance,
-      props.parameters,
-      status?.converged,
-      status?.iterationCount,
-      selection?.ids,
-      selection?.status.count,
-      selection?.status.overflow,
-      selection?.status.requiredCount,
-      selection?.outputMask,
-      selection?.lineCounts,
-      selection?.lineStarts
-    ]);
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(
+        [
+          props.positions,
+          props.lineOffsets,
+          this.computeImportance && this.metric === 'time-ratio' ? props.timestamps : undefined,
+          props.importance,
+          selection ? props.parameters : undefined,
+          status?.converged,
+          status?.iterationCount,
+          selection?.ids,
+          selection?.status.count,
+          selection?.status.overflow,
+          selection?.status.requiredCount,
+          selection?.outputMask,
+          selection?.lineCounts,
+          selection?.lineStarts
+        ].map((view, index) => [String(index), view])
+      )
+    );
+    validateGeometryScratchByteLengths(graph, id, {
+      rowColumnsAndScan: props.positions.length * 4,
+      iterationState: 16,
+      iterationDispatch: 12
+    });
     const nodes: GPUCommandNode<Parameters>[] = [];
     if (this.computeImportance) {
       nodes.push(...this._getImportanceNodes(graph));

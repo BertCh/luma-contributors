@@ -3,6 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  validateZonalStatisticsBindings,
+  validateZonalStatisticsReadWriteDispatches
+} from './zonal-statistics-validation';
+import {
   createTransientView,
   GPUGroupAggregation,
   GraphVectorView,
@@ -649,6 +653,7 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
       ],
       getOutputViews(output)
     );
+    validateZonalStatisticsReadWriteDispatches(id, props, this.plan, this.sumOrder === 'atomic');
   }
 
   /**
@@ -661,6 +666,17 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, featureCount, plan, sumOrder} = this;
     const {features, output, values, weights, areas} = props;
+    const sortedSums = sumOrder === 'sorted' && (plan.needSums || plan.needWeightSums);
+    validateZonalStatisticsBindings(
+      graph,
+      id,
+      props,
+      this.pointCount,
+      featureCount,
+      plan,
+      sortedSums,
+      getOutputViews(output)
+    );
     validateGraphViewsBelongToGraph(id, graph, [
       props.positions,
       values,
@@ -673,7 +689,6 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
       features.kind === 'feature-rows' ? features.pointFeatureRows : undefined,
       ...getOutputViews(output)
     ]);
-    const sortedSums = sumOrder === 'sorted' && (plan.needSums || plan.needWeightSums);
     const nodes: GPUCommandNode<Parameters>[] = [];
     if (
       this.spatialContext.coordinateSpace === 'longitude-latitude' &&

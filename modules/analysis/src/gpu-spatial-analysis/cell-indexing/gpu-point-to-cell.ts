@@ -3,21 +3,36 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  getViewBindingRange,
   type GPUCommandGraph,
   type GPUCommandNode,
-  type GraphDataView
+  type GraphDataView,
+  type GraphVectorView
 } from '@luma.gl/graph/gpu-core';
 import {dggs} from '@luma.gl/shaders';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
-  createWGSLKernelNode,
-  type WGSLKernelBinding
-} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+  createCellRowKernelNode,
+  type CellRowKernelBinding
+} from '../cell-aggregation/cell-row-kernel';
 import {
+  createGraphChunkDispatchParameters,
+  planGraphChunkDispatch,
+  validateGraphChunkDispatchBindings,
+  type GraphChunkDispatchPlan
+} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {
+  getGraphViewChunks,
+  validateCapacity,
+  validateCommandNodeBudget,
+  validateGPUStorageBindingByteLength,
+  validateGraphViewTopology,
+  validateRequirement,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateCellWritableViews} from '../cell-aggregation/cell-validation';
 import {CELL_KEY_WGSL, getCellKeyLayout, QUADBIN_TILE_WGSL} from '../cell-aggregation/cell-keys';
 import {validateCellIndexResolution, type GPUCellIndexFamily} from './cell-index-families';
 import {GEOHASH_INDEX_WGSL, QUADKEY_INDEX_WGSL, S2_INDEX_WGSL} from './cell-index-wgsl';
@@ -33,55 +48,67 @@ import {
 
 const OPERATION = 'GPUPointToCell';
 
-/** Caller-owned outputs of {@link GPUPointToCell}. Both views are row-aligned with `positions`. */
-export type GPUPointToCellOutput = {
-  /** One 64-bit key per row as little-endian `(low, high)` words. Zero for masked or non-finite rows. */
-  cells: GraphDataView<'uint32x2'>;
-  /** Optional `1` for every row that received a key and `0` for masked, non-finite or unplaceable rows. */
-  validity?: GraphDataView<'uint32'>;
-};
+/** Row indices and dispatch counts are unsigned 32-bit integers. */
+const MAXIMUM_POINT_ROW_COUNT = 0xffffffff;
+
+/** Packed or record-batch position input. */
+type PointPositionRows = GraphDataView<'float32x2'> | GraphVectorView<'float32x2'>;
+
+/** Caller-owned outputs of {@link GPUPointToCell}, packed for packed input and chunked otherwise. */
+export type GPUPointToCellOutput<Positions extends PointPositionRows = GraphDataView<'float32x2'>> =
+  {
+    /** One 64-bit key per row as little-endian `(low, high)` words. Zero for masked or non-finite rows. */
+    cells: Positions extends GraphVectorView
+      ? GraphVectorView<'uint32x2'>
+      : GraphDataView<'uint32x2'>;
+    /** Optional `1` for every row that received a key and `0` for masked, non-finite or unplaceable rows. */
+    validity?: Positions extends GraphVectorView
+      ? GraphVectorView<'uint32'>
+      : GraphDataView<'uint32'>;
+  };
 
 /**
  * Properties for {@link GPUPointToCell}.
  *
  * Per-frame (no recompile): the contents of `positions` and `mask`. Topology (needs a new graph):
- * `family`, `resolution`, the row count and which optional views are present.
+ * `family`, `resolution`, the row count, chunk boundaries and which optional views are present.
  */
-export type GPUPointToCellProps = {
-  /** Prefix for generated node IDs. Defaults to `'point-to-cell'`. */
-  id?: string;
-  /** Grid family of the output keys. */
-  family: GPUCellIndexFamily;
-  /**
-   * Resolution of the output cells, fixed at compile time: Quadbin 0-26, H3 0-15, quadkey 1-29,
-   * geohash 1-12, S2 0-30.
-   */
-  resolution: number;
-  /**
-   * Arithmetic precision of the `'h3'` family; ignored by other families. `'float32'` (default) is
-   * the plain f32 `latLngToCell`; `'extended'` uses double-float (hi/lo f32 pair) arithmetic and
-   * matches h3-js on the same f32 input positions through the resolutions listed on
-   * {@link GPUPointToCell}. Fixed at compile time.
-   */
-  precision?: 'float32' | 'extended';
-  /**
-   * Coordinate contract of `positions`. Defaults to, and must be, longitude/latitude without a
-   * metric; planar contexts throw (project-first does not apply: grids index geographic positions).
-   */
-  spatialContext?: GPUSpatialContext;
-  /** Longitude/latitude degrees per row. */
-  positions: GraphDataView<'float32x2'>;
-  /** Optional per-row mask; zero produces a zero key. */
-  mask?: GraphDataView<'uint32'>;
-  /** Caller-owned outputs. */
-  output: GPUPointToCellOutput;
-};
+export type GPUPointToCellProps<Positions extends PointPositionRows = GraphDataView<'float32x2'>> =
+  {
+    /** Prefix for generated node IDs. Defaults to `'point-to-cell'`. */
+    id?: string;
+    /** Grid family of the output keys. */
+    family: GPUCellIndexFamily;
+    /**
+     * Resolution of the output cells, fixed at compile time: Quadbin 0-26, H3 0-15, quadkey 1-29,
+     * geohash 1-12, S2 0-30.
+     */
+    resolution: number;
+    /**
+     * Arithmetic precision of the `'h3'` family; ignored by other families. `'float32'` (default) is
+     * the plain f32 `latLngToCell`; `'extended'` uses double-float (hi/lo f32 pair) arithmetic and
+     * matches h3-js on the same f32 input positions through the resolutions listed on
+     * {@link GPUPointToCell}. Fixed at compile time.
+     */
+    precision?: 'float32' | 'extended';
+    /**
+     * Coordinate contract of `positions`. Defaults to, and must be, longitude/latitude without a
+     * metric; planar contexts throw (project-first does not apply: grids index geographic positions).
+     */
+    spatialContext?: GPUSpatialContext;
+    /** Longitude/latitude degrees per row. */
+    positions: Positions;
+    /** Optional per-row mask; zero produces a zero key. */
+    mask?: GraphDataView<'uint32'> | GraphVectorView<'uint32'>;
+    /** Caller-owned outputs. */
+    output: GPUPointToCellOutput<Positions>;
+  };
 
 /**
  * Converts longitude/latitude points to 64-bit discrete global grid cell keys, one row per row.
  *
- * One compute kernel writes `output.cells` (little-endian `(low, high)` words, the Arrow `Uint64`
- * layout that `GPUCellAggregation` accepts as pre-keyed `cells`) and optionally `output.validity`.
+ * One compute kernel per input chunk writes `output.cells` (little-endian `(low, high)` words,
+ * the Arrow `Uint64` layout that `GPUCellAggregation` accepts as pre-keyed `cells`) and optionally `output.validity`.
  * Rows that are masked out or have a non-finite longitude or latitude get the zero key, the "no
  * cell" sentinel of every family. The contributor never compiles, submits or reads back.
  *
@@ -116,17 +143,25 @@ export type GPUPointToCellProps = {
  *   shader compiler preserving error-free transformations (guarded with an integer OR of a
  *   runtime zero); it has been verified on Metal only, so check other backends before relying on it.
  *
- * Inputs must be single packed views. Outputs must not share buffers with the inputs.
+ * Accepts chunked input. Every chunk must be packed; `mask` and row-aligned outputs must
+ * mirror the position chunk boundaries, as in `GPUTimeWindowFilter`. Packed input keeps packed
+ * outputs. No input repacking or row-proportional scratch is needed. Outputs must not share
+ * buffers with the inputs. Output byte ranges must not overlap across chunks or columns.
  */
-export class GPUPointToCell implements GPUCommandNodeProducer {
+export class GPUPointToCell<Positions extends PointPositionRows = GraphDataView<'float32x2'>>
+  implements GPUCommandNodeProducer
+{
   /** Prefix for every node ID. */
   readonly id: string;
   /** Validated properties. */
-  readonly props: GPUPointToCellProps;
+  readonly props: GPUPointToCellProps<Positions>;
+  private readonly chunkPlan: GraphChunkDispatchPlan;
+  /** One parameter upload plus one key dispatch per nonempty input chunk. */
+  readonly estimatedCommandNodeCount: number;
   /** Resolved spatial context (longitude/latitude, no metric). */
   readonly spatialContext: GPUSpatialContext;
 
-  constructor(props: GPUPointToCellProps) {
+  constructor(props: GPUPointToCellProps<Positions>) {
     this.id = props.id ?? 'point-to-cell';
     this.props = props;
     this.spatialContext = resolveGPUSpatialContext(
@@ -136,27 +171,38 @@ export class GPUPointToCell implements GPUCommandNodeProducer {
     );
     const id = this.id;
     validateCellIndexResolution(id, props.family, props.resolution);
-    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
-    const rows = props.positions.length;
-    if (rows < 1) {
-      throw new Error(`${id} needs at least one row`);
-    }
-    if (props.mask) {
-      validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
-      if (props.mask.length !== rows) {
-        throw new Error(`${id} mask length must equal the row count`);
+    validateCapacity(id, 'positions rows', props.positions.length, 1, MAXIMUM_POINT_ROW_COUNT);
+    for (const [name, view, formats] of [
+      ['positions', props.positions, ['float32x2']],
+      ['mask', props.mask, ['uint32']],
+      ['output.cells', props.output.cells, ['uint32x2']],
+      ['output.validity', props.output.validity, ['uint32']]
+    ] as const) {
+      if (view) {
+        for (const chunk of getGraphViewChunks(view as GraphDataView | GraphVectorView)) {
+          validateSinglePackedView(chunk, formats, `${id} ${name}`);
+        }
+        validateRequirement(
+          id,
+          view.length === props.positions.length,
+          `${name} length must equal the row count`
+        );
+        validateGraphViewTopology(id, name, props.positions, view);
       }
     }
-    validateSinglePackedView(props.output.cells, ['uint32x2'], `${id} output.cells`);
-    if (props.output.cells.length !== rows) {
-      throw new Error(`${id} output.cells length must equal the row count`);
-    }
-    if (props.output.validity) {
-      validateSinglePackedView(props.output.validity, ['uint32'], `${id} output.validity`);
-      if (props.output.validity.length !== rows) {
-        throw new Error(`${id} output.validity length must equal the row count`);
-      }
-    }
+    validateCellWritableViews(id, [
+      ['output.cells', props.output.cells],
+      ['output.validity', props.output.validity]
+    ]);
+    this.chunkPlan = planGraphChunkDispatch(id, {
+      positions: props.positions,
+      mask: props.mask,
+      cells: props.output.cells,
+      validity: props.output.validity
+    });
+    this.estimatedCommandNodeCount =
+      1 + getGraphViewChunks(props.positions).filter(chunk => chunk.length > 0).length;
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     validateGraphOutputsDisjointFromInputs(
       id,
       [props.output.cells, props.output.validity],
@@ -164,7 +210,7 @@ export class GPUPointToCell implements GPUCommandNodeProducer {
     );
   }
 
-  /** Returns the single key kernel node. */
+  /** Returns the runtime parameter upload and one key dispatch per nonempty position chunk. */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
@@ -177,31 +223,80 @@ export class GPUPointToCell implements GPUCommandNodeProducer {
       output.cells,
       output.validity
     ]);
-    const bindings: WGSLKernelBinding[] = [
-      {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
-      ...(props.mask
-        ? [{name: 'rowMask', view: props.mask, type: 'u32', access: 'read'} as const]
-        : []),
-      {name: 'cellsOut', view: output.cells, type: 'u32', access: 'read_write'},
-      ...(output.validity
-        ? [{name: 'validityOut', view: output.validity, type: 'u32', access: 'read_write'} as const]
-        : [])
-    ];
-    const keyExpression = getKeyExpression(family, resolution, isExtended);
-    return [
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-keys`,
-        operation: OPERATION,
-        variant: isExtended ? 'h3-extended' : family,
-        bindings,
-        invocationCount: props.positions.length,
-        declarations: `const RESOLUTION: u32 = ${resolution}u;
+    for (const view of [props.positions, props.mask, output.cells, output.validity]) {
+      for (const chunk of view ? getGraphViewChunks(view as GraphDataView | GraphVectorView) : []) {
+        validateGPUStorageBindingByteLength(
+          graph.device,
+          id,
+          'row chunk',
+          getViewBindingRange(chunk).size,
+          'reduce the number of rows per chunk'
+        );
+        validateCapacity(
+          id,
+          'row chunk buffer byteLength',
+          chunk.buffer.byteLength,
+          0,
+          graph.device.limits.maxBufferSize
+        );
+      }
+    }
+    validateGraphChunkDispatchBindings(graph, id, this.chunkPlan);
+    const parameters = createGraphChunkDispatchParameters(graph, {
+      id: `${id}-chunks`,
+      plan: this.chunkPlan
+    });
+    const nodes: GPUCommandNode<Parameters>[] = [...parameters.nodes];
+    const positionChunks = getGraphViewChunks(props.positions);
+    const maskChunks = props.mask ? getGraphViewChunks(props.mask) : undefined;
+    const cellChunks = getGraphViewChunks(output.cells);
+    const validityChunks = output.validity ? getGraphViewChunks(output.validity) : undefined;
+    for (const [chunkIndex, positions] of positionChunks.entries()) {
+      if (positions.length === 0) {
+        continue;
+      }
+      const mask = maskChunks?.[chunkIndex];
+      const validity = validityChunks?.[chunkIndex];
+      const bindings: CellRowKernelBinding[] = [
+        {name: 'positions', view: positions, components: 2, type: 'f32', access: 'read'},
+        ...(mask
+          ? [{name: 'rowMask', view: mask, components: 1, type: 'u32', access: 'read'} as const]
+          : []),
+        {
+          name: 'cellsOut',
+          view: cellChunks[chunkIndex],
+          components: 2,
+          type: 'u32',
+          access: 'read_write'
+        },
+        ...(validity
+          ? [
+              {
+                name: 'validityOut',
+                view: validity,
+                components: 1,
+                type: 'u32',
+                access: 'read_write'
+              } as const
+            ]
+          : [])
+      ];
+      const keyExpression = getKeyExpression(family, resolution, isExtended);
+      nodes.push(
+        createCellRowKernelNode<Parameters>(graph, {
+          id: positionChunks.length === 1 ? `${id}-keys` : `${id}-keys-chunk-${chunkIndex}`,
+          operation: OPERATION,
+          variant: isExtended ? 'h3-extended' : family,
+          bindings,
+          length: positions.length,
+          parameters: parameters.slots[chunkIndex],
+          declarations: `const RESOLUTION: u32 = ${resolution}u;
 ${getFamilyDeclarations(family, isExtended)}
 ${IS_FINITE_BITS_WGSL}`,
-        body: `let longitude = positions[positionsOffset + 2u * index];
+          body: `let longitude = positions[positionsOffset + 2u * index];
   let latitude = positions[positionsOffset + 2u * index + 1u];
   var isValid = isFiniteBits(longitude) && isFiniteBits(latitude);
-  ${props.mask ? 'isValid = isValid && rowMask[rowMaskOffset + index] != 0u;' : ''}
+  ${mask ? 'isValid = isValid && rowMask[rowMaskOffset + index] != 0u;' : ''}
   var key = vec2u(0u);
   if (isValid) {
     key = ${keyExpression};
@@ -209,9 +304,11 @@ ${IS_FINITE_BITS_WGSL}`,
   isValid = isValid && any(key != vec2u(0u));
   cellsOut[cellsOutOffset + 2u * index] = key.y;
   cellsOut[cellsOutOffset + 2u * index + 1u] = key.x;
-  ${output.validity ? 'validityOut[validityOutOffset + index] = select(0u, 1u, isValid);' : ''}`
-      })
-    ];
+  ${validity ? 'validityOut[validityOutOffset + index] = select(0u, 1u, isValid);' : ''}`
+        })
+      );
+    }
+    return nodes;
   }
 }
 

@@ -4,7 +4,8 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {WgslReflect} from 'wgsl_reflect';
-import {expect, it} from 'vitest';
+import {auditWGSLModule} from '../../analysis-core/kernel-audit/kernel-audit-wgsl';
+import {expect, it, vi} from 'vitest';
 import {
   getGPUAZPMaximumTableWordCount,
   GPU_MAX_P_STATUS,
@@ -188,7 +189,7 @@ it('GPUMaxPRegions has no row cap: 262,144 rows build, and scratch beyond one bi
     let serial = 0;
     const view = <Format extends 'uint32' | 'float32'>(format: Format, length: number) =>
       createTransientView(graph, `max-p-cap-${serial++}`, format, length);
-    return new GPUMaxPRegions({
+    const contributor = new GPUMaxPRegions({
       weights: {
         offsets: view('uint32', rows + 1),
         neighbors: view('uint32', rows),
@@ -207,7 +208,18 @@ it('GPUMaxPRegions has no row cap: 262,144 rows build, and scratch beyond one bi
         objective: view('float32', 1),
         status: view('uint32', GPU_MAX_P_STATUS.length)
       }
-    }).getCommandNodes(graph);
+    });
+    const allocate = vi.spyOn(graph, 'createTransientBuffer');
+    const createView = vi.spyOn(graph, 'createDataView');
+    const add = vi.spyOn(graph, 'add');
+    try {
+      return contributor.getCommandNodes(graph);
+    } catch (error) {
+      expect(allocate).not.toHaveBeenCalled();
+      expect(createView).not.toHaveBeenCalled();
+      expect(add).not.toHaveBeenCalled();
+      throw error;
+    }
   };
   // 8 times the former cap, with the default 16 starts and one column.
   const nodes = build(262144, 1, 16);
@@ -219,7 +231,9 @@ it('GPUMaxPRegions has no row cap: 262,144 rows build, and scratch beyond one bi
   }
   // The region table (columnCount + 3 words per start and row) must fit one 128 MiB binding:
   // 16 starts x 262,144 rows x 11 words x 4 bytes is 184 MB.
-  expect(() => build(262144, 8, 16)).toThrow(/scratch exceeds one storage binding/);
+  expect(() => build(262144, 8, 16)).toThrow(
+    /max-p-regions region records needs 184549376 bytes in one binding \(limit 134217728\)/
+  );
   expect(() => build(262144, 8, 11)).not.toThrow();
 });
 
@@ -231,7 +245,7 @@ it('GPUAZPRegions has no row cap and keeps private memory independent of the row
     let serial = 0;
     const view = <Format extends 'uint32' | 'float32'>(format: Format, length: number) =>
       createTransientView(graph, `private-${serial++}`, format, length);
-    return new GPUAZPRegions({
+    const contributor = new GPUAZPRegions({
       id: 'azp-cap',
       weights: {
         offsets: view('uint32', rows + 1),
@@ -250,7 +264,18 @@ it('GPUAZPRegions has no row cap and keeps private memory independent of the row
         objective: view('float32', 1),
         status: view('uint32', 4)
       }
-    }).getCommandNodes(graph);
+    });
+    const allocate = vi.spyOn(graph, 'createTransientBuffer');
+    const createView = vi.spyOn(graph, 'createDataView');
+    const add = vi.spyOn(graph, 'add');
+    try {
+      return contributor.getCommandNodes(graph);
+    } catch (error) {
+      expect(allocate).not.toHaveBeenCalled();
+      expect(createView).not.toHaveBeenCalled();
+      expect(add).not.toHaveBeenCalled();
+      throw error;
+    }
   };
   // 262,144 rows (8 times the former cap) and the widest table that fits one binding.
   const sizes = [262144, Math.floor(maximumTableWordCount / 8)];
@@ -271,8 +296,29 @@ it('GPUAZPRegions has no row cap and keeps private memory independent of the row
   );
   // Neighborhood rows, hash table, stack, visited bits and the count: 2,068 bytes.
   expect(candidates && getPrivateMemoryBytes(candidates.source)).toBe(2068);
-  // One word past the binding limit is refused with the documented maximum.
+  for (const rows of [65, 257, 4097]) {
+    const reductions = build(rows, 1, 4).filter(
+      node => node.workload?.variant === 'deterministic-objective-reduction'
+    );
+    expect(reductions).toHaveLength(Math.ceil(Math.log2(rows)));
+    expect(getGPUCommandNodePipelineKeys(reductions).size).toBe(1);
+    const kernels = getGPUCommandNodeKernelSources(reductions);
+    expect(new Set(kernels.map(kernel => kernel.source)).size).toBe(1);
+    for (const kernel of kernels) {
+      expect(kernel.constants).toEqual({});
+      expect(auditWGSLModule(kernel.source, kernel.constants)).toEqual([]);
+    }
+    let remaining = rows;
+    for (const node of reductions) {
+      remaining = Math.ceil(remaining / 2);
+      expect(node.workload?.maximumInvocationCount).toBe(remaining);
+      expect(node.workload?.maximumWorkgroupCount).toBe(Math.ceil(remaining / 256));
+    }
+  }
+  // One row past the binding limit is refused with the exact aligned byte requirement.
   expect(() => build(Math.floor(maximumTableWordCount / 8) + 1, 8, 64)).toThrow(
-    new RegExp(`must be at most ${maximumTableWordCount}$`)
+    new RegExp(
+      `azp-cap values chunk 0 needs ${(Math.floor(maximumTableWordCount / 8) + 1) * 8 * 4} bytes in one binding \\(limit ${maximumTableWordCount * 4}\\)`
+    )
   );
 });

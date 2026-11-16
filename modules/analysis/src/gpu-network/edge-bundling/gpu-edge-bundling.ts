@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateNetworkViewBindings, validateNetworkWritableViews} from '../network-view-utils';
+
 import {Buffer} from '@luma.gl/core';
 import {
   createTransientView,
@@ -13,8 +15,7 @@ import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
   validateSinglePackedView,
-  validateGPUStorageBindingByteLength,
-  validateGraphViewsBelongToGraph
+  validateGPUStorageBindingByteLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   resolveGPUSpatialContext,
@@ -257,6 +258,7 @@ export class GPUEdgeBundling implements GPUCommandNodeProducer {
   constructor(props: GPUEdgeBundlingProps) {
     this.id = props.id ?? 'edge-bundling';
     this.props = props;
+    validateNetworkWritableViews(this.id, props.output);
     this.pointsPerEdge = props.pointsPerEdge ?? GPU_EDGE_BUNDLING_DEFAULTS.pointsPerEdge;
     this.maximumIterations =
       props.maximumIterations ?? GPU_EDGE_BUNDLING_DEFAULTS.maximumIterations;
@@ -361,7 +363,7 @@ export class GPUEdgeBundling implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, maximumIterations, pointsPerEdge, densityResolution, edgeCount} = this;
     const {output} = props;
-    validateGraphViewsBelongToGraph(id, graph, [
+    validateNetworkViewBindings(id, graph, [
       props.nodePositions,
       props.sourceNodes,
       props.targetNodes,
@@ -371,6 +373,12 @@ export class GPUEdgeBundling implements GPUCommandNodeProducer {
       output.lineOffsets,
       output.drawRecord
     ]);
+    validateNetworkViewBindings(id, graph, [], {
+      work: edgeCount * pointsPerEdge * 8,
+      density: densityResolution * densityResolution * 4,
+      iterationInfo: maximumIterations * EDGE_BUNDLING_ITERATION_SLOT_WORDS * 4,
+      gate: maximumIterations * EDGE_BUNDLING_GATE_WORDS_PER_ITERATION * 4
+    });
     const densityByteLength = densityResolution * densityResolution * Uint32Array.BYTES_PER_ELEMENT;
     if (densityByteLength > graph.device.limits.maxStorageBufferBindingSize) {
       throw new Error(`${id} density grid exceeds maxStorageBufferBindingSize`);

@@ -13,10 +13,10 @@ import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   createFillNode,
   createWGSLDispatchGate,
-  createWGSLKernelNode,
   type WGSLDispatchGate,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {createStatisticsKernelNode as createWGSLKernelNode} from '../spatial-weights/statistics-kernel-node';
 import {
   validateCapacity,
   validateCommandNodeBudget,
@@ -49,10 +49,17 @@ import {
   PERMUTATION_FLOAT_WGSL,
   PERMUTATION_INVALID_POSITION,
   PERMUTATION_TOTAL,
-  validatePermutationInputs
+  validatePermutationInputs,
+  validatePermutationInputBindings
 } from './permutation-inference-kernels';
+import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {createSpatialStatisticsCollectiveNode} from '../spatial-weights/spatial-statistics-collective-node';
+import {createGraphChunkGroupKernelNode} from '../../analysis-core/kernels/graph-chunk-groups';
 import {PERMUTATION_RANDOM_WGSL} from '../../analysis-core/kernels/permutation-random';
-import {getPermutationShuffleWGSL} from '../../analysis-core/kernels/permutation-shuffle';
+import {
+  getPermutationShuffleWGSL,
+  PERMUTATION_SHUFFLE_FULL_RANGE_ROUNDS
+} from '../../analysis-core/kernels/permutation-shuffle';
 import {PHILOX_PURPOSES} from '../../analysis-core/kernels/philox-random';
 import {
   getAlternativeMultiplier,
@@ -91,10 +98,10 @@ const MATERIALIZED_MAXIMUM_ELEMENTS = 2 ** 25;
 const MATERIALIZED_MAXIMUM_BATCHES = 4096;
 
 /**
- * Upper bound for the front end, finalization and published GPUScan (at most 2^24 rows).
+ * Upper bound for the split-column front end, finalization and published GPUScan (uint32 rows).
  * Chunk-specific analysis/weight kernels and observed pair sums are counted separately below.
  */
-const FIXED_COMMAND_NODE_ALLOWANCE = 64;
+const FIXED_COMMAND_NODE_ALLOWANCE = 96;
 
 /** Words of the sequential-stopping state view (see {@link GPUGlobalPermutationTest}). */
 const SEQUENTIAL_STATE = {
@@ -192,6 +199,10 @@ export const GPU_GLOBAL_PERMUTATION_SUMMARY = {
 
 /** Caller-owned outputs of {@link GPUGlobalPermutationTest}. */
 export type GPUGlobalPermutationTestOutput = {
+  /** Exact uint32 number of analyzed rows. */
+  analysisCount?: GraphDataView<'uint32'>;
+  /** Exact uint32 number of included islands. */
+  islandCount?: GraphDataView<'uint32'>;
   /**
    * Summary row, `GPU_GLOBAL_PERMUTATION_SUMMARY.length` float32 values laid out by
    * `GPU_GLOBAL_PERMUTATION_SUMMARY`, including the island and analysis row counts.
@@ -371,7 +382,13 @@ export class GPUGlobalPermutationTest implements GPUCommandNodeProducer {
     const id = props.id ?? 'global-permutation-test';
     this.id = id;
     this.props = props;
-    validatePermutationInputs({...props, id, operation: OPERATION});
+    validatePermutationInputs({
+      ...props,
+      id,
+      operation: OPERATION,
+      analysisCount: props.output.analysisCount,
+      islandCount: props.output.islandCount
+    });
     if (!['moran', 'geary', 'getisOrdG', 'bivariateMoran', 'leesL'].includes(props.statistic)) {
       throw new Error(`${id} unknown statistic ${props.statistic}`);
     }
@@ -455,10 +472,13 @@ export class GPUGlobalPermutationTest implements GPUCommandNodeProducer {
       validatePackedUint32View(output.histogram, `${id} output.histogram`);
       validateCapacity(id, 'output.histogram length', output.histogram.length);
     }
+    validateDisjointWritableViews(id, {...props.output, status: undefined, ...props.output.status});
     validateGraphOutputsDisjointFromInputs(
       id,
       [
         props.output.summary,
+        props.output.analysisCount,
+        props.output.islandCount,
         props.output.referenceDistribution,
         props.output.histogram,
         props.output.status?.invalidCount
@@ -517,6 +537,8 @@ export class GPUGlobalPermutationTest implements GPUCommandNodeProducer {
       parameters,
       weights.status?.overflow,
       props.output.summary,
+      props.output.analysisCount,
+      props.output.islandCount,
       props.output.referenceDistribution,
       props.output.histogram,
       props.output.status?.invalidCount
@@ -530,6 +552,21 @@ export class GPUGlobalPermutationTest implements GPUCommandNodeProducer {
         'reduce permutationBatchSize or rows'
       );
     }
+    validatePermutationInputBindings(graph, {...props, id, operation: OPERATION}, [
+      props.output.summary,
+      props.output.analysisCount,
+      props.output.islandCount,
+      props.output.referenceDistribution,
+      props.output.histogram,
+      props.output.status?.invalidCount
+    ]);
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'pair partials scratch',
+      (maximumPermutations + 1) * getPairBlockCount(weights) * 4,
+      'reduce maximumPermutations or packed rows'
+    );
     const rows = props.values.length;
     const lee = statistic === 'leesL';
     const bivariate = statistic === 'bivariateMoran' || lee;
@@ -537,6 +574,8 @@ export class GPUGlobalPermutationTest implements GPUCommandNodeProducer {
     const multiplier = getAlternativeMultiplier(alternative);
     const inputs = getPermutationInputNodes<Parameters>(graph, {
       ...props,
+      analysisCount: props.output.analysisCount,
+      islandCount: props.output.islandCount,
       secondValues: bivariate ? props.secondValues : undefined,
       islands: props.islands,
       id: `${id}-inputs`,
@@ -651,7 +690,7 @@ export class GPUGlobalPermutationTest implements GPUCommandNodeProducer {
       const invocationCount = dispatch.isWhole
         ? options.invocationCount
         : (options.invocationCount / blockCount) * chunkBlockCount;
-      return createWGSLKernelNode<Parameters>(graph, {
+      return createSpatialStatisticsCollectiveNode<Parameters>(graph, {
         id: `${options.id}${dispatch.idSuffix}`,
         operation: OPERATION,
         variant: options.variant,
@@ -668,17 +707,17 @@ export class GPUGlobalPermutationTest implements GPUCommandNodeProducer {
         ],
         workgroupSize: PAIR_WORKGROUP_SIZE,
         invocationCount,
-        guardIndex: false,
+        parameterValues: [dispatch.rowStart, dispatch.rowCount, chunkBlockCount, blockBase],
         ...options.gate,
         declarations: `const ROWS: u32 = ${rows}u;
-const CAPACITY: u32 = ${dispatch.weights.neighbors.length}u;
-${dispatch.constantsWGSL}
-const CHUNK_ROW_COUNT: u32 = ${dispatch.rowCount}u;
-const BLOCK_BASE: u32 = ${blockBase}u;
+var<private> CAPACITY: u32;
+var<private> WEIGHTS_ROW_START: u32;
+var<private> CHUNK_ROW_COUNT: u32;
+var<private> BLOCK_BASE: u32;
 const PARTIAL_BLOCK_COUNT: u32 = ${blockCount}u;
 const INVALID_POSITION: u32 = ${PERMUTATION_INVALID_POSITION}u;
 const BLOCK_ROWS: u32 = ${PAIR_BLOCK_ROWS}u;
-const BLOCK_COUNT: u32 = ${dispatch.isWhole ? blockCount : chunkBlockCount}u;
+var<private> BLOCK_COUNT: u32;
 const WORKGROUP_SIZE: u32 = ${PAIR_WORKGROUP_SIZE}u;
 var<workgroup> partialSums: array<f32, ${PAIR_WORKGROUP_SIZE}>;
 ${getPermutationParameterWGSL(maximumPermutations)}${
@@ -686,7 +725,7 @@ ${getPermutationParameterWGSL(maximumPermutations)}${
     ? ''
     : `
 ${PERMUTATION_RANDOM_WGSL}
-${getPermutationShuffleWGSL(PHILOX_PURPOSES.permutationShuffle.id)}
+${getPermutationShuffleWGSL(PHILOX_PURPOSES.permutationShuffle.id, PERMUTATION_SHUFFLE_FULL_RANGE_ROUNDS)}
 fn getPermutedPosition(position: u32, permutation: u32, count: u32) -> u32 {
   if (permutation == 0u) {
     return position;
@@ -696,15 +735,20 @@ fn getPermutedPosition(position: u32, permutation: u32, count: u32) -> u32 {
 }`,
         // No early return: every invocation of a workgroup must reach the barriers. A workgroup
         // handles one permutation, so its shuffle rounds are drawn once into workgroup memory.
-        body: `let workgroup = index / WORKGROUP_SIZE;
+        body: `CAPACITY = arrayLength(&neighbors) - neighborsOffset;
+  WEIGHTS_ROW_START = getChunkParameter(36u);
+  CHUNK_ROW_COUNT = getChunkParameter(37u);
+  BLOCK_COUNT = getChunkParameter(38u);
+  BLOCK_BASE = getChunkParameter(39u);
+  let permutationWorkgroupIndex = index / WORKGROUP_SIZE;
   let permutation = ${options.permutationWGSL};
-  let block = workgroup % BLOCK_COUNT;
+  let permutationBlockIndex = permutationWorkgroupIndex % BLOCK_COUNT;
   let count = rowPositions[rowPositionsOffset + ROWS];
   let runsPermutation = index < INVOCATION_COUNT && permutation <= readValidPermutationCount();${
     materialized
       ? `
   // Batch slot of this workgroup's permutation inside the materialized buffers.
-  let slotBase = (workgroup / BLOCK_COUNT) * ROWS;`
+  let slotBase = (permutationWorkgroupIndex / BLOCK_COUNT) * ROWS;`
       : `
   if (runsPermutation && permutation > 0u) {
     loadSwapOrNotRounds(readSeedKey(), permutation, count, localInvocationIndex, WORKGROUP_SIZE);
@@ -713,9 +757,9 @@ fn getPermutedPosition(position: u32, permutation: u32, count: u32) -> u32 {
   workgroupBarrier();
   var partialSum = 0.0;
   if (runsPermutation) {
-    let chunkRowStart = ${dispatch.isWhole ? '0u' : 'WEIGHTS_ROW_START'};
-    let rowEnd = chunkRowStart + min((block + 1u) * BLOCK_ROWS, CHUNK_ROW_COUNT);
-    for (var row = chunkRowStart + block * BLOCK_ROWS + localInvocationIndex; row < rowEnd; row += WORKGROUP_SIZE) {
+    let chunkRowStart = WEIGHTS_ROW_START;
+    let rowEnd = chunkRowStart + min((permutationBlockIndex + 1u) * BLOCK_ROWS, CHUNK_ROW_COUNT);
+    for (var row = chunkRowStart + permutationBlockIndex * BLOCK_ROWS + localInvocationIndex; row < rowEnd; row += WORKGROUP_SIZE) {
       let position = rowPositions[rowPositionsOffset + row];
       if (position == INVALID_POSITION) {
         continue;
@@ -747,7 +791,7 @@ fn getPermutedPosition(position: u32, permutation: u32, count: u32) -> u32 {
           getPermutedPosition(neighborPosition, permutation, count)];
         ${termWGSL}`,
         'row',
-        dispatch.rowStartWGSL
+        'WEIGHTS_ROW_START'
       )}
       ${rowWGSL}
     }
@@ -761,7 +805,7 @@ fn getPermutedPosition(position: u32, permutation: u32, count: u32) -> u32 {
     workgroupBarrier();
   }
   if (index < INVOCATION_COUNT && localInvocationIndex == 0u${sequential || materialized ? ' && permutation <= MAXIMUM_PERMUTATIONS' : ''}) {
-    partials[partialsOffset + permutation * PARTIAL_BLOCK_COUNT + BLOCK_BASE + block] = partialSums[0];
+    partials[partialsOffset + permutation * PARTIAL_BLOCK_COUNT + BLOCK_BASE + permutationBlockIndex] = partialSums[0];
   }`
       });
     };
@@ -794,7 +838,7 @@ fn getPermutedPosition(position: u32, permutation: u32, count: u32) -> u32 {
       permutationWGSL?: string;
       gate?: ReturnType<WGSLDispatchGate<Parameters>['getGate']>;
     }) =>
-      createWGSLKernelNode<Parameters>(graph, {
+      createGraphChunkGroupKernelNode<Parameters>(graph, {
         id: options.id,
         operation: OPERATION,
         variant: options.variant,
@@ -823,13 +867,13 @@ fn getPermutedPosition(position: u32, permutation: u32, count: u32) -> u32 {
     return;
   }
   var sum = 0.0;
-  for (var block = 0u; block < BLOCK_COUNT; block++) {
-    sum += partials[partialsOffset + permutation * BLOCK_COUNT + block];
+  for (var permutationBlockIndex = 0u; permutationBlockIndex < BLOCK_COUNT; permutationBlockIndex++) {
+    sum += partials[partialsOffset + permutation * BLOCK_COUNT + permutationBlockIndex];
   }
   pairSums[pairSumsOffset + permutation] = sum;`
           : `var sum = 0.0;
-  for (var block = 0u; block < BLOCK_COUNT; block++) {
-    sum += partials[partialsOffset + index * BLOCK_COUNT + block];
+  for (var permutationBlockIndex = 0u; permutationBlockIndex < BLOCK_COUNT; permutationBlockIndex++) {
+    sum += partials[partialsOffset + index * BLOCK_COUNT + permutationBlockIndex];
   }
   pairSums[pairSumsOffset + index] = sum;`
       });
@@ -855,7 +899,7 @@ fn getPermutedPosition(position: u32, permutation: u32, count: u32) -> u32 {
           id: `${id}-pairs`,
           variant: `pairs-${statistic}`,
           invocationCount: sumCount * blockCount * PAIR_WORKGROUP_SIZE,
-          permutationWGSL: 'workgroup / BLOCK_COUNT'
+          permutationWGSL: 'permutationWorkgroupIndex / BLOCK_COUNT'
         }),
         createPairSumsNode({id: `${id}-pair-sums`, variant: 'pair-sums', invocationCount: sumCount})
       );
@@ -890,12 +934,12 @@ fn getPermutedPosition(position: u32, permutation: u32, count: u32) -> u32 {
       nodes.push(...negative.nodes);
     }
     const scaleWGSL = {
-      moran: `count / (totals[totalsOffset + ${T.s0}u] * totals[totalsOffset + ${T.sumSquares}u])`,
-      geary: `(count - 1.0) / (2.0 * totals[totalsOffset + ${T.s0}u] * totals[totalsOffset + ${T.sumSquares}u])`,
-      getisOrdG: `1.0 / (count * (count - 1.0) * totals[totalsOffset + ${T.mean}u] * totals[totalsOffset + ${T.mean}u] - totals[totalsOffset + ${T.sumSquares}u])`,
-      bivariateMoran: `count / (totals[totalsOffset + ${T.s0}u] * sqrt(totals[totalsOffset + ${T.sumSquares}u] * totals[totalsOffset + ${T.sumSquaresY}u]))`,
+      moran: `divideSpatialCountByValue(exactCount, totals[totalsOffset + ${T.s0}u] * totals[totalsOffset + ${T.sumSquares}u])`,
+      geary: `divideSpatialCountByValue(max(exactCount, 1u) - 1u, 2.0 * totals[totalsOffset + ${T.s0}u] * totals[totalsOffset + ${T.sumSquares}u])`,
+      getisOrdG: `1.0 / (multiplyBySpatialCount(multiplyBySpatialCount(totals[totalsOffset + ${T.mean}u] * totals[totalsOffset + ${T.mean}u], exactCount), max(exactCount, 1u) - 1u) - totals[totalsOffset + ${T.sumSquares}u])`,
+      bivariateMoran: `divideSpatialCountByValue(exactCount, totals[totalsOffset + ${T.s0}u] * sqrt(totals[totalsOffset + ${T.sumSquares}u] * totals[totalsOffset + ${T.sumSquaresY}u]))`,
       // L = z'(W'W)z / 1'(W'W)1 with z standardized by the population deviation: n / sqrt(SS_x SS_y) / S0sq.
-      leesL: `count / (totals[totalsOffset + ${T.s0Squared}u] * sqrt(totals[totalsOffset + ${T.sumSquares}u] * totals[totalsOffset + ${T.sumSquaresY}u]))`
+      leesL: `divideSpatialCountByValue(exactCount, totals[totalsOffset + ${T.s0Squared}u] * sqrt(totals[totalsOffset + ${T.sumSquares}u] * totals[totalsOffset + ${T.sumSquaresY}u]))`
     }[statistic];
     const R = GPU_GLOBAL_PERMUTATION_SUMMARY;
     const bins = props.output.histogram?.length ?? 0;
@@ -916,8 +960,8 @@ fn getPermutedPosition(position: u32, permutation: u32, count: u32) -> u32 {
       });
     }
     // The finalize kernel already binds eight buffers (the device limit), so a negative value
-    // poisons the row count in `totals` instead of adding a binding: every scaled statistic is
-    // then NaN, and `invalidInput` below is how the kernel recognizes it.
+    // marks the legacy row count in `totals` as NaN instead of adding a binding. The exact
+    // count stays in rowPositions; finalization must explicitly invalidate the scale as well.
     const invalidCountView = props.output.status?.invalidCount;
     if (negative) {
       nodes.push(
@@ -926,7 +970,7 @@ fn getPermutedPosition(position: u32, permutation: u32, count: u32) -> u32 {
           operation: OPERATION,
           variant: 'reject-negative',
           bindings: [
-            {name: 'negativeCount', view: negative.negativeCount, type: 'f32', access: 'read'},
+            {name: 'negativeCount', view: negative.negativeCount, type: 'u32', access: 'read'},
             {name: 'totals', view: totals, type: 'f32', access: 'read_write'},
             ...(invalidCountView
               ? [
@@ -941,10 +985,10 @@ fn getPermutedPosition(position: u32, permutation: u32, count: u32) -> u32 {
           ],
           invocationCount: 1,
           declarations: PERMUTATION_FLOAT_WGSL,
-          body: `if (negativeCount[negativeCountOffset] > 0.0) {
+          body: `if (negativeCount[negativeCountOffset] > 0u) {
     totals[totalsOffset + ${T.count}u] = getQuietNaN(5u);
   }
-  ${invalidCountView ? 'invalidCount[invalidCountOffset] = u32(negativeCount[negativeCountOffset]);' : ''}`
+  ${invalidCountView ? 'invalidCount[invalidCountOffset] = negativeCount[negativeCountOffset];' : ''}`
         })
       );
     } else if (invalidCountView) {
@@ -1025,9 +1069,10 @@ fn reduceCount(local: u32, value: u32) -> u32 {
   let permutations = select(readValidPermutationCount(), stoppedAt, stoppedAt != 0u);`
       : 'let permutations = readValidPermutationCount();'
   }
-  let count = totals[totalsOffset + ${T.count}u];
-  let invalidInput = ${negative ? '!isFiniteFloat(count)' : 'false'};
-  let scale = ${scaleWGSL};
+  let count = f32(rowPositions[rowPositionsOffset + ROWS]);
+  let exactCount = rowPositions[rowPositionsOffset + ROWS];
+  let invalidInput = ${negative ? '!isFiniteFloat(totals[totalsOffset + 0u])' : 'false'};
+  let scale = select(${scaleWGSL}, getQuietNaN(5u), invalidInput);
   let observedSum = pairSums[pairSumsOffset];
   let observed = scale * observedSum;
   var greaterPart = 0u;
@@ -1101,7 +1146,7 @@ fn reduceCount(local: u32, value: u32) -> u32 {
     let validZ = standardDeviation > 0.0 && isFiniteFloat(zSimulated);
     // Tested: a valid permutation count and an observed statistic that exists (n >= 2, not truncated).
     let tested = permutations > 0u && isFiniteFloat(observed) && !invalidInput;
-    results[resultsOffset + ${R.observed}u] = select(getQuietNaN(0u), observed, isFiniteFloat(observed));
+    results[resultsOffset + ${R.observed}u] = select(getQuietNaN(0u), observed, isFiniteFloat(observed) && !invalidInput);
     results[resultsOffset + ${R.pseudoPValue}u] = select(getQuietNaN(1u), ${
       sequential
         ? `select(f32(min(${multiplier}u * (larger + 1u), permutations + 1u)) / f32(permutations + 1u), f32(min(${multiplier}u * ${stopAfter}u, permutations)) / f32(permutations), stoppedAt != 0u)`
@@ -1205,7 +1250,7 @@ fn reduceCount(local: u32, value: u32) -> u32 {
       permutationOffset: number;
       gate?: ReturnType<WGSLDispatchGate<Parameters>['getGate']>;
     }) =>
-      createWGSLKernelNode<Parameters>(graph, {
+      createSpatialStatisticsCollectiveNode<Parameters>(graph, {
         id: options.id,
         operation: OPERATION,
         variant: `materialize-${props.statistic}`,
@@ -1213,20 +1258,20 @@ fn reduceCount(local: u32, value: u32) -> u32 {
         workgroupSize: PAIR_WORKGROUP_SIZE,
         invocationCount: options.slotCount * materializeBlocks * PAIR_WORKGROUP_SIZE,
         ...options.gate,
-        guardIndex: false,
+        parameterValues: [options.permutationOffset],
         declarations: `const ROWS: u32 = ${rows}u;
 const BLOCK_ROWS: u32 = ${PAIR_BLOCK_ROWS}u;
 const BLOCK_COUNT: u32 = ${materializeBlocks}u;
 const WORKGROUP_SIZE: u32 = ${PAIR_WORKGROUP_SIZE}u;
 ${getPermutationParameterWGSL(maximumPermutations)}
 ${PERMUTATION_RANDOM_WGSL}
-${getPermutationShuffleWGSL(PHILOX_PURPOSES.permutationShuffle.id)}`,
+${getPermutationShuffleWGSL(PHILOX_PURPOSES.permutationShuffle.id, PERMUTATION_SHUFFLE_FULL_RANGE_ROUNDS)}`,
         // One workgroup per permutation and block of positions; the round material of the
         // permutation is drawn once into workgroup memory. Permutation 0 copies the values.
-        body: `let workgroup = index / WORKGROUP_SIZE;
-  let slot = workgroup / BLOCK_COUNT;
-  let block = workgroup % BLOCK_COUNT;
-  let permutation = parameters[parametersOffset + ${S.base}u] + ${options.permutationOffset}u + slot;
+        body: `let permutationWorkgroupIndex = index / WORKGROUP_SIZE;
+  let slot = permutationWorkgroupIndex / BLOCK_COUNT;
+  let permutationBlockIndex = permutationWorkgroupIndex % BLOCK_COUNT;
+  let permutation = parameters[parametersOffset + ${S.base}u] + getChunkParameter(36u) + slot;
   let count = rowPositions[rowPositionsOffset + ROWS];
   let runsPermutation = index < INVOCATION_COUNT && permutation <= readValidPermutationCount();
   if (runsPermutation && permutation > 0u) {
@@ -1234,8 +1279,8 @@ ${getPermutationShuffleWGSL(PHILOX_PURPOSES.permutationShuffle.id)}`,
   }
   workgroupBarrier();
   if (runsPermutation) {
-    let end = min((block + 1u) * BLOCK_ROWS, count);
-    for (var position = block * BLOCK_ROWS + localInvocationIndex; position < end; position += WORKGROUP_SIZE) {
+    let end = min((permutationBlockIndex + 1u) * BLOCK_ROWS, count);
+    for (var position = permutationBlockIndex * BLOCK_ROWS + localInvocationIndex; position < end; position += WORKGROUP_SIZE) {
       let source = select(getSwapOrNotPermutationIndex(position, count), position, permutation == 0u);${
         permutedX
           ? `
@@ -1288,7 +1333,7 @@ ${getPermutationShuffleWGSL(PHILOX_PURPOSES.permutationShuffle.id)}`,
           id: `${id}-batch-${batch}-pairs`,
           variant: `pairs-${props.statistic}-materialized`,
           invocationCount: batchSize * blockCount * PAIR_WORKGROUP_SIZE,
-          permutationWGSL: `parameters[parametersOffset + ${S.base}u] + workgroup / BLOCK_COUNT`
+          permutationWGSL: `parameters[parametersOffset + ${S.base}u] + permutationWorkgroupIndex / BLOCK_COUNT`
         }),
         context.createPairSumsNode({
           id: `${id}-batch-${batch}-pair-sums`,
@@ -1462,7 +1507,7 @@ fn getExceedanceCount(greater: u32, lesser: u32) -> u32 {
           id: `${id}-batch-${batch}-pairs`,
           variant: `pairs-${props.statistic}-batch`,
           invocationCount: pairInvocations,
-          permutationWGSL: `parameters[parametersOffset + ${S.base}u] + 1u + workgroup / BLOCK_COUNT`,
+          permutationWGSL: `parameters[parametersOffset + ${S.base}u] + 1u + permutationWorkgroupIndex / BLOCK_COUNT`,
           getGate: dispatch => {
             const pairsGate = gate.getGate(dispatch.chunkIndex);
             return {

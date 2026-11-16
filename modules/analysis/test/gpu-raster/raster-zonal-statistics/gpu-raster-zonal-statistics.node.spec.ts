@@ -154,7 +154,7 @@ it('GPURasterZonalStatistics rejects aliasing and foreign graphs', () => {
   expectConstructorToThrow(graph => {
     const shared = createTransientView(graph, 'shared', 'float32', CAPACITY);
     return {output: {sums: shared, means: shared}};
-  }, /share buffers/);
+  }, /logical byte ranges must not overlap/);
   expectConstructorToThrow(graph => {
     const zones = createTransientView(graph, 'aliased-zones', 'uint32', WIDTH * HEIGHT);
     return {
@@ -162,7 +162,7 @@ it('GPURasterZonalStatistics rejects aliasing and foreign graphs', () => {
       zoneCapacity: WIDTH * HEIGHT,
       output: {cellCounts: zones}
     };
-  }, /share buffers/);
+  }, /logical byte ranges must not overlap/);
   const graph = new GPUCommandGraph(createNullWebGPUDevice());
   const otherGraph = new GPUCommandGraph(createNullWebGPUDevice());
   expect(() =>

@@ -79,7 +79,7 @@ function validateOptions(id: string, options: CPUSeeminglyUnrelatedRegressionOpt
  * - Float64 centered QR replaces float32 tile reductions and normal-equation solves. Residuals
  *   use centered coefficients before rounding. Compare well-conditioned outputs at 5e-3 relative
  *   tolerance; covariance error is scaled by the diagonal geometric mean.
- * - Shader-only equation, predictor, 16-system-coefficient and 65536-row caps are dropped.
+ * - GPU equation, predictor, 16-system-coefficient and float32 row-count envelopes are dropped.
  *   Design rank uses norm-scaled QR pivots > 64 * Number.EPSILON; normalized error covariance
  *   squared Cholesky pivots use 64 * Number.EPSILON times the corresponding diagonal. GPU 1e-3
  *   Cholesky-pivot failures may therefore succeed on the CPU.

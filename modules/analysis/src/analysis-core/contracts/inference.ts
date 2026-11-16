@@ -70,8 +70,8 @@ export type GPUPermutationStatisticAdapter = {
 /** Circular interpretation of line directions. */
 export type GPUCircularStatisticsContract = {
   mode: 'directional' | 'axial';
-  angleUnit: 'radians';
-  origin: 'positive-x-counter-clockwise';
+  angleUnit: 'radians' | 'degrees';
+  origin: 'positive-x-counter-clockwise' | 'positive-y-clockwise';
   binCount: number;
 };
 

@@ -14,7 +14,10 @@
  *   bits, first character most significant.
  * - `'s2'`: standard S2CellId (face in bits 61..63, Hilbert position, trailing 1 marker bit).
  */
-export type GPUCellIndexFamily = 'quadbin' | 'h3' | 'quadkey' | 'geohash' | 's2';
+export type GPUCellIndexFamily = GPUCellFamily | 'quadkey' | 'geohash';
+
+/** Hierarchical cell families shared by cell topology, compaction and outlines. */
+export type GPUCellFamily = 'quadbin' | 'h3' | 's2';
 
 /** Inclusive resolution range of one {@link GPUCellIndexFamily}. */
 export type GPUCellIndexResolutionRange = {
@@ -50,7 +53,10 @@ export const GPU_CELL_INDEX_FAMILIES: readonly GPUCellIndexFamily[] = [
 
 /** Returns true when `value` names a {@link GPUCellIndexFamily}. */
 export function isGPUCellIndexFamily(value: unknown): value is GPUCellIndexFamily {
-  return typeof value === 'string' && value in GPU_CELL_INDEX_RESOLUTION_RANGES;
+  return (
+    typeof value === 'string' &&
+    Object.prototype.hasOwnProperty.call(GPU_CELL_INDEX_RESOLUTION_RANGES, value)
+  );
 }
 
 /**

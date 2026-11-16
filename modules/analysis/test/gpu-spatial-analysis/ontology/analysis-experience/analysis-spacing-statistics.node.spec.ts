@@ -1645,3 +1645,27 @@ describe('robust spacing grid with outliers and unequal densities', () => {
     expect(statistics.pointCount).toBe(20000);
   });
 });
+
+describe('shared exact geographic extent conventions', () => {
+  it('preserves source longitude bounds at the poles while deduplicating physical locations', () => {
+    const spacing = computeGPUAnalysisSpacingStatistics([178, 90, -178, 90], {
+      coordinateModel: 'geographic'
+    });
+    expect(spacing.extent).toEqual([178, 90, -178, 90]);
+    expect(spacing.duplicateLocationCount).toBe(1);
+  });
+
+  it('keeps source 0-to-360 bounds when already shortest and resolves equal gaps deterministically', () => {
+    expect(
+      computeGPUAnalysisSpacingStatistics([150, 0, 250, 1], {coordinateModel: 'geographic'}).extent
+    ).toEqual([150, 0, 250, 1]);
+    for (const coordinates of [
+      [-170, 0, -60, 1, 50, 2, 170, 3],
+      [170, 3, 50, 2, -60, 1, -170, 0]
+    ]) {
+      expect(
+        computeGPUAnalysisSpacingStatistics(coordinates, {coordinateModel: 'geographic'}).extent
+      ).toEqual([170, 0, 50, 3]);
+    }
+  });
+});

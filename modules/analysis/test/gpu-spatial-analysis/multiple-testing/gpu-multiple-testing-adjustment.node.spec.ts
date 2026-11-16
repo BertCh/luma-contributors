@@ -6,6 +6,7 @@ import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
 import {
   getMultipleTestingAdjustedPValues,
+  GPU_MULTIPLE_TESTING_MAXIMUM_ROWS,
   GPUMultipleTestingAdjustment,
   resolveGPUMultipleTestingMethod,
   type GPUMultipleTestingAdjustmentOutput,
@@ -98,9 +99,9 @@ it('resolveGPUMultipleTestingMethod and the CPU reference validate their argumen
   );
   expect(() => getMultipleTestingAdjustedPValues([0.1], 'holm', -1)).toThrow(/minimumFamilySize/);
   expect(() => getMultipleTestingAdjustedPValues([0.1], 'holm', 1.5)).toThrow(/minimumFamilySize/);
-  expect(() => getMultipleTestingAdjustedPValues([0.1], 'holm', 2 ** 24)).toThrow(
-    /minimumFamilySize/
-  );
+  expect(() =>
+    getMultipleTestingAdjustedPValues([0.1], 'holm', GPU_MULTIPLE_TESTING_MAXIMUM_ROWS)
+  ).toThrow(/minimumFamilySize/);
 });
 
 let serial = 0;
@@ -133,7 +134,9 @@ it('GPUMultipleTestingAdjustment validates its props and emits deterministic nod
   expect(() => create({}, {adjustedPValues: common.pValues})).toThrow(/share buffers/);
   expect(() => create({}, {adjustedPValues: view('uint32', 10) as never})).toThrow();
   expect(() => create({minimumFamilySize: -1})).toThrow(/minimumFamilySize/);
-  expect(() => create({minimumFamilySize: 2 ** 24})).toThrow(/minimumFamilySize/);
+  expect(() => create({minimumFamilySize: GPU_MULTIPLE_TESTING_MAXIMUM_ROWS})).toThrow(
+    /minimumFamilySize/
+  );
   expect(() => create({minimumFamilySize: 2.5})).toThrow(/minimumFamilySize/);
   expect(() => create({}, {testedCount: view('uint32', 0)})).toThrow(/testedCount/);
   expect(() => create({}, {testedCount: common.pValues as never})).toThrow();

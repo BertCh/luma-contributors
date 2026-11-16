@@ -2,6 +2,16 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRegressionOutputDispatches} from './regression-output-dispatches';
+
+import {getInstrumentalVariablesCovarianceAllocationLengths} from './instrumental-variables-covariance-parameters';
+
+import {getRegressionTwoStageAllocationLengths} from './regression-binding-plans';
+
+import {validateRegressionAllocations} from './spatial-likelihood-allocations';
+
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -362,6 +372,23 @@ export class GPUSpatialTwoStageLeastSquares implements GPUCommandNodeProducer {
       props.tileRowCount ??
       Math.max(MINIMUM_DEFAULT_TILE_ROWS, Math.ceil(rows / MAXIMUM_DEFAULT_TILE_COUNT));
     this.tileCount = Math.ceil(rows / this.tileRowCount);
+    validateRegressionOutputDispatches(
+      this.id,
+      {
+        ...output,
+        status: undefined,
+        code: output.status.code,
+        covariance: props.robust?.output.covariance,
+        covarianceStatus: props.robust
+          ? getInstrumentalVariablesCovarianceStatusView(props.robust.output.status)
+          : undefined
+      },
+      [
+        ['table', 'summary', 'code'],
+        ['covariance', 'covarianceStatus'],
+        {read: ['covariance', 'covarianceStatus'], write: ['table']}
+      ]
+    );
     validateGraphOutputsDisjointFromInputs(
       id,
       [
@@ -402,6 +429,48 @@ export class GPUSpatialTwoStageLeastSquares implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, rowCount, tileRowCount, tileCount, instrumentOrder} = this;
     const {weights, output, predictorCount: k} = props;
+    validateGraphChunkBindingRanges(graph, id, {
+      predictors: props.predictors,
+      response: props.response,
+      offsets: weights.offsets,
+      neighbors: weights.neighbors,
+      weights: weights.weights,
+      table: output.table,
+      summary: output.summary,
+      code: output.status.code,
+      residuals: output.residuals,
+      robustCovariance: props.robust?.output.covariance,
+      robustStatus: props.robust
+        ? getInstrumentalVariablesCovarianceStatusView(props.robust.output.status)
+        : undefined,
+      robustClusters: props.robust?.clusters,
+      robustKernelOffsets: props.robust?.kernel?.offsets,
+      robustKernelNeighbors: props.robust?.kernel?.neighbors,
+      robustKernelWeights: props.robust?.kernel?.weights,
+      robustKernelOverflow: props.robust?.kernel?.status?.overflow
+    });
+    validateRegressionAllocations(
+      graph.device,
+      id,
+      getRegressionTwoStageAllocationLengths(
+        rowCount,
+        k,
+        weights.neighbors.length,
+        instrumentOrder,
+        tileRowCount
+      )
+    );
+    if (props.robust)
+      validateRegressionAllocations(graph.device, id, {
+        'robust design': rowCount * (k + 1),
+        'robust instruments': rowCount * (instrumentOrder + 1) * k,
+        ...getInstrumentalVariablesCovarianceAllocationLengths(
+          rowCount,
+          k + 1,
+          (instrumentOrder + 1) * k,
+          props.robust
+        )
+      });
     validateGraphViewsBelongToGraph(id, graph, [
       props.predictors,
       props.response,

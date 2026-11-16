@@ -125,3 +125,5 @@ export type {
 } from './cpu-vector-straight-skeleton-operation';
 export {GPUVectorStraightSkeletonOperation} from './gpu-vector-straight-skeleton-operation';
 export type {VectorStraightSkeletonOperationProps} from './gpu-vector-straight-skeleton-operation';
+
+export type {GPUSegmentSnapStatus} from './gpu-segment-snap';

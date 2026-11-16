@@ -2,12 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {Buffer, Device} from '@luma.gl/core';
+import {Buffer, type Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {cellToChildren, cellToParent, compactCells, getPentagons, polygonToCells} from 'h3-js';
 import {expect, it} from 'vitest';
-import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {
   GPUCellCompaction,
   type GPUCellCompactionProps
@@ -17,8 +16,7 @@ import {
   h3ToBigInt,
   joinCellKey,
   quadbinTileToCell,
-  splitCellKey,
-  type CellFamily
+  splitCellKey
 } from '../cell-aggregation/cell-aggregation-oracle';
 import {createRandom} from '../cell-aggregation/cell-aggregation-points';
 import {
@@ -31,8 +29,11 @@ import {
   compactCellsOnCPU,
   compareBigInt,
   getCellDescendants,
-  uncompactCellsOnCPU
+  uncompactCellsOnCPU,
+  type CellCompactionFamily
 } from './cell-compaction-oracle';
+import {getS2TopologyCell} from './s2-topology-oracle';
+import {createCompactionTestViewImporter} from './cell-compaction-test-views';
 import {requireTestDevice} from '../../utils/require-test-device';
 
 type RunResult = {
@@ -46,13 +47,14 @@ type RunResult = {
 };
 
 type RunOptions = {
-  family: CellFamily;
+  family: CellCompactionFamily;
   operation: GPUCellCompactionProps['operation'];
   cells: readonly bigint[];
   capacity?: number;
   wordOrder?: 'little-endian' | 'high-low';
   mask?: number[];
   count?: number;
+  subviews?: boolean;
 };
 
 function createWords(cells: readonly bigint[], wordOrder?: string): Uint32Array {
@@ -71,21 +73,33 @@ async function runCompaction(device: Device, options: RunOptions): Promise<RunRe
   const capacity = options.capacity ?? Math.max(rows, 1) * 4;
   const buffers: Buffer[] = [];
   const track = (buffer: Buffer) => {
-    buffers.push(buffer);
+    if (!buffers.includes(buffer)) buffers.push(buffer);
     return buffer;
   };
   const graph = new GPUCommandGraph(device, {id: 'cell-compaction-graph'});
-  const importView = <Format extends 'uint32' | 'uint32x2'>(
-    name: string,
-    buffer: Buffer,
-    format: Format,
-    length: number
-  ) => importGraphBuffer(graph, name, track(buffer), format, length);
-  const cellsOut = createOutputBuffer(device, 2 * capacity);
-  const countOut = createOutputBuffer(device, 1);
-  const overflowOut = createOutputBuffer(device, 1);
-  const totalOut = createOutputBuffer(device, 1);
-  const droppedOut = createOutputBuffer(device, 1);
+  const scalarBase = Math.ceil((4 + 8 * capacity) / 256) * 256;
+  const offsets: Record<string, number> = {
+    'cells-out': 4,
+    'count-out': scalarBase + 4,
+    'dropped-out': scalarBase + 8,
+    'overflow-out': scalarBase + 260,
+    'total-out': scalarBase + 516
+  };
+  const importView = createCompactionTestViewImporter(graph, track, offsets, options.subviews);
+  const shared = options.subviews
+    ? device.createBuffer({byteLength: scalarBase + 520, usage: Buffer.STORAGE | Buffer.COPY_SRC})
+    : undefined;
+  const input = (values: Uint32Array) => {
+    if (!options.subviews) return createInputBuffer(device, values);
+    const prefixed = new Uint32Array(values.length + 1);
+    prefixed.set(values, 1);
+    return device.createBuffer({data: prefixed, usage: Buffer.STORAGE});
+  };
+  const cellsOut = shared ?? createOutputBuffer(device, 2 * capacity);
+  const countOut = shared ?? createOutputBuffer(device, 1);
+  const overflowOut = shared ?? createOutputBuffer(device, 1);
+  const totalOut = shared ?? createOutputBuffer(device, 1);
+  const droppedOut = shared ?? createOutputBuffer(device, 1);
   graph.add(
     new GPUCellCompaction({
       family: options.family,
@@ -93,27 +107,17 @@ async function runCompaction(device: Device, options: RunOptions): Promise<RunRe
       wordOrder: options.wordOrder,
       cells: importView(
         'cells',
-        createInputBuffer(device, createWords(options.cells, options.wordOrder)),
+        input(createWords(options.cells, options.wordOrder)),
         'uint32x2',
         rows
       ),
       mask: options.mask
-        ? importView(
-            'mask',
-            createInputBuffer(device, Uint32Array.from(options.mask)),
-            'uint32',
-            rows
-          )
+        ? importView('mask', input(Uint32Array.from(options.mask)), 'uint32', rows)
         : undefined,
       count:
         options.count === undefined
           ? undefined
-          : importView(
-              'count',
-              createInputBuffer(device, Uint32Array.of(options.count)),
-              'uint32',
-              1
-            ),
+          : importView('count', input(Uint32Array.of(options.count)), 'uint32', 1),
       output: {
         cells: importView('cells-out', cellsOut, 'uint32x2', capacity),
         status: {
@@ -127,17 +131,23 @@ async function runCompaction(device: Device, options: RunOptions): Promise<RunRe
   );
   const compiled = graph.compile();
   submitGraph(device, compiled, undefined);
-  const [count] = await readUint32(countOut, 1);
-  const [overflow] = await readUint32(overflowOut, 1);
-  const [total] = await readUint32(totalOut, 1);
-  const [dropped] = await readUint32(droppedOut, 1);
-  const words = await readUint32(cellsOut, 2 * capacity);
+  const read = async (buffer: Buffer, name: string, length: number) => {
+    const words = await readUint32(buffer);
+    const begin = options.subviews ? offsets[name] / 4 : 0;
+    return words.slice(begin, begin + length);
+  };
+  const [count] = await read(countOut, 'count-out', 1);
+  const [overflow] = await read(overflowOut, 'overflow-out', 1);
+  const [total] = await read(totalOut, 'total-out', 1);
+  const [dropped] = await read(droppedOut, 'dropped-out', 1);
+  const words = await read(cellsOut, 'cells-out', 2 * capacity);
   const cells: bigint[] = [];
   for (let row = 0; row < count; row++) {
     cells.push(joinCellKey(words[2 * row], words[2 * row + 1]));
   }
   const zeroTail = words.slice(2 * count).every(word => word === 0);
-  for (const buffer of [...buffers, cellsOut, countOut, overflowOut, totalOut, droppedOut]) {
+  compiled.destroy();
+  for (const buffer of buffers) {
     buffer.destroy();
   }
   return {cells, count, overflow, total, dropped, zeroTail};
@@ -477,5 +487,244 @@ it('GPUCellCompaction uncompacts pentagons, mixed resolutions, caps and overflow
   expect(overflow.overflow).toBe(1);
   expect(overflow.cells.map(String)).toEqual(all.slice(0, 20).map(String));
   expect(bigIntToH3(pentagons[0]).length).toBeGreaterThan(0);
+  device.destroy();
+});
+
+it('GPUCellCompaction compacts S2 faces, mixed output levels, duplicates and level 30 keys', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const resolution of [0, 3, 26, 30]) {
+    const parentLevel = Math.max(0, resolution - 2);
+    const parents = Array.from({length: 6}, (_, face) =>
+      getS2TopologyCell({face, ij: [0, 0], level: parentLevel})
+    );
+    const complete = parents.flatMap(cell => getCellDescendants('s2', cell, resolution));
+    const expected = compactCellsOnCPU('s2', complete, resolution);
+    expect(expected).toEqual(parents);
+    const result = await runCompaction(device, {
+      family: 's2',
+      operation: {type: 'compact', resolution},
+      cells: shuffle([...complete, ...complete.slice(0, 3)], 37)
+    });
+    expect(result.cells).toEqual(expected);
+    expect(result).toMatchObject({count: 6, total: 6, overflow: 0, dropped: 0, zeroTail: true});
+    if (resolution === 0) continue;
+    const partial = [...complete.slice(1), 0n, 0xffffffffffffffffn, 1n << 59n];
+    const partialExpected = compactCellsOnCPU('s2', partial, resolution);
+    expect(partialExpected.length).toBeGreaterThan(7);
+    for (const sorted of [false, true]) {
+      const valid = partial.slice(0, -3).sort(compareBigInt);
+      const sortedInput = [...valid, ...partial.slice(-3)];
+      const result = await runCompaction(device, {
+        family: 's2',
+        operation: {type: 'compact', resolution, sorted},
+        cells: sorted ? sortedInput : shuffle(partial, 19),
+        capacity: 7,
+        wordOrder: sorted ? 'high-low' : 'little-endian'
+      });
+      expect(result.cells).toEqual(partialExpected.slice(0, 7));
+      expect(result).toMatchObject({
+        count: 7,
+        total: partialExpected.length,
+        overflow: 1,
+        dropped: 3
+      });
+    }
+    const expanded = await runCompaction(device, {
+      family: 's2',
+      operation: {type: 'uncompact', resolution},
+      cells: partialExpected,
+      capacity: complete.length + 5
+    });
+    expect(expanded.cells).toEqual(complete.slice(1));
+    expect(expanded).toMatchObject({total: complete.length - 1, overflow: 0, zeroTail: true});
+    const bounded = await runCompaction(device, {
+      family: 's2',
+      operation: {type: 'compact', resolution, minimumResolution: resolution - 1},
+      cells: complete
+    });
+    expect(bounded.cells).toEqual(
+      parents.flatMap(cell => getCellDescendants('s2', cell, resolution - 1))
+    );
+  }
+  device.destroy();
+});
+
+it('GPUCellCompaction keeps the first input subtree after multiple uint32 offset wraps', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const family of ['quadbin', 's2'] as const) {
+    // Each level-one cell has 4^14 descendants. Thirty-three cells cause two wraps.
+    // Capacity is small, so no large GPU allocation is needed to test this overflow.
+    const first = family === 's2' ? 1n << 58n : quadbinTileToCell(0, 0, 1);
+    const other = family === 's2' ? (2n << 60n) | (1n << 58n) : quadbinTileToCell(1, 1, 1);
+    const result = await runCompaction(device, {
+      family,
+      operation: {type: 'uncompact', resolution: 15, maximumDepth: 15},
+      cells: [first, ...new Array<bigint>(32).fill(other)],
+      capacity: 8
+    });
+    const marker = 1n << 30n;
+    // Closed-form first eight Hilbert/Morton ranks of the first input subtree.
+    const expected = Array.from({length: 8}, (_, slot) =>
+      family === 's2'
+        ? marker * BigInt(2 * slot + 1)
+        : 0x48f0000000000000n | (BigInt(slot) << 22n) | ((1n << 22n) - 1n)
+    );
+    expect(result.cells).toEqual(expected);
+    expect(result).toMatchObject({count: 8, total: 0xffffffff, overflow: 1, dropped: 0});
+  }
+  device.destroy();
+});
+
+it('GPUCellCompaction S2 honors masks, row count, empty selections and expansion depth', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const parent = getS2TopologyCell({face: 5, ij: [73, 19], level: 28});
+  const leaves = getCellDescendants('s2', parent, 30);
+  const selected = await runCompaction(device, {
+    family: 's2',
+    operation: {type: 'compact', resolution: 30},
+    cells: [...leaves, 0n, parent],
+    mask: [...leaves.map((_, index) => Number(index !== 0)), 1, 1],
+    count: 17
+  });
+  expect(selected.cells).toEqual(compactCellsOnCPU('s2', leaves.slice(1), 30));
+  expect(selected).toMatchObject({dropped: 2, overflow: 0, zeroTail: true});
+  const empty = await runCompaction(device, {
+    family: 's2',
+    operation: {type: 'compact', resolution: 30},
+    cells: leaves,
+    mask: leaves.map(() => 0)
+  });
+  expect(empty).toEqual({cells: [], count: 0, total: 0, overflow: 0, dropped: 16, zeroTail: true});
+  const depthBounded = await runCompaction(device, {
+    family: 's2',
+    operation: {type: 'uncompact', resolution: 30, maximumDepth: 1},
+    cells: [parent, leaves[7], 0n],
+    capacity: 8
+  });
+  expect(depthBounded).toEqual({
+    cells: [leaves[7]],
+    count: 1,
+    total: 1,
+    overflow: 0,
+    dropped: 2,
+    zeroTail: true
+  });
+  device.destroy();
+});
+
+it.each([
+  255, 256, 257, 513
+])('S2 compaction independently matches the oracle at %i rows on both sorting routes', async rows => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const pool = Array.from({length: 64}, (_, ordinal) =>
+    Array.from(
+      {length: 6},
+      (_, face) => (BigInt(face) << 61n) | ((BigInt(120 + ordinal) * 2n + 1n) << 24n)
+    )
+  ).flat();
+  // Consecutive level-18 Hilbert ranks around 128 cross the low-word boundary.
+  // Interleave all faces, omit one sibling per block and then add duplicates.
+  const partial = pool.filter((_, index) => Math.floor(index / 6) % 16 !== 0);
+  const input = Array.from(
+    {length: rows},
+    (_, index) => partial[index % Math.min(partial.length, Math.floor(rows * 0.75))]
+  );
+  const expected = compactCellsOnCPU('s2', input, 18);
+  for (const sorted of [false, true]) {
+    const result = await runCompaction(device, {
+      family: 's2',
+      operation: {type: 'compact', resolution: 18, sorted},
+      cells: sorted ? [...input].sort(compareBigInt) : shuffle(input, rows),
+      capacity: rows
+    });
+    expect(result.cells).toEqual(expected);
+    expect(result).toMatchObject({
+      count: expected.length,
+      total: expected.length,
+      overflow: 0,
+      dropped: 0,
+      zeroTail: true
+    });
+  }
+  device.destroy();
+});
+
+it('S2 uncompaction saturates across scan blocks with zero-count rows around both block boundaries', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const first = 1n << 58n;
+  const second = (2n << 60n) | first;
+  const cells = new Array<bigint>(513).fill(0n);
+  cells[0] = first;
+  for (let index = 1; index < 15; index++) cells[index] = second;
+  for (let index = 257; index <= 270; index++) cells[index] = second;
+  for (const index of [255, 510, 511]) cells[index] = second;
+  // Sixteen 4^14 subtrees carry at row 255; thirty-two carry again at row 511.
+  const result = await runCompaction(device, {
+    family: 's2',
+    operation: {type: 'uncompact', resolution: 15, maximumDepth: 15},
+    cells,
+    capacity: 8
+  });
+  expect(result.cells).toEqual(Array.from({length: 8}, (_, index) => BigInt(2 * index + 1) << 30n));
+  expect(result).toMatchObject({
+    count: 8,
+    total: 0xffffffff,
+    overflow: 1,
+    dropped: 481,
+    zeroTail: true
+  });
+  device.destroy();
+});
+
+it('S2 compaction accepts nonaligned storage-only inputs and disjoint output regions in one buffer', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const parent = getS2TopologyCell({face: 4, ij: [109, 37], level: 27});
+  const leaves = getCellDescendants('s2', parent, 30);
+  const result = await runCompaction(device, {
+    family: 's2',
+    operation: {type: 'compact', resolution: 30},
+    cells: leaves,
+    capacity: 4,
+    subviews: true
+  });
+  expect(result).toEqual({
+    cells: [parent],
+    count: 1,
+    total: 1,
+    overflow: 0,
+    dropped: 0,
+    zeroTail: true
+  });
+  device.destroy();
+});
+
+it('S2 compaction retains the exact native-key-order prefix of random level-30 keys', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const random = createRandom(30513);
+  const cells = Array.from({length: 513}, (_, index) =>
+    getS2TopologyCell({
+      face: index % 6,
+      ij: [Math.floor(random() * 2 ** 30), Math.floor(random() * 2 ** 30)],
+      level: 30
+    })
+  );
+  const expected = compactCellsOnCPU('s2', cells, 30);
+  for (const sorted of [false, true]) {
+    const result = await runCompaction(device, {
+      family: 's2',
+      operation: {type: 'compact', resolution: 30, sorted},
+      cells: sorted ? [...cells].sort(compareBigInt) : cells,
+      capacity: 37
+    });
+    expect(result.cells).toEqual(expected.slice(0, 37));
+    expect(result).toMatchObject({count: 37, total: expected.length, overflow: 1, dropped: 0});
+  }
   device.destroy();
 });

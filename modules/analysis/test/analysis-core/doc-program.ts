@@ -23,6 +23,7 @@ export const ANALYSIS_DOC_PAGES = [
   'gpu-spatial-analysis/gaussian-random-field.md',
   'gpu-spatial-analysis/README.md',
   'gpu-spatial-analysis/concepts.md',
+  'gpu-spatial-analysis/analysis-experience.md',
   'gpu-spatial-analysis/temporal-context.md',
   'gpu-spatial-analysis/vecchia-likelihood.md',
   'gpu-spatial-analysis/change-points-and-expectation-based-scan.md',

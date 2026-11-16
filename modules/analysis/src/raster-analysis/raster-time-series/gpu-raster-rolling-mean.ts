@@ -8,18 +8,21 @@ import type {
   GPUCommandNode,
   GPUCommandNodeProducer
 } from '@luma.gl/graph/gpu-core';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  createRasterTimeSeriesNodes,
+  planRasterTimeSeriesChunks,
+  rasterTimeSeriesBinding as rasterBinding,
+  validateRasterTimeSeriesViews as validateRasterViews,
+  validateRasterTimeSeriesGraph as validateRasterGraph,
+  type RasterTimeSeriesScalarView as RasterScalarView,
+  type RasterTimeSeriesView,
+  type RasterTimeSeriesChunkPlan
+} from './raster-time-series-chunks-b';
 import {
   validateCapacity,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {
-  RASTER_FINITE_WGSL,
-  rasterBinding,
-  validateRasterGraph,
-  validateRasterViews,
-  type RasterScalarView
-} from '../remote-sensing/raster-kernel-utils';
+import {RASTER_FINITE_WGSL} from '../remote-sensing/raster-kernel-utils';
 import {
   GPU_RASTER_STREAMING_ACCUMULATOR_PARAMETER_LENGTH,
   MAXIMUM_RASTER_STREAM_CHUNK_SLICE_COUNT
@@ -29,7 +32,7 @@ import {
 export const MAXIMUM_ROLLING_WINDOW_LENGTH = 128;
 
 /** Properties of {@link GPURasterRollingMean}. */
-export type GPURasterRollingMeanProps = {
+export type GPURasterRollingMeanProps<Rows extends RasterScalarView = GraphDataView> = {
   id?: string;
   cellCount: number;
   /** Slices of each chunk, in `[1, 256]`. */
@@ -37,17 +40,17 @@ export type GPURasterRollingMeanProps = {
   /** Trailing window in slices, in `[2, 128]`. */
   windowLength: number;
   /** Cell-major chunk `cell * chunkSliceCount + slice`; nonfinite samples are missing. */
-  values: GraphDataView<'float32'>;
+  values: RasterTimeSeriesView<'float32', Rows>;
   /** Per-observation QA; zero makes the sample missing. */
-  mask?: GraphDataView<'uint32'>;
+  mask?: RasterTimeSeriesView<'uint32', Rows>;
   /** Float32, see `getGPURasterStreamingAccumulatorParameterValues`. */
   parameters: GraphDataView<'float32'>;
   /** Caller-owned ring of the last `windowLength` samples per cell (float32), carried between chunks. */
-  ring: GraphDataView<'float32'>;
+  ring: RasterTimeSeriesView<'float32', Rows>;
   /** Caller-owned samples seen so far per cell (uint32). */
-  seenCount: GraphDataView<'uint32'>;
+  seenCount: RasterTimeSeriesView<'uint32', Rows>;
   /** Rolling mean per chunk slice, `cell * chunkSliceCount + slice`; NaN until the window is full or when it holds a missing sample. */
-  output: GraphDataView<'float32'>;
+  output: RasterTimeSeriesView<'float32', Rows>;
 };
 
 /**
@@ -57,10 +60,18 @@ export type GPURasterRollingMeanProps = {
  *
  * Per-frame: `parameters` and the contents of the views. Compile-time: `cellCount`,
  * `chunkSliceCount`, `windowLength`, and which optional views exist.
+ *
+ * Cell-major views accept matching chunks of complete cell records; shared tables stay packed.
  */
-export class GPURasterRollingMean implements GPUCommandNodeProducer {
+export class GPURasterRollingMean<Rows extends RasterScalarView = GraphDataView>
+  implements GPUCommandNodeProducer
+{
   readonly id: string;
-  constructor(readonly props: GPURasterRollingMeanProps) {
+  readonly props: GPURasterRollingMeanProps<Rows>;
+  readonly chunkPlan: RasterTimeSeriesChunkPlan;
+  readonly estimatedCommandNodeCount: number;
+  constructor(props: GPURasterRollingMeanProps<Rows> & {values: Rows}) {
+    this.props = props;
     const id = props.id ?? 'raster-rolling-mean';
     this.id = id;
     validateCapacity(id, 'cellCount', props.cellCount);
@@ -92,7 +103,15 @@ export class GPURasterRollingMean implements GPUCommandNodeProducer {
       props.parameters.length >= GPU_RASTER_STREAMING_ACCUMULATOR_PARAMETER_LENGTH,
       `parameters must hold ${GPU_RASTER_STREAMING_ACCUMULATOR_PARAMETER_LENGTH} entries`
     );
-    validateRasterViews(id, this.getInputs(), this.getOutputs());
+    this.chunkPlan = planRasterTimeSeriesChunks(this.id, props.cellCount, {
+      values: {view: props.values, entriesPerCell: props.chunkSliceCount},
+      mask: {view: props.mask, entriesPerCell: props.chunkSliceCount},
+      ring: {view: props.ring, entriesPerCell: props.windowLength},
+      seenCount: {view: props.seenCount, entriesPerCell: 1},
+      output: {view: props.output, entriesPerCell: props.chunkSliceCount}
+    });
+    this.estimatedCommandNodeCount = this.chunkPlan.estimatedCommandNodeCount;
+    validateRasterViews(this.id, this.getInputs(), this.getOutputs(), this.chunkPlan);
   }
 
   private getInputs(): RasterScalarView[] {
@@ -110,22 +129,21 @@ export class GPURasterRollingMean implements GPUCommandNodeProducer {
     const {props, id} = this;
     const {chunkSliceCount: chunk, windowLength: window, values, mask, parameters} = props;
     validateRasterGraph(id, graph, this.getInputs(), this.getOutputs());
-    return [
-      createWGSLKernelNode<Parameters>(graph, {
-        id,
-        operation: 'GPURasterRollingMean',
-        invocationCount: props.cellCount,
-        workgroupSize: 64,
-        bindings: [
-          rasterBinding('values', values),
-          rasterBinding('parameters', parameters),
-          ...(mask ? [rasterBinding('mask', mask)] : []),
-          rasterBinding('ring', props.ring, true),
-          rasterBinding('seenCount', props.seenCount, true),
-          rasterBinding('rolling', props.output, true)
-        ],
-        declarations: RASTER_FINITE_WGSL,
-        body: `var seen = seenCount[seenCountOffset + index];
+    return createRasterTimeSeriesNodes<Parameters>(graph, this.chunkPlan, {
+      id,
+      operation: 'GPURasterRollingMean',
+      invocationCount: props.cellCount,
+      workgroupSize: 64,
+      bindings: [
+        rasterBinding('values', values),
+        rasterBinding('parameters', parameters),
+        ...(mask ? [rasterBinding('mask', mask)] : []),
+        rasterBinding('ring', props.ring, true),
+        rasterBinding('seenCount', props.seenCount, true),
+        rasterBinding('rolling', props.output, true)
+      ],
+      declarations: RASTER_FINITE_WGSL,
+      body: `var seen = seenCount[seenCountOffset + index];
 if (parameters[parametersOffset] != 0.0) { seen = 0u; }
 let activeSliceCount = u32(clamp(parameters[parametersOffset + 1u], 0.0, ${chunk}.0));
 for (var slice = 0u; slice < ${chunk}u; slice++) {
@@ -149,7 +167,6 @@ for (var slice = 0u; slice < ${chunk}u; slice++) {
   rolling[rollingOffset + index * ${chunk}u + slice] = mean;
 }
 seenCount[seenCountOffset + index] = seen;`
-      })
-    ];
+    });
   }
 }

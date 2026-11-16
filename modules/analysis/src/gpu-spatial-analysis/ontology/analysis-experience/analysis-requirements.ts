@@ -109,6 +109,26 @@ function evaluateCountLimit(
       `${formatCount(profile.rowCount, 'row')}; at most ${formatNumber(limit)} ${limit === 1 ? 'is' : 'are'} supported`
     );
   }
+  const networkQuantity = {
+    'maximum-network-edges': ['edgeCount', 'physical edge'],
+    'maximum-network-nodes': ['nodeCount', 'network node'],
+    'maximum-network-arcs': ['arcCount', 'traversable arc']
+  } as const;
+  if (requirement.id in networkQuantity) {
+    const [quantity, label] = networkQuantity[requirement.id as keyof typeof networkQuantity];
+    const count = profile.network?.[quantity];
+    if (count === undefined)
+      return unknownResult(
+        requirement,
+        `The ${label} count for the selected topology is not known; at most ${formatNumber(limit)} are supported`
+      );
+    return decidedResult(
+      requirement,
+      count <= limit,
+      'profile',
+      `${formatCount(count, label)}; at most ${formatNumber(limit)} are supported`
+    );
+  }
   // A point has one vertex, so a point table's vertex count is its row count.
   const vertexCount =
     profile.vertexCount ?? (profile.kind === 'points' ? profile.rowCount : undefined);
@@ -333,23 +353,91 @@ type ColumnOutcome =
   | {state: 'decided'; passed: boolean; message: string; sampled: boolean};
 
 function checkDistinctCount(
-  count: number,
-  estimated: boolean,
+  column: GPUAnalysisColumnProfile,
   limit: number,
   message: string,
-  decide: (check: ColumnCheck, kind: 'existential') => ColumnOutcome,
-  sampled: boolean
+  maximum: boolean = false
 ): ColumnOutcome {
-  if (estimated) {
-    // The profile exposes no estimator error bound. Its documented standard error is not a
-    // worst-case relative bound, so neither side of a hard threshold is established by it.
+  const sampleSize = column.sampleSize ?? column.rowCount;
+  const sampled = sampleSize < column.rowCount;
+  const sample = sampled
+    ? ` (in a sample of ${formatNumber(sampleSize)} of ${formatNumber(column.rowCount)} rows)`
+    : '';
+  let lowerBound = column.distinctCountLowerBound;
+  let upperBound = column.distinctCountUpperBound;
+  const exactCount = column.distinctCountIsEstimate ? undefined : column.distinctCount;
+  if (lowerBound === undefined && upperBound === undefined) {
+    if (column.distinctCountIsEstimate || column.distinctCount === undefined) {
+      return {
+        state: 'unknown',
+        sampled,
+        message: `${message}${sample}; the estimated count has no guaranteed error bound, so confirm with an exact count`
+      };
+    }
+    lowerBound = upperBound = column.distinctCount;
+  }
+  if (
+    lowerBound === undefined ||
+    upperBound === undefined ||
+    !Number.isSafeInteger(lowerBound) ||
+    !Number.isSafeInteger(upperBound) ||
+    lowerBound < 0 ||
+    (exactCount !== undefined && !Number.isSafeInteger(exactCount))
+  ) {
     return {
       state: 'unknown',
       sampled,
-      message: `${message}; the estimated count has no guaranteed error bound, so confirm with an exact count`
+      message: `${message}${sample}; the guaranteed distinct bounds are incomplete or inconsistent, so refine with an exact count`
     };
   }
-  return decide({passed: count >= limit, message}, 'existential');
+  // Bounds are inclusive guarantees, not necessarily tight. Intersect independent evidence
+  // in the inspected population before accounting for any uninspected rows. A loose upper
+  // bound may exceed the row ceiling, and an exact count may lie anywhere inside the bounds.
+  lowerBound = Math.max(lowerBound, exactCount ?? 0);
+  upperBound = Math.min(upperBound, sampleSize - column.nullCount, exactCount ?? Infinity);
+  if (lowerBound > upperBound) {
+    return {
+      state: 'unknown',
+      sampled,
+      message: `${message}${sample}; the guaranteed distinct bounds, non-null row ceiling and exact count have an empty intersection, so refine with an exact count`
+    };
+  }
+  // Each uninspected row may introduce one new value, including when every sampled row is null.
+  const populationUpperBound = upperBound + (sampled ? column.rowCount - sampleSize : 0);
+  const passed = maximum ? populationUpperBound <= limit : lowerBound >= limit;
+  const failed = maximum ? lowerBound > limit : populationUpperBound < limit;
+  const bounds =
+    column.distinctCountLowerBound !== undefined || sampled
+      ? `; guaranteed population distinct bounds [${formatNumber(lowerBound)}, ${formatNumber(populationUpperBound)}]`
+      : '';
+  if (!passed && !failed) {
+    return {
+      state: 'unknown',
+      sampled,
+      message: `${message}${sample}${bounds}; ${sampled && !maximum ? 'the sample cannot rule it out for the whole column; ' : ''}refine with an exact count near this threshold`
+    };
+  }
+  return {state: 'decided', passed, sampled, message: `${message}${sample}${bounds}`};
+}
+
+/** Checks descriptor bounds, never the rows of a dataset. */
+function describeNumericRange(requirement: GPUAnalysisRequirementSpec): string {
+  const {minimum, maximum, integer} = requirement;
+  if (
+    (minimum === undefined && maximum === undefined && integer !== true) ||
+    (minimum !== undefined && !Number.isFinite(minimum)) ||
+    (maximum !== undefined && !Number.isFinite(maximum)) ||
+    (minimum !== undefined && maximum !== undefined && minimum > maximum)
+  ) {
+    throw new Error(
+      'evaluateGPUAnalysisRequirement: numeric-range requires finite ordered minimum/maximum bounds or integer: true'
+    );
+  }
+  return [
+    integer ? 'integer values' : 'numeric values',
+    ...(minimum === undefined ? [] : [`at least ${formatNumber(minimum)}`]),
+    ...(maximum === undefined ? [] : [`at most ${formatNumber(maximum)}`])
+  ].join(' ');
 }
 
 function checkColumn(
@@ -384,6 +472,37 @@ function checkColumn(
   const maximum = Number.isFinite(column.maximum) ? column.maximum : undefined;
 
   switch (requirement.id) {
+    case 'numeric-range': {
+      const wanted = describeNumericRange(requirement);
+      const integral = column.integral ?? (column.type === 'integer' ? true : undefined);
+      const outside =
+        (requirement.minimum !== undefined &&
+          minimum !== undefined &&
+          minimum < requirement.minimum) ||
+        (requirement.maximum !== undefined &&
+          maximum !== undefined &&
+          maximum > requirement.maximum) ||
+        (requirement.integer === true && integral === false);
+      if (outside)
+        return decide(
+          {passed: false, message: `${name} violates the required range: ${wanted}`},
+          'universal'
+        );
+      if (
+        (requirement.minimum !== undefined && minimum === undefined) ||
+        (requirement.maximum !== undefined && maximum === undefined) ||
+        (requirement.integer === true && integral === undefined)
+      )
+        return {
+          state: 'unknown',
+          sampled,
+          message: `The profile cannot establish ${wanted} for ${name}`
+        };
+      return decide(
+        {passed: true, message: `${name} satisfies the required range: ${wanted}`},
+        'universal'
+      );
+    }
     case 'positive-values':
       if (minimum === undefined) {
         return {
@@ -430,14 +549,11 @@ function checkColumn(
           'existential'
         );
       }
-      if (column.distinctCount !== undefined) {
+      if (column.distinctCount !== undefined || column.distinctCountLowerBound !== undefined) {
         return checkDistinctCount(
-          column.distinctCount,
-          column.distinctCountIsEstimate === true,
+          column,
           VARYING_DISTINCT_MINIMUM,
-          `${name} has ${column.distinctCountIsEstimate ? 'about ' : ''}${formatCount(column.distinctCount, 'distinct value')}; at least ${VARYING_DISTINCT_MINIMUM} are needed for the values to differ`,
-          decide,
-          sampled
+          `${name} has ${column.distinctCountIsEstimate ? 'about ' : ''}${formatCount(column.distinctCount ?? (column.distinctCountLowerBound as number), 'distinct value')}; at least ${VARYING_DISTINCT_MINIMUM} are needed for the values to differ`
         );
       }
       return {
@@ -445,22 +561,23 @@ function checkColumn(
         message: `No range or distinct count was computed for ${name}; the values must differ`
       };
     }
-    case 'minimum-distinct-values': {
+    case 'minimum-distinct-values':
+    case 'maximum-distinct-values': {
       const limit = requireLimit(requirement);
-      if (column.distinctCount === undefined) {
+      const maximum = requirement.id === 'maximum-distinct-values';
+      const direction = maximum ? 'at most' : 'at least';
+      if (column.distinctCount === undefined && column.distinctCountLowerBound === undefined) {
         return {
           state: 'unknown',
-          message: `No distinct count was computed for ${name}; at least ${formatNumber(limit)} are needed`
+          message: `No distinct count was computed for ${name}; ${direction} ${formatNumber(limit)} are needed`
         };
       }
       const about = column.distinctCountIsEstimate ? 'about ' : '';
       return checkDistinctCount(
-        column.distinctCount,
-        column.distinctCountIsEstimate === true,
+        column,
         limit,
-        `${name} has ${about}${formatCount(column.distinctCount, 'distinct value')}; at least ${formatNumber(limit)} ${limit === 1 ? 'is' : 'are'} needed`,
-        decide,
-        sampled
+        `${name} has ${about}${formatCount(column.distinctCount ?? (column.distinctCountLowerBound as number), 'distinct value')}; ${direction} ${formatNumber(limit)} ${limit === 1 ? 'is' : 'are'} needed`,
+        maximum
       );
     }
     default:
@@ -485,7 +602,10 @@ function evaluateColumnRequirement(
       `evaluateGPUAnalysisRequirement: requirement.role of "${requirement.id}" must name a field role`
     );
   }
-  if (requirement.id === 'minimum-distinct-values') {
+  if (
+    requirement.id === 'minimum-distinct-values' ||
+    requirement.id === 'maximum-distinct-values'
+  ) {
     requireLimit(requirement);
   }
   const names = resolveBoundNames(boundColumns[requirement.role]);
@@ -539,6 +659,9 @@ function evaluateColumnRequirement(
  * - `minimum-rows`, `maximum-rows`: `profile.rowCount` against `limit`.
  * - `maximum-vertices`: `profile.vertexCount` against `limit`; for point data the row count; else
  *   unknown.
+ * - `maximum-network-edges`, `maximum-network-nodes`, `maximum-network-arcs`: exact physical
+ *   edges, builder nodes or traversable directed arcs for the selected topology. Unknown without
+ *   network facts; the host must select facts for its revision and topology settings first.
  * - `planar-coordinates`, `geographic-coordinates`: `profile.coordinates.model`. Evidence is
  *   `declaration` or `guess` by its source; unknown when absent. A declared model passes or
  *   fails; a guessed one passes when it agrees with confidence above low and is `unknown` (evidence `guess`, remedy
@@ -548,19 +671,23 @@ function evaluateColumnRequirement(
  * - `row-semantics`: `profile.rowSemantics.value` against `expects`; unknown until present,
  *   and unknown for low-confidence guesses whether matching or contradicting.
  * - `positive-values`, `non-negative-values`: the minimum of each column bound to `role`.
+ * - `numeric-range`: inclusive minimum/maximum and integrality of each bound column, or the
+ *   named numeric parameter in `parameters`. Missing statistics stay unknown. Sampled columns
+ *   can refute a range but cannot establish it for every row.
  * - `no-missing-values`: the null count of each bound column.
  * - `varying-values`: minimum below maximum, else distinct count of at least 2.
- * - `minimum-distinct-values`: exact distinct count against `limit`. Estimated counts are
- *   unknown: the profile contract supplies no guaranteed relative error bound. The same applies
- *   to `varying-values` when only an estimated distinct count is available.
+ * - `minimum-distinct-values`, `maximum-distinct-values`: inclusive guaranteed distinct bounds
+ *   against `limit`. An estimate alone remains unknown. Bounds that straddle the threshold
+ *   require exact refinement. Maximum distinct values expresses category capacity.
  *   Value requirements are `unknown` when no column is bound or the statistic is absent. When a
  *   bound column's statistics are sampled (`sampleSize` below `rowCount`) the evidence is
  *   `sampled-profile` and each id follows one rule. A universal property can be refuted by a
- *   sample but not established: `positive-values`, `non-negative-values`, `no-missing-values`
+ *   sample but not established: `positive-values`, `non-negative-values`, `numeric-range`, `no-missing-values`
  *   and `no-duplicate-locations` fail when the sample shows a counterexample and are `unknown`
  *   when the sample satisfies them. An existential property can be established but not
  *   refuted: `varying-values` and `minimum-distinct-values` pass when the sample shows enough
- *   variety and are `unknown` when it does not. The message names the sample.
+ *   variety. Distinct upper bounds add one potential value per uninspected row, so a sampled
+ *   capacity passes only when that full-population upper bound fits. The message names the sample.
  * - `every-row-has-a-neighbor`: for areas, `profile.contiguity.islandCount` being 0; for points,
  *   always true from two rows on (each point has a nearest neighbor); unknown for other kinds.
  * - `no-duplicate-locations`: `profile.spacing.duplicateLocationCount` being 0 (sampling above).
@@ -573,12 +700,44 @@ function evaluateColumnRequirement(
 export function evaluateGPUAnalysisRequirement(
   requirement: GPUAnalysisRequirementSpec,
   profile: GPUAnalysisDataProfile,
-  boundColumns: GPUAnalysisBoundColumns
+  boundColumns: GPUAnalysisBoundColumns,
+  parameters: Readonly<Record<string, unknown>> = {}
 ): GPUAnalysisRequirementResult {
+  if (requirement.id === 'numeric-range') {
+    const wanted = describeNumericRange(requirement);
+    if (requirement.parameter !== undefined) {
+      if (requirement.role !== undefined)
+        throw new Error(
+          'evaluateGPUAnalysisRequirement: numeric-range must name either a parameter or a role, not both'
+        );
+      const value = parameters[requirement.parameter];
+      if (value === undefined)
+        return unknownResult(
+          requirement,
+          `Parameter ${requirement.parameter} is unknown; requires ${wanted}`
+        );
+      const passed =
+        typeof value === 'number' &&
+        Number.isFinite(value) &&
+        (requirement.minimum === undefined || value >= requirement.minimum) &&
+        (requirement.maximum === undefined || value <= requirement.maximum) &&
+        (!requirement.integer || Number.isInteger(value));
+      return decidedResult(
+        requirement,
+        passed,
+        'declaration',
+        `${requirement.parameter} is ${String(value)}; requires ${wanted}`
+      );
+    }
+    return evaluateColumnRequirement(requirement, profile, boundColumns);
+  }
   switch (requirement.id) {
     case 'minimum-rows':
     case 'maximum-rows':
     case 'maximum-vertices':
+    case 'maximum-network-edges':
+    case 'maximum-network-nodes':
+    case 'maximum-network-arcs':
       return evaluateCountLimit(requirement, profile);
     case 'planar-coordinates':
     case 'geographic-coordinates':
@@ -592,6 +751,7 @@ export function evaluateGPUAnalysisRequirement(
     case 'no-missing-values':
     case 'varying-values':
     case 'minimum-distinct-values':
+    case 'maximum-distinct-values':
       return evaluateColumnRequirement(requirement, profile, boundColumns);
     case 'every-row-has-a-neighbor':
       return evaluateNeighbors(requirement, profile);
@@ -614,10 +774,11 @@ export function evaluateGPUAnalysisRequirement(
 export function evaluateGPUAnalysisRequirements(
   requirements: readonly GPUAnalysisRequirementSpec[],
   profile: GPUAnalysisDataProfile,
-  boundColumns: GPUAnalysisBoundColumns
+  boundColumns: GPUAnalysisBoundColumns,
+  parameters: Readonly<Record<string, unknown>> = {}
 ): readonly GPUAnalysisRequirementResult[] {
   return requirements.map(requirement =>
-    evaluateGPUAnalysisRequirement(requirement, profile, boundColumns)
+    evaluateGPUAnalysisRequirement(requirement, profile, boundColumns, parameters)
   );
 }
 

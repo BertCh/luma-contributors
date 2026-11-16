@@ -21,6 +21,9 @@ import {
 import type {GPUSpaceTimeWeightsLayout} from '../spatial-weights/spatial-weights-space-time-stages';
 import {getChangePointSeriesReaderWGSL} from './change-point-series-wgsl';
 
+import {validateSpatialStatisticsBindings} from '../spatial-weights/spatial-statistics-bindings';
+import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
+
 const OPERATION = 'GPUPettittTest';
 
 /** Largest `sliceCount`: every invocation compares `sliceCount^2` pairs. */
@@ -83,6 +86,7 @@ export class GPUPettittTest implements GPUCommandNodeProducer {
     validateViewLength(id, 'changeSlice', output.changeSlice, cellCount);
     validateSinglePackedView(output.pValues, ['float32'], `${id} pValues`);
     validateViewLength(id, 'pValues', output.pValues, cellCount);
+    validateDisjointWritableViews(id, output);
     validateGraphOutputsDisjointFromInputs(
       id,
       [output.statistic, output.changeSlice, output.pValues],
@@ -95,6 +99,7 @@ export class GPUPettittTest implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
+    validateSpatialStatisticsBindings(graph, id, props);
     const {values, layout, cellCount, sliceCount, output} = props;
     validateGraphViewsBelongToGraph(id, graph, [
       values,

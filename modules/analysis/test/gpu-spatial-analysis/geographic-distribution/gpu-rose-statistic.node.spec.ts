@@ -37,7 +37,9 @@ for (const mode of ['directional', 'axial'] as const) {
     expect(source).toContain('sharedDirectionSine[lane] += sharedDirectionSine[lane + stride];');
     expect(source).toContain('let validCount = f32(sharedCount[0]);');
     expect(source).toContain(
-      mode === 'axial' ? 'let circularAngle = 2.0 * angle;' : 'let circularAngle = angle;'
+      mode === 'axial'
+        ? 'let cosineAngle = (unitDirection.x-unitDirection.y)*(unitDirection.x+unitDirection.y);'
+        : 'let cosineAngle = unitDirection.x;'
     );
     // Evaluate the generated final expression in binary64, independently of the weighted
     // summary. This is a CPU test oracle only, not a production execution path.

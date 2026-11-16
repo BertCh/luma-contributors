@@ -2,12 +2,17 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {createConditionalSimulationBlockNode} from './conditional-simulation-block-kernel';
+import {createGraphChunkGroupKernelNode} from '../../analysis-core/kernels/graph-chunk-groups';
+
 import {
   createTransientView,
+  getBoundedDispatchLayout,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import {createSpatialStatisticsParameterNodes} from '../../analysis-core/kernels/spatial-statistics-parameter-nodes';
 import {
   createWGSLKernelNode,
   createWGSLDispatchGate,
@@ -310,21 +315,38 @@ ${control ? 'preparationState[preparationStateOffset + 1u] = preparationControl[
   const dispatch = createWGSLDispatchGate(graph, {
     id: `${id}-blocked-preparation-dispatch`,
     operation: 'GPUConditionalGaussianSimulation',
-    shapes: preparationKernels.map(kernel => [kernel.invocationCount, kernel.workgroupSize])
+    shapes: preparationKernels.map(kernel => [kernel.invocationCount, kernel.workgroupSize ?? 64])
   });
   const factorKernelCount = preparationKernels.findIndex(
     kernel => kernel.variant === 'blocked-whiten-initialize'
   );
+  const dispatchParameters = createSpatialStatisticsParameterNodes(
+    graph,
+    `${id}-blocked-dispatch-shapes`,
+    Uint32Array.from(
+      preparationKernels.flatMap((kernel, slot) => {
+        const layout = getBoundedDispatchLayout(
+          'GPUConditionalGaussianSimulation',
+          kernel.invocationCount,
+          kernel.workgroupSize ?? 64,
+          graph.device.limits.maxComputeWorkgroupsPerDimension
+        );
+        return [layout.x, layout.y, layout.z, Number(slot >= factorKernelCount)];
+      })
+    )
+  );
   const nodes: GPUCommandNode<Parameters>[] = [
+    ...dispatchParameters.nodes,
     createWGSLKernelNode(graph, {
       id: `${id}-blocked-preparation-gates`,
       operation: 'GPUConditionalGaussianSimulation',
       variant: 'blocked-preparation-gates',
-      invocationCount: 1,
+      invocationCount: preparationKernels.length,
       bindings: [
         {name: 'scratch', view: scratch, type: 'f32', access: 'read'},
         {name: 'failure', view: failure, type: 'atomic<u32>', access: 'read_write'},
         dispatch.binding,
+        {name: 'dispatchShapes', view: dispatchParameters.parameters, type: 'u32', access: 'read'},
         ...(control && simulation.preparationState
           ? [
               {
@@ -342,18 +364,57 @@ ${control ? 'preparationState[preparationStateOffset + 1u] = preparationControl[
             ]
           : [])
       ],
-      body: `atomicStore(&failure[failureOffset], 0u);
-${dispatch.armWGSL}
-if (!(${factorGate})) {
-  for (var slot = 0u; slot < ${factorKernelCount}u; slot++) { dispatch[dispatchOffset + slot * 3u] = 0u; }
-}${control ? ' else { preparationState[preparationStateOffset + 4u]++; }' : ''}
-if (!(${momentsGate})) {
-  for (var slot = ${factorKernelCount}u; slot < ${preparationKernels.length}u; slot++) { dispatch[dispatchOffset + slot * 3u] = 0u; }
+      body: `let shape = dispatchShapesOffset + index * 4u;
+let enabled = select(${factorGate}, ${momentsGate}, dispatchShapes[shape + 3u] != 0u);
+dispatch[dispatchOffset + index * 3u] = select(0u, dispatchShapes[shape], enabled);
+dispatch[dispatchOffset + index * 3u + 1u] = dispatchShapes[shape + 1u];
+dispatch[dispatchOffset + index * 3u + 2u] = dispatchShapes[shape + 2u];
+if (index == 0u) {
+  atomicStore(&failure[failureOffset], 0u);
+  ${control ? `if (${factorGate}) { preparationState[preparationStateOffset + 4u]++; }` : ''}
 }`
     }),
-    ...preparationKernels.map((kernel, slot) =>
-      createWGSLKernelNode(graph, {...kernel, ...dispatch.getGate(slot)})
-    ),
+    ...preparationKernels.map((kernel, slot) => {
+      const blockStart = kernel.constants?.['BLOCK_START'] ?? 0;
+      const replaceTopology = (source: string) =>
+        source
+          .replace(/override (?:BLOCK_START|TILES_PER_AXIS): u32;/g, '')
+          .replace(
+            /\bTILES_PER_AXIS\b/g,
+            `((${capacity}u - getChunkParameter(0u) - 1u) / BLOCK_SIZE)`
+          )
+          .replace(/\bBLOCK_START\b/g, 'getChunkParameter(0u)');
+      if (kernel.guardIndex === false) {
+        return createConditionalSimulationBlockNode(graph, {
+          id: kernel.id,
+          operation: kernel.operation,
+          variant: kernel.variant,
+          bindings: kernel.bindings,
+          invocationCount: kernel.invocationCount,
+          blockStart,
+          declarations: replaceTopology(kernel.declarations ?? ''),
+          body: replaceTopology(kernel.body),
+          ...dispatch.getGate(slot)
+        });
+      }
+      return createGraphChunkGroupKernelNode(graph, {
+        id: kernel.id,
+        pipelineId: `${id}-${kernel.variant}`,
+        operation: kernel.operation,
+        variant: kernel.variant,
+        bindings: kernel.bindings,
+        invocationCount: kernel.invocationCount,
+        workgroupSize: kernel.workgroupSize ?? 64,
+        rowBase: blockStart,
+        totalLength: capacity,
+        declarations: replaceTopology(kernel.declarations ?? ''),
+        // Uncalled helper functions do not retain bindings in an inferred WebGPU layout.
+        // Mirror createWGSLKernelNode's address-only references without reading any storage.
+        body: `${kernel.bindings.map(binding => `_ = &${binding.name};`).join('\n')}
+${replaceTopology(kernel.body)}`,
+        ...dispatch.getGate(slot)
+      });
+    }),
     createWGSLKernelNode(graph, {
       id: `${id}-blocked-publish-moments`,
       operation: 'GPUConditionalGaussianSimulation',

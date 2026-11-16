@@ -3,6 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  validateTrajectoryBindings,
+  validateTrajectoryWritableDispatches,
+  validateTrajectoryOutputRanges
+} from '../trajectory-analysis/trajectory-binding-validation';
+import {
   createFullCovarianceKalmanNodes,
   getKalmanTimeSource
 } from './trajectory-kalman-full-covariance';
@@ -164,7 +169,8 @@ export class GPUTrajectoryKalman implements GPUCommandNodeProducer {
     validateRequirement(
       this.id,
       props.timeUnitsPerSecond === undefined ||
-        (Number.isFinite(props.timeUnitsPerSecond) && props.timeUnitsPerSecond > 0),
+        (Number.isFinite(Math.fround(props.timeUnitsPerSecond)) &&
+          Math.fround(props.timeUnitsPerSecond) > 0),
       'timeUnitsPerSecond must be a positive finite number'
     );
     validateSinglePackedView(props.offsets, ['uint32'], this.id);
@@ -204,6 +210,26 @@ export class GPUTrajectoryKalman implements GPUCommandNodeProducer {
       Boolean(props.output.smoothedState) === Boolean(props.output.smoothedCovariance),
       'output.smoothedState and output.smoothedCovariance must be given together'
     );
+    validateTrajectoryOutputRanges(this.id, this.props.output);
+    validateTrajectoryWritableDispatches(this.id, [
+      {
+        filteredState: props.output.filteredState,
+        filteredCovariance: props.output.filteredCovariance,
+        status: props.output.status
+      },
+      {
+        smoothedState: props.output.smoothedState,
+        smoothedCovariance: props.output.smoothedCovariance,
+        status: props.output.status
+      }
+    ]);
+    if (props.output.smoothedState) {
+      validateGraphOutputsDisjointFromInputs(
+        this.id,
+        [props.output.status, props.output.smoothedState, props.output.smoothedCovariance],
+        [props.output.filteredState, props.output.filteredCovariance]
+      );
+    }
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
       props.positions,
       props.times,
@@ -215,6 +241,7 @@ export class GPUTrajectoryKalman implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateTrajectoryBindings(graph, this.id, this.props);
     const {props, id} = this;
     validateGraphViewsBelongToGraph(id, graph, [
       props.positions,

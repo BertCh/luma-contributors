@@ -9,10 +9,7 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
-import {
-  createWGSLKernelNode,
-  type WGSLKernelBinding
-} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {type WGSLKernelBinding} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
@@ -23,6 +20,9 @@ import {
   validateFloat32OrUint32Values,
   type GPUFloat32OrUint32Values
 } from '../spatial-weights/float32-values';
+import {validateSpatialStatisticsBindings} from '../spatial-weights/spatial-statistics-bindings';
+import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {createSpatialStatisticsRowNode} from '../spatial-weights/spatial-statistics-row-dispatch';
 import {SPATIAL_AUTOCORRELATION_FLOAT_WGSL} from '../spatial-autocorrelation/spatial-autocorrelation-kernels';
 import {
   type GPUSpatialWeights,
@@ -32,7 +32,6 @@ import {
   getGPUSpatialWeightsChunkDispatches,
   getGPUSpatialWeightsOrChunksViews,
   validateGPUSpatialWeightsOrChunks,
-  wrapGPUSpatialWeightsChunkBody,
   type GPUChunkedSpatialWeights
 } from '../spatial-weights/gpu-chunked-spatial-weights';
 
@@ -138,6 +137,7 @@ export class GPUSpatialEmpiricalBayesRates implements GPUCommandNodeProducer {
         throw new Error(`${id} mask length must equal the events length`);
       }
     }
+    validateDisjointWritableViews(id, props.output);
     const outputs = this._getOutputs();
     for (const [name, view] of outputs) {
       validateSinglePackedView(view, ['float32'], `${id} output.${name}`);
@@ -165,6 +165,9 @@ export class GPUSpatialEmpiricalBayesRates implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
+    validateSpatialStatisticsBindings(graph, id, props, {
+      'row conversions': props.events.length * 4
+    });
     const {weights, mask} = props;
     const outputs = this._getOutputs();
     validateGraphViewsBelongToGraph(id, graph, [
@@ -223,10 +226,11 @@ export class GPUSpatialEmpiricalBayesRates implements GPUCommandNodeProducer {
           includedWGSL('neighbor'),
           action,
           'index',
-          dispatch.rowStartWGSL
+          'WEIGHTS_ROW_START'
         );
       return outputChunks.map((chunk, chunkIndex) =>
-        createWGSLKernelNode<Parameters>(graph, {
+        createSpatialStatisticsRowNode<Parameters>(graph, {
+          rowBase: dispatch.rowStart,
           id: `${outputChunks.length > 1 ? `${id}-smooth-${chunkIndex}` : `${id}-smooth`}${dispatch.idSuffix}`,
           operation: OPERATION,
           variant: 'smooth',
@@ -241,22 +245,18 @@ export class GPUSpatialEmpiricalBayesRates implements GPUCommandNodeProducer {
           ],
           invocationCount: dispatch.rowCount,
           declarations: `const ROWS: u32 = ${rows}u;
-const CAPACITY: u32 = ${dispatch.weights.neighbors.length}u;
-${dispatch.constantsWGSL}
 ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`,
-          body: wrapGPUSpatialWeightsChunkBody(
-            dispatch,
-            `let nan = getQuietNaN(index);
+          body: `let nan = getQuietNaN(index);
   if (!${includedWGSL('index')}) {
     ${writeOutputs(chunk, () => 'nan')}
     return;
   }
   var eventSum = events[eventsOffset + index];
   var populationSum = populations[populationsOffset + index];
-  var count = 1.0;
+  var count = 1u;
   ${getNeighborLoopWGSL(`eventSum += events[eventsOffset + neighbor];
       populationSum += populations[populationsOffset + neighbor];
-      count += 1.0;`)}
+      count++;`)}
   let priorMean = eventSum / populationSum;
   let ownDeviation = events[eventsOffset + index] / populations[populationsOffset + index] - priorMean;
   var deviationSum = populations[populationsOffset + index] * ownDeviation * ownDeviation;
@@ -264,14 +264,13 @@ ${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}`,
       let deviation = events[eventsOffset + neighbor] / b - priorMean;
       deviationSum += b * deviation * deviation;`)}
   let spatialRate = priorMean;
-  let priorVariance = max(deviationSum / populationSum - priorMean / (populationSum / count), 0.0);
+  let priorVariance = max(deviationSum / populationSum - priorMean / (divideBySpatialCount(populationSum, count)), 0.0);
   let ownPopulation = populations[populationsOffset + index];
   let ownRate = events[eventsOffset + index] / ownPopulation;
   let denominator = priorVariance + priorMean / ownPopulation;
   let weight = select(0.0, priorVariance / denominator, denominator > 0.0);
   let smoothed = weight * ownRate + (1.0 - weight) * priorMean;
   ${writeOutputs(chunk, name => expressions[name])}`
-          )
         })
       );
     });

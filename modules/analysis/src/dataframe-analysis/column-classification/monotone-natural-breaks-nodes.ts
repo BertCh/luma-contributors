@@ -3,7 +3,13 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  createClassificationKernelNode,
+  type ClassificationKernelProps
+} from './classification-kernel-node';
+import {Buffer} from '@luma.gl/core';
+import {
   createTransientView,
+  getBoundedDispatchLayout,
   GPUScan,
   GPUScanUint64,
   GPUSort,
@@ -11,16 +17,13 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {
-  createWGSLActiveCountDispatch,
-  createWGSLKernelNode,
-  type WGSLKernelBinding
-} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import type {WGSLKernelBinding} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {validateGPUStorageBindingByteLength} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   CLASS_BREAKS_EXTREMES,
   CLASS_BREAKS_STATE,
-  CLASS_BREAKS_WIDE_WGSL
+  CLASS_BREAKS_WIDE_WGSL,
+  getClassBreaksIndirectGate
 } from './class-breaks-kernels';
 import {GPU_CLASS_BREAKS_METHOD_CODES} from './class-breaks-parameters';
 import {COLUMN_ORDERED_KEY_WGSL} from './column-classification-shared';
@@ -51,7 +54,22 @@ export function getMonotoneNaturalBreaksNodes<Parameters>(
   const id = `${props.id}-monotone-natural-breaks`;
   const rowCount = values.length;
   const stride = rowCount + 1;
+  const createWGSLKernelNode = (
+    targetGraph: GPUCommandGraph<Parameters>,
+    kernelProps: ClassificationKernelProps<Parameters>
+  ) =>
+    createClassificationKernelNode(targetGraph, {
+      ...kernelProps,
+      parameterValues: [rowCount, stride, ...(kernelProps.parameterValues ?? [])]
+    });
+
   const workgroupSize = 64;
+  const taskLayout = getBoundedDispatchLayout(
+    id,
+    rowCount * workgroupSize,
+    workgroupSize,
+    graph.device.limits.maxComputeWorkgroupsPerDimension
+  );
   for (const [name, words] of [
     ['partitions', (maximumClassCount + 1) * stride],
     ['tasks', rowCount * 8],
@@ -89,7 +107,7 @@ export function getMonotoneNaturalBreaksNodes<Parameters>(
   ): WGSLKernelBinding => ({name, view, type, access});
   const active = `state[stateOffset + ${CLASS_BREAKS_STATE.method}u] == ${GPU_CLASS_BREAKS_METHOD_CODES['natural-breaks']}u`;
   const finiteCount = `extremes[extremesOffset + ${CLASS_BREAKS_EXTREMES.finiteCount}u]`;
-  const declarations = `${COLUMN_ORDERED_KEY_WGSL}\n${CLASS_BREAKS_WIDE_WGSL}\nconst ROW_COUNT: u32 = ${rowCount}u;\nconst STRIDE: u32 = ${stride}u;`;
+  const declarations = `${COLUMN_ORDERED_KEY_WGSL}\n${CLASS_BREAKS_WIDE_WGSL}\nfn getReferenceRowCount() -> u32 { return getChunkParameter(36u); }\nfn getReferenceStride() -> u32 { return getChunkParameter(37u); }`;
   const nodes: GPUCommandNode<Parameters>[] = [
     createWGSLKernelNode(graph, {
       id: `${id}-initialize`,
@@ -100,7 +118,7 @@ export function getMonotoneNaturalBreaksNodes<Parameters>(
         binding('scores', scores, 'f32', 'read_write'),
         binding('cursor', cursor, 'u32', 'read_write')
       ],
-      body: `if (index < ${scores.length}u) { scores[scoresOffset + index] = select(1e30, 0.0, index == 0u); }
+      body: `if (index < (arrayLength(&scores) - scoresOffset)) { scores[scoresOffset + index] = select(1e30, 0.0, index == 0u); }
   if (index < 5u) { cursor[cursorOffset + index] = 0u; }`
     }),
     createWGSLKernelNode(graph, {
@@ -162,10 +180,10 @@ export function getMonotoneNaturalBreaksNodes<Parameters>(
   }
   let square = multiplyWide(position, position);
   moments[momentsOffset + index] = position;
-  moments[momentsOffset + ROW_COUNT + index] = 0u;
-  moments[momentsOffset + 2u * ROW_COUNT + index] = square.x;
-  moments[momentsOffset + 3u * ROW_COUNT + index] = square.y;
-  moments[momentsOffset + 4u * ROW_COUNT + index] = u32(distinct);`
+  moments[momentsOffset + getReferenceRowCount() + index] = 0u;
+  moments[momentsOffset + 2u * getReferenceRowCount() + index] = square.x;
+  moments[momentsOffset + 3u * getReferenceRowCount() + index] = square.y;
+  moments[momentsOffset + 4u * getReferenceRowCount() + index] = u32(distinct);`
     })
   ];
   const momentView = (view: GraphDataView<'uint32'>, field: number) =>
@@ -176,6 +194,13 @@ export function getMonotoneNaturalBreaksNodes<Parameters>(
     });
   const prefixLow = make('prefix-low', rowCount);
   const prefixHigh = make('prefix-high', rowCount);
+  const taskDispatch = createTransientView(
+    graph,
+    `${id}-task-dispatch`,
+    'uint32',
+    3,
+    Buffer.STORAGE | Buffer.INDIRECT
+  );
   for (const field of [0, 2]) {
     nodes.push(
       ...new GPUScanUint64({
@@ -193,10 +218,19 @@ export function getMonotoneNaturalBreaksNodes<Parameters>(
         bindings: [
           binding('low', prefixLow),
           binding('high', prefixHigh),
-          binding('prefix', prefix, 'u32', 'read_write')
+          binding(
+            'prefix',
+            graph.createDataView(prefix.buffer, {
+              format: 'uint32',
+              byteOffset: prefix.byteOffset + field * rowCount * 4,
+              length: 2 * rowCount
+            }),
+            'u32',
+            'read_write'
+          )
         ],
-        body: `prefix[prefixOffset + ${field * rowCount}u + index] = low[lowOffset + index];
-  prefix[prefixOffset + ${(field + 1) * rowCount}u + index] = high[highOffset + index];`
+        body: `prefix[prefixOffset + index] = low[lowOffset + index];
+  prefix[prefixOffset + getChunkParameter(36u) + index] = high[highOffset + index];`
       })
     );
   }
@@ -230,7 +264,7 @@ export function getMonotoneNaturalBreaksNodes<Parameters>(
   cursor[cursorOffset + 1u] = 0u;
   cursor[cursorOffset + 2u] = select(0u, 1u, ${active} && count > 0u && layer <= min(cursor[cursorOffset + 4u], state[stateOffset + ${CLASS_BREAKS_STATE.classCount}u]));
   cursor[cursorOffset + 3u] = count;
-  scores[scoresOffset + (layer & 1u) * STRIDE] = 1e30;
+  scores[scoresOffset + (layer & 1u) * getReferenceStride()] = 1e30;
   tasks[tasksOffset] = 1u;
   tasks[tasksOffset + 1u] = count;
   tasks[tasksOffset + 2u] = layer - 1u;
@@ -238,25 +272,46 @@ export function getMonotoneNaturalBreaksNodes<Parameters>(
       })
     );
     for (let level = 0; level < maximumLevels; level++) {
-      const gate = createWGSLActiveCountDispatch(graph, {
-        id: `${id}-dispatch-${layer}-${level}`,
-        operation: 'GPUClassBreaks',
-        count: cursor,
-        countRow: 2,
-        maximumItemCount: rowCount,
-        invocationsPerItem: workgroupSize,
-        workgroupSize
-      });
       nodes.push(
-        gate.updateNode,
+        createWGSLKernelNode(graph, {
+          id: `${id}-dispatch-${layer}-${level}`,
+          operation: 'GPUClassBreaks',
+          invocationCount: 1,
+          parameterValues: [taskLayout.x, taskLayout.y],
+          bindings: [
+            binding('cursor', cursor),
+            binding('dispatch', taskDispatch, 'u32', 'read_write')
+          ],
+          body: `let taskCount = min(cursor[cursorOffset + 2u], getChunkParameter(36u));
+  let maximumX = getChunkParameter(38u);
+  let maximumY = getChunkParameter(39u);
+  var x = min(taskCount, maximumX);
+  var y = 1u;
+  var z = 1u;
+  if (taskCount > maximumX) {
+    x = maximumX;
+    y = min((taskCount + maximumX - 1u) / maximumX, maximumY);
+  }
+  if (taskCount > maximumX * maximumY) {
+    y = maximumY;
+    z = (taskCount + maximumX * maximumY - 1u) / (maximumX * maximumY);
+  }
+  dispatch[dispatchOffset] = x;
+  dispatch[dispatchOffset + 1u] = y;
+  dispatch[dispatchOffset + 2u] = z;`
+        }),
         createWGSLKernelNode(graph, {
           id: `${id}-search-${layer}-${level}`,
           operation: 'GPUClassBreaks',
           variant: 'monotone-search',
+          workgroupCollective: true,
           invocationCount: rowCount * workgroupSize,
           workgroupSize,
-          guardIndex: false,
-          condition: gate.condition,
+          ...getClassBreaksIndirectGate<Parameters>(
+            `${id}-search-${layer}-${level}`,
+            taskDispatch,
+            0
+          ),
           bindings: [
             binding('sortedKeys', sortedKeys),
             binding('prefix', prefix),
@@ -271,7 +326,7 @@ var<workgroup> candidateSplits: array<u32, ${workgroupSize}>;
 var<workgroup> requiresFallback: u32;
 fn readPrefix(field: u32, end: u32) -> vec2<u32> {
   if (end == 0u) { return vec2<u32>(0u); }
-  return vec2<u32>(prefix[prefixOffset + field * ROW_COUNT + end - 1u], prefix[prefixOffset + (field + 1u) * ROW_COUNT + end - 1u]);
+  return vec2<u32>(prefix[prefixOffset + field * getReferenceRowCount() + end - 1u], prefix[prefixOffset + (field + 1u) * getReferenceRowCount() + end - 1u]);
 }
 fn rangeCost(first: u32, end: u32) -> f32 {
   return getClassCost(end - first, subtractWide(readPrefix(0u, end), readPrefix(0u, first)), subtractWide(readPrefix(2u, end), readPrefix(2u, first)));
@@ -281,17 +336,17 @@ fn rangeCost(first: u32, end: u32) -> f32 {
   let layer = cursor[cursorOffset];
   let level = cursor[cursorOffset + 1u];
   let taskCount = cursor[cursorOffset + 2u];
-  let base = tasksOffset + (level & 1u) * ROW_COUNT * 4u + min(task, ROW_COUNT - 1u) * 4u;
+  let base = tasksOffset + (level & 1u) * getReferenceRowCount() * 4u + min(task, getReferenceRowCount() - 1u) * 4u;
   let first = tasks[base]; let last = tasks[base + 1u];
   let lower = tasks[base + 2u]; let upper = tasks[base + 3u];
   let end = first + (last - min(first, last)) / 2u;
   var best = 1e30; var split = lower;
-  let feasible = task < taskCount && first <= last && prefix[prefixOffset + 4u * ROW_COUNT + min(end - 1u, ROW_COUNT - 1u)] >= layer;
+  let feasible = task < taskCount && first <= last && prefix[prefixOffset + 4u * getReferenceRowCount() + min(end - 1u, getReferenceRowCount() - 1u)] >= layer;
   if (feasible) {
     let high = min(max(upper, lower), end - 1u);
     for (var start = lower + local; start <= high; start += ${workgroupSize}u) {
       if (start > 0u && decodeOrderedKey(sortedKeys[sortedKeysOffset + start - 1u]) == decodeOrderedKey(sortedKeys[sortedKeysOffset + start])) { continue; }
-      let candidate = scores[scoresOffset + ((layer - 1u) & 1u) * STRIDE + start] + rangeCost(start, end);
+      let candidate = scores[scoresOffset + ((layer - 1u) & 1u) * getReferenceStride() + start] + rangeCost(start, end);
       if (candidate < best || (candidate == best && start < split)) { best = candidate; split = start; }
     }
   }
@@ -314,7 +369,7 @@ fn rangeCost(first: u32, end: u32) -> f32 {
     best = 1e30; split = layer - 1u;
     for (var start = layer - 1u + local; start < end; start += ${workgroupSize}u) {
       if (start > 0u && decodeOrderedKey(sortedKeys[sortedKeysOffset + start - 1u]) == decodeOrderedKey(sortedKeys[sortedKeysOffset + start])) { continue; }
-      let candidate = scores[scoresOffset + ((layer - 1u) & 1u) * STRIDE + start] + rangeCost(start, end);
+      let candidate = scores[scoresOffset + ((layer - 1u) & 1u) * getReferenceStride() + start] + rangeCost(start, end);
       if (candidate < best || (candidate == best && start < split)) { best = candidate; split = start; }
     }
     candidateCosts[local] = best; candidateSplits[local] = split;
@@ -332,11 +387,11 @@ fn rangeCost(first: u32, end: u32) -> f32 {
   if (local == 0u && task < taskCount) {
     let selected = candidateSplits[0];
     if (first <= last) {
-      scores[scoresOffset + (layer & 1u) * STRIDE + end] = candidateCosts[0];
-      partitions[partitionsOffset + layer * STRIDE + end] = selected;
+      scores[scoresOffset + (layer & 1u) * getReferenceStride() + end] = candidateCosts[0];
+      partitions[partitionsOffset + layer * getReferenceStride() + end] = selected;
     }
-    if (taskCount * 2u <= ROW_COUNT) {
-      let next = tasksOffset + ((level + 1u) & 1u) * ROW_COUNT * 4u + task * 8u;
+    if (taskCount * 2u <= getReferenceRowCount()) {
+      let next = tasksOffset + ((level + 1u) & 1u) * getReferenceRowCount() * 4u + task * 8u;
       tasks[next] = first; tasks[next + 1u] = select(0u, end - 1u, first <= last);
       tasks[next + 2u] = lower; tasks[next + 3u] = max(lower, selected);
       tasks[next + 4u] = select(1u, end + 1u, first <= last); tasks[next + 5u] = select(0u, last, first <= last);
@@ -377,7 +432,7 @@ fn rangeCost(first: u32, end: u32) -> f32 {
   let classes = min(cursor[cursorOffset + 4u], state[stateOffset + ${CLASS_BREAKS_STATE.classCount}u]);
   edgeState[edgeStateOffset] = classes;
   for (var layer = classes; layer > 1u; layer--) {
-    let split = partitions[partitionsOffset + layer * STRIDE + end];
+    let split = partitions[partitionsOffset + layer * getReferenceStride() + end];
     edges[edgesOffset + layer - 1u] = decodeOrderedKey(sortedKeys[sortedKeysOffset + split]);
     end = split;
   }`

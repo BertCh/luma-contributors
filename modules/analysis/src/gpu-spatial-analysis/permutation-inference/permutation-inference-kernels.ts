@@ -5,6 +5,7 @@
 import {
   createTransientView,
   GPUScan,
+  GPUReduction,
   validatePackedUint32View,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -24,20 +25,31 @@ import {
 } from '../spatial-weights/spatial-weights';
 import {
   getGPUSpatialWeightsChunks,
+  getGPUSpatialWeightsOrChunksViews,
   validateGPUSpatialWeightsOrChunks,
   type GPUChunkedSpatialWeights
 } from '../spatial-weights/gpu-chunked-spatial-weights';
 import {SPATIAL_AUTOCORRELATION_FLOAT_WGSL} from '../spatial-autocorrelation/spatial-autocorrelation-kernels';
 import {GPU_PERMUTATION_PARAMETER_LENGTH} from './permutation-parameters';
-import {validateCapacity} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  validateCapacity,
+  validateGPUStorageBindingByteLength
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createFloat32ValuesNodes,
   type GPUFloat32OrUint32Values,
   validateFloat32OrUint32Values
 } from '../spatial-weights/float32-values';
 
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateGraphChunkGroupKernelSupport} from '../../analysis-core/kernels/graph-chunk-groups';
+import {createSpatialStatisticsRowNode} from '../spatial-weights/spatial-statistics-row-dispatch';
+
 /** Rows reduced by one workgroup in the first level of the deterministic column sums. @internal */
 export const BLOCK_ROWS = 4096;
+
+/** uint32 row addresses leave one full reduction block for strided-loop increments and trailing counts. */
+export const PERMUTATION_MAXIMUM_ROW_COUNT = 0xffffffff - BLOCK_ROWS;
 
 /** `rowPositions` value of an excluded row. @internal */
 export const PERMUTATION_INVALID_POSITION = 0xffffffff;
@@ -71,6 +83,7 @@ export type PermutationInputProps = {
   mask?: GraphDataView<'uint32'>;
   parameters: GraphDataView<'uint32'>;
   maximumPermutations: number;
+  analysisCount?: GraphDataView<'uint32'>;
   /** Island policy; defaults to `'exclude'`. */
   islands?: GPUIslandPolicy;
   /**
@@ -123,7 +136,7 @@ export type PermutationInputs<Parameters> = {
 export function validatePermutationInputs(props: PermutationInputProps): number {
   const {id} = props;
   const rows = validateGPUSpatialWeightsOrChunks(id, props.weights);
-  validateCapacity(id, 'weights row count', rows, 2, 2 ** 24 - 1);
+  validateCapacity(id, 'weights row count', rows, 2, PERMUTATION_MAXIMUM_ROW_COUNT);
   if (validateFloat32OrUint32Values(props.values, `${id} values`) !== rows) {
     throw new Error(`${id} values length must equal the weights row count`);
   }
@@ -138,6 +151,10 @@ export function validatePermutationInputs(props: PermutationInputProps): number 
     if (props.mask.length !== rows) {
       throw new Error(`${id} mask length must equal the weights row count`);
     }
+  }
+  if (props.analysisCount) {
+    validatePackedUint32View(props.analysisCount, `${id} output.analysisCount`);
+    validateCapacity(id, 'output.analysisCount length', props.analysisCount.length, 1, 1);
   }
   if (props.islandCount) {
     validatePackedUint32View(props.islandCount, `${id} output.islandCount`);
@@ -156,6 +173,40 @@ export function validatePermutationInputs(props: PermutationInputProps): number 
   );
   validateCapacity(id, 'maximumPermutations', props.maximumPermutations, 1, 2 ** 20);
   return rows;
+}
+
+/** Preflights the exact-rank preparation bindings and its split-column scratch. @internal */
+export function validatePermutationInputBindings<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: PermutationInputProps,
+  outputs: readonly (GraphDataView | undefined)[] = []
+): void {
+  validateGraphChunkGroupKernelSupport(graph, props.id, 8);
+  validateGraphChunkBindingRanges(
+    graph,
+    props.id,
+    Object.fromEntries(
+      [
+        ...getGPUSpatialWeightsOrChunksViews(props.weights),
+        props.weights.status?.overflow,
+        props.values,
+        props.secondValues,
+        props.mask,
+        props.parameters,
+        props.islandCount,
+        props.analysisCount,
+        ...outputs
+      ].map((view, index) => [`binding ${index}`, view])
+    )
+  );
+
+  validateGPUStorageBindingByteLength(
+    graph.device,
+    props.id,
+    'row positions scratch',
+    (props.values.length + 1) * 4,
+    'reduce packed rows or request larger device bindings'
+  );
 }
 
 /**
@@ -221,6 +272,7 @@ export function getPermutationInputNodes<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: PermutationInputProps & {centerX: boolean}
 ): PermutationInputs<Parameters> {
+  validatePermutationInputBindings(graph, props);
   const {id, operation, weights, mask} = props;
   const valuesInput = createFloat32ValuesNodes(graph, `${id}-values`, props.values);
   const secondInput = props.secondValues
@@ -234,7 +286,16 @@ export function getPermutationInputNodes<Parameters>(
   const rows = values.length;
   const blockCount = Math.ceil(rows / BLOCK_ROWS);
   const columnCount = 8;
-  const matrix = createTransientView(graph, `${id}-matrix`, 'float32', columnCount * rows);
+  // A separate binding per column keeps preparation at one word per row, even at 30M rows.
+  const columns = Array.from({length: columnCount}, (_, column) =>
+    createTransientView(graph, `${id}-column-${column}`, 'float32', rows)
+  );
+  const columnBinding = (column: number): WGSLKernelBinding => ({
+    name: `column${column}`,
+    view: columns[column],
+    type: 'f32',
+    access: 'read_write'
+  });
   const flags = createTransientView(graph, `${id}-flags`, 'uint32', rows);
   const analysisFlags = createTransientView(graph, `${id}-analysis-flags`, 'uint32', rows);
   const scanned = createTransientView(graph, `${id}-scanned`, 'uint32', rows);
@@ -262,25 +323,15 @@ export function getPermutationInputNodes<Parameters>(
   const totalsB = createTransientView(graph, `${id}-totals-b`, 'float32', 2);
   const totalsC = createTransientView(graph, `${id}-totals-c`, 'float32', 4);
   const totals = createTransientView(graph, `${id}-totals`, 'float32', 9);
-  const getConstantsWGSL = (capacity: number, rowStart?: number) => `const ROWS: u32 = ${rows}u;
-const CAPACITY: u32 = ${capacity}u;
-${rowStart === undefined ? '' : `const WEIGHTS_ROW_START: u32 = ${rowStart}u;\n`}const INVALID_POSITION: u32 = ${PERMUTATION_INVALID_POSITION}u;
-fn getMatrixIndex(column: u32, row: u32) -> u32 {
-  return column * ROWS + row;
-}
+  const constantsWGSL = `const ROWS: u32 = ${rows}u;
+const INVALID_POSITION: u32 = ${PERMUTATION_INVALID_POSITION}u;
 ${PERMUTATION_FLOAT_WGSL}`;
-  const constantsWGSL = getConstantsWGSL(weightChunks[0].weights.neighbors.length);
-  // The body of a chunk's kernel sees the global row as `index`; its offsets start at the chunk row.
   const getChunkKernelProps = (chunk: (typeof chunkWeights)[number], chunkIndex: number) => ({
     idSuffix: isWholeWeights ? '' : `-${chunkIndex}`,
-    invocationCount: isWholeWeights ? rows : chunk.rowCount,
-    declarations: getConstantsWGSL(
-      chunk.weights.neighbors.length,
-      isWholeWeights ? undefined : chunk.rowStart
-    ),
-    rowStart: isWholeWeights ? undefined : 'WEIGHTS_ROW_START',
-    wrapBody: (body: string) =>
-      isWholeWeights ? body : `{ let index = index + WEIGHTS_ROW_START;\n${body}\n}`
+    invocationCount: chunk.rowCount,
+    declarations: constantsWGSL,
+    rowStart: 'WEIGHTS_ROW_START',
+    wrapBody: (body: string) => body
   });
   const getWeightBindings = (
     chunk: (typeof chunkWeights)[number],
@@ -330,7 +381,8 @@ ${PERMUTATION_FLOAT_WGSL}`;
     }),
     ...chunkWeights.map((chunk, chunkIndex) => {
       const chunkKernel = getChunkKernelProps(chunk, chunkIndex);
-      return createWGSLKernelNode<Parameters>(graph, {
+      return createSpatialStatisticsRowNode<Parameters>(graph, {
+        rowBase: chunk.rowStart,
         id: `${id}-analysis${chunkKernel.idSuffix}`,
         operation,
         variant: keepIslands ? 'analysis-keep' : 'analysis-exclude',
@@ -373,20 +425,21 @@ ${PERMUTATION_FLOAT_WGSL}`;
         {name: 'values', view: values, type: 'f32', access: 'read'},
         ...secondBinding,
         {name: 'analysisFlags', view: analysisFlags, type: 'u32', access: 'read'},
-        {name: 'matrix', view: matrix, type: 'f32', access: 'read_write'}
+        columnBinding(0),
+        columnBinding(1)
       ],
       invocationCount: rows,
       declarations: constantsWGSL,
       body: `let analyzed = analysisFlags[analysisFlagsOffset + index] != 0u;
-  matrix[matrixOffset + getMatrixIndex(0u, index)] =
+  column0[column0Offset + index] =
     select(0.0, values[valuesOffset + index], analyzed);
-  matrix[matrixOffset + getMatrixIndex(1u, index)] =
+  column1[column1Offset + index] =
     select(0.0, ${secondValues ? 'secondValues[secondValuesOffset + index]' : '0.0'}, analyzed);`
     }),
-    ...getColumnSumNodes<Parameters>(graph, {
+    ...getSplitColumnSumNodes<Parameters>(graph, {
       id: `${id}-sum-a`,
       operation,
-      matrix,
+      columns,
       rows,
       blockCount,
       first: 0,
@@ -425,64 +478,73 @@ ${PERMUTATION_FLOAT_WGSL}`;
       bindings: [
         {name: 'rowPositions', view: rowPositions, type: 'u32', access: 'read'},
         {name: 'totalsA', view: totalsA, type: 'f32', access: 'read'},
-        {name: 'matrix', view: matrix, type: 'f32', access: 'read_write'}
+        columnBinding(0),
+        columnBinding(1),
+        columnBinding(2),
+        columnBinding(3)
       ],
       // First-pass deviations from the tree-sum mean; their sum corrects that mean below.
       invocationCount: rows,
       declarations: constantsWGSL,
       body: `let included = rowPositions[rowPositionsOffset + index] != INVALID_POSITION;
-  let count = f32(rowPositions[rowPositionsOffset + ROWS]);
-  matrix[matrixOffset + getMatrixIndex(2u, index)] =
-    select(0.0, matrix[matrixOffset + getMatrixIndex(0u, index)] - totalsA[totalsAOffset] / count, included);
-  matrix[matrixOffset + getMatrixIndex(3u, index)] =
-    select(0.0, matrix[matrixOffset + getMatrixIndex(1u, index)] - totalsA[totalsAOffset + 1u] / count, included);`
+  let count = rowPositions[rowPositionsOffset + ROWS];
+  column2[column2Offset + index] =
+    select(0.0, column0[column0Offset + index] - divideBySpatialCount(totalsA[totalsAOffset], count), included);
+  column3[column3Offset + index] =
+    select(0.0, column1[column1Offset + index] - divideBySpatialCount(totalsA[totalsAOffset + 1u], count), included);`
     }),
-    ...getColumnSumNodes<Parameters>(graph, {
+    ...getSplitColumnSumNodes<Parameters>(graph, {
       id: `${id}-sum-b`,
       operation,
-      matrix,
+      columns,
       rows,
       blockCount,
       first: 2,
       count: 2,
       totals: totalsB
     }),
-    createWGSLKernelNode<Parameters>(graph, {
-      id: `${id}-compact`,
-      operation,
-      variant: 'compact',
-      bindings: [
-        {name: 'rowPositions', view: rowPositions, type: 'u32', access: 'read'},
-        {name: 'totalsB', view: totalsB, type: 'f32', access: 'read'},
-        {name: 'compactX', view: compactX, type: 'f32', access: 'read_write'},
-        {name: 'compactY', view: compactY, type: 'f32', access: 'read_write'},
-        {name: 'matrix', view: matrix, type: 'f32', access: 'read_write'}
-      ],
-      invocationCount: rows,
-      declarations: constantsWGSL,
-      body: `let position = rowPositions[rowPositionsOffset + index];
+    ...[0, 1].map(variable =>
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-compact-${variable}`,
+        operation,
+        variant: 'compact',
+        bindings: [
+          {name: 'rowPositions', view: rowPositions, type: 'u32', access: 'read'},
+          {name: 'totalsB', view: totalsB, type: 'f32', access: 'read'},
+          {name: 'rawValues', view: columns[variable], type: 'f32', access: 'read'},
+          {name: 'deviations', view: columns[variable + 2], type: 'f32', access: 'read'},
+          {
+            name: 'compact',
+            view: variable === 0 ? compactX : compactY,
+            type: 'f32',
+            access: 'read_write'
+          },
+          {name: 'squares', view: columns[variable + 4], type: 'f32', access: 'read_write'}
+        ],
+        invocationCount: rows,
+        declarations: `${constantsWGSL}\nconst VARIABLE: u32 = ${variable}u;`,
+        body: `let position = rowPositions[rowPositionsOffset + index];
   let included = position != INVALID_POSITION;
-  let count = f32(rowPositions[rowPositionsOffset + ROWS]);
-  // Second-pass mean correction: the deviations from the first mean sum to count * (mean - mean0).
-  let centeredX = matrix[matrixOffset + getMatrixIndex(2u, index)] - totalsB[totalsBOffset] / count;
-  let centeredY = matrix[matrixOffset + getMatrixIndex(3u, index)] - totalsB[totalsBOffset + 1u] / count;
+  let count = rowPositions[rowPositionsOffset + ROWS];
+  let centered = deviations[deviationsOffset + index] - divideBySpatialCount(totalsB[totalsBOffset + VARIABLE], count);
   if (included) {
-    compactX[compactXOffset + position] = ${props.centerX ? 'centeredX' : 'matrix[matrixOffset + getMatrixIndex(0u, index)]'};
-    compactY[compactYOffset + position] = ${props.centerY === false ? 'matrix[matrixOffset + getMatrixIndex(1u, index)]' : 'centeredY'};
+    compact[compactOffset + position] = ${(variable === 0 ? props.centerX : props.centerY !== false) ? 'centered' : 'rawValues[rawValuesOffset + index]'};
   }
-  matrix[matrixOffset + getMatrixIndex(4u, index)] = select(0.0, centeredX * centeredX, included);
-  matrix[matrixOffset + getMatrixIndex(5u, index)] = select(0.0, centeredY * centeredY, included);`
-    }),
+  squares[squaresOffset + index] = select(0.0, centered * centered, included);`
+      })
+    ),
     ...chunkWeights.map((chunk, chunkIndex) => {
       const chunkKernel = getChunkKernelProps(chunk, chunkIndex);
-      return createWGSLKernelNode<Parameters>(graph, {
+      return createSpatialStatisticsRowNode<Parameters>(graph, {
+        rowBase: chunk.rowStart,
         id: `${id}-row-weights${chunkKernel.idSuffix}`,
         operation,
         variant: standardize ? 'row-weights-standardize' : 'row-weights',
         bindings: [
           ...getWeightBindings(chunk),
           {name: 'rowPositions', view: rowPositions, type: 'u32', access: 'read'},
-          {name: 'matrix', view: matrix, type: 'f32', access: 'read_write'},
+          columnBinding(6),
+          columnBinding(7),
           ...(standardize
             ? [
                 {
@@ -501,8 +563,8 @@ ${PERMUTATION_FLOAT_WGSL}`;
     ${getGPUSpatialWeightsNeighborLoopWGSL('rowPositions[rowPositionsOffset + neighbor] != INVALID_POSITION', 'rowWeight += weight;', 'index', chunkKernel.rowStart)}
   }
   // Row-standardized weights are re-standardized over the active slots: a row with any active slot sums to 1.
-  matrix[matrixOffset + getMatrixIndex(6u, index)] = ${standardize ? 'select(0.0, 1.0, rowWeight > 0.0)' : 'rowWeight'};
-  matrix[matrixOffset + getMatrixIndex(7u, index)] = ${standardize ? 'select(0.0, 1.0, rowWeight > 0.0)' : 'rowWeight * rowWeight'};
+  column6[column6Offset + index] = ${standardize ? 'select(0.0, 1.0, rowWeight > 0.0)' : 'rowWeight'};
+  column7[column7Offset + index] = ${standardize ? 'select(0.0, 1.0, rowWeight > 0.0)' : 'rowWeight * rowWeight'};
   ${
     standardize
       ? `let scale = select(0.0, 1.0 / rowWeight, rowWeight > 0.0);
@@ -515,10 +577,10 @@ ${PERMUTATION_FLOAT_WGSL}`;
   }`)
       });
     }),
-    ...getColumnSumNodes<Parameters>(graph, {
+    ...getSplitColumnSumNodes<Parameters>(graph, {
       id: `${id}-sum-c`,
       operation,
-      matrix,
+      columns,
       rows,
       blockCount,
       first: 4,
@@ -536,15 +598,17 @@ ${PERMUTATION_FLOAT_WGSL}`;
         {name: 'totalsC', view: totalsC, type: 'f32', access: 'read'},
         {name: 'totals', view: totals, type: 'f32', access: 'read_write'}
       ],
+      // contract-allow: single-invocation -- count division takes exactly 64 integer steps.
       invocationCount: 1,
-      declarations: `const ROWS: u32 = ${rows}u;`,
+      declarations: `const ROWS: u32 = ${rows}u;
+${PERMUTATION_FLOAT_WGSL}`,
       // The count is an exact uint32 (the scan total) and is converted to f32 only here.
-      body: `let count = f32(rowPositions[rowPositionsOffset + ROWS]);
-  let meanX = totalsA[totalsAOffset] / count + totalsB[totalsBOffset] / count;
-  let meanY = totalsA[totalsAOffset + 1u] / count + totalsB[totalsBOffset + 1u] / count;
-  totals[totalsOffset] = count;
-  totals[totalsOffset + 1u] = meanX * count;
-  totals[totalsOffset + 2u] = meanY * count;
+      body: `let count = rowPositions[rowPositionsOffset + ROWS];
+  let meanX = divideBySpatialCount(totalsA[totalsAOffset], count) + divideBySpatialCount(totalsB[totalsBOffset], count);
+  let meanY = divideBySpatialCount(totalsA[totalsAOffset + 1u], count) + divideBySpatialCount(totalsB[totalsBOffset + 1u], count);
+  totals[totalsOffset] = f32(count);
+  totals[totalsOffset + 1u] = multiplyBySpatialCount(meanX, count);
+  totals[totalsOffset + 2u] = multiplyBySpatialCount(meanY, count);
   totals[totalsOffset + 3u] = totalsC[totalsCOffset];
   totals[totalsOffset + 4u] = totalsC[totalsCOffset + 1u];
   totals[totalsOffset + 5u] = totalsC[totalsCOffset + 2u];
@@ -553,6 +617,19 @@ ${PERMUTATION_FLOAT_WGSL}`;
   totals[totalsOffset + 8u] = totalsC[totalsCOffset + 3u];`
     })
   ];
+  if (props.analysisCount)
+    nodes.push(
+      createWGSLKernelNode(graph, {
+        id: `${id}-analysis-count`,
+        operation,
+        invocationCount: 1,
+        bindings: [
+          {name: 'positions', view: rowPositions, type: 'u32', access: 'read'},
+          {name: 'analysisCount', view: props.analysisCount, type: 'u32', access: 'read_write'}
+        ],
+        body: `analysisCount[analysisCountOffset] = positions[positionsOffset + ${rows}u];`
+      })
+    );
   return {
     nodes,
     rowPositions,
@@ -568,6 +645,36 @@ ${PERMUTATION_FLOAT_WGSL}`;
       effective: chunk.effective
     }))
   };
+}
+
+/** Same fixed-order trees as the packed matrix, with independently bound columns. @internal */
+function getSplitColumnSumNodes<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    operation: string;
+    columns: GraphDataView<'float32'>[];
+    rows: number;
+    blockCount: number;
+    first: number;
+    count: number;
+    totals: GraphDataView<'float32'>;
+  }
+): GPUCommandNode<Parameters>[] {
+  return Array.from({length: props.count}, (_, column) =>
+    getColumnSumNodes(graph, {
+      ...props,
+      id: `${props.id}-${column}`,
+      matrix: props.columns[props.first + column],
+      first: 0,
+      count: 1,
+      totals: graph.createDataView(props.totals.buffer, {
+        format: 'float32',
+        length: 1,
+        byteOffset: props.totals.byteOffset + column * 4
+      })
+    })
+  ).flat();
 }
 
 /**
@@ -615,8 +722,8 @@ const BLOCK_COUNT: u32 = ${blockCount}u;
 const FIRST_COLUMN: u32 = ${first}u;
 const COLUMN_COUNT: u32 = ${count}u;`,
       body: `let column = index / BLOCK_COUNT;
-  let block = index % BLOCK_COUNT;
-  blockOffsets[blockOffsetsOffset + index] = (FIRST_COLUMN + column) * ROWS + min(block * BLOCK_ROWS, ROWS);
+  let blockIndex = index % BLOCK_COUNT;
+  blockOffsets[blockOffsetsOffset + index] = (FIRST_COLUMN + column) * ROWS + min(blockIndex * BLOCK_ROWS, ROWS);
   if (index <= COLUMN_COUNT) {
     columnOffsets[columnOffsetsOffset + index] = index * BLOCK_COUNT;
   }`
@@ -642,7 +749,7 @@ const COLUMN_COUNT: u32 = ${count}u;`,
 
 /**
  * Counts the analysis rows whose compacted `x` is negative, for the statistics that are defined
- * only for non-negative data (Getis-Ord G). The count is an exact float32 integer below 2^24.
+ * only for non-negative data (Getis-Ord G). Exact uint32 diagnostics stay correct above 2^24.
  * Reads the uncentered `compactX` (`centerX: false`). @internal
  */
 export function getNegativeValueCountNodes<Parameters>(
@@ -654,10 +761,10 @@ export function getNegativeValueCountNodes<Parameters>(
     compactX: GraphDataView<'float32'>;
     rowPositions: GraphDataView<'uint32'>;
   }
-): {nodes: GPUCommandNode<Parameters>[]; negativeCount: GraphDataView<'float32'>} {
+): {nodes: GPUCommandNode<Parameters>[]; negativeCount: GraphDataView<'uint32'>} {
   const {id, operation, rows} = props;
-  const indicators = createTransientView(graph, `${id}-negative-indicators`, 'float32', rows);
-  const negativeCount = createTransientView(graph, `${id}-negative-count`, 'float32', 1);
+  const indicators = createTransientView(graph, `${id}-negative-indicators`, 'uint32', rows);
+  const negativeCount = createTransientView(graph, `${id}-negative-count`, 'uint32', 1);
   return {
     negativeCount,
     nodes: [
@@ -668,23 +775,19 @@ export function getNegativeValueCountNodes<Parameters>(
         bindings: [
           {name: 'compactX', view: props.compactX, type: 'f32', access: 'read'},
           {name: 'rowPositions', view: props.rowPositions, type: 'u32', access: 'read'},
-          {name: 'indicators', view: indicators, type: 'f32', access: 'read_write'}
+          {name: 'indicators', view: indicators, type: 'u32', access: 'read_write'}
         ],
         invocationCount: rows,
         declarations: `const ROWS: u32 = ${rows}u;`,
         // Positions at or past the analysis count hold no value.
-        body: `indicators[indicatorsOffset + index] = select(0.0, 1.0, index < rowPositions[rowPositionsOffset + ROWS] && compactX[compactXOffset + index] < 0.0);`
+        body: `indicators[indicatorsOffset + index] = select(0u, 1u, index < rowPositions[rowPositionsOffset + ROWS] && compactX[compactXOffset + index] < 0.0);`
       }),
-      ...getColumnSumNodes<Parameters>(graph, {
+      ...new GPUReduction({
         id: `${id}-negative-sum`,
-        operation,
-        matrix: indicators,
-        rows,
-        blockCount: Math.ceil(rows / BLOCK_ROWS),
-        first: 0,
-        count: 1,
-        totals: negativeCount
-      })
+        input: indicators,
+        output: negativeCount,
+        operation: 'sum'
+      }).getCommandNodes(graph)
     ]
   };
 }

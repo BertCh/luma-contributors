@@ -3,6 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  validateTrajectoryBindings,
+  validateTrajectoryWritableDispatches,
+  validateTrajectoryOutputRanges
+} from '../trajectory-analysis/trajectory-binding-validation';
+import {
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -10,6 +15,7 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {SCALED_QUOTIENT_WGSL} from '../../analysis-core/kernels/scaled-quotient-wgsl';
 import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
@@ -25,6 +31,8 @@ import {
 import type {GPUSpaceTimeWeightsLayout} from '../spatial-weights/spatial-weights-space-time-stages';
 
 const OPERATION = 'GPUSpaceTimeCrossCorrelation';
+// Overlap endpoints and lag arithmetic use signed 32-bit integers in the shader.
+const SPACE_TIME_CORRELATION_MAXIMUM_PERIOD_COUNT = 0x7fffffff;
 
 /** Largest number of lags. */
 export const GPU_SPACE_TIME_CROSS_CORRELATION_MAXIMUM_LAGS = 64;
@@ -79,7 +87,7 @@ export type GPUSpaceTimeCrossCorrelationProps = {
  * control across locations and lags.
  *
  * For cell `c` and lag `l` the statistic is the Pearson correlation of the `n` overlapping pairs
- * `(first[c, t], second[c, t + l])`, each series centred on its own overlap mean (two passes, f32).
+ * `(first[c, t], second[c, t + l])`, each series scaled before centring on its own overlap mean (three passes, f32).
  * The p-value is Fisher's z test, `p = erfc(|atanh r| sqrt(n - 3) / sqrt 2)`, a normal
  * approximation that assumes serially independent observations: autocorrelated series give
  * p-values that are too small, so prewhiten (or difference) the series first when that matters.
@@ -128,6 +136,16 @@ export class GPUSpaceTimeCrossCorrelation implements GPUCommandNodeProducer {
       throw new Error(`${id} lags must be distinct`);
     }
     this.rowCount = cellCount * lags.length;
+    // All cube addresses are uint32; periods and signed lags are converted to i32 in WGSL.
+    validateCapacity(id, 'cube rows', cellCount * periodCount);
+    validateCapacity(id, 'correlation rows', this.rowCount);
+    validateCapacity(
+      id,
+      'periodCount',
+      periodCount,
+      1,
+      SPACE_TIME_CORRELATION_MAXIMUM_PERIOD_COUNT
+    );
     for (const [name, view] of [
       ['first', props.first],
       ['second', props.second]
@@ -148,6 +166,10 @@ export class GPUSpaceTimeCrossCorrelation implements GPUCommandNodeProducer {
       validateViewLength(id, 'pairCounts', output.pairCounts, this.rowCount);
     }
     resolveGPUMultipleTestingMethod(id, props.multipleTesting);
+    validateTrajectoryOutputRanges(this.id, this.getUsedOutput());
+    validateTrajectoryWritableDispatches(this.id, [
+      {correlations: output.correlations, pValues: output.pValues, pairCounts: output.pairCounts}
+    ]);
     validateGraphOutputsDisjointFromInputs(
       id,
       [
@@ -155,16 +177,22 @@ export class GPUSpaceTimeCrossCorrelation implements GPUCommandNodeProducer {
         output.pValues,
         output.adjustedPValues,
         output.pairCounts,
-        output.testedCount
+        output.adjustedPValues ? output.testedCount : undefined
       ],
       [props.first, props.second]
     );
+  }
+
+  private getUsedOutput(): GPUSpaceTimeCrossCorrelationOutput {
+    const {output} = this.props;
+    return {...output, testedCount: output.adjustedPValues ? output.testedCount : undefined};
   }
 
   /** Returns the correlation kernel and, with an adjusted-p output, the adjustment nodes. */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateTrajectoryBindings(graph, this.id, {...this.props, output: this.getUsedOutput()});
     const {props, id, rowCount} = this;
     const {first, second, layout, cellCount, periodCount, lags, output} = props;
     validateGraphViewsBelongToGraph(id, graph, [
@@ -174,7 +202,7 @@ export class GPUSpaceTimeCrossCorrelation implements GPUCommandNodeProducer {
       output.pValues,
       output.adjustedPValues,
       output.pairCounts,
-      output.testedCount
+      output.adjustedPValues ? output.testedCount : undefined
     ]);
     const address = (cell: string, period: string) =>
       layout === 'period-major'
@@ -214,6 +242,7 @@ const LAG_COUNT: u32 = ${lags.length}u;
 const MINIMUM_PAIRS: u32 = ${GPU_SPACE_TIME_CROSS_CORRELATION_MINIMUM_PAIRS}u;
 ${GET_NAN_WGSL}
 ${IS_FINITE_VALUE_WGSL}
+${SCALED_QUOTIENT_WGSL}
 // Numerical Recipes erfcc, relative error below 1.2e-7 for x >= 0.
 fn erfcPositive(x: f32) -> f32 {
   let t = 1.0 / (1.0 + 0.5 * x);
@@ -227,7 +256,7 @@ fn erfcPositive(x: f32) -> f32 {
   var lagTable = array<i32, ${lags.length}>(${lags.map(lag => `${lag}`).join(', ')});
   let lag = lagTable[lagIndex];
   let start = max(0, -lag);
-  let stop = min(i32(PERIODS), i32(PERIODS) - lag);
+  let stop = i32(PERIODS) - max(lag, 0);
   let pairs = u32(max(stop - start, 0));
   ${output.pairCounts ? 'pairCounts[pairCountsOffset + index] = pairs;' : ''}
   correlations[correlationsOffset + index] = getNaN();
@@ -251,12 +280,21 @@ fn erfcPositive(x: f32) -> f32 {
     firstMaximum = max(firstMaximum, a);
     secondMinimum = min(secondMinimum, b);
     secondMaximum = max(secondMaximum, b);
-    firstSum += a;
-    secondSum += b;
+
   }
   // A constant series has no correlation; testing the range avoids a rounding residue in the mean.
   if (firstMinimum == firstMaximum || secondMinimum == secondMaximum) {
     return;
+  }
+  // Normalize before summing or squaring: finite observations can otherwise overflow the
+  // mean, covariance or variance product even for a perfectly correlated series.
+  let firstScale = max(abs(firstMinimum), abs(firstMaximum));
+  let secondScale = max(abs(secondMinimum), abs(secondMaximum));
+  let firstAnchor = getScaledQuotient(firstMinimum, firstScale, 1.0, 0);
+  let secondAnchor = getScaledQuotient(secondMinimum, secondScale, 1.0, 0);
+  for (var period = start; period < stop; period++) {
+    firstSum += getScaledQuotient(first[firstOffset + ${address('cell', 'u32(period)')}], firstScale, 1.0, 0) - firstAnchor;
+    secondSum += getScaledQuotient(second[secondOffset + ${address('cell', 'u32(period + lag)')}], secondScale, 1.0, 0) - secondAnchor;
   }
   let firstMean = firstSum / f32(pairs);
   let secondMean = secondSum / f32(pairs);
@@ -264,8 +302,8 @@ fn erfcPositive(x: f32) -> f32 {
   var secondSquares = 0.0;
   var products = 0.0;
   for (var period = start; period < stop; period++) {
-    let a = first[firstOffset + ${address('cell', 'u32(period)')}] - firstMean;
-    let b = second[secondOffset + ${address('cell', 'u32(period + lag)')}] - secondMean;
+    let a = getScaledQuotient(first[firstOffset + ${address('cell', 'u32(period)')}], firstScale, 1.0, 0) - firstAnchor - firstMean;
+    let b = getScaledQuotient(second[secondOffset + ${address('cell', 'u32(period + lag)')}], secondScale, 1.0, 0) - secondAnchor - secondMean;
     firstSquares += a * a;
     secondSquares += b * b;
     products += a * b;

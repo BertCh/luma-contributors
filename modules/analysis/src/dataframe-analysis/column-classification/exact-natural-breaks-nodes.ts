@@ -2,25 +2,27 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  createClassificationKernelNode,
+  type ClassificationKernelProps
+} from './classification-kernel-node';
 import {Buffer} from '@luma.gl/core';
 import {
   createTransientView,
+  getBoundedDispatchLayout,
   GPUSort,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {
-  createWGSLKernelNode,
-  type WGSLKernelBinding
-} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import type {WGSLKernelBinding} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   CLASS_BREAKS_EXTREMES,
   CLASS_BREAKS_STATE,
-  getClassBreaksDispatchWGSL,
   getClassBreaksIndirectGate
 } from './class-breaks-kernels';
 import {validateGPUStorageBindingByteLength} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {NATURAL_BREAKS_MAXIMUM_MATERIALIZED_ROWS} from './natural-breaks-limits';
 import {GPU_CLASS_BREAKS_METHOD_CODES} from './class-breaks-parameters';
 import {COLUMN_ORDERED_KEY_WGSL} from './column-classification-shared';
 
@@ -50,6 +52,21 @@ export function getExactNaturalBreaksNodes<Parameters>(
   const id = `${props.id}-exact-natural-breaks`;
   const rowCount = values.length;
   const stride = rowCount + 1;
+  const referenceLayout = getBoundedDispatchLayout(
+    'GPUClassBreaks',
+    rowCount,
+    64,
+    graph.device.limits.maxComputeWorkgroupsPerDimension
+  );
+  const createWGSLKernelNode = (
+    targetGraph: GPUCommandGraph<Parameters>,
+    kernelProps: ClassificationKernelProps<Parameters>
+  ) =>
+    createClassificationKernelNode(targetGraph, {
+      ...kernelProps,
+      parameterValues: [rowCount, stride, referenceLayout.x, referenceLayout.y, referenceLayout.z]
+    });
+
   const make = (name: string, length: number) =>
     createTransientView(graph, `${id}-${name}`, 'uint32', length);
   const cursor = make('cursor', 1);
@@ -66,7 +83,7 @@ export function getExactNaturalBreaksNodes<Parameters>(
   const sortedRows = make('sorted-rows', rowCount);
   const materialize =
     props.exactStorage === 'materialized' ||
-    (props.exactStorage !== 'recompute' && rowCount <= 1024);
+    (props.exactStorage !== 'recompute' && rowCount <= NATURAL_BREAKS_MAXIMUM_MATERIALIZED_ROWS);
   validateGPUStorageBindingByteLength(
     graph.device,
     id,
@@ -100,7 +117,7 @@ export function getExactNaturalBreaksNodes<Parameters>(
   ): WGSLKernelBinding => ({name, view, type, access});
   const gate = `state[stateOffset + ${CLASS_BREAKS_STATE.method}u] != ${GPU_CLASS_BREAKS_METHOD_CODES['natural-breaks']}u`;
   const finiteCount = `extremes[extremesOffset + ${CLASS_BREAKS_EXTREMES.finiteCount}u]`;
-  const declarations = `${COLUMN_ORDERED_KEY_WGSL}\nconst ROW_COUNT: u32 = ${rowCount}u;\nconst STRIDE: u32 = ${stride}u;`;
+  const declarations = `${COLUMN_ORDERED_KEY_WGSL}\nfn getReferenceRowCount() -> u32 { return getChunkParameter(36u); }\nfn getReferenceStride() -> u32 { return getChunkParameter(37u); }`;
   const nodes: GPUCommandNode<Parameters>[] = [];
   nodes.push(
     createWGSLKernelNode(graph, {
@@ -164,7 +181,7 @@ export function getExactNaturalBreaksNodes<Parameters>(
     let delta = value - mean;
     mean = mean + delta / f32(index - start + 1u);
     variance = variance + delta * (value - mean);
-    costs[costsOffset + index * ROW_COUNT + start] = max(variance, 0.0);
+    costs[costsOffset + index * getReferenceRowCount() + start] = max(variance, 0.0);
   }`
       })
     );
@@ -180,8 +197,8 @@ export function getExactNaturalBreaksNodes<Parameters>(
         binding('cursor', cursor, 'u32', 'read_write')
       ],
       body: `if (index == 0u) { cursor[cursorOffset] = 0u; }
-  // Normalized finite interval costs are at most 16 * ROW_COUNT, far below this sentinel.
-  if (index < ${scores.length}u) { scores[scoresOffset + index] = select(1e30, 0.0, index == 0u); }
+  // Normalized finite interval costs are at most 16 * getReferenceRowCount(), far below this sentinel.
+  if (index < (arrayLength(&scores) - scoresOffset)) { scores[scoresOffset + index] = select(1e30, 0.0, index == 0u); }
   partitions[partitionsOffset + index] = 0u;`
     })
   );
@@ -199,7 +216,10 @@ export function getExactNaturalBreaksNodes<Parameters>(
         ],
         body: `let layer = cursor[cursorOffset] + 1u;
   cursor[cursorOffset] = layer;
-  ${getClassBreaksDispatchWGSL(graph, {operation: 'GPUClassBreaks', slot: 0, invocationCount: rowCount, workgroupSize: 64, activeExpression: `!(${gate}) && layer <= state[stateOffset + ${CLASS_BREAKS_STATE.classCount}u]`})}`
+  let isEnabled = !(${gate}) && layer <= state[stateOffset + ${CLASS_BREAKS_STATE.classCount}u];
+  dispatch[dispatchOffset] = select(0u, getChunkParameter(38u), isEnabled);
+  dispatch[dispatchOffset + 1u] = getChunkParameter(39u);
+  dispatch[dispatchOffset + 2u] = getChunkParameter(40u);`
       })
     );
     nodes.push(
@@ -231,10 +251,10 @@ export function getExactNaturalBreaksNodes<Parameters>(
     costs
       ? `for (var start = 0u; start < end; start = start + 1u) {
     if (start > 0u && decodeOrderedKey(sortedKeys[sortedKeysOffset + start - 1u]) == decodeOrderedKey(sortedKeys[sortedKeysOffset + start])) { continue; }
-    let candidate = scores[scoresOffset + (layer - 1u) * STRIDE + start] + costs[costsOffset + index * ROW_COUNT + start];
+    let candidate = scores[scoresOffset + (layer - 1u) * getReferenceStride() + start] + costs[costsOffset + index * getReferenceRowCount() + start];
     if (candidate < best) { best = candidate; split = start; }
   }
-  scores[scoresOffset + layer * STRIDE + end] = best;`
+  scores[scoresOffset + layer * getReferenceStride() + end] = best;`
       : `
   let minimum = decodeOrderedKey(sortedKeys[sortedKeysOffset]);
   let maximum = decodeOrderedKey(sortedKeys[sortedKeysOffset + ${finiteCount} - 1u]);
@@ -252,14 +272,14 @@ export function getExactNaturalBreaksNodes<Parameters>(
     mean = mean + delta / f32(end - start);
     variance = variance + delta * (value - mean);
     if (start > 0u && decodeOrderedKey(sortedKeys[sortedKeysOffset + start - 1u]) == decodeOrderedKey(sortedKeys[sortedKeysOffset + start])) { continue; }
-    let candidate = scores[scoresOffset + ((layer - 1u) & 1u) * STRIDE + start] + max(variance, 0.0);
+    let candidate = scores[scoresOffset + ((layer - 1u) & 1u) * getReferenceStride() + start] + max(variance, 0.0);
     // Descending traversal still chooses the same lowest split as the ascending materialized path.
     if (candidate < best || (candidate == best && start < split)) { best = candidate; split = start; }
   }
-  if (index == 0u) { scores[scoresOffset + (layer & 1u) * STRIDE] = 1e30; }
-  scores[scoresOffset + (layer & 1u) * STRIDE + end] = best;`
+  if (index == 0u) { scores[scoresOffset + (layer & 1u) * getReferenceStride()] = 1e30; }
+  scores[scoresOffset + (layer & 1u) * getReferenceStride() + end] = best;`
   }
-  partitions[partitionsOffset + layer * STRIDE + end] = split;`
+  partitions[partitionsOffset + layer * getReferenceStride() + end] = split;`
       })
     );
   }
@@ -287,7 +307,7 @@ export function getExactNaturalBreaksNodes<Parameters>(
   let classes = min(distinct, state[stateOffset + ${CLASS_BREAKS_STATE.classCount}u]);
   edgeState[edgeStateOffset] = classes;
   for (var layer = classes; layer > 1u; layer = layer - 1u) {
-    let split = partitions[partitionsOffset + layer * STRIDE + end];
+    let split = partitions[partitionsOffset + layer * getReferenceStride() + end];
     edges[edgesOffset + layer - 1u] = decodeOrderedKey(sortedKeys[sortedKeysOffset + split]);
     end = split;
   }`

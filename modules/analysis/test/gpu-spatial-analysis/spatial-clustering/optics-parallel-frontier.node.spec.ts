@@ -3,10 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {expect, it} from 'vitest';
+import {expect, it, vi} from 'vitest';
 import {WgslReflect} from 'wgsl_reflect';
 import {
   GPUOPTICS,
+  GPU_OPTICS_GRID_MAXIMUM_ROWS,
   GPU_OPTICS_MAXIMUM_COMMAND_NODE_COUNT,
   type GPUOPTICSProps
 } from '../../../src/gpu-spatial-analysis/spatial-clustering/gpu-optics';
@@ -63,7 +64,7 @@ it('accepts xi beyond 4096 through the indexed cap, and validates the parallel p
     expect(createOPTICS(graph, 65536).estimatedCommandNodeCount).toBe(
       GPU_OPTICS_MAXIMUM_COMMAND_NODE_COUNT
     );
-    expect(() => createOPTICS(graph, 65537)).toThrow(/^parallel-check positions rows.*65536/);
+    expect(() => createOPTICS(graph, 65537)).toThrow(/^parallel-check xi positions rows.*65536/);
     expect(() => createOPTICS(graph, 256, {neighborIndex: 'brute-force'})).toThrow(
       /orderingMethod 'parallel' needs neighborIndex 'grid'/
     );
@@ -90,18 +91,23 @@ it('accepts xi beyond 4096 through the indexed cap, and validates the parallel p
 it('bounds actual node counts at reduction boundaries and reuses row scratch between visits', () => {
   const device = createNullWebGPUDevice();
   try {
-    for (const rows of [2, 255, 256, 257, 4097, 65536]) {
+    for (const rows of [2, 255, 256, 257, 4097, 65536, 65537, GPU_OPTICS_GRID_MAXIMUM_ROWS]) {
       const graph = new GPUCommandGraph(device);
       // Full 4097-row graph crosses the shared 32768-node budget; cap the largest graph
       // at two visits to check its storage shapes without allocating 590,000 test nodes.
-      const optics = createOPTICS(graph, rows, {maximumIterations: rows === 65536 ? 2 : rows});
+      const optics = createOPTICS(graph, rows, {
+        maximumIterations: rows >= 65536 ? 2 : rows,
+        ...(rows > 65536
+          ? {extractionMethod: 'dbscan', extractionDistance: 1, neighborCapacity: rows}
+          : {})
+      });
       const nodes = optics.getCommandNodes(graph);
       expect(nodes.length).toBeLessThanOrEqual(optics.estimatedCommandNodeCount);
       const frontier = nodes.filter(
         node => node.id.includes('-parallel-') && !node.id.endsWith('-initialize')
       );
       const visits = optics.props.maximumIterations ?? rows;
-      expect(frontier.length).toBe(visits * (rows > 256 ? 9 : 7));
+      expect(frontier.length).toBe(visits * (rows > 65536 ? 11 : rows > 256 ? 9 : 7));
       for (const node of frontier) {
         if (node.id.includes('-parallel-commit-')) expect(node.condition, node.id).toBeUndefined();
         else expect(node.condition?.source, node.id).toBe('gpu');
@@ -120,7 +126,7 @@ it('bounds actual node counts at reduction boundaries and reuses row scratch bet
           })
         )
       );
-      expect(keyBuffers.size).toBe(rows > 256 ? 3 : 2);
+      expect(keyBuffers.size).toBe(rows > 65536 ? 4 : rows > 256 ? 3 : 2);
       if (rows === 257) {
         // Compile one visit's templates and xi batches on the null device, then parse all
         // WGSL independently. This catches storage binding and shader syntax regressions.
@@ -136,6 +142,101 @@ it('bounds actual node counts at reduction boundaries and reuses row scratch bet
           expect(reflection.storage.length, kernel.id).toBeLessThanOrEqual(8);
         }
       }
+    }
+  } finally {
+    device.destroy();
+  }
+});
+
+it('accepts a complete million-row batched graph within the shared budget', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const rows = GPU_OPTICS_GRID_MAXIMUM_ROWS;
+    const optics = createOPTICS(graph, rows, {
+      orderingMethod: 'sequential',
+      extractionMethod: 'dbscan',
+      extractionDistance: 1,
+      neighborCapacity: rows
+    });
+    expect(optics.estimatedCommandNodeCount).toBe(2 * 4096 + 256);
+    const nodes = optics.getCommandNodes(graph);
+    expect(nodes.length).toBeLessThanOrEqual(optics.estimatedCommandNodeCount);
+    expect(nodes.filter(node => node.workload?.variant === 'grid-frontier-batch')).toHaveLength(
+      4096
+    );
+    const initialize = nodes.find(node => node.workload?.variant === 'frontier-initialize')!;
+    expect(initialize.workload?.maximumInvocationCount).toBe(rows);
+    const source = getGPUCommandNodeKernelSources([initialize])[0].source;
+    expect(source).not.toContain('for (var row');
+    const batches = nodes.filter(node => node.workload?.variant === 'grid-frontier-batch');
+    const gates = nodes.filter(node => node.workload?.variant === 'grid-frontier-gate');
+    expect(batches.every(node => node.condition?.source === 'gpu')).toBe(true);
+    expect(gates).toHaveLength(batches.length);
+    expect(gates.every(node => node.condition === undefined)).toBe(true);
+    expect(() =>
+      createOPTICS(graph, rows, {
+        orderingMethod: 'sequential',
+        extractionMethod: 'dbscan',
+        extractionDistance: 1,
+        frontierBatchSize: 1
+      })
+    ).toThrow(/^parallel-check estimated command node count must be at most 32768/);
+    // The old custom budget stays fixed: increasing the row cap must not create
+    // permission for an eleven-million-node parallel graph.
+    expect(() =>
+      createOPTICS(graph, rows, {extractionMethod: 'dbscan', extractionDistance: 1})
+    ).toThrow(
+      new RegExp(
+        `^parallel-check estimated command node count must be at most ${GPU_OPTICS_MAXIMUM_COMMAND_NODE_COUNT}`
+      )
+    );
+    expect(() =>
+      createOPTICS(graph, rows + 1, {extractionMethod: 'dbscan', extractionDistance: 1})
+    ).toThrow(/^parallel-check positions rows.*1048576/);
+  } finally {
+    device.destroy();
+  }
+});
+
+it('checks the largest row and neighbor bindings before declaring any scratch or command nodes', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    for (const scenario of [
+      {
+        minimumSamples: 2,
+        neighborCapacity: 65537,
+        bindingLimit: 65537 * 8,
+        name: 'frontier points'
+      },
+      {
+        minimumSamples: 256,
+        neighborCapacity: 65537,
+        bindingLimit: 2 ** 24,
+        name: 'core neighbor scratch'
+      },
+      {
+        minimumSamples: 2,
+        neighborCapacity: 2 ** 26,
+        bindingLimit: 2 ** 27,
+        name: 'neighborCapacity'
+      }
+    ]) {
+      Object.assign(device.limits, {maxStorageBufferBindingSize: scenario.bindingLimit});
+      const graph = new GPUCommandGraph(device);
+      const optics = createOPTICS(graph, 65537, {
+        extractionMethod: 'dbscan',
+        extractionDistance: 1,
+        minimumSamples: scenario.minimumSamples,
+        neighborCapacity: scenario.neighborCapacity,
+        maximumIterations: 1
+      });
+      const createBuffer = vi.spyOn(graph, 'createTransientBuffer');
+      expect(() => optics.getCommandNodes(graph)).toThrow(
+        new RegExp(`^parallel-check ${scenario.name} needs.*limit ${scenario.bindingLimit}`)
+      );
+      expect(createBuffer).not.toHaveBeenCalled();
+      createBuffer.mockRestore();
     }
   } finally {
     device.destroy();

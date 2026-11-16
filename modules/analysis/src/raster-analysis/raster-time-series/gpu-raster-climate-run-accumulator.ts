@@ -4,23 +4,26 @@
 
 import type {
   GraphDataView,
+  GraphVectorView,
   GPUCommandGraph,
   GPUCommandNode,
   GPUCommandNodeProducer
 } from '@luma.gl/graph/gpu-core';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  createRasterTimeSeriesKernelNode,
+  planRasterTimeSeriesChunks,
+  validateRasterTimeSeriesBindings,
+  validateRasterTimeSeriesViews,
+  type RasterTimeSeriesField,
+  type RasterTimeSeriesScalarView
+} from './raster-time-series-chunks';
 import {
   validateCapacity,
+  validateCommandNodeBudget,
   validateFiniteNumber,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {
-  RASTER_FINITE_WGSL,
-  rasterBinding,
-  validateRasterGraph,
-  validateRasterViews,
-  type RasterScalarView
-} from '../remote-sensing/raster-kernel-utils';
+import {RASTER_FINITE_WGSL, rasterBinding} from '../remote-sensing/raster-kernel-utils';
 import {
   DEFAULT_MAXIMUM_RASTER_STREAM_SLICE_COUNT,
   MAXIMUM_RASTER_STREAM_CHUNK_SLICE_COUNT,
@@ -65,15 +68,17 @@ export function getGPURasterClimateRunAccumulatorParameterValues(
 }
 
 /** Properties of {@link GPURasterClimateRunAccumulator}. */
-export type GPURasterClimateRunAccumulatorProps = {
+export type GPURasterClimateRunAccumulatorProps<
+  Rows extends GraphDataView<'float32'> | GraphVectorView<'float32'> = GraphDataView<'float32'>
+> = {
   id?: string;
   cellCount: number;
   /** Slices of each chunk, in `[1, 256]`. */
   chunkSliceCount: number;
   /** Cell-major chunk; nonfinite samples are missing. */
-  values: GraphDataView<'float32'>;
+  values: Rows;
   /** Per-observation QA; zero makes the sample missing. */
-  mask?: GraphDataView<'uint32'>;
+  mask?: RasterTimeSeriesField<'uint32', Rows>;
   /** Float32, see {@link getGPURasterClimateRunAccumulatorParameterValues}. */
   parameters: GraphDataView<'float32'>;
   /** Run condition against the threshold. Defaults to `'at-or-above'`. */
@@ -82,9 +87,9 @@ export type GPURasterClimateRunAccumulatorProps = {
   minimumSpellLength?: number;
   state: {
     /** Per cell `[currentRun, longestRun, matchingSampleCount, spellCount, spellSampleCount, missingCount]`, uint32. */
-    runs?: GraphDataView<'uint32'>;
+    runs?: RasterTimeSeriesField<'uint32', Rows>;
     /** Per cell 96-bit fixed-point degree-day sum, three `uint32` words: `sum max(0, value - threshold)` for `'above'` conditions, `sum max(0, threshold - value)` for `'below'`; decode with `getGPURasterFixedPointValues`. */
-    degreeDays?: GraphDataView<'uint32'>;
+    degreeDays?: RasterTimeSeriesField<'uint32', Rows>;
   };
 };
 
@@ -95,14 +100,22 @@ export type GPURasterClimateRunAccumulatorProps = {
  * `missingCount`. Degree-day totals are exact 96-bit fixed-point sums, so a total over decades
  * loses nothing to float32 rounding.
  *
+ * Cell-major fields accept packed views or matching vector chunks of complete cell records.
+ * Shared date, model and parameter tables remain packed.
+ *
  * Per-frame: `parameters` and the view contents. Compile-time: `cellCount`, `chunkSliceCount`,
  * `condition`, `minimumSpellLength`, and which optional views and state exist.
  */
-export class GPURasterClimateRunAccumulator implements GPUCommandNodeProducer {
+export class GPURasterClimateRunAccumulator<
+  Rows extends GraphDataView<'float32'> | GraphVectorView<'float32'> = GraphDataView<'float32'>
+> implements GPUCommandNodeProducer
+{
   readonly id: string;
+  readonly estimatedCommandNodeCount: number;
+  private readonly chunkProps: readonly GPURasterClimateRunAccumulatorProps<Rows>[];
   readonly condition: GPURasterClimateCondition;
   readonly minimumSpellLength: number;
-  constructor(readonly props: GPURasterClimateRunAccumulatorProps) {
+  constructor(readonly props: GPURasterClimateRunAccumulatorProps<Rows>) {
     const id = props.id ?? 'raster-climate-run-accumulator';
     this.id = id;
     this.condition = props.condition ?? 'at-or-above';
@@ -145,15 +158,23 @@ export class GPURasterClimateRunAccumulator implements GPUCommandNodeProducer {
       props.parameters.length >= GPU_RASTER_CLIMATE_RUN_ACCUMULATOR_PARAMETER_LENGTH,
       `parameters must hold ${GPU_RASTER_CLIMATE_RUN_ACCUMULATOR_PARAMETER_LENGTH} entries`
     );
-    validateRasterViews(id, this.getInputs(), this.getOutputs());
+    this.chunkProps = planRasterTimeSeriesChunks(id, props, {
+      values: props.chunkSliceCount,
+      mask: props.chunkSliceCount,
+      'state.runs': 6,
+      'state.degreeDays': 3
+    });
+    this.estimatedCommandNodeCount = this.chunkProps.length * 1;
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
+    validateRasterTimeSeriesViews(id, this.getInputs(), this.getOutputs());
   }
 
-  private getInputs(): RasterScalarView[] {
+  private getInputs(): RasterTimeSeriesScalarView[] {
     const {values, mask, parameters} = this.props;
     return [values, parameters, ...(mask ? [mask] : [])];
   }
 
-  private getOutputs(): RasterScalarView[] {
+  private getOutputs(): RasterTimeSeriesScalarView[] {
     const {runs, degreeDays} = this.props.state;
     return [...(runs ? [runs] : []), ...(degreeDays ? [degreeDays] : [])];
   }
@@ -161,9 +182,22 @@ export class GPURasterClimateRunAccumulator implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {props, id, condition, minimumSpellLength} = this;
+    validateRasterTimeSeriesBindings(graph, this.id, [...this.getInputs(), ...this.getOutputs()]);
+    return this.chunkProps.flatMap((props, chunkIndex) =>
+      this.getChunkCommandNodes(graph, {
+        ...props,
+        id: `${this.id}-chunk-${chunkIndex}`
+      } as unknown as GPURasterClimateRunAccumulatorProps)
+    );
+  }
+
+  private getChunkCommandNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>,
+    props: GPURasterClimateRunAccumulatorProps
+  ): readonly GPUCommandNode<Parameters>[] {
+    const {condition, minimumSpellLength} = this;
+    const id = props.id!;
     const {chunkSliceCount: chunk, values, mask, parameters, state} = props;
-    validateRasterGraph(id, graph, this.getInputs(), this.getOutputs());
     const conditionOperator = {
       above: '>',
       'at-or-above': '>=',
@@ -174,7 +208,7 @@ export class GPURasterClimateRunAccumulator implements GPUCommandNodeProducer {
       ? 'max(value - threshold, 0.0)'
       : 'max(threshold - value, 0.0)';
     return [
-      createWGSLKernelNode<Parameters>(graph, {
+      createRasterTimeSeriesKernelNode<Parameters>(graph, {
         id,
         operation: 'GPURasterClimateRunAccumulator',
         invocationCount: props.cellCount,

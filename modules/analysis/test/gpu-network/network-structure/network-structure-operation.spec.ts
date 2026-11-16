@@ -4,7 +4,10 @@
 
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
-import {CPUNetworkStructureOperation} from '../../../src/gpu-network/network-structure/cpu-network-structure-operation';
+import {
+  CPUNetworkStructureOperation,
+  computeNetworkStructureOnCPU
+} from '../../../src/gpu-network/network-structure/cpu-network-structure-operation';
 import {
   GPUNetworkStructureOperation,
   type NetworkStructureOperationProps
@@ -88,7 +91,63 @@ for (const fixture of ['blocks', 'invalid-slot', 'isolated'] as const) {
       results.push(
         await runOperationGraph(device, {inputs, operations: [new Operation(props)], outputs})
       );
-    // All outputs are integer identifiers or flags; tolerance is zero.
-    for (const value of outputs) expect(results[0][value]).toEqual(results[1][value]);
+    // All outputs are integer identifiers or flags; tolerance is zero. The direct CPU
+    // oracle checks expected values independently of how either operation declares its ports.
+    const expected = computeNetworkStructureOnCPU({
+      offsets: inputs.offsets.values,
+      neighbors: inputs.neighbors.values,
+      reverseEdgeSlots: inputs.reverse.values
+    });
+    for (const [port, value] of Object.entries(props.output)) {
+      if (value === undefined) continue;
+      expect(results[0][value]).toEqual(results[1][value]);
+      expect(results[0][value]).toEqual(expected[port as keyof typeof expected]);
+    }
   });
+}
+
+for (const [mode, strongComponentsMaximumIterations] of [
+  ['parallel', 1],
+  ['parallel', 32],
+  ['exact', 1]
+] as const) {
+  it(`operation publishes SCC controls and status: ${mode}, budget ${strongComponentsMaximumIterations}`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    // One 3-cycle and one isolated vertex: CPU Tarjan labels are [0, 0, 0, 3].
+    const offsets = new Uint32Array([0, 1, 2, 3, 3]);
+    const neighbors = new Uint32Array([1, 2, 0]);
+    const result = await runOperationGraph(device, {
+      inputs: {
+        offsets: {format: 'uint32', values: offsets},
+        neighbors: {format: 'uint32', values: neighbors}
+      },
+      operations: [
+        new GPUNetworkStructureOperation({
+          mode,
+          strongComponentsMaximumIterations,
+          nodeCount: 4,
+          edgeCount: 3,
+          topology: {offsets: 'offsets', neighbors: 'neighbors'},
+          output: {strongComponents: 'labels'},
+          strongComponentsStatus: {
+            converged: 'converged',
+            iterationCount: 'iterations',
+            iterationLimitReached: 'exhausted'
+          }
+        })
+      ],
+      outputs: ['labels', 'converged', 'iterations', 'exhausted']
+    });
+    const finished = mode === 'exact' || strongComponentsMaximumIterations > 1;
+    expect(result['labels']).toEqual(
+      finished
+        ? computeNetworkStructureOnCPU({offsets, neighbors}).strongComponents
+        : new Uint32Array(4).fill(0xffffffff)
+    );
+    expect(result['converged']).toEqual(new Uint32Array([Number(finished)]));
+    expect(result['exhausted']).toEqual(new Uint32Array([Number(!finished)]));
+    expect(result['iterations'][0]).toBeGreaterThanOrEqual(1);
+    expect(result['iterations'][0]).toBeLessThanOrEqual(strongComponentsMaximumIterations);
+  }, 120000);
 }

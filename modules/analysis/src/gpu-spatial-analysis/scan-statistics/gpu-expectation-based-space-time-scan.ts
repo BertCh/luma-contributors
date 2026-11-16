@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateSpatialStatisticsBindings} from '../spatial-weights/spatial-statistics-bindings';
+import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -19,10 +21,8 @@ import {
   validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {
-  createWGSLDispatchGate,
-  createWGSLKernelNode
-} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {createWGSLDispatchGate} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {createStatisticsKernelNode as createWGSLKernelNode} from '../spatial-weights/statistics-kernel-node';
 import {POISSON_OBSERVED_TERM_WGSL} from '../../analysis-core/kernels/wgsl-poisson-observed-term';
 import {
   getGPUSphereRadius,
@@ -310,6 +310,13 @@ export class GPUExpectationBasedSpaceTimeScan implements GPUCommandNodeProducer 
       ],
       [props.positions, props.cases, props.baseline, parameters]
     );
+    validateDisjointWritableViews(id, {
+      clusterZones: props.output.clusterZones,
+      clusterStatistics: props.output.clusterStatistics,
+      statistics: props.output.statistics,
+      summary: props.output.summary,
+      zoneStatistics: props.output.zoneStatistics
+    });
   }
 
   /** CPU description of the inference, for legends. */
@@ -330,6 +337,11 @@ export class GPUExpectationBasedSpaceTimeScan implements GPUCommandNodeProducer 
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, zones, batchReplicates, batchCount} = this;
+    validateSpatialStatisticsBindings(graph, id, props, {
+      'neighbor tables': zones * props.maximumNeighbors * 4,
+      'replicate table': (batchReplicates + 1) * zones * props.maximumWindowLength * 4,
+      'center records': zones * 12
+    });
     const {positions, cases, baseline, parameters, output} = props;
     const {timeBuckets, maximumNeighbors, maximumWindowLength, maximumReplicates} = props;
     const {clusterZones, clusterStatistics, statistics, summary, zoneStatistics} = output;

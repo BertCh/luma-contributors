@@ -3,6 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  validateInterpolationOutputsDisjointFromInputs,
+  validateInterpolationOutputPasses
+} from '../spatial-interpolation/interpolation-view-validation';
+
+import {
   createTransientView,
   GPUGather,
   GPUReduction,
@@ -22,10 +27,10 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
-  validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
+  validateGPUStorageBindingByteLength,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {
   createSegmentSumNode,
   getSegmentSumDispatchShape,
@@ -288,7 +293,12 @@ export class GPUPycnophylactic implements GPUCommandNodeProducer {
         `${id} output.status.converged and output.status.iterationCount need a tolerance`
       );
     }
-    validateGraphOutputsDisjointFromInputs(id, this.getOutputViews(), this.getInputViews());
+    validateInterpolationOutputPasses(id, this.getOutputBindings(), [
+      {write: {mass: output.mass, density: output.density}},
+      {write: {invalidCount: output.status?.invalidCount}},
+      {write: {converged: output.status?.converged, iterationCount: output.status?.iterationCount}}
+    ]);
+    validateInterpolationOutputsDisjointFromInputs(id, this.getOutputViews(), this.getInputViews());
   }
 
   private getInputViews(): (GraphDataView | undefined)[] {
@@ -297,14 +307,18 @@ export class GPUPycnophylactic implements GPUCommandNodeProducer {
   }
 
   private getOutputViews(): (GraphDataView | undefined)[] {
+    return Object.values(this.getOutputBindings());
+  }
+
+  private getOutputBindings(): Record<string, GraphDataView | undefined> {
     const {output} = this.props;
-    return [
-      output.mass,
-      output.density,
-      output.status?.converged,
-      output.status?.iterationCount,
-      output.status?.invalidCount
-    ];
+    return {
+      'output.mass': output.mass,
+      'output.density': output.density,
+      'output.status.converged': output.status?.converged,
+      'output.status.iterationCount': output.status?.iterationCount,
+      'output.status.invalidCount': output.status?.invalidCount
+    };
   }
 
   /** Returns the sort, initialization and per-iteration smoothing and rescaling nodes. */
@@ -314,8 +328,30 @@ export class GPUPycnophylactic implements GPUCommandNodeProducer {
     const {id, props} = this;
     const {width, height} = props.grid;
     const {totals, zoneCount, maximumIterations: iterations, output} = props;
-    validateGraphViewsBelongToGraph(id, graph, [...this.getInputViews(), ...this.getOutputViews()]);
+    validateGraphChunkBindingRanges(graph, id, {
+      zones: props.zones,
+      totals: props.totals,
+      parameters: props.parameters,
+      zoneAnchorCells: props.zoneAnchorCells,
+      tolerance: props.tolerance,
+      ...this.getOutputBindings()
+    });
     const cellCount = width * height;
+    // Cell and zone intermediates are scalar, with a trailing offset for the zone scan.
+    for (const [name, length] of Object.entries({
+      cellScratch: cellCount,
+      zoneScratch: zoneCount,
+      segmentOffsets: zoneCount + 1,
+      convergenceFlags: props.tolerance ? 2 : 0,
+      iterationDispatch: props.tolerance ? 6 : 0
+    }))
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        name,
+        length * Uint32Array.BYTES_PER_ELEMENT,
+        'reduce the grid size or zoneCount'
+      );
     const kernel = props.kernel ?? 'rook';
     const geographic = this.spatialContext.coordinateSpace === 'longitude-latitude';
     const {tolerance} = props;

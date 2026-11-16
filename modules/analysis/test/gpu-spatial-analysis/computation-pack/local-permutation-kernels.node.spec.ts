@@ -10,12 +10,17 @@ import {
   getGPUCommandNodeKernelSources
 } from '../../utils/gpu-contributor-test-utils';
 import {createReplayTest} from './local-permutation-test-fixture';
+import {
+  findReservedIdentifiers,
+  stripWGSLComments
+} from '../../analysis-core/kernel-audit/kernel-audit-wgsl';
+import {findStatisticsNonFiniteConstants} from '../spatial-weights/statistics-wgsl-audit';
 
 // The fixture is `JSON.stringify(kernels, null, 2)` plus a newline, the full WGSL of the permute
 // kernel per configuration. When a shared WGSL module that the kernel includes changes on purpose,
-// regenerate it with `UPDATE_LOCAL_PERMUTATION_KERNELS=1 npx vitest run --project node
+// regenerate it with `UPDATE_LOCAL_PERMUTATION_KERNELS=1 node_modules/.bin/vitest run --project node
 // modules/analysis/test/gpu-spatial-analysis/computation-pack/local-permutation-kernels.node.spec.ts`
-// and diff the old and new text of a few configurations before accepting it.
+// --maxWorkers=1 and diff the old and new text of a few configurations before accepting it.
 //
 // Baseline history after the computation-pack refactor:
 // - 2026-11-10 (math correctness review): two additions, identical in all 162 configurations and
@@ -25,7 +30,10 @@ import {createReplayTest} from './local-permutation-test-fixture';
 //   constant `ANALYTIC_P_VALUE_FLOOR` and clamps to it instead of `min(..., 1.0)`
 //   (spatial-statistics-08); the permute kernel includes the module and does not call the
 //   function, so no permutation result changes.
-it('preserves the complete pre-refactor permutation WGSL byte for byte across 162 configurations', () => {
+// - 2026-11-16 (F-STATS): exact uint32 count helpers, runtime row parameters and safe scaled
+//   quotients replace the float32-count implementations. The complete fixture is refreshed;
+//   independent permutation oracles retain the numerical-result contract.
+it('preserves the complete permutation WGSL baseline byte for byte across 162 configurations', () => {
   const kernels: Record<string, string> = {};
   for (const statistic of [
     'localMoran',
@@ -62,6 +70,8 @@ it('preserves the complete pre-refactor permutation WGSL byte for byte across 16
               stopAfterExceedances ?? '-'
             ].join('/');
             kernels[key] = getGPUCommandNodeKernelSources(nodes)[0].source;
+            expect(findReservedIdentifiers(stripWGSLComments(kernels[key])), key).toEqual([]);
+            expect(findStatisticsNonFiniteConstants(kernels[key]), key).toEqual([]);
             graph.device.destroy();
           }
         }

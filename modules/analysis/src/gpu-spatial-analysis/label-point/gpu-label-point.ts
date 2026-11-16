@@ -16,7 +16,6 @@ import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPUPolygonGeometryFields} from '../../analysis-core/contracts/index';
@@ -24,6 +23,8 @@ import {
   createWGSLKernelNode,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
+
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 
 const OPERATION = 'GPULabelPoint';
 
@@ -43,6 +44,10 @@ export const GPU_LABEL_POINT_DEFAULT_REFINEMENT_ROUNDS = 6;
 export const GPU_LABEL_POINT_DEFAULT_SMALL_FEATURE_VERTEX_LIMIT = 32;
 /** Lanes of the per-feature workgroup used for large features. */
 const WORKGROUP_SIZE = 64;
+/** One 64-lane workgroup per feature must fit the uint32 invocation count. */
+const GPU_LABEL_POINT_MAXIMUM_FEATURE_COUNT = Math.floor(0xffffffff / WORKGROUP_SIZE);
+/** Squared search-grid cell indices are uint32. */
+const GPU_LABEL_POINT_MAXIMUM_GRID_SIZE = Math.floor(Math.sqrt(0xffffffff));
 
 /** Caller-owned outputs of {@link GPULabelPoint}. */
 export type GPULabelPointOutput = {
@@ -179,8 +184,20 @@ export class GPULabelPoint implements GPUCommandNodeProducer {
     this.smallFeatureVertexLimit =
       props.smallFeatureVertexLimit ?? GPU_LABEL_POINT_DEFAULT_SMALL_FEATURE_VERTEX_LIMIT;
     const {id} = this;
-    validateCapacity(id, 'initialGridSize', this.initialGridSize, 2);
-    validateCapacity(id, 'refinementGridSize', this.refinementGridSize, 3);
+    validateCapacity(
+      id,
+      'initialGridSize',
+      this.initialGridSize,
+      2,
+      GPU_LABEL_POINT_MAXIMUM_GRID_SIZE
+    );
+    validateCapacity(
+      id,
+      'refinementGridSize',
+      this.refinementGridSize,
+      3,
+      GPU_LABEL_POINT_MAXIMUM_GRID_SIZE
+    );
     validateCapacity(id, 'refinementRounds', this.refinementRounds, 0);
     validateCapacity(id, 'refinementCandidates', this.refinementCandidates, 1, 16);
     validateCapacity(id, 'smallFeatureVertexLimit', this.smallFeatureVertexLimit, 0);
@@ -195,6 +212,13 @@ export class GPULabelPoint implements GPUCommandNodeProducer {
       }
     }
     this.featureCount = props.featureOffsets.length - 1;
+    validateCapacity(
+      id,
+      'feature count',
+      this.featureCount,
+      1,
+      GPU_LABEL_POINT_MAXIMUM_FEATURE_COUNT
+    );
     const {points, distances, degenerate} = props.output;
     validateSinglePackedView(points, ['float32x2'], `${id} output.points`);
     if (points.length !== this.featureCount) {
@@ -225,15 +249,15 @@ export class GPULabelPoint implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
     const {points, distances, degenerate} = props.output;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.positions,
-      props.ringOffsets,
-      props.featureOffsets,
-      props.polygonOffsets,
-      points,
-      distances,
-      degenerate
-    ]);
+    validateGraphChunkBindingRanges(graph, id, {
+      positions: props.positions,
+      ringOffsets: props.ringOffsets,
+      featureOffsets: props.featureOffsets,
+      polygonOffsets: props.polygonOffsets,
+      'output.points': points,
+      'output.distances': distances,
+      'output.degenerate': degenerate
+    });
     const bindings: WGSLKernelBinding[] = [
       {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
       {name: 'ringOffsets', view: props.ringOffsets, type: 'u32', access: 'read'},

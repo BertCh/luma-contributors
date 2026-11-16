@@ -3,6 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  validateTerrainBindings,
+  getTerrainGateScratchByteLength
+} from '../terrain-processing/terrain-binding-preflight';
+import {
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -177,6 +181,10 @@ export class GPUTerrainWatersheds implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateTerrainBindings(graph, this.id, this.props, {
+      'pointer scratch': 4 * this.props.grid.width * this.props.grid.height,
+      'gate table': getTerrainGateScratchByteLength(this.props.maximumIterations ?? 32)
+    });
     const {id, props} = this;
     const {output} = props;
     const {width, height} = props.grid;

@@ -16,6 +16,19 @@ import {getPackedPredictionAccessors} from '../../analysis-core/kernels/gpu-pred
 import type {GPUVariogramModelFit} from './gpu-variogram-model-fit';
 import {COOPERATIVE_VARIOGRAM_FIT_WGSL} from './variogram-model-fit-cooperative';
 import {VARIOGRAM_MODEL_SHAPE_WGSL, type VariogramModelType} from './variogram-model';
+import {createSpatialStatisticsParameterNodes} from '../../analysis-core/kernels/spatial-statistics-parameter-nodes';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {
+  validateGPUStorageBindingByteLength,
+  validateMaximumCount
+} from '../../analysis-core/kernels/gpu-contributor-utils';
+
+/** One aligned slot per Cressie round keeps offsets and pipeline sources identical. */
+const ROUND_PARAMETER_SLOT_WORD_COUNT = 64;
+/** Reweight and publish flags are the only shader-visible words in each slot. */
+const ROUND_PARAMETER_WORD_COUNT = 2;
+/** The initial fit and three reweighting rounds retain the existing contract. @internal */
+export const CRESSIE_ROUND_COUNT = 4;
 
 const MODEL_CODES: Record<VariogramModelType, number> = {
   spherical: 0,
@@ -36,6 +49,59 @@ export function getParallelVariogramModelFitNodes<Parameters>(
   contributor: GPUVariogramModelFit
 ): GPUCommandNode<Parameters>[] {
   const {id, props, models, rangeSteps, maximumIterations} = contributor;
+  validateGraphChunkBindingRanges(graph, id, {
+    distances: props.distances,
+    semivariances: props.semivariances,
+    pairCounts: props.pairCounts,
+    ...props.output
+  });
+  validateMaximumCount(
+    id,
+    'storage bindings',
+    8,
+    graph.device.limits.maxStorageBuffersPerShaderStage
+  );
+  const roundCount =
+    props.weighting === undefined || props.weighting === 'cressie' ? CRESSIE_ROUND_COUNT : 1;
+  const scratchWordCount = 4 + models.length * (rangeSteps + 1) * 4;
+  validateGPUStorageBindingByteLength(
+    graph.device,
+    id,
+    'search scratch',
+    scratchWordCount * 4,
+    'reduce rangeSteps or models length'
+  );
+  validateMaximumCount(
+    id,
+    'search scratch byteLength',
+    scratchWordCount * 4,
+    graph.device.limits.maxBufferSize
+  );
+  validateGPUStorageBindingByteLength(
+    graph.device,
+    id,
+    'round parameter slot',
+    ROUND_PARAMETER_WORD_COUNT * 4,
+    'use a device with an eight-byte storage binding'
+  );
+  validateMaximumCount(
+    id,
+    'round parameter buffer byteLength',
+    roundCount * ROUND_PARAMETER_SLOT_WORD_COUNT * 4,
+    graph.device.limits.maxBufferSize
+  );
+  const roundValues = new Uint32Array(roundCount * ROUND_PARAMETER_SLOT_WORD_COUNT);
+  for (let round = 0; round < roundCount; round++) {
+    roundValues.set(
+      [Number(round > 0), Number(round === roundCount - 1)],
+      round * ROUND_PARAMETER_SLOT_WORD_COUNT
+    );
+  }
+  const roundParameters = createSpatialStatisticsParameterNodes(
+    graph,
+    `${id}-round-parameters`,
+    roundValues
+  );
   const modelCodes = models.map(model => MODEL_CODES[model]);
   const previousStart = 4;
   const candidateStart = previousStart + models.length * 4;
@@ -115,6 +181,7 @@ fn fitLinear(range: f32) -> vec4<f32> {
 }
 `;
   const nodes: GPUCommandNode<Parameters>[] = [
+    ...roundParameters.nodes,
     createWGSLKernelNode(graph, {
       id: `${id}-prepare`,
       operation: 'GPUVariogramModelFit',
@@ -163,8 +230,16 @@ for (var modelIndex = 0u; modelIndex < ${models.length}u; modelIndex++) {
 }`
     })
   ];
-  const roundCount = props.weighting === undefined || props.weighting === 'cressie' ? 4 : 1;
   for (let round = 0; round < roundCount; round++) {
+    const roundParameterView = graph.createDataView(roundParameters.parameters.buffer, {
+      format: 'uint32',
+      length: ROUND_PARAMETER_WORD_COUNT,
+      byteOffset: round * ROUND_PARAMETER_SLOT_WORD_COUNT * 4
+    });
+    const roundBindings = [
+      ...bindings,
+      {name: 'roundParameters', view: roundParameterView, type: 'u32', access: 'read'} as const
+    ];
     nodes.push(
       createWGSLKernelNode(graph, {
         id: `${id}-candidates-${round}`,
@@ -172,14 +247,14 @@ for (var modelIndex = 0u; modelIndex < ${models.length}u; modelIndex++) {
         variant: 'range-candidates',
         invocationCount: models.length * rangeSteps,
         workgroupSize: 64,
-        bindings,
+        bindings: roundBindings,
         declarations,
         body: `
 let modelIndex = index / ${rangeSteps}u;
 if (statuses[statusesOffset + modelIndex] != 0u) { return; }
 model = MODEL_CODES[modelIndex];
 previous = readFit(${previousStart}u + modelIndex * 4u);
-reweight = ${round > 0};
+reweight = roundParameters[roundParametersOffset] != 0u;
 let step = index % ${rangeSteps}u;
 let range = exp(scratch[scratchOffset] + scratch[scratchOffset + 1u] * f32(step));
 writeFit(${candidateStart}u + index * 4u, fitLinear(range));`
@@ -193,14 +268,18 @@ writeFit(${candidateStart}u + index * 4u, fitLinear(range));`
         invocationCount: models.length * 64,
         workgroupSize: 64,
         guardIndex: false,
-        bindings,
-        declarations: declarations + COOPERATIVE_VARIOGRAM_FIT_WGSL,
+        bindings: roundBindings,
+        declarations:
+          declarations +
+          COOPERATIVE_VARIOGRAM_FIT_WGSL +
+          '\nvar<workgroup> sharedPublishRound: u32;',
         body: `
 let modelIndex = workgroupIndex;
 model = MODEL_CODES[modelIndex];
 previous = readFit(${previousStart}u + modelIndex * 4u);
-reweight = ${round > 0};
+reweight = roundParameters[roundParametersOffset] != 0u;
 if (localInvocationIndex == 0u) {
+  sharedPublishRound = roundParameters[roundParametersOffset + 1u];
   sharedValid = 0u;
   if (statuses[statusesOffset + modelIndex] == 0u) {
     var selected = previous;
@@ -244,9 +323,7 @@ for (var iteration = 0u; iteration < ${maximumIterations}u; iteration++) {
 if (innerFit.w < best.w) { best = innerFit; }
 if (outerFit.w < best.w) { best = outerFit; }
 if (localInvocationIndex == 0u) { writeFit(${previousStart}u + modelIndex * 4u, best); }
-${
-  round === roundCount - 1
-    ? `
+if (workgroupUniformLoad(&sharedPublishRound) != 0u) {
 let bracket = rightBound - left;
 if (!isFiniteValue(best.w) || !isFiniteValue(best.x) || !isFiniteValue(best.y) || !isFiniteValue(best.z)) { if (localInvocationIndex == 0u) { statuses[statusesOffset + modelIndex] = 2u; } return; }
 var partialUnweighted = 0.0;
@@ -264,8 +341,7 @@ let binCount = scratch[scratchOffset + 2u];
 write_parameters(modelIndex, best);
 write_diagnostics(modelIndex, vec4f(binCount, unweighted, binCount * log(max(unweighted / binCount, 1e-30)) + 6.0, bracket));
 statuses[statusesOffset + modelIndex] = select(0u, 3u, boundary || bracket > 1e-5);
-}`
-    : ''
+}
 }`
       })
     );

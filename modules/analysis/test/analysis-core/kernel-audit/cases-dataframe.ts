@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {GraphDataView} from '@luma.gl/graph/gpu-core';
 import {
   getGPUClassBreaksParameterLength,
   getGPUColumnQuantilesParameterLength,
@@ -653,7 +654,7 @@ const COLUMN_PROFILE_CASES: KernelAuditCase[] = [
   },
   {
     exportName: 'GPUColumnProfile',
-    name: 'maximum columns, bins, precision, top categories and rows',
+    name: 'maximum columns, bins, precision and top categories at 2^24 rows',
     build: ({graph, view, device}) => {
       const categoryCount = getGPUColumnProfileMaximumCategoryTotal(device) / 4;
       const columnCount = GPU_COLUMN_PROFILE_MAXIMUM_COLUMN_COUNT;
@@ -690,7 +691,7 @@ const COLUMN_PROFILE_CASES: KernelAuditCase[] = [
   },
   {
     exportName: 'GPUColumnProfile',
-    name: 'one row above the maximum (2^24 + 1), float32 counts',
+    name: 'uint32 counts above the former float32 boundary (2^24 + 1)',
     build: ({graph, view}) =>
       graph.add(
         new GPUColumnProfile({
@@ -699,6 +700,48 @@ const COLUMN_PROFILE_CASES: KernelAuditCase[] = [
           histogramBinCount: 2048,
           hyperLogLogPrecision: 12,
           topCategoryCount: 1,
+          output: {statistics: view('float32', GPU_COLUMN_PROFILE_STATISTIC_COUNT)}
+        })
+      )
+  },
+  ...[false, true].map(
+    (aboveLimit): KernelAuditCase => ({
+      exportName: 'GPUColumnProfile',
+      name: aboveLimit
+        ? 'numeric rows one above the storage binding maximum'
+        : 'numeric rows at the storage binding maximum',
+      build: ({graph, view, maximumRows}) =>
+        graph.add(
+          new GPUColumnProfile({
+            columns: [{values: view('float32', maximumRows(4) + Number(aboveLimit))}],
+            histogramBinCount: 1,
+            output: {
+              statistics: view('float32', GPU_COLUMN_PROFILE_STATISTIC_COUNT),
+              counts: view('uint32', 2)
+            }
+          })
+        )
+    })
+  ),
+  {
+    exportName: 'GPUColumnProfile',
+    name: 'row metadata one above uint32 addressing',
+    build: ({graph, view}) =>
+      graph.add(
+        new GPUColumnProfile({
+          // Metadata-only: the constructor must reject the row count before any GPU allocation.
+          columns: [
+            {
+              values: new GraphDataView(view('float32', 1).buffer, {
+                format: 'float32',
+                length: 0x100000000,
+                byteOffset: 0,
+                byteStride: 4,
+                rowByteLength: 4
+              })
+            }
+          ],
+          histogramBinCount: 1,
           output: {statistics: view('float32', GPU_COLUMN_PROFILE_STATISTIC_COUNT)}
         })
       )

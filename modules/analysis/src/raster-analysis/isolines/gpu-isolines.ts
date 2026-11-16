@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRasterStorageBindings} from '../raster-grid/raster-storage-preflight';
 import {
   createTransientView,
   GPUScan,
@@ -36,7 +37,8 @@ import {
   getRasterAlgebraInputNodes,
   getRasterAlgebraInputViews,
   isRasterAlgebraBand,
-  validateRasterAlgebraInput
+  validateRasterAlgebraInput,
+  validateRasterAlgebraInputBindings
 } from '../raster-algebra/raster-algebra-input';
 import {GPU_ISOLINES_PARAMETER_LENGTH} from './isolines-parameters';
 import {
@@ -174,7 +176,7 @@ export type GPUIsolinesProps = {
  * float64 crossing (1.2 cm at 100 km); add the origin back on the CPU or as the layer's coordinate
  * origin.
  *
- * Row direction: row 0 of the raster is placed at `minY` of the per-frame extent and rows advance
+ * Row direction: row-zero sample centers are half a cell above `minY` of the outer extent; rows advance
  * toward larger y. Placement uses only the dimensions of `grid` (or the domain with `tile`);
  * `grid.affine` is checked for finite values at construction but is not used for placement. A north-up grid (row 0 at the top, the default of
  * `makeGPURasterMetadata`) therefore comes out mirrored north to south unless the caller reverses
@@ -313,6 +315,25 @@ export class GPUIsolines implements GPUCommandNodeProducer, GPURasterHaloStage {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    const storageProps = this.props;
+    validateRasterAlgebraInputBindings(graph, this.id, [storageProps.values], storageProps.grid);
+    validateRasterStorageBindings(
+      graph,
+      this.id,
+      [storageProps.mask, storageProps.levels, storageProps.parameters, ...this.getOutputViews()],
+      {
+        'cell counts and offsets':
+          (storageProps.grid.width - 1) * (storageProps.grid.height - 1) * 4,
+        'segment edges':
+          storageProps.output.polylines && !storageProps.output.segmentEdges
+            ? this.segmentCapacity * 8
+            : 0,
+        'stitch states': storageProps.output.polylines ? this.segmentCapacity * 16 : 0,
+        'staged polyline vertices': (storageProps.output.polylines?.vertices.length ?? 0) * 8,
+        'stitch totals': storageProps.output.polylines ? 8 : 4
+      }
+    );
+
     const {id, props, segmentCapacity, maximumLevelCount} = this;
     const {output} = props;
     const {polylines} = output;

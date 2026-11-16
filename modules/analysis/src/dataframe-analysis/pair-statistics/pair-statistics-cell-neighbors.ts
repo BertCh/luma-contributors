@@ -12,7 +12,10 @@ import {
   validateCapacity,
   validateMaximumCount
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  createGraphChunkGroupKernelNode,
+  GRAPH_CHUNK_GROUP_EXTRA_PARAMETER_OFFSET
+} from '../../analysis-core/kernels/graph-chunk-groups';
 
 /** Entries one invocation of a segment-total level adds. */
 const PAIR_STATISTICS_TOTAL_FAN_IN = 256;
@@ -57,19 +60,24 @@ export function getPairStatisticsSegmentTotalNodes<Parameters>(
             segmentCount * groupCount * (props.detectOverflow ? 2 : 1)
           ) as GraphDataView<'float32'> | GraphDataView<'uint32'>);
     nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
+      createGraphChunkGroupKernelNode<Parameters>(graph, {
         id: `${id}-level-${level}`,
         operation,
         variant: `segment-total-${type}`,
         invocationCount: segmentCount * groupCount,
+        parameterValues: [groupCount, entryCount, segmentCount, Number(level > 0)],
         bindings: [
           {name: 'entries', view: input, type, access: 'read'},
           {name: 'totals', view: output, type, access: 'read_write'}
         ],
-        body: props.detectOverflow
-          ? `let segment = index / ${groupCount}u; let group = index % ${groupCount}u;
-  let begin = segment * ${entryCount}u + group * ${PAIR_STATISTICS_TOTAL_FAN_IN}u;
-  let end = segment * ${entryCount}u + min((group + 1u) * ${PAIR_STATISTICS_TOTAL_FAN_IN}u, ${entryCount}u);
+        declarations: `fn readTotalParameter(slot: u32) -> u32 { return getChunkParameter(${GRAPH_CHUNK_GROUP_EXTRA_PARAMETER_OFFSET}u + slot); }`,
+        body: `let groupCount = readTotalParameter(0u); let entryCount = readTotalParameter(1u);
+  let segmentCount = readTotalParameter(2u);
+  ${
+    props.detectOverflow
+      ? `let segment = index / groupCount; let group = index % groupCount;
+  let begin = segment * entryCount + group * ${PAIR_STATISTICS_TOTAL_FAN_IN}u;
+  let end = segment * entryCount + min((group + 1u) * ${PAIR_STATISTICS_TOTAL_FAN_IN}u, entryCount);
   var total = ${type}(0);
   var overflow = 0u;
   for (var entry = begin; entry < end; entry++) {
@@ -77,16 +85,17 @@ export function getPairStatisticsSegmentTotalNodes<Parameters>(
     let exceeds = value > 0xffffffffu - total;
     total = select(total + value, 0xffffffffu, exceeds);
     overflow |= u32(exceeds);
-    ${level > 0 ? `overflow |= entries[entriesOffset + ${segmentCount * entryCount}u + entry];` : ''}
+    if (readTotalParameter(3u) != 0u) { overflow |= entries[entriesOffset + segmentCount * entryCount + entry]; }
   }
   totals[totalsOffset + index] = total;
-  totals[totalsOffset + ${segmentCount * groupCount}u + index] = overflow;`
-          : `let segment = index / ${groupCount}u; let group = index % ${groupCount}u;
-  let begin = segment * ${entryCount}u + group * ${PAIR_STATISTICS_TOTAL_FAN_IN}u;
-  let end = segment * ${entryCount}u + min((group + 1u) * ${PAIR_STATISTICS_TOTAL_FAN_IN}u, ${entryCount}u);
+  totals[totalsOffset + (segmentCount * groupCount) + index] = overflow;`
+      : `let segment = index / groupCount; let group = index % groupCount;
+  let begin = segment * entryCount + group * ${PAIR_STATISTICS_TOTAL_FAN_IN}u;
+  let end = segment * entryCount + min((group + 1u) * ${PAIR_STATISTICS_TOTAL_FAN_IN}u, entryCount);
   var total = ${type}(0);
   for (var entry = begin; entry < end; entry++) { total += entries[entriesOffset + entry]; }
   totals[totalsOffset + index] = total;`
+  } `
       })
     );
     if (groupCount === 1) return nodes;

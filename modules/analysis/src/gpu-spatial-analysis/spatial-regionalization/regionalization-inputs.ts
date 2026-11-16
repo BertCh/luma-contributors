@@ -15,6 +15,7 @@ import {
   getStorageBindingElementLimit,
   validateCapacity,
   validateMaximumCount,
+  validateGPUStorageBindingByteLength,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GPUSpatialWeightsTranspose} from '../spatial-weights/gpu-spatial-weights-transpose';
@@ -25,6 +26,38 @@ import {
 
 /** Lanes of the per-column standardization workgroup. */
 const STANDARDIZE_LANES = 256;
+/** Published transpose sorts use local bitonic through 256 slots, then 16 radix buckets. */
+const ADJACENCY_SORT_WORKGROUP_SIZE = 256;
+const ADJACENCY_SORT_BUCKET_COUNT = 16;
+
+/** Preflight the union and nested transpose, without creating their buffers. @internal */
+export function validateSymmetricAdjacencyScratch<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  id: string,
+  weights: GPUSpatialWeights,
+  rowCount: number
+): void {
+  if (weights.information?.symmetric === true) return;
+  const capacity = weights.neighbors.length;
+  for (const [name, byteLength] of [
+    ['adjacency offsets', (rowCount + 1) * 4],
+    ['adjacency neighbors and weights', Math.max(1, 2 * capacity) * 4],
+    [
+      'transpose sort histogram',
+      capacity > ADJACENCY_SORT_WORKGROUP_SIZE
+        ? Math.ceil(capacity / ADJACENCY_SORT_WORKGROUP_SIZE) * ADJACENCY_SORT_BUCKET_COUNT * 4
+        : 0
+    ],
+    ['transpose parameters', 4]
+  ] as const)
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      name,
+      byteLength,
+      'reduce rows or weights slot capacity'
+    );
+}
 
 /**
  * Number of `uint32` words of the seed-only per-frame parameters shared by `GPUAZPRegions`,

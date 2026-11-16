@@ -26,7 +26,8 @@ import {getSizeRouteWGSL} from './polygon-triangulation-monotone-wgsl';
 import {
   validateCapacity,
   getStorageBindingElementLimit,
-  validateGraphViewsBelongToGraph,
+  validateGPUStorageBindingByteLength,
+  validateGraphOutputsDisjointFromInputs,
   validateMaximumCount,
   validateSinglePackedView
 } from '../kernels/gpu-contributor-utils';
@@ -35,6 +36,10 @@ import {EXACT_ORIENTATION_WGSL} from '../kernels/exact-orientation-wgsl';
 import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
 import type {GPUPolygonGeometryFields} from '../contracts/index';
 
+import {
+  validateDisjointWritableViews,
+  validateGraphChunkBindingRanges
+} from '../kernels/graph-chunk-dispatch';
 import {getPolygonTriangulationLayoutNodes} from './polygon-triangulation-layout';
 
 const OPERATION = 'GPUPolygonTriangulation';
@@ -116,6 +121,17 @@ export function validatePolygonTriangulationScratch(
     'scratch nodes',
     getPolygonTriangulationNodeCount(vertexCount, ringCount, polygonCount),
     getGPUPolygonTriangulationMaximumNodeCount(device, useZOrderHash)
+  );
+  validateCapacity(
+    id,
+    'scratch byteLength',
+    Math.max(
+      (useZOrderHash ? 28 : 16) *
+        getPolygonTriangulationNodeCount(vertexCount, ringCount, polygonCount),
+      16
+    ),
+    0,
+    device.limits.maxBufferSize
   );
 }
 
@@ -360,6 +376,26 @@ export class GPUPolygonTriangulation implements GPUCommandNodeProducer {
     if (props.monotoneMaximumVertices !== undefined) {
       validateCapacity(id, 'monotoneMaximumVertices', props.monotoneMaximumVertices);
     }
+    const writtenOutputs = {
+      indices: output.indices,
+      triangleOffsets: output.triangleOffsets,
+      valid: this.polygonCount > 0 ? output.valid : undefined,
+      triangleCount: this.polygonCount > 0 ? output.triangleCount : undefined
+    };
+    validateDisjointWritableViews(id, writtenOutputs, {separateDispatches: true});
+    // The scan publishes triangleOffsets in an earlier dispatch; Earcut/monotone bind only
+    // the writable result columns together and read triangle prefixes from private layout.
+    validateDisjointWritableViews(id, {
+      indices: output.indices,
+      valid: writtenOutputs.valid,
+      triangleCount: writtenOutputs.triangleCount
+    });
+    validateGraphOutputsDisjointFromInputs(id, Object.values(writtenOutputs), [
+      props.positions,
+      props.featureOffsets,
+      props.polygonOffsets,
+      props.ringOffsets
+    ]);
   }
 
   private getViews(): (GraphDataView | undefined)[] {
@@ -371,8 +407,8 @@ export class GPUPolygonTriangulation implements GPUCommandNodeProducer {
       polygonOffsets,
       ringOffsets,
       indices,
-      valid,
-      triangleCount,
+      this.polygonCount > 0 ? valid : undefined,
+      this.polygonCount > 0 ? triangleCount : undefined,
       triangleOffsets
     ];
   }
@@ -386,7 +422,18 @@ export class GPUPolygonTriangulation implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, polygonCount, ringCount} = this;
     const {output} = props;
-    validateGraphViewsBelongToGraph(id, graph, this.getViews());
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(this.getViews().map((view, index) => [`view ${index}`, view]))
+    );
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'triangle offsets scratch',
+      (polygonCount + 1) * 4,
+      'reduce the polygon count'
+    );
     validatePolygonTriangulationScratch(
       graph.device,
       id,
@@ -396,6 +443,14 @@ export class GPUPolygonTriangulation implements GPUCommandNodeProducer {
       props.useZOrderHash ?? true
     );
     const vertexCount = props.positions.length;
+    // The monotone path binds up to 40 bytes per input row; larger inputs keep today's behavior
+    // (Earcut within `maximumWork`), so the default never makes an accepted input throw.
+    const useMonotone =
+      (props.largePolygonMethod ?? 'monotone') === 'monotone' &&
+      vertexCount <= getGPUPolygonTriangulationMonotoneMaximumVertexCount(graph.device);
+    if (useMonotone && props.monotoneMaximumVertices !== undefined) {
+      validatePolygonTriangulationMonotoneCapacity(graph.device, id, props.monotoneMaximumVertices);
+    }
     // Scratch nodes: 4 words each, with a capacity of 2 * vertices + 5 * holes + 8 per polygon.
     const nodeCount = getPolygonTriangulationNodeCount(vertexCount, ringCount, polygonCount);
     const useZOrderHash = props.useZOrderHash ?? true;
@@ -407,11 +462,6 @@ export class GPUPolygonTriangulation implements GPUCommandNodeProducer {
       'uint32',
       Math.max((useZOrderHash ? 7 : 4) * nodeCount, 4)
     );
-    // The monotone path binds up to 40 bytes per input row; larger inputs keep today's behavior
-    // (Earcut within `maximumWork`), so the default never makes an accepted input throw.
-    const useMonotone =
-      (props.largePolygonMethod ?? 'monotone') === 'monotone' &&
-      vertexCount <= getGPUPolygonTriangulationMonotoneMaximumVertexCount(graph.device);
     const triangleOffsets =
       output.triangleOffsets ??
       createTransientView(graph, `${id}-polygon-triangle-offsets`, 'uint32', polygonCount + 1);
@@ -473,13 +523,6 @@ export class GPUPolygonTriangulation implements GPUCommandNodeProducer {
           props.monotoneMinimumVertices ??
           GPU_POLYGON_TRIANGULATION_DEFAULT_MONOTONE_MINIMUM_VERTICES
       };
-      if (props.monotoneMaximumVertices !== undefined) {
-        validatePolygonTriangulationMonotoneCapacity(
-          graph.device,
-          id,
-          props.monotoneMaximumVertices
-        );
-      }
       monotoneNodes = getMonotoneTriangulationNodes(graph, monotoneProps);
     }
     const monotoneMinimumVertices =

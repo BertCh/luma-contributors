@@ -190,7 +190,8 @@ export function createChainReachNodes<Parameters>(
 
 /**
  * Node writing `offsets[track]` = the rows of a sorted-by-track `tracks` column belonging to tracks
- * before `track`, with one terminal entry. One serial thread over the table. @internal
+ * before `track`, with one terminal entry. Each boundary independently binary-searches the
+ * sorted table, including empty tracks and the terminal boundary. @internal
  */
 export function createTrackTableOffsetsNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
@@ -209,18 +210,20 @@ export function createTrackTableOffsetsNode<Parameters>(
     id,
     operation,
     variant: 'track-offsets',
-    invocationCount: 1,
+    invocationCount: trackCount + 1,
     bindings: [
       {name: 'tracks', view: tracks, type: 'u32', access: 'read'},
       {name: 'total', view: count, type: 'u32', access: 'read'},
       {name: 'offsets', view: offsets, type: 'u32', access: 'read_write'}
     ],
-    body: `let total = min(total[totalOffset], ${capacity}u);
-  var row = 0u;
-  offsets[offsetsOffset] = 0u;
-  for (var track = 0u; track < ${trackCount}u; track++) {
-    while (row < total && tracks[tracksOffset + row] == track) { row++; }
-    offsets[offsetsOffset + track + 1u] = row;
-  }`
+    body: `let totalRows = min(total[totalOffset], ${capacity}u);
+  var low = 0u;
+  var high = totalRows;
+  while (low < high) {
+    let middle = low + (high - low) / 2u;
+    if (tracks[tracksOffset + middle] < index) { low = middle + 1u; }
+    else { high = middle; }
+  }
+  offsets[offsetsOffset + index] = low;`
   });
 }

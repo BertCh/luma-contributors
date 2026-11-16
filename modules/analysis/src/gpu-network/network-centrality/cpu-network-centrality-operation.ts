@@ -30,6 +30,7 @@ export type CPUNetworkCentralityInput = {
 
 export type CPUNetworkCentralityOptions = {
   betweennessScale?: number;
+  sampling?: 'exact' | 'sampled';
   /** False for closeness-only calls: zero-weight cycles then do not affect convergence. */
   computeBetweenness?: boolean;
 };
@@ -40,6 +41,7 @@ export type CPUNetworkCentralityResult = {
   closeness: Float32Array;
   harmonicCloseness: Float32Array;
   reachedCounts: Uint32Array;
+  approximation: Uint32Array;
   converged: Uint32Array;
   zeroWeightCycle: Uint32Array;
   iterationLimitReached: Uint32Array;
@@ -83,6 +85,13 @@ export function computeNetworkCentralityOnCPU(
   }
   if (costLimit && costLimit.length !== 1)
     throw new Error('costLimit must contain exactly one row');
+  validateRequirement(
+    'computeNetworkCentralityOnCPU',
+    options.sampling === undefined ||
+      options.sampling === 'exact' ||
+      options.sampling === 'sampled',
+    "sampling must be 'exact' or 'sampled'"
+  );
   const scale = options.betweennessScale ?? 1;
   validateFiniteNumber('computeNetworkCentralityOnCPU', 'betweennessScale', scale);
   const nodeTotals = new Float64Array(nodeCount);
@@ -218,6 +227,7 @@ export function computeNetworkCentralityOnCPU(
     closeness,
     harmonicCloseness,
     reachedCounts,
+    approximation: Uint32Array.of(Number(options.sampling === 'sampled')),
     converged: Uint32Array.of(Number(!anyCycle)),
     zeroWeightCycle: Uint32Array.of(Number(anyCycle)),
     iterationLimitReached: Uint32Array.of(0)
@@ -276,6 +286,11 @@ export class CPUNetworkCentralityOperation extends GPUCPUOperation {
         props.output.edgeBetweenness !== undefined,
       'output.status.zeroWeightCycle needs a betweenness output'
     );
+    validateRequirement(
+      id,
+      props.sampling === undefined || props.sampling === 'exact' || props.sampling === 'sampled',
+      "sampling must be 'exact' or 'sampled'"
+    );
     const operation = new GPUNetworkCentralityOperation(props);
     super({
       id,
@@ -325,6 +340,7 @@ export class CPUNetworkCentralityOperation extends GPUCPUOperation {
           },
           {
             betweennessScale: props.betweennessScale,
+            sampling: props.sampling,
             computeBetweenness:
               props.output.betweenness !== undefined || props.output.edgeBetweenness !== undefined
           }

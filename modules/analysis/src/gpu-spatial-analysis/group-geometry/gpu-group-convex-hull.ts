@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {Device} from '@luma.gl/core';
 import {
   resolveGPUSpatialContext,
   type GPUSpatialContext
@@ -27,9 +28,10 @@ import {
   validateCapacity,
   validateRequirement,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
+  validateGPUStorageBindingByteLength,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {GET_QUIET_NAN_SEEDED_WGSL} from '../../analysis-core/kernels/wgsl-common';
 
 const OPERATION = 'GPUGroupConvexHull';
@@ -57,6 +59,37 @@ const LATTICE_BIAS = 2 ** LATTICE_BITS;
 export const GPU_GROUP_CONVEX_HULL_MAXIMUM_PREFILTER_LEVELS = 4;
 /** Default prefilter level count for inputs of at least 8192 rows. */
 const DEFAULT_PREFILTER_LEVELS = 2;
+
+/** Preflights all row/group scratch, also for enclosing geometry contributors. @internal */
+export function validateGroupConvexHullScratch(
+  device: Device,
+  id: string,
+  rowCount: number,
+  groupCount: number,
+  prefilterLevels = rowCount >= PREFILTER_MINIMUM_ROWS ? DEFAULT_PREFILTER_LEVELS : 0,
+  extremePointFilter = groupCount <= EXTREME_FILTER_DEFAULT_MAXIMUM_GROUPS
+): void {
+  for (const [name, wordCount] of [
+    ['hull row scratch', rowCount],
+    ['hull offsets', groupCount + 1],
+    ['hull chain scratch', rowCount + groupCount],
+    ['hull prefilter scratch', prefilterLevels > 0 ? 2 * rowCount + 2 : 0],
+    ['hull extreme scratch', extremePointFilter ? 2 * EXTREME_DIRECTION_COUNT * groupCount : 0],
+    [
+      'hull sort scratch',
+      rowCount <= 256 ? 2 ** Math.ceil(Math.log2(Math.max(rowCount, 1))) : rowCount
+    ]
+  ] as const) {
+    if (wordCount === 0) continue;
+    validateGPUStorageBindingByteLength(
+      device,
+      id,
+      name,
+      wordCount * 4,
+      'reduce positions rows or groupCount'
+    );
+  }
+}
 
 /**
  * Legacy overflow bit for the per-group limit.
@@ -318,12 +351,20 @@ export class GPUGroupConvexHull implements GPUCommandNodeProducer {
     const {props, id, groupCount} = this;
     const {output, positions, labels, maximumVerticesPerGroup, vertexCapacity} = props;
     const {status, ...columns} = output;
-    validateGraphViewsBelongToGraph(id, graph, [
+    validateGraphChunkBindingRanges(graph, id, {
       positions,
       labels,
-      ...Object.values(columns),
-      ...Object.values(status)
-    ]);
+      ...columns,
+      ...Object.fromEntries(Object.entries(status).map(([name, view]) => [`status.${name}`, view]))
+    });
+    validateGroupConvexHullScratch(
+      graph.device,
+      id,
+      positions.length,
+      groupCount,
+      this.prefilterLevels,
+      this.extremePointFilter
+    );
     const rows = positions.length;
     const f32 = (name: string, length: number) =>
       createTransientView(graph, `${id}-${name}`, 'float32', length);

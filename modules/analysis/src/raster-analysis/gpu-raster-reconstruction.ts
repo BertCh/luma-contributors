@@ -2,11 +2,17 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  validateRasterStorageBindings,
+  getRasterIterationSlotByteLength
+} from './raster-grid/raster-storage-preflight';
 import {validateGPUStatusPort} from '../analysis-core/contracts/status';
 import {
   getGraphOutputViews,
   validateCommandNodeBudget,
-  validateRequirement
+  validateRequirement,
+  validateSinglePackedView,
+  getGraphOutputViews as getRasterPreflightOutputViews
 } from '../analysis-core/kernels/gpu-contributor-utils';
 import {
   createTransientView,
@@ -15,7 +21,16 @@ import {
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import {
+  getRasterAlgebraInputNodes,
+  isRasterAlgebraBand,
+  validateRasterAlgebraInput,
+  validateRasterAlgebraInputBindings,
+  getRasterAlgebraInputBindingViews
+} from './raster-algebra/raster-algebra-input';
+import {validateRasterFractionalWritableViews} from './fractional-coverage/raster-fractional-tile-kernel';
+import {validateRasterGrid} from './raster-band-utils';
 import {createWGSLKernelNode} from '../analysis-core/kernels/wgsl-kernel-nodes';
 import {IS_FINITE_VALUE_WGSL} from '../analysis-core/kernels/wgsl-common';
 import {
@@ -24,6 +39,7 @@ import {
   requireRasterLength,
   validateRasterExpansionGraph,
   validateRasterExpansionViews,
+  RASTER_BAND_CANONICALIZATION_NODE_COUNT,
   type RasterIterationStatusOutputs
 } from './raster-expansion-utils';
 
@@ -34,8 +50,9 @@ export type GPURasterReconstructionProps = {
   id?: string;
   grid: GPURasterMetadata;
   /** Finite grayscale marker <= mask for dilation, >= mask for erosion; otherwise invalid. */
-  marker: GraphDataView<'float32'>;
-  mask: GraphDataView<'float32'>;
+  marker: GraphDataView<'float32'> | GPURasterBand;
+  /** Published constraint band, or legacy grayscale values; missing values are barriers. */
+  mask: GraphDataView<'float32'> | GPURasterBand;
   method?: 'dilation' | 'erosion';
   /**
    * Neighbours a value spreads to in one round: `8` is the 3 x 3 square (edge and corner
@@ -74,14 +91,11 @@ export class GPURasterReconstruction implements GPUCommandNodeProducer {
     this.id = props.id ?? 'raster-reconstruction';
     this.props = props;
     const {id} = this;
-    const count = validateRasterExpansionViews(
-      id,
-      props.grid,
-      [props.marker, props.mask],
-      getGraphOutputViews(props.output)
-    );
-    requireRasterLength(props.marker, count, id, 'marker');
-    requireRasterLength(props.mask, count, id, 'mask');
+    const count = validateRasterGrid(id, props.grid);
+    validateSinglePackedView(props.output.values, ['float32'], `${id} output.values`);
+    validateSinglePackedView(props.output.validity, ['uint32'], `${id} output.validity`);
+    validateRasterAlgebraInput(id, 'marker', props.marker, props.grid, count);
+    validateRasterAlgebraInput(id, 'mask', props.mask, props.grid, count);
     requireRasterLength(props.output.values, count, id, 'output.values');
     requireRasterLength(props.output.validity, count, id, 'output.validity');
     requireRasterLength(props.output.status.converged, 1, id, 'output.status.converged');
@@ -99,9 +113,22 @@ export class GPURasterReconstruction implements GPUCommandNodeProducer {
       Number.isInteger(maximumIterations) && maximumIterations > 0,
       'maximumIterations must be a positive integer'
     );
-    // Initialization and publish, plus the gated rounds.
-    this.estimatedCommandNodeCount = 2 + getRasterJacobiLoopNodeCount(maximumIterations + 1);
+    // Canonicalization is additive; legacy raw inputs retain their original command budget.
+    this.estimatedCommandNodeCount =
+      2 +
+      (isRasterAlgebraBand(props.marker) ? RASTER_BAND_CANONICALIZATION_NODE_COUNT : 0) +
+      (isRasterAlgebraBand(props.mask) ? RASTER_BAND_CANONICALIZATION_NODE_COUNT : 0) +
+      getRasterJacobiLoopNodeCount(maximumIterations + 1);
     validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
+    validateRasterFractionalWritableViews(
+      id,
+      props.output,
+      [
+        ...getRasterAlgebraInputBindingViews(props.marker, count),
+        ...getRasterAlgebraInputBindingViews(props.mask, count)
+      ],
+      [[props.output.values, props.output.validity], Object.values(props.output.status)]
+    );
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
@@ -110,21 +137,27 @@ export class GPURasterReconstruction implements GPUCommandNodeProducer {
     const {grid, output} = props;
     const count = grid.width * grid.height;
     const dilation = props.method !== 'erosion';
-    validateRasterExpansionGraph(id, graph, [
-      props.marker,
-      props.mask,
-      ...getGraphOutputViews(output)
-    ]);
+    validateRasterAlgebraInputBindings(graph, id, [props.marker, props.mask], grid);
+    validateRasterStorageBindings(graph, id, getGraphOutputViews(output), {
+      'reconstruction planes': count * 4,
+      'iteration gates': getRasterIterationSlotByteLength(
+        (props.maximumIterations ?? DEFAULT_MAXIMUM_ITERATIONS) + 1
+      )
+    });
+    const marker = getRasterAlgebraInputNodes(graph, `${id}-marker`, props.marker, grid);
+    const mask = getRasterAlgebraInputNodes(graph, `${id}-mask`, props.mask, grid);
     const first = createTransientView(graph, `${id}-first`, 'float32', count);
     const second = createTransientView(graph, `${id}-second`, 'float32', count);
     const nodes: GPUCommandNode<Parameters>[] = [
+      ...marker.nodes,
+      ...mask.nodes,
       createWGSLKernelNode(graph, {
         id: `${id}-init`,
         operation: 'GPURasterReconstruction',
         invocationCount: count,
         bindings: [
-          {name: 'marker', view: props.marker, type: 'f32', access: 'read'},
-          {name: 'mask', view: props.mask, type: 'f32', access: 'read'},
+          {name: 'marker', view: marker.values, type: 'f32', access: 'read'},
+          {name: 'mask', view: mask.values, type: 'f32', access: 'read'},
           {name: 'values', view: first, type: 'f32', access: 'read_write'}
         ],
         declarations: IS_FINITE_VALUE_WGSL,
@@ -159,7 +192,7 @@ export class GPURasterReconstruction implements GPUCommandNodeProducer {
             invocationCount: count,
             bindings: [
               {name: 'previous', view: previous, type: 'f32', access: 'read'},
-              {name: 'mask', view: props.mask, type: 'f32', access: 'read'},
+              {name: 'mask', view: mask.values, type: 'f32', access: 'read'},
               {name: 'next', view: next, type: 'f32', access: 'read_write'},
               {name: 'status', view: status, type: 'atomic<u32>', access: 'read_write'},
               slotBinding
@@ -272,6 +305,21 @@ export class GPURasterFillHoles implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    const storageProps = this.props;
+    const storageCellCount = storageProps.grid.width * storageProps.grid.height;
+    validateRasterStorageBindings(
+      graph,
+      this.id,
+      [storageProps.input, ...getRasterPreflightOutputViews(storageProps.output)],
+      {
+        'reconstruction planes': storageCellCount * 4,
+        'iteration state': 16,
+        'iteration gates': getRasterIterationSlotByteLength(
+          (storageProps.maximumIterations ?? DEFAULT_MAXIMUM_ITERATIONS) + 1
+        )
+      }
+    );
+
     const {id, props} = this;
     const count = props.grid.width * props.grid.height;
     const marker = createTransientView(graph, `${id}-marker`, 'float32', count);

@@ -71,3 +71,7 @@ export type {
   GPUResolvedRasterContext,
   GPURasterCellSizeMode
 } from './raster-grid';
+export * from './device-limits';
+export {createGraphChunkGather} from './kernels/graph-chunk-gather';
+export * from './kernels/graph-chunk-dispatch';
+export * from './kernels/graph-chunk-groups';

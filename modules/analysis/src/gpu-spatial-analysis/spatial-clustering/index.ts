@@ -54,3 +54,11 @@ export {
   GPU_HIERARCHICAL_DENSITY_CLUSTERING_PARAMETER_LENGTH
 } from './hierarchical-density-clustering-parameters';
 export type {GPUHierarchicalDensityClusteringSettings} from './hierarchical-density-clustering-parameters';
+
+export {GPU_HIERARCHICAL_DENSITY_CLUSTERING_REFERENCE_MAXIMUM_ROW_COUNT} from './gpu-hierarchical-density-clustering';
+export {
+  GPU_OPTICS_BRUTE_FORCE_MAXIMUM_ROWS,
+  GPU_OPTICS_GRID_MAXIMUM_ROWS,
+  GPU_OPTICS_XI_MAXIMUM_ROWS,
+  GPU_OPTICS_DEFAULT_FRONTIER_BATCH_SIZE
+} from './gpu-optics';

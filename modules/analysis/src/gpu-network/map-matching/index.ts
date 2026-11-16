@@ -28,3 +28,7 @@ export type {
 } from './cpu-map-matching-operation';
 export {GPUMapMatchingOperation} from './gpu-map-matching-operation';
 export type {MapMatchingOperationProps} from './gpu-map-matching-operation';
+export {
+  GPU_MAP_MATCHING_MAXIMUM_CANDIDATE_COUNT,
+  GPU_MAP_MATCHING_MAXIMUM_ROUTE_NODE_BUDGET
+} from './gpu-map-matching';

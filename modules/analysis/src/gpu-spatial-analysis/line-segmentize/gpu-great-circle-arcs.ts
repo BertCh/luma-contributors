@@ -13,7 +13,6 @@ import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -36,6 +35,9 @@ import {
   getLineGeometryOutputViews,
   validateLineGeometryOutput
 } from './line-geometry-output';
+
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateGeometryScratchByteLengths} from '../geometry-edit/geometry-storage-validation';
 
 const OPERATION = 'GPUGreatCircleArcs';
 
@@ -170,12 +172,16 @@ export class GPUGreatCircleArcs implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id, radius} = this;
     const {output} = props;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.sources,
-      props.targets,
-      props.parameters,
-      ...getLineGeometryOutputViews(output)
-    ]);
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(
+        [props.sources, props.targets, props.parameters, ...getLineGeometryOutputViews(output)].map(
+          (view, index) => [String(index), view]
+        )
+      )
+    );
+    validateGeometryScratchByteLengths(graph, id, {countsAndScan: props.sources.length * 4});
     const pairCount = props.sources.length;
     const counts = createTransientView(graph, `${id}-counts`, 'uint32', pairCount);
     const starts = createTransientView(graph, `${id}-starts`, 'uint32', pairCount);

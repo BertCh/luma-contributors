@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 import {
   createTransientView,
+  getViewBindingRange,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -18,8 +19,23 @@ import {
   validateSinglePackedView,
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs,
-  validateCapacity
+  validateCapacity,
+  validateViewLength,
+  validateGPUStorageBindingByteLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  validateDisjointWritableViews,
+  validateGraphChunkBindingRanges
+} from '../../analysis-core/kernels/graph-chunk-dispatch';
+
+/** Two private vertex/edge arrays bound the reference search's per-invocation memory. */
+export const GPU_ALTERNATIVE_ROUTES_MAXIMUM_NODE_COUNT = 256;
+/** Bounds the per-query output initialization and retained exact routes. */
+export const GPU_ALTERNATIVE_ROUTES_MAXIMUM_ROUTE_COUNT = 32;
+/** Bounds the storage-backed heap and its serial insertion/removal work per query. */
+export const GPU_ALTERNATIVE_ROUTES_MAXIMUM_FRONTIER_SIZE = 65536;
+/** Bounds edge examinations in the exhaustive simple-path reference search. */
+export const GPU_ALTERNATIVE_ROUTES_MAXIMUM_EXPANSIONS = 10000000;
 
 export type GPUAlternativeRoutesProps = {
   id?: string;
@@ -47,7 +63,7 @@ export type GPUAlternativeRoutesProps = {
   };
 };
 
-/** Bounded uniform-cost search over simple edge paths, independent queries on the GPU.
+/** Bounded reference-tier uniform-cost search over simple edge paths, independent queries on the GPU.
  * A storage-buffer min heap orders prefixes by float32 cost then lexicographic CSR edge IDs.
  * Nonnegative finite weights make each popped destination the next shortest simple route.
  * Search stops after k destinations, avoiding enumeration of more expensive alternatives.
@@ -56,6 +72,14 @@ export type GPUAlternativeRoutesProps = {
  * Invalid endpoints yield an empty certified result; invalid weights/neighbors are impassable.
  * Source == destination returns the zero-edge route. Overflowed float32 path sums are impassable.
  * No CPU result readback or fallback is used. Scratch is 4 * queries * frontier * (2 + 2 * nodes).
+ *
+ * Cap rationale: 256 nodes bounds the two private reconstruction arrays; 65536 frontier entries
+ * bounds the serial heap and its full-path copies; 32 retained routes and 10000000 examinations
+ * bound the exhaustive reference work. Raising these does not provide a parallel traversal.
+ * GPUKShortestPaths is the large-graph alternative, but cannot silently replace this route:
+ * Yen/reachability does not promise this class's global lexicographic edge order for tied costs,
+ * and its batch status cannot reproduce independent per-query certification. The CPU twin keeps
+ * the exact ordering without the GPU private-memory and binding bounds.
  */
 export class GPUAlternativeRoutes implements GPUCommandNodeProducer {
   readonly id: string;
@@ -65,32 +89,65 @@ export class GPUAlternativeRoutes implements GPUCommandNodeProducer {
   constructor(readonly props: GPUAlternativeRoutesProps) {
     this.id = props.id ?? 'alternative-routes';
     this.nodeCount = validateGPUNetworkTopology(this.id, props.topology, {weights: true}).nodeCount;
-    validateCapacity(this.id, 'nodeCount', this.nodeCount, 1, 256);
-    validateCapacity(this.id, 'routeCount', props.routeCount, 1, 32);
+    validateCapacity(
+      this.id,
+      'nodeCount',
+      this.nodeCount,
+      1,
+      GPU_ALTERNATIVE_ROUTES_MAXIMUM_NODE_COUNT
+    );
+    validateCapacity(
+      this.id,
+      'routeCount',
+      props.routeCount,
+      1,
+      GPU_ALTERNATIVE_ROUTES_MAXIMUM_ROUTE_COUNT
+    );
     this.maximumFrontierSize = props.maximumFrontierSize ?? 1024;
-    validateCapacity(this.id, 'maximumFrontierSize', this.maximumFrontierSize, 1, 65536);
+    validateCapacity(
+      this.id,
+      'maximumFrontierSize',
+      this.maximumFrontierSize,
+      1,
+      GPU_ALTERNATIVE_ROUTES_MAXIMUM_FRONTIER_SIZE
+    );
     this.maximumExpansions = props.maximumExpansions ?? 100000;
-    validateCapacity(this.id, 'maximumExpansions', this.maximumExpansions, 1, 10000000);
-    for (const view of [props.sources, props.targets])
-      validateSinglePackedView(view, ['uint32'], this.id);
-    if (props.sources.length !== props.targets.length || props.sources.length < 1)
-      throw new Error('Route queries must have equal positive lengths');
+    validateCapacity(
+      this.id,
+      'maximumExpansions',
+      this.maximumExpansions,
+      1,
+      GPU_ALTERNATIVE_ROUTES_MAXIMUM_EXPANSIONS
+    );
+    for (const [name, view] of [
+      ['sources', props.sources],
+      ['targets', props.targets]
+    ] as const)
+      validateSinglePackedView(view, ['uint32'], `${this.id} ${name}`);
+    validateCapacity(this.id, 'sources rows', props.sources.length);
+    validateViewLength(this.id, 'targets', props.targets, props.sources.length);
     const routes = props.sources.length * props.routeCount;
+    for (const [name, length] of Object.entries({
+      'output path rows': routes * this.nodeCount,
+      metadataWords: props.sources.length * (4 + props.routeCount * 2),
+      frontierWords: props.sources.length * this.maximumFrontierSize * (2 + 2 * this.nodeCount)
+    }))
+      validateCapacity(this.id, name, length);
     for (const [name, view] of Object.entries(props.output)) {
-      validateSinglePackedView(view, [name === 'costs' ? 'float32' : 'uint32'], this.id);
+      validateSinglePackedView(
+        view,
+        [name === 'costs' ? 'float32' : 'uint32'],
+        `${this.id} output.${name}`
+      );
       const expected =
         name === 'vertices' || name === 'edges'
           ? routes * this.nodeCount
           : name === 'counts' || name === 'complete'
             ? props.sources.length
             : routes;
-      if (view.length !== expected) throw new Error('Route output length mismatch');
+      validateViewLength(this.id, `output.${name}`, view, expected);
     }
-    const outputBuffers = Object.values(props.output)
-      .filter(view => view !== undefined)
-      .map(view => view.buffer);
-    if (new Set(outputBuffers).size !== outputBuffers.length)
-      throw new Error('Outputs must use distinct buffers');
+    validateDisjointWritableViews(this.id, props.output);
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
       ...getGPUNetworkTopologyViews(props.topology),
       props.sources,
@@ -107,6 +164,40 @@ export class GPUAlternativeRoutes implements GPUCommandNodeProducer {
       props.targets,
       ...Object.values(props.output)
     ]);
+    const frontierWords = props.sources.length * this.maximumFrontierSize * (2 + 2 * nodeCount);
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(
+        [
+          ...getGPUNetworkTopologyViews(props.topology),
+          props.sources,
+          props.targets,
+          ...Object.values(props.output)
+        ].map((view, index) => [`view ${index}`, view])
+      )
+    );
+    for (const [name, byteLength] of Object.entries({
+      metadata: props.sources.length * (4 + props.routeCount * 2) * 4,
+      frontier: frontierWords * 4,
+      ...Object.fromEntries(
+        [
+          ...getGPUNetworkTopologyViews(props.topology),
+          props.sources,
+          props.targets,
+          ...Object.values(props.output)
+        ]
+          .filter(view => view !== undefined)
+          .map((view, index) => [`view ${index}`, getViewBindingRange(view).size])
+      )
+    }))
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        name,
+        byteLength,
+        'reduce query count or maximumFrontierSize'
+      );
     // Pack query endpoints and output metadata to keep the traversal within eight storage bindings.
     // Metadata outputs are separated by a second pass, while path arrays are caller-owned.
     const metadata = createTransientView(
@@ -114,14 +205,6 @@ export class GPUAlternativeRoutes implements GPUCommandNodeProducer {
       `${id}-metadata`,
       'uint32',
       props.sources.length * (4 + props.routeCount * 2)
-    );
-    const frontierWords = props.sources.length * this.maximumFrontierSize * (2 + 2 * nodeCount);
-    validateCapacity(
-      id,
-      'frontierWords',
-      frontierWords,
-      1,
-      Math.min(0xffffffff, Math.floor(graph.device.limits.maxStorageBufferBindingSize / 4))
     );
     const frontier = createTransientView(graph, `${id}-frontier`, 'uint32', frontierWords);
     const stride = 4 + props.routeCount * 2;

@@ -3,6 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  validateNetworkViewBindings,
+  getNetworkPhysicalBuffer,
+  validateNetworkOutputsDisjointFromInputs
+} from '../network-view-utils';
+import {
   createTransientView,
   GPUVisibilityWorkflow,
   type GPUCommandGraph,
@@ -14,13 +19,10 @@ import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {createFillNode, createPublishNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
-  validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
   validateCompactOutput,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
-  getGPUNetworkTopologyViews,
   validateGPUNetworkTopology,
   type GPUNetworkAdjacency
 } from '../../analysis-core/network-topology';
@@ -32,6 +34,11 @@ import {
   createNeighborhoodEdgeMaskNode,
   createNeighborhoodHopsNode
 } from './network-neighborhood-passes';
+
+import {
+  getFrontierPhaseLayout,
+  FRONTIER_DISPATCH_SLOT_WORDS
+} from '../network-reachability/network-frontier';
 
 const DEFAULT_MAXIMUM_HOPS = 8;
 const OPERATION = 'GPUNetworkNeighborhood';
@@ -188,8 +195,8 @@ export class GPUNetworkNeighborhood implements GPUCommandNodeProducer {
       GPU_NETWORK_REACHABILITY_MAXIMUM_ITERATIONS
     );
     const outputs = getOutputViews(output);
-    validateGraphOutputsDisjointFromInputs(id, outputs, getInputViews(props));
-    const outputBuffers = outputs.filter(view => view !== undefined).map(view => view.buffer);
+    validateNetworkOutputsDisjointFromInputs(id, outputs, getInputViews(props));
+    const outputBuffers = outputs.filter(view => view !== undefined).map(getNetworkPhysicalBuffer);
     if (new Set(outputBuffers).size !== outputBuffers.length) {
       throw new Error(`${id} outputs must use separate buffers from each other`);
     }
@@ -202,14 +209,21 @@ export class GPUNetworkNeighborhood implements GPUCommandNodeProducer {
     const {id, props, maximumHops} = this;
     const {output} = props;
     const {offsets, neighbors} = props.topology;
-    validateGraphViewsBelongToGraph(id, graph, [
-      ...getInputViews(props),
-      ...getOutputViews(output)
-    ]);
     const nodeCount = output.hopDistances.length;
     const edgeCount = neighbors.length;
     const needsEdges = Boolean(output.edges || output.edgeMask);
     const needsNodeMask = Boolean(output.nodeMask || output.nodes || needsEdges);
+    const frontierLayout = getFrontierPhaseLayout(maximumHops);
+    validateNetworkViewBindings(id, graph, [...getInputViews(props), ...getOutputViews(output)], {
+      unitWeights: edgeCount * 4,
+      nodeColumns: nodeCount * 4,
+      // Visibility source IDs, flags, offsets and scan levels are bounded by their mask rows.
+      compactionRows: Math.max(output.nodes ? nodeCount : 0, output.edges ? edgeCount : 0) * 4,
+      frontierQueues: nodeCount * 8,
+      frontierControl: frontierLayout.controlWordCount * 4,
+      frontierDispatch: frontierLayout.dispatchSlotCount * FRONTIER_DISPATCH_SLOT_WORDS * 4,
+      totals: 4
+    });
     const nodes: GPUCommandNode<Parameters>[] = [];
 
     const unitWeights = createTransientView(graph, `${id}-unit-weights`, 'float32', edgeCount);
@@ -363,7 +377,8 @@ function getCompactNodes<Parameters>(
 /** Returns every read-only view referenced by the props. */
 function getInputViews(props: GPUNetworkNeighborhoodProps): (GraphDataView | undefined)[] {
   return [
-    ...getGPUNetworkTopologyViews(props.topology),
+    props.topology.offsets,
+    props.topology.neighbors,
     props.startNodes,
     typeof props.startCount === 'object' ? props.startCount : undefined,
     props.hops,

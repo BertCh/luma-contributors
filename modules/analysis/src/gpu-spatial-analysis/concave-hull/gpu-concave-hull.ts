@@ -11,14 +11,20 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {
   GPUDelaunayTessellation,
-  getDelaunayMaximumTriangleCount
+  getDelaunayMaximumTriangleCount,
+  getDelaunayScratchTriangleCapacity,
+  validateDelaunayScratch
 } from '../delaunay-tessellation/gpu-delaunay-tessellation';
-import type {GPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
 import {
   getGraphOutputViews,
   validateCapacity,
   validateFiniteNumber,
-  validateGraphViewsBelongToGraph,
+  validateSinglePackedView,
+  validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
   validateRequirement,
   validateViewLength
@@ -29,6 +35,20 @@ import {
   createTriangleEdgeAdjacencyNodes,
   TRIANGLE_ADJACENCY_NONE
 } from '../shared/triangle-edge-adjacency';
+
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+
+/** Three edges of two uint32 words per reserved triangle use uint32 word addresses. */
+const CONCAVE_HULL_MAXIMUM_TRIANGLE_RESERVATION = Math.floor(0xffffffff / 6);
+
+function validateConcaveHullRadius(id: string, value: number): void {
+  validateFiniteNumber(id, 'maximumCircumradius', value, 0);
+  validateRequirement(
+    id,
+    Math.fround(value) > 0,
+    'maximumCircumradius must be greater than 0 after float32 conversion'
+  );
+}
 
 export type GPUConcaveHullProps = {
   id?: string;
@@ -59,6 +79,18 @@ function validateConcaveHullOutput(
   triangleCapacity: number,
   convergedRows: number
 ): void {
+  validateCapacity(
+    id,
+    'triangle reservation',
+    triangleCapacity,
+    0,
+    CONCAVE_HULL_MAXIMUM_TRIANGLE_RESERVATION
+  );
+  validateSinglePackedView(output.triangles, ['uint32x3'], `${id} output.triangles`);
+  validateSinglePackedView(output.triangleValidity, ['uint32'], `${id} output.triangleValidity`);
+  validateSinglePackedView(output.boundaryEdges, ['uint32x2'], `${id} output.boundaryEdges`);
+  validateSinglePackedView(output.edgeValidity, ['uint32'], `${id} output.edgeValidity`);
+  validateSinglePackedView(output.status.converged, ['uint32'], `${id} output.status.converged`);
   validateViewLength(id, 'output.triangles', output.triangles, triangleCapacity);
   validateViewLength(id, 'output.triangleValidity', output.triangleValidity, triangleCapacity);
   validateViewLength(id, 'output.boundaryEdges', output.boundaryEdges, 3 * triangleCapacity);
@@ -90,13 +122,10 @@ export class GPUConcaveHull implements GPUCommandNodeProducer {
     this.id = props.id ?? 'concave-hull';
     this.props = props;
     const capacity = getDelaunayMaximumTriangleCount(props.positions.length);
-    // maximumCircumradius must be positive and representable as a finite f32.
-    validateFiniteNumber(this.id, 'maximumCircumradius', props.maximumCircumradius, 0);
-    validateRequirement(
-      this.id,
-      props.maximumCircumradius > 0,
-      'maximumCircumradius must be greater than 0'
-    );
+    validateSinglePackedView(props.positions, ['float32x2'], `${this.id} positions`);
+    resolveGPUSpatialContext(this.id, props.spatialContext);
+    validateConcaveHullRadius(this.id, props.maximumCircumradius);
+    getDelaunayScratchTriangleCapacity(this.id, props.positions.length);
     validateConcaveHullOutput(this.id, props.output, capacity, 1);
     validateGraphOutputsDisjointFromInputs(this.id, getGraphOutputViews(props.output), [
       props.positions
@@ -107,7 +136,22 @@ export class GPUConcaveHull implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
     const {output} = props;
-    validateGraphViewsBelongToGraph(id, graph, [props.positions, ...getGraphOutputViews(output)]);
+    validateGraphChunkBindingRanges(graph, id, {
+      positions: props.positions,
+      ...Object.fromEntries(
+        getGraphOutputViews(output).map((view, index) => [`output ${index}`, view])
+      )
+    });
+    validateDelaunayScratch(graph.device, id, props.positions.length);
+    // Edge-key sort padding is at most twice its uint32 half-edge input; boundaryEdges is
+    // already a larger 24-byte-per-triangle binding and bounds adjacency/sort scratch.
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'edge adjacency scratch',
+      Math.max(output.boundaryEdges.length, 1) * 4,
+      'reduce positions rows'
+    );
     const count = createTransientView(graph, `${id}-count`, 'uint32', 1);
     const requiredCount = createTransientView(graph, `${id}-required`, 'uint32', 1);
     const overflow = createTransientView(graph, `${id}-overflow`, 'uint32', 1);
@@ -280,6 +324,11 @@ export class GPUGroupConcaveHull implements GPUCommandNodeProducer {
     this.id = props.id ?? 'group-concave-hull';
     this.props = props;
     validateCapacity(this.id, 'groupCount', props.groupCount);
+    validateSinglePackedView(props.positions, ['float32x2'], `${this.id} positions`);
+    validateSinglePackedView(props.groupIds, ['uint32'], `${this.id} groupIds`);
+    resolveGPUSpatialContext(this.id, props.spatialContext);
+    validateConcaveHullRadius(this.id, props.maximumCircumradius);
+    getDelaunayScratchTriangleCapacity(this.id, props.positions.length, props.groupCount);
     validateRequirement(
       this.id,
       props.groupIds.length === props.positions.length,
@@ -299,11 +348,21 @@ export class GPUGroupConcaveHull implements GPUCommandNodeProducer {
     const {output, groupCount} = props;
     const pointCount = props.positions.length;
     const capacity = getDelaunayMaximumTriangleCount(pointCount);
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.positions,
-      props.groupIds,
-      ...getGraphOutputViews(output)
-    ]);
+    validateGraphChunkBindingRanges(graph, id, {
+      positions: props.positions,
+      groupIds: props.groupIds,
+      ...Object.fromEntries(
+        getGraphOutputViews(output).map((view, index) => [`output ${index}`, view])
+      )
+    });
+    validateDelaunayScratch(graph.device, id, pointCount, groupCount);
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'packed boundary scratch',
+      Math.max(3 * capacity, 1) * 8,
+      'reduce positions rows'
+    );
     const scalar = (name: string, length = 1) =>
       createTransientView(graph, `${id}-${name}`, 'uint32', length);
     const count = scalar('count');

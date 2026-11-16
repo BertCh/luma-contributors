@@ -16,10 +16,19 @@ import {
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
+  validateCapacity,
+  validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {SCALED_QUOTIENT_WGSL} from '../../analysis-core/kernels/scaled-quotient-wgsl';
+import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {
+  getCellDispatchBuffer,
+  validateCellDispatchOutputs
+} from '../cell-indexing/cell-dispatch-validation';
 import type {GPUCardinalityPort, GPUOverflowStatusPort} from '../../analysis-core/contracts/status';
 import {
   getCellTableViews,
@@ -34,6 +43,8 @@ import {
 } from '../../analysis-core/cell-key-wgsl';
 
 const OPERATION = 'GPUCellTableCompare';
+/** Two-word row addressing and the sum of both input cardinalities must fit uint32. */
+const MAXIMUM_CELL_TABLE_ROW_COUNT = 0x7fffffff;
 const STATISTICS_WORKGROUP_SIZE = 256;
 /** Upper bound of the workgroups sharing the standardized z-score reductions. */
 const STATISTICS_MAXIMUM_GROUPS = 256;
@@ -147,6 +158,7 @@ export class GPUCellTableCompare implements GPUCommandNodeProducer {
   readonly sumScale: number;
   /** Resolved z-score kind. */
   readonly zScoreKind: GPUCellTableCompareZScore;
+  private readonly stageMeasures: boolean;
 
   constructor(props: GPUCellTableCompareProps) {
     this.id = props.id ?? 'cell-table-compare';
@@ -164,15 +176,27 @@ export class GPUCellTableCompare implements GPUCommandNodeProducer {
     }
     validateCellTable(id, 'before', props.before);
     validateCellTable(id, 'after', props.after);
+    validateCapacity(
+      id,
+      'before.cells.length',
+      props.before.cells.length,
+      1,
+      MAXIMUM_CELL_TABLE_ROW_COUNT
+    );
+    validateCapacity(
+      id,
+      'after.cells.length',
+      props.after.cells.length,
+      1,
+      MAXIMUM_CELL_TABLE_ROW_COUNT
+    );
     if (this.measure === 'sum' && (!props.before.sums || !props.after.sums)) {
       throw new Error(`${id} measure 'sum' needs sums on both before and after`);
     }
     const {output} = props;
     validateSinglePackedView(output.cells, ['uint32x2'], `${id} output.cells`);
     const capacity = output.cells.length;
-    if (capacity < 1) {
-      throw new Error(`${id} output.cells must hold at least one row`);
-    }
+    validateCapacity(id, 'output.cells.length', capacity, 1, MAXIMUM_CELL_TABLE_ROW_COUNT);
     if (output.presence) {
       validateSinglePackedView(output.presence, ['uint32'], `${id} output.presence`);
     }
@@ -210,6 +234,31 @@ export class GPUCellTableCompare implements GPUCommandNodeProducer {
         throw new Error(`${id} output.status.${name} needs one row`);
       }
     }
+    const {status, ...columns} = output;
+    const measureBuffers = new Set(
+      [output.before, output.after, output.delta].flatMap(view =>
+        view ? [getCellDispatchBuffer(view)] : []
+      )
+    );
+    this.stageMeasures = [output.ratio, output.percentChange, output.zScore].some(
+      view => view && measureBuffers.has(getCellDispatchBuffer(view))
+    );
+    validateCellDispatchOutputs(id, {...columns, ...status}, [
+      {cells: output.cells, presence: output.presence, mask: output.mask},
+      this.stageMeasures
+        ? {}
+        : {
+            before: output.before,
+            after: output.after,
+            delta: output.delta
+          },
+      {
+        ratio: output.ratio,
+        percentChange: output.percentChange,
+        zScore: output.zScore
+      },
+      {...status}
+    ]);
     validateGraphOutputsDisjointFromInputs(id, getOutputViews(output), [
       ...getCellTableViews(props.before),
       ...getCellTableViews(props.after)
@@ -226,6 +275,56 @@ export class GPUCellTableCompare implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, measure} = this;
     const {before, after, output} = props;
+    const views: Record<string, GraphDataView | undefined> = {};
+    for (const [name, table] of [
+      ['before', before],
+      ['after', after]
+    ] as const) {
+      views[`${name}.cells`] = table.cells;
+      views[`${name}.measure`] = measure === 'sum' ? table.sums : table.counts;
+      views[`${name}.status.count`] = table.status.count;
+      views[`${name}.status.overflow`] = table.status.overflow;
+    }
+    for (const [name, view] of Object.entries(getOutputViews(output)))
+      views[`output ${name}`] = view;
+    validateGraphChunkBindingRanges(graph, id, views);
+    // The bounds plane includes the final lower bound and two clamped input counts.
+    const scratch = [
+      ['match bounds scratch', (before.cells.length + 3) * Uint32Array.BYTES_PER_ELEMENT],
+      ['output columns scratch', output.cells.length * Float32Array.BYTES_PER_ELEMENT]
+    ] as const;
+    for (const [name, byteLength] of scratch) {
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        name,
+        byteLength,
+        'reduce table capacities or use a device with larger bindings'
+      );
+      validateCapacity(id, `${name} byteLength`, byteLength, 0, graph.device.limits.maxBufferSize);
+    }
+    if (output.zScore && this.zScoreKind === 'standardized') {
+      const groups = clamp(
+        Math.ceil(output.cells.length / STATISTICS_WORKGROUP_SIZE),
+        1,
+        STATISTICS_MAXIMUM_GROUPS
+      );
+      const byteLength = 2 * groups * Float32Array.BYTES_PER_ELEMENT;
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        'statistics partials scratch',
+        byteLength,
+        'reduce output.cells.length or use a device with larger bindings'
+      );
+      validateCapacity(
+        id,
+        'statistics partials scratch byteLength',
+        byteLength,
+        0,
+        graph.device.limits.maxBufferSize
+      );
+    }
     validateGraphViewsBelongToGraph(id, graph, [
       ...getCellTableViews(before),
       ...getCellTableViews(after),
@@ -248,9 +347,14 @@ export class GPUCellTableCompare implements GPUCommandNodeProducer {
     const total = transient('total', 'uint32', 1);
     const beforeRows = transient('before-rows', 'uint32', capacity);
     const afterRows = transient('after-rows', 'uint32', capacity);
-    const beforeValues = output.before ?? transient('before-values', 'float32', capacity);
-    const afterValues = output.after ?? transient('after-values', 'float32', capacity);
-    const deltaValues = output.delta ?? transient('delta-values', 'float32', capacity);
+    // Derived columns must not bind a caller buffer both read-only and writable, even at
+    // disjoint offsets. Stage only this packed-layout case; ordinary layouts keep their route.
+    const beforeValues =
+      (!this.stageMeasures && output.before) || transient('before-values', 'float32', capacity);
+    const afterValues =
+      (!this.stageMeasures && output.after) || transient('after-values', 'float32', capacity);
+    const deltaValues =
+      (!this.stageMeasures && output.delta) || transient('delta-values', 'float32', capacity);
 
     // 1. Matches: before rows whose key also occurs in `after`, an exclusive scan of them, and
     // the clamped row counts. The scan has one extra row, so `prefix[capacityBefore]` is the total.
@@ -401,7 +505,9 @@ ${searchFunction('lowerBoundBefore', 'Before')}`,
         ? `vec2u(${table}Measure[${table}MeasureOffset + 2u * ${row} + 1u], ${table}Measure[${table}MeasureOffset + 2u * ${row}])`
         : `vec2u(0u, ${table}Measure[${table}MeasureOffset + ${row}])`;
     const toFloat = (value: string) =>
-      isSum ? `cellI64ToF32(${value}) / SUM_SCALE` : `cellI64ToF32(${value})`;
+      isSum
+        ? `getScaledQuotient(cellI64ToF32(${value}), SUM_SCALE, 1.0, 0)`
+        : `cellI64ToF32(${value})`;
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-measures`,
@@ -421,7 +527,8 @@ ${searchFunction('lowerBoundBefore', 'Before')}`,
         declarations: `const CAPACITY: u32 = ${capacity}u;
 const NO_ROW: u32 = 0xffffffffu;
 ${ORDERED_KEY_WGSL}
-${getFixedPointWGSL(this.sumScale)}`,
+${getFixedPointWGSL(this.sumScale)}
+${SCALED_QUOTIENT_WGSL}`,
         body: `if (index >= min(total[totalOffset], CAPACITY)) {
     beforeOut[beforeOutOffset + index] = 0.0;
     afterOut[afterOutOffset + index] = 0.0;
@@ -579,14 +686,29 @@ var<workgroup> partials: array<f32, ${STATISTICS_WORKGROUP_SIZE}>;`;
           ],
           invocationCount: capacity,
           declarations: `const CAPACITY: u32 = ${capacity}u;
-${ORDERED_KEY_WGSL}`,
+${ORDERED_KEY_WGSL}
+${IS_FINITE_VALUE_WGSL}
+${SCALED_QUOTIENT_WGSL}
+fn getCompareQuotient(value: f32, divisor: f32) -> f32 {
+  if (isFiniteValue(value) && isFiniteValue(divisor) && divisor != 0.0) {
+    return getScaledQuotient(value, divisor, 1.0, 0);
+  }
+  return value / divisor;
+}
+fn getComparePercent(value: f32, divisor: f32) -> f32 {
+  if (isFiniteValue(value) && isFiniteValue(divisor) && divisor != 0.0) {
+    let parts = frexp(value);
+    return getScaledQuotient(parts.fract * 100.0, divisor, 1.0, parts.exp);
+  }
+  return (100.0 * value) / divisor;
+}`,
           body: `let isOccupied = index < min(total[totalOffset], CAPACITY);
   let nan = getNaN();
   let beforeValue = beforeValues[beforeValuesOffset + index];
   let afterValue = afterValues[afterValuesOffset + index];
   let delta = deltaValues[deltaValuesOffset + index];
-  ${output.ratio ? 'ratioOut[ratioOutOffset + index] = select(nan, afterValue / beforeValue, isOccupied && beforeValue != 0.0);' : ''}
-  ${output.percentChange ? 'percentOut[percentOutOffset + index] = select(nan, (100.0 * delta) / beforeValue, isOccupied && beforeValue != 0.0);' : ''}
+  ${output.ratio ? 'ratioOut[ratioOutOffset + index] = select(nan, getCompareQuotient(afterValue, beforeValue), isOccupied && beforeValue != 0.0);' : ''}
+  ${output.percentChange ? 'percentOut[percentOutOffset + index] = select(nan, getComparePercent(delta, beforeValue), isOccupied && beforeValue != 0.0);' : ''}
   ${
     output.zScore
       ? this.zScoreKind === 'poisson'
@@ -595,15 +717,37 @@ ${ORDERED_KEY_WGSL}`,
   // negative number, which WGSL leaves indeterminate).
   let denominator = beforeValue + afterValue;
   let undefinedScore = select(nan, 0.0, beforeValue == 0.0 && afterValue == 0.0);
-  let score = select(undefinedScore, delta / sqrt(max(denominator, 0.0)), denominator > 0.0);
+  let score = select(undefinedScore, getCompareQuotient(delta, sqrt(max(denominator, 0.0))), denominator > 0.0);
   zScoreOut[zScoreOutOffset + index] = select(nan, score, isOccupied);`
         : `let mean = statistics[statisticsOffset];
   let deviation = statistics[statisticsOffset + 1u];
-  zScoreOut[zScoreOutOffset + index] = select(nan, select(0.0, (delta - mean) / deviation, deviation != 0.0), isOccupied);`
+  zScoreOut[zScoreOutOffset + index] = select(nan, select(0.0, getCompareQuotient(delta - mean, deviation), deviation != 0.0), isOccupied);`
       : ''
   }`
         })
       );
+    }
+
+    if (this.stageMeasures) {
+      for (const [name, source, destination] of [
+        ['before', beforeValues, output.before],
+        ['after', afterValues, output.after],
+        ['delta', deltaValues, output.delta]
+      ] as const)
+        if (destination)
+          nodes.push(
+            createWGSLKernelNode(graph, {
+              id: `${id}-publish-${name}`,
+              operation: OPERATION,
+              variant: 'publish-measures',
+              bindings: [
+                read('sourceValues', source, 'f32'),
+                write('destinationValues', destination, 'f32')
+              ],
+              invocationCount: capacity,
+              body: 'destinationValues[destinationValuesOffset + index] = sourceValues[sourceValuesOffset + index];'
+            })
+          );
     }
 
     // 6. Presence, and empty keys past the union count.

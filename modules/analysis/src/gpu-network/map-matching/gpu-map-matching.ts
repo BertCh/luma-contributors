@@ -11,6 +11,7 @@ import {
 } from '../../analysis-core/contracts/spatial-context';
 import {
   createTransientView,
+  getViewBindingRange,
   GPUScan,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -27,9 +28,19 @@ import {
   validateCapacity,
   validateMaximumCount,
   validateSinglePackedView,
+  validateFiniteNumber,
+  validateNonZeroFiniteNumber,
+  validateRequirement,
+  validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  validateDisjointWritableViews,
+  validateGraphChunkBindingRanges
+} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {SCALED_QUOTIENT_WGSL} from '../../analysis-core/kernels/scaled-quotient-wgsl';
+import {FIXED_POINT_WGSL} from '../../analysis-core/kernels/fixed-point-accumulator';
 
 import type {GPUNetworkAdjacency} from '../../analysis-core/network-topology';
 import {
@@ -57,6 +68,18 @@ const OPERATION = 'GPUMapMatching';
 const HOP_WORD_COUNT = 5;
 /** Bits of `-1.0f`: an out-of-range node ID and a negative (invalid) edge length. */
 const INVALID_EDGE_WORD = 0xbf800000;
+/** Bounds the candidate and Viterbi private arrays and the quadratic per-fix route table. */
+export const GPU_MAP_MATCHING_MAXIMUM_CANDIDATE_COUNT = 8;
+/** Bounds five private search tables, their hash and the optional route reconstruction array. */
+export const GPU_MAP_MATCHING_MAXIMUM_ROUTE_NODE_BUDGET = 128;
+/** A bounded edge rectangle inserts at most this many cells per axis. */
+const MAP_MATCHING_MAXIMUM_EDGE_CELL_SPAN = 16;
+/** Every grid counter and its prefix must fit uint32 even when every edge spans 16 by 16 cells. */
+const MAP_MATCHING_MAXIMUM_EDGE_COUNT = Math.floor(
+  0xffffffff / MAP_MATCHING_MAXIMUM_EDGE_CELL_SPAN ** 2
+);
+/** Bounds dense grid scratch and preserves the existing float32-exact grid indexing envelope. */
+const MAP_MATCHING_MAXIMUM_GRID_CELL_COUNT = 2 ** 24;
 
 /** Value written to `matchedEdges` for a point with no candidate edge or no feasible match. */
 export const GPU_MAP_MATCHING_NONE = 0xffffffff;
@@ -64,9 +87,10 @@ export const GPU_MAP_MATCHING_NONE = 0xffffffff;
 /**
  * Largest `topology` edge count of {@link GPUMapMatching} on `device`: the edge table holds 12
  * bytes per edge in one storage binding, so 11184810 on a default device (128 MiB bindings).
+ * Larger bindings remain capped at 16777215 edges so the grid's uint32 count scan cannot wrap.
  */
 export function getGPUMapMatchingMaximumEdgeCount(device: Device): number {
-  return getStorageBindingElementLimit(device, 12);
+  return Math.min(MAP_MATCHING_MAXIMUM_EDGE_COUNT, getStorageBindingElementLimit(device, 12));
 }
 
 /**
@@ -174,8 +198,8 @@ export type GPUMapMatchingOutput = {
   breaks?: GraphDataView<'uint32'>;
   /**
    * Optional log-likelihood per track: the sum of the best final score of each unbroken stretch.
-   * Scores are renormalized per step in `float32` and the per-step offsets are summed as a whole
-   * part and a fraction, so the value is accurate to about one `float32` rounding of its own magnitude
+   * Scores are renormalized per step in `float32` and the per-step offsets use the shared 96-bit
+   * fixed-point sum, so the value is accurate to about one `float32` rounding of its own magnitude
    * however long the track is.
    */
   trackLogLikelihoods?: GraphDataView<'float32'>;
@@ -190,6 +214,8 @@ export type GPUMapMatchingOutput = {
   breakCount?: GraphDataView<'uint32'>;
   /** Optional GPU-written status words. */
   status?: {
+    /** Canonical intermediate-capacity flag: mirrors overflow for grid entries and route tables. */
+    candidateOverflow?: GraphDataView<'uint32'>;
     /**
      * Optional one-row flag: 1 when a bounded table dropped entries, so the result may differ from
      * the exact model. Either the edge grid dropped entries (an edge spanning more than 16 cells per
@@ -398,6 +424,15 @@ export type GPUMapMatchingProps = {
  * at +-180. Edges are straight segments between nodes, so they should be road-length. For a
  * network that crosses the antimeridian give `bounds` across it (for example longitudes 179.9 to
  * 180.1): longitudes are unwrapped around the grid center.
+ *
+ * Cap rationale: eight candidates bounds serial per-fix insertion selection and the K-by-K
+ * Viterbi transitions; the storage-backed candidate/route tables alone do not make those stages
+ * cooperative. Increasing K needs a measured cooperative selection/transition design, not just
+ * larger private arrays. A route budget of 128 keeps the search tables, hash and reconstruction
+ * below 8 KiB of private storage; the next power-of-two budget (256) exceeds it even at K=8.
+ * A supplied routeTable already bypasses bounded searches when its cost limit covers the hop.
+ * CPUMapMatchingOperation accepts more candidates and exact uncapped routes; the GPU defaults
+ * are retained until a GPU route preserves candidate ties, restart behavior and drop statuses.
  */
 export class GPUMapMatching implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -431,6 +466,10 @@ export class GPUMapMatching implements GPUCommandNodeProducer {
       props.spatialContext,
       MAP_MATCHING_SPATIAL_CONTEXT_SUPPORT
     );
+    const geodesicRadius = getGPUGreatCircleRadius(this.spatialContext);
+    if (geodesicRadius !== undefined) {
+      validateNonZeroFiniteNumber(id, 'spatialContext.sphereRadius', geodesicRadius);
+    }
     const topologyShape = validateGPUNetworkTopology(id, props.topology, {
       nodePositions: true
     });
@@ -443,6 +482,7 @@ export class GPUMapMatching implements GPUCommandNodeProducer {
       ['output.matchedCount', output.matchedCount],
       ['output.breakCount', output.breakCount],
       ['output.status.overflow', output.status?.overflow],
+      ['output.status.candidateOverflow', output.status?.candidateOverflow],
       ['output.status.routeOverflow', output.status?.routeOverflow],
       ['output.traversedEdges.edges', output.traversedEdges?.edges],
       ['output.traversedEdges.counts', output.traversedEdges?.counts],
@@ -473,6 +513,7 @@ export class GPUMapMatching implements GPUCommandNodeProducer {
     this.trackCount = props.trackOffsets.length - 1;
     this.nodeCount = topologyShape.nodeCount;
     this.edgeCount = topologyShape.edgeCount;
+    validateMaximumCount(id, 'topology edges', this.edgeCount, MAP_MATCHING_MAXIMUM_EDGE_COUNT);
     this.candidateCount = props.candidateCount ?? 8;
     if (this.trackCount < 1) {
       throw new Error(`${id} trackOffsets needs at least one track`);
@@ -483,21 +524,47 @@ export class GPUMapMatching implements GPUCommandNodeProducer {
     if (props.parameters.length !== GPU_MAP_MATCHING_PARAMETER_LENGTH) {
       throw new Error(`${id} parameters must contain ${GPU_MAP_MATCHING_PARAMETER_LENGTH} rows`);
     }
-    validateCapacity(id, 'candidateCount', this.candidateCount, 1, 8);
-    validateCapacity(id, 'routeNodeBudget', props.routeNodeBudget ?? 64, 8, 128);
-    if (!(props.cellSize > 0) || !Number.isFinite(props.cellSize)) {
-      throw new Error(`${id} cellSize must be positive`);
-    }
+    validateCapacity(
+      id,
+      'candidateCount',
+      this.candidateCount,
+      1,
+      GPU_MAP_MATCHING_MAXIMUM_CANDIDATE_COUNT
+    );
+    validateCapacity(
+      id,
+      'routeNodeBudget',
+      props.routeNodeBudget ?? 64,
+      8,
+      GPU_MAP_MATCHING_MAXIMUM_ROUTE_NODE_BUDGET
+    );
+    validateFiniteNumber(id, 'cellSize', props.cellSize);
+    validateRequirement(
+      id,
+      Math.fround(props.cellSize) > 0,
+      'cellSize must be positive in float32'
+    );
     const [minX, minY] = props.bounds.minimum;
     const [maxX, maxY] = props.bounds.maximum;
+    for (const [name, value] of [
+      ['minimum.x', minX],
+      ['minimum.y', minY],
+      ['maximum.x', maxX],
+      ['maximum.y', maxY]
+    ] as const) {
+      validateFiniteNumber(id, `bounds.${name}`, value);
+    }
     if (!(maxX > minX) || !(maxY > minY)) {
       throw new Error(`${id} bounds must have a positive extent`);
     }
     this.gridWidth = Math.max(1, Math.ceil((maxX - minX) / props.cellSize));
     this.gridHeight = Math.max(1, Math.ceil((maxY - minY) / props.cellSize));
-    if (this.gridWidth * this.gridHeight > 1 << 24) {
-      throw new Error(`${id} cellSize yields more than 2^24 grid cells; use a larger cellSize`);
-    }
+    validateMaximumCount(
+      id,
+      'cellSize grid cells',
+      this.gridWidth * this.gridHeight,
+      MAP_MATCHING_MAXIMUM_GRID_CELL_COUNT
+    );
     if (props.entryCapacity !== undefined) {
       validateCapacity(id, 'entryCapacity', props.entryCapacity);
     }
@@ -508,6 +575,7 @@ export class GPUMapMatching implements GPUCommandNodeProducer {
       ) {
         throw new Error(`${id} minimumFixSpacingSigmas must be a non-negative number`);
       }
+      validateFiniteNumber(id, 'minimumFixSpacingSigmas', props.minimumFixSpacingSigmas, 0);
     }
     if (output.traversedEdges) {
       // A traversed route needs a capacity; the views are sized from it.
@@ -537,6 +605,7 @@ export class GPUMapMatching implements GPUCommandNodeProducer {
       ['matchedCount', output.matchedCount, 1],
       ['breakCount', output.breakCount, 1],
       ['status.overflow', output.status?.overflow, 1],
+      ['status.candidateOverflow', output.status?.candidateOverflow, 1],
       ['status.routeOverflow', output.status?.routeOverflow, 1]
     ] as const) {
       if (view && view.length !== length) {
@@ -574,10 +643,10 @@ export class GPUMapMatching implements GPUCommandNodeProducer {
     }
     const outputs = getOutputs(props);
     validateGraphOutputsDisjointFromInputs(id, outputs, getInputs(props));
-    const outputBuffers = outputs.filter(view => view !== undefined).map(view => view.buffer);
-    if (new Set(outputBuffers).size !== outputBuffers.length) {
-      throw new Error(`${id} outputs must use separate buffers`);
-    }
+    validateDisjointWritableViews(
+      id,
+      Object.fromEntries(outputs.map((view, index) => [`output ${index}`, view]))
+    );
   }
 
   /**
@@ -591,6 +660,13 @@ export class GPUMapMatching implements GPUCommandNodeProducer {
     const {id, props, pointCount, trackCount, nodeCount, edgeCount, candidateCount} = this;
     const {output} = props;
     validateGraphViewsBelongToGraph(id, graph, [...getInputs(props), ...getOutputs(props)]);
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(
+        [...getInputs(props), ...getOutputs(props)].map((view, index) => [`view ${index}`, view])
+      )
+    );
     validateMaximumCount(
       id,
       'topology edges',
@@ -626,6 +702,31 @@ export class GPUMapMatching implements GPUCommandNodeProducer {
     const cellCount = this.gridWidth * this.gridHeight;
     const entryCapacity =
       props.entryCapacity ?? Math.min(16 * edgeCount + 256, maximumEntryCapacity);
+    // Check aligned caller bindings and every row-proportional scratch plane before declaring
+    // any resource or node. A rejected graph can then be reused with a smaller batch or grid.
+    for (const [name, byteLength] of Object.entries({
+      edgeTable: edgeCount * 12,
+      grid: cellCount * 4,
+      entries: entryCapacity * 4,
+      candidates: pointCount * candidateCount * 12,
+      routes: pointCount * candidateCount * (candidateCount + 1) * 4,
+      scores: pointCount * (candidateCount + 1) * 4,
+      backPointers: pointCount * candidateCount * 4,
+      points: pointCount * 4,
+      ...(traversedEdges ? {hops: pointCount * HOP_WORD_COUNT * 4} : {}),
+      ...Object.fromEntries(
+        [...getInputs(props), ...getOutputs(props)]
+          .filter(view => view !== undefined)
+          .map((view, index) => [`view ${index}`, getViewBindingRange(view).size])
+      )
+    }))
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        name,
+        byteLength,
+        'reduce point count, entryCapacity or grid cells'
+      );
     const [minX, minY] = props.bounds.minimum;
     const maxX = props.bounds.maximum[0];
     const geodesicRadius = getGPUGreatCircleRadius(this.spatialContext);
@@ -638,7 +739,8 @@ export class GPUMapMatching implements GPUCommandNodeProducer {
       ({name, view, type, access: 'read'}) as WGSLKernelBinding;
     const write = (name: string, view: GraphDataView, type: WGSLKernelBinding['type'] = 'u32') =>
       ({name, view, type, access: 'read_write'}) as WGSLKernelBinding;
-    const common = `const POINT_COUNT: u32 = ${pointCount}u;
+    const common = `${SCALED_QUOTIENT_WGSL}
+const POINT_COUNT: u32 = ${pointCount}u;
 const NODE_COUNT: u32 = ${nodeCount}u;
 const EDGE_COUNT: u32 = ${edgeCount}u;
 const K: u32 = ${candidateCount}u;
@@ -658,12 +760,12 @@ const CELL_COUNT: u32 = ${cellCount}u;
 const ENTRY_CAPACITY: u32 = ${entryCapacity}u;
 const GRID_MINIMUM: vec2<f32> = vec2<f32>(${toLiteral(minX)}, ${toLiteral(minY)});
 const CELL_SIZE: f32 = ${toLiteral(props.cellSize)};
-const MAX_EDGE_SPAN: u32 = 16u;
+const MAX_EDGE_SPAN: u32 = ${MAP_MATCHING_MAXIMUM_EDGE_CELL_SPAN}u;
 fn getCellX(x: f32) -> u32 {
-  return u32(clamp(floor((x - GRID_MINIMUM.x) / CELL_SIZE), 0.0, f32(GRID_WIDTH - 1u)));
+  return u32(clamp(floor(getScaledQuotient(x - GRID_MINIMUM.x, CELL_SIZE, 1.0, 0)), 0.0, f32(GRID_WIDTH - 1u)));
 }
 fn getCellY(y: f32) -> u32 {
-  return u32(clamp(floor((y - GRID_MINIMUM.y) / CELL_SIZE), 0.0, f32(GRID_HEIGHT - 1u)));
+  return u32(clamp(floor(getScaledQuotient(y - GRID_MINIMUM.y, CELL_SIZE, 1.0, 0)), 0.0, f32(GRID_HEIGHT - 1u)));
 }
 ${getNetworkMetricWGSL(geodesicRadius)}
 ${getGridXWGSL(geodesicRadius !== undefined, minX, maxX)}`;
@@ -703,7 +805,6 @@ ${declarations}`,
     const pointStarts = transient('point-starts', 'uint32', pointCount);
     // Previous retained fix per point (NONE for the first of a track, DROPPED_FIX for a dropped one).
     const predecessors = transient('predecessors', 'uint32', pointCount);
-    const hops = transient('hops', 'uint32', pointCount * HOP_WORD_COUNT);
     const routes = transient(
       'routes',
       'float32',
@@ -881,7 +982,7 @@ ${getRouteTableDeclarations()}`
           read('cellEnds', cellEnds),
           write('cursors', cursors, 'atomic<u32>'),
           write('entries', entries),
-          write('overflow', overflow)
+          write('overflow', overflow, 'atomic<u32>')
         ],
         edgeCount,
         `if (!isEdgeValid(index)) {
@@ -889,7 +990,7 @@ ${getRouteTableDeclarations()}`
   }
   ${cellRange}
   if (cellX1 - cellX0 >= MAX_EDGE_SPAN || cellY1 - cellY0 >= MAX_EDGE_SPAN) {
-    overflow[overflowOffset] = 1u;
+    atomicStore(&overflow[overflowOffset], 1u);
   }
   for (var cellY = cellY0; cellY <= min(cellY1, cellY0 + MAX_EDGE_SPAN - 1u); cellY++) {
     for (var cellX = cellX0; cellX <= min(cellX1, cellX0 + MAX_EDGE_SPAN - 1u); cellX++) {
@@ -899,7 +1000,7 @@ ${getRouteTableDeclarations()}`
       if (slot < ENTRY_CAPACITY) {
         entries[entriesOffset + slot] = index;
       } else {
-        overflow[overflowOffset] = 1u;
+        atomicStore(&overflow[overflowOffset], 1u);
       }
     }
   }`,
@@ -1115,7 +1216,7 @@ fn readFixPoint(point: u32) -> vec2<f32> {
         'route-status',
         [
           read('routes', routes, 'f32'),
-          write('overflow', overflow),
+          write('overflow', overflow, 'atomic<u32>'),
           ...(output.status?.routeOverflow
             ? [write('routeOverflow', output.status.routeOverflow, 'atomic<u32>')]
             : [])
@@ -1125,7 +1226,7 @@ fn readFixPoint(point: u32) -> vec2<f32> {
   if (dropped == 0u) {
     return;
   }
-  overflow[overflowOffset] = 1u;
+  atomicStore(&overflow[overflowOffset], 1u);
   ${
     output.status?.routeOverflow
       ? `// Saturating sum: an add that wraps pins the total at the maximum, and every later add
@@ -1176,6 +1277,7 @@ fn readFixPoint(point: u32) -> vec2<f32> {
       )
     );
     if (traversedEdges) {
+      const hops = transient('hops', 'uint32', pointCount * HOP_WORD_COUNT);
       const edgeCapacity = props.traversedEdgeCapacity!;
       const traversedOverflow =
         traversedEdges.status?.overflow ?? transient('traversed-overflow', 'uint32', 1);
@@ -1217,7 +1319,7 @@ ${getAccessDeclarations()}`
             read('edgeTable', edgeTable),
             write('traversedEdges', traversedEdges.edges),
             write('traversedCounts', traversedEdges.counts),
-            write('traversedOverflow', traversedOverflow)
+            write('traversedOverflow', traversedOverflow, 'atomic<u32>')
           ],
           trackCount,
           getRouteEdgesBody(),
@@ -1309,6 +1411,15 @@ ${summarySource.declarations}`,
         })
       );
     }
+    if (output.status?.candidateOverflow)
+      nodes.push(
+        kernel(
+          'candidate-status',
+          [read('overflow', overflow), write('candidateOverflow', output.status.candidateOverflow)],
+          1,
+          'candidateOverflow[candidateOverflowOffset] = overflow[overflowOffset];'
+        )
+      );
     return nodes;
   }
 }
@@ -1328,7 +1439,7 @@ function getCandidateRadiusWGSL(isGeodesic: boolean): string {
     parameters[parametersOffset + 2u],
     2.0 * CELL_SIZE * GEODESIC_DEGREES_TO_RADIANS * NETWORK_EARTH_RADIUS
   );
-  let latitudeExtent = radius / NETWORK_EARTH_RADIUS * GEODESIC_RADIANS_TO_DEGREES;
+  let latitudeExtent = getScaledQuotient(radius, NETWORK_EARTH_RADIUS, 1.0, 0) * GEODESIC_RADIANS_TO_DEGREES;
   let bandLatitude = min(abs(point.y) + latitudeExtent, 90.0);
   let longitudeExtent = min(latitudeExtent / max(geodesicCosLatitude(bandLatitude), 1.0e-6), 180.0);`;
 }
@@ -1540,7 +1651,9 @@ fn searchNetwork(start: u32, limit: f32, pendingCount: u32) -> u32 {
       targetTotal++;
     }
   }
-  for (var slot = 0u; slot <= HASH_MASK; slot++) {
+  // A runtime trip count prevents the Metal back end from losing unrolled integer-table stores.
+  let hashCellCount = (HASH_MASK + 1u) * min(arrayLength(&adjacency), 1u);
+  for (var slot = 0u; slot < hashCellCount; slot++) {
     tableHash[slot] = 0u;
   }
   var count = 0u;
@@ -1548,9 +1661,12 @@ fn searchNetwork(start: u32, limit: f32, pendingCount: u32) -> u32 {
   count = 1u;
   loop {
     var best = NONE;
-    var bestKey = limit + 1.0;
+    // At large finite bounds, limit + 1 rounds back to limit. Select the first finite key
+    // explicitly so a key exactly at the inclusive bound is still settled.
+    var bestKey = limit;
     for (var slot = 0u; slot < count; slot++) {
-      if (tableDone[slot] == 0u && tableKey[slot] < bestKey) {
+      if (tableDone[slot] == 0u && bitcast<u32>(tableKey[slot]) < 0x7f800000u &&
+          (best == NONE || tableKey[slot] < bestKey)) {
         best = slot;
         bestKey = tableKey[slot];
       }
@@ -1859,7 +1975,7 @@ function getForwardBody(hasFixFilter: boolean): string {
           if (route < 0.0) {
             continue;
           }
-          let score = fromScore + transitionConstant - abs(straight - route) / beta;
+          let score = fromScore + transitionConstant - getScaledQuotient(abs(straight - route), beta, 1.0, 0);
           if (score > newScore[to]) {
             newScore[to] = score;
             newBack[to] = fromSlot;
@@ -1874,7 +1990,7 @@ function getForwardBody(hasFixFilter: boolean): string {
         newBack[slot] = NONE;
         continue;
       }
-      let normalized = getCandidateDistance(point, slot) / sigma;
+      let normalized = getScaledQuotient(getCandidateDistance(point, slot), sigma, 1.0, 0);
       let emission = emissionConstant - 0.5 * normalized * normalized;
       if (isReachable) {
         if (newScore[slot] > -1.0e29) {
@@ -1912,9 +2028,24 @@ function getForwardBody(hasFixFilter: boolean): string {
 function getBackwardBody(hasLogLikelihood: boolean, hasFixFilter: boolean): string {
   return `let first = trackOffsets[trackOffsetsOffset + index];
   let last = trackOffsets[trackOffsetsOffset + index + 1u];
-  sumWhole = 0;
-  sumFraction = 0.0;
-  sumLarge = 0.0;
+  likelihoodSum = vec3<u32>(0u);
+  ${
+    hasLogLikelihood
+      ? `// Choose a shared scale from the actual finite terms, excluding sentinel scores.
+  var maximumExponent = 0u;
+  for (var point = first; point < last; point++) {
+    ${hasFixFilter ? 'if (predecessors[predecessorsOffset + point] == DROPPED_FIX) { continue; }' : ''}
+    let row = scoresOffset + point * SCORE_STRIDE;
+    maximumExponent = max(maximumExponent, getFixedPointExponentBits(scores[row + K]));
+    for (var slot = 0u; slot < K; slot++) {
+      let score = scores[row + slot];
+      if (score > -1.0e29) { maximumExponent = max(maximumExponent, getFixedPointExponentBits(score)); }
+    }
+  }
+  // At most two terms per uint32-indexed point: 33 bits of integer headroom cannot wrap.
+  likelihoodUnitExponent = getFixedPointUnitExponent(maximumExponent, 33u);`
+      : ''
+  }
   var current = NONE;
   var isPicking = true;
   for (var step = 0u; step < last - first; step++) {
@@ -1970,31 +2101,20 @@ function getBackwardBody(hasLogLikelihood: boolean, hasFixFilter: boolean): stri
 }
 
 /**
- * Sum of the terms added with `addToSum`, held as a whole part (`i32`) and a fraction in [0, 1)
- * (`f32`) so the log-likelihood of a long track keeps the accuracy of one rounding of its final
- * magnitude instead of one per step. A compensated float sum (Neumaier) did not keep the accuracy on the
- * Metal test device (error of hundreds on a 1e7 total); floor and integer adds do. Terms beyond 1e9 go in a third
- * float sum.
+ * A shared 96-bit fixed-point sum avoids both signed whole-part wrap and reassociated float
+ * compensation on Metal. The per-track maximum exponent and 33 headroom bits cover at most
+ * two terms per uint32-indexed point. Decode rounds once to float32; quantization error is at
+ * most half a fixed-point unit per term (see FIXED_POINT_WGSL).
  */
 function getSumDeclarations(): string {
-  return `var<private> sumWhole: i32 = 0;
-var<private> sumFraction: f32 = 0.0;
-var<private> sumLarge: f32 = 0.0;
+  return `${FIXED_POINT_WGSL}
+var<private> likelihoodSum: vec3<u32> = vec3<u32>(0u);
+var<private> likelihoodUnitExponent: i32 = 0;
 fn addToSum(term: f32) {
-  if (abs(term) > 1.0e9) {
-    sumLarge += term;
-    return;
-  }
-  let whole = floor(term);
-  sumWhole += i32(whole);
-  sumFraction += term - whole;
-  if (sumFraction >= 1.0) {
-    sumFraction -= 1.0;
-    sumWhole += 1;
-  }
+  likelihoodSum = addFixedPoint(likelihoodSum, quantizeFixedPoint(term, likelihoodUnitExponent));
 }
 fn getSum() -> f32 {
-  return f32(sumWhole) + sumFraction + sumLarge;
+  return getFixedPointFloat(likelihoodSum, likelihoodUnitExponent);
 }`;
 }
 
@@ -2048,7 +2168,7 @@ fn emitEdge(track: u32, edge: u32) {
   if (emittedCount < EDGE_CAPACITY) {
     traversedEdges[traversedEdgesOffset + track * EDGE_CAPACITY + emittedCount] = edge;
   } else {
-    traversedOverflow[traversedOverflowOffset] = 1u;
+    atomicStore(&traversedOverflow[traversedOverflowOffset], 1u);
   }
   emittedCount++;
 }`;
@@ -2101,7 +2221,7 @@ function getRouteEdgesBody(): string {
       }
     }
     if (!isRecovered) {
-      traversedOverflow[traversedOverflowOffset] = 1u;
+      atomicStore(&traversedOverflow[traversedOverflowOffset], 1u);
     } else {
       for (var step = 0u; step < pathLength; step++) {
         emitEdge(index, pathEdges[pathLength - 1u - step]);
@@ -2141,6 +2261,7 @@ function getOutputs(props: GPUMapMatchingProps): (GraphDataView | undefined)[] {
     output.matchedCount,
     output.breakCount,
     output.status?.overflow,
+    output.status?.candidateOverflow,
     output.status?.routeOverflow,
     output.traversedEdges?.edges,
     output.traversedEdges?.counts,

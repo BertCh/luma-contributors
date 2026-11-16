@@ -2,6 +2,14 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRegressionOutputDispatches} from './regression-output-dispatches';
+
+import {getInstrumentalVariablesCovarianceAllocationLengths} from './instrumental-variables-covariance-parameters';
+
+import {validateRegressionAllocations} from './spatial-likelihood-allocations';
+
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -152,6 +160,11 @@ export class GPUInstrumentalVariablesCovariance implements GPUCommandNodeProduce
       validateSinglePackedView(view, [format], this.id);
       validateRequirement(this.id, view.length === length, `${name} length must equal ${length}`);
     }
+    validateRegressionOutputDispatches(
+      this.id,
+      {covariance: props.output.covariance, status: this.status},
+      [['covariance', 'status']]
+    );
     validateGraphOutputsDisjointFromInputs(
       this.id,
       [props.output.covariance, this.status],
@@ -175,6 +188,23 @@ export class GPUInstrumentalVariablesCovariance implements GPUCommandNodeProduce
     const columns = props.coefficientCount;
     const instruments = props.instrumentCount;
     const coefficients = columns + 1;
+    validateGraphChunkBindingRanges(graph, id, {
+      design: props.design,
+      instruments: props.instruments,
+      residuals: props.residuals,
+      clusters: props.clusters,
+      kernelOffsets: props.kernel?.offsets,
+      kernelNeighbors: props.kernel?.neighbors,
+      kernelWeights: props.kernel?.weights,
+      kernelOverflow: props.kernel?.status?.overflow,
+      covariance: props.output.covariance,
+      status: this.status
+    });
+    validateRegressionAllocations(
+      graph.device,
+      id,
+      getInstrumentalVariablesCovarianceAllocationLengths(rows, columns, instruments, props)
+    );
     // The design or instrument view is the largest caller binding, the score rows the largest
     // transient one; both are float32 rows of at most 16 values.
     validateCapacity(

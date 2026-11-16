@@ -2,6 +2,18 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRegressionOutputDispatches} from './regression-output-dispatches';
+
+import {
+  getRegressionTraceAllocationLengths,
+  getRegressionWeightBindings,
+  getRegressionMaximumEdgeCount
+} from './regression-binding-plans';
+
+import {validateRegressionAllocations} from './spatial-likelihood-allocations';
+
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -27,7 +39,6 @@ import {
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   GPUSpatialWeightsTranspose,
-  getGPUSpatialWeightsOrChunksViews,
   isGPUChunkedSpatialWeights,
   validateGPUSpatialWeightsOrChunks,
   type GPUChunkedSpatialWeights,
@@ -306,6 +317,11 @@ export class GPUSpatialWeightsTraces implements GPUCommandNodeProducer {
     if (includeGram && isGPUChunkedSpatialWeights(props.weights)) {
       throw new Error(`${id} Gram traces need whole weights`); // chunked transpose is not available
     }
+    validateRegressionOutputDispatches(
+      this.id,
+      {...output, status: undefined, approximation: output.status?.approximation},
+      [{read: ['infinityNorm'], write: ['powerTraces', 'powerTraceStandardErrors', 'gramTraces']}]
+    );
     validateGraphOutputsDisjointFromInputs(
       id,
       [
@@ -316,7 +332,7 @@ export class GPUSpatialWeightsTraces implements GPUCommandNodeProducer {
         output.status?.approximation,
         output.infinityNorm
       ],
-      [...getGPUSpatialWeightsOrChunksViews(props.weights), props.parameters]
+      [...Object.values(getRegressionWeightBindings(props.weights)), props.parameters]
     );
   }
 
@@ -333,8 +349,29 @@ export class GPUSpatialWeightsTraces implements GPUCommandNodeProducer {
     const {weights, output, maximumPower} = props;
     const stochastic = this.mode === 'stochastic';
     const includeGram = this.includeGramTraces;
+    validateGraphChunkBindingRanges(graph, id, {
+      ...getRegressionWeightBindings(weights),
+      ...output,
+      approximation: output.status?.approximation,
+      status: undefined,
+      parameters: props.parameters
+    });
+    validateRegressionAllocations(
+      graph.device,
+      id,
+      getRegressionTraceAllocationLengths({
+        rowCount,
+        edgeCount: getRegressionMaximumEdgeCount(weights),
+        maximumPower,
+        tileCount,
+        mode: this.mode,
+        probeCount: props.probeCount,
+        probeBatchSize: props.probeBatchSize,
+        includeGram
+      })
+    );
     validateGraphViewsBelongToGraph(id, graph, [
-      ...getGPUSpatialWeightsOrChunksViews(weights),
+      ...Object.values(getRegressionWeightBindings(weights)),
       output.powerTraces,
       output.powerTraceStandardErrors,
       output.powerSums,

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateSpatialOutputViews} from './spatial-output-validation';
 import {ADDITION_ROUNDING_ERROR_WGSL} from '../../analysis-core/kernels/addition-rounding-error-wgsl';
 import {PHILOX_PURPOSES, PHILOX_WGSL} from '../../analysis-core/kernels/philox-random';
 import {
@@ -21,8 +22,11 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validateSinglePackedView
+  validateSinglePackedView,
+  validateGPUStorageBindingByteLength,
+  validateCommandNodeBudget
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {GPU_SPATIAL_CLUSTERING_NOISE} from './spatial-clustering-parameters';
 import {
   GET_QUIET_NAN_SEEDED_WGSL,
@@ -50,6 +54,12 @@ const REDUCTION_WORKGROUP_SIZE = 256;
 const MAXIMUM_SLICES = 16;
 /** Largest number of point chunks (workgroups) the partial pass launches. */
 const MAXIMUM_CHUNKS = 256;
+/** Fixed preparation, optional compaction, origin and final publishing nodes. */
+const KMEANS_FIXED_COMMAND_NODE_ALLOWANCE = 256;
+/** Restart preparation/scoring plus five nodes per Lloyd step and four per k-means++ draw. */
+const KMEANS_RESTART_COMMAND_NODE_ALLOWANCE = 64;
+const KMEANS_NODES_PER_ITERATION = 5;
+const KMEANS_NODES_PER_SEED = 4;
 
 /** Largest `k`. */
 export const GPU_SPATIAL_KMEANS_MAXIMUM_CLUSTERS = 256;
@@ -281,6 +291,7 @@ export type GPUSpatialKMeansProps = {
 export class GPUSpatialKMeans implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
   readonly id: string;
+  readonly estimatedCommandNodeCount: number;
   /** Validated properties. */
   readonly props: GPUSpatialKMeansProps;
   /** Resolved initialization. */
@@ -383,6 +394,32 @@ export class GPUSpatialKMeans implements GPUCommandNodeProducer {
         throw new Error(`${id} output.squaredDistances length must equal positions length`);
       }
     }
+    validateSpatialOutputViews(
+      id,
+      Object.fromEntries(getOutputs(output).map((view, index) => [`output[${index}]`, view])),
+      [
+        {
+          read: [!this.centerCoordinates ? output.centers : undefined],
+          write: [output.labels, output.squaredDistances]
+        },
+        {read: [output.labels], write: [output.sizes]},
+        ...((props.restartCount ?? 1) === 1
+          ? [
+              {
+                read: [output.labels],
+                write: [output.sizes, !this.centerCoordinates ? output.centers : undefined]
+              }
+            ]
+          : [])
+      ]
+    );
+    this.estimatedCommandNodeCount =
+      KMEANS_FIXED_COMMAND_NODE_ALLOWANCE +
+      this.restartCount *
+        (KMEANS_RESTART_COMMAND_NODE_ALLOWANCE +
+          KMEANS_NODES_PER_ITERATION * props.maximumIterations +
+          (this.initialization === 'kmeans++' ? KMEANS_NODES_PER_SEED * props.k : 0));
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     validateGraphOutputsDisjointFromInputs(id, getOutputs(output), [
       props.positions,
       props.parameters
@@ -398,6 +435,25 @@ export class GPUSpatialKMeans implements GPUCommandNodeProducer {
     const {labels, centers} = output;
     validateGraphViewsBelongToGraph(id, graph, [positions, parameters, ...getOutputs(output)]);
     const rows = positions.length;
+    validateGraphChunkBindingRanges(graph, id, {
+      positions,
+      parameters,
+      ...Object.fromEntries(getOutputs(output).map((view, index) => [`output[${index}]`, view]))
+    });
+    const partialCount = k * Math.min(MAXIMUM_CHUNKS, Math.ceil(rows / REDUCTION_WORKGROUP_SIZE));
+    for (const [name, byteLength] of [
+      ['row scratch', rows * 4],
+      ['partial reductions', partialCount * 4],
+      ['cluster sums', k * 8],
+      ['iteration dispatch', 48]
+    ] as const)
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        name,
+        byteLength,
+        'reduce positions rows or k'
+      );
     const restartCount = this.restartCount;
     const multiStart = restartCount > 1;
     const view = <Format extends 'uint32' | 'float32'>(

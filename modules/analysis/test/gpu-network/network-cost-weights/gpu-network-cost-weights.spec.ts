@@ -312,3 +312,24 @@ it('GPUNetworkCostWeights feeds GPUCatchmentAccessibility, matching PySAL access
     });
   }
 });
+
+it('Gaussian network cost weights preserve ratios near float32 maximum', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const result = await runCostWeights(device, {
+    costs: Float32Array.of(1.5e38, 3e38),
+    rowCount: 1,
+    orientation: 'rows',
+    settings: {costLimit: 3e38, decay: 'gaussian'},
+    capacity: 2
+  });
+  const edge = Math.exp(-0.5);
+  expect(result.offsets).toEqual([0, 2]);
+  expect(result.neighbors).toEqual([0, 1]);
+  expect(Math.abs(result.weights[0] - (Math.exp(-0.125) - edge) / (1 - edge))).toBeLessThan(
+    WEIGHT_TOLERANCE
+  );
+  expect(Math.abs(result.weights[1])).toBeLessThan(WEIGHT_TOLERANCE);
+  expect(result.overflow).toBe(0);
+  expect(result.requiredCount).toBe(2);
+});

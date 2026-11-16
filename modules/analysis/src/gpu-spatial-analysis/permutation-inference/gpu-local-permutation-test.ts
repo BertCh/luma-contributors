@@ -4,6 +4,7 @@
 
 import {
   createTransientView,
+  GPUReduction,
   validatePackedUint32View,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -17,6 +18,7 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
+  validateCommandNodeBudget,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView
@@ -32,6 +34,9 @@ import {
   type GPUIslandPolicy,
   type GPUSpatialWeights
 } from '../spatial-weights/spatial-weights';
+import {createSpatialStatisticsRowNode} from '../spatial-weights/spatial-statistics-row-dispatch';
+import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateGPUStorageBindingByteLength} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   GPUMultipleTestingAdjustment,
   resolveGPUMultipleTestingMethod
@@ -45,7 +50,8 @@ import {
   PERMUTATION_FLOAT_WGSL,
   PERMUTATION_INVALID_POSITION,
   PERMUTATION_TOTAL,
-  validatePermutationInputs
+  validatePermutationInputs,
+  validatePermutationInputBindings
 } from './permutation-inference-kernels';
 import {PERMUTATION_RANDOM_WGSL} from '../../analysis-core/kernels/permutation-random';
 import {
@@ -62,10 +68,14 @@ import {PHILOX_PURPOSES} from '../../analysis-core/kernels/philox-random';
 import type {GPUFloat32OrUint32Values} from '../spatial-weights/float32-values';
 import {
   getGPUSpatialWeightsOrChunksViews,
+  getGPUSpatialWeightsChunks,
   type GPUChunkedSpatialWeights
 } from '../spatial-weights/gpu-chunked-spatial-weights';
 
 const OPERATION = 'GPULocalPermutationTest';
+
+/** Bounds fixed split-column preparation, published scans/sort, classification and status nodes. */
+const LOCAL_PERMUTATION_FIXED_COMMAND_NODE_ALLOWANCE = 256;
 
 /** Philox counter word `c` that tags local conditional-permutation draws. @internal */
 export const LOCAL_PERMUTATION_RANDOM_TAG = PHILOX_PURPOSES.localPermutationTest.id;
@@ -210,6 +220,8 @@ export function getLocalStatisticSpec(
 
 /** Caller-owned outputs of {@link GPULocalPermutationTest}. */
 export type GPULocalPermutationTestOutput = {
+  /** Exact uint32 number of analyzed rows. */
+  analysisCount?: GraphDataView<'uint32'>;
   /**
    * Caller-owned exceedance count `M` per row (numerator of the pseudo p-value; see
    * {@link GPUInferenceAlternative}), or `GPU_LOCAL_PERMUTATION_NOT_TESTED`.
@@ -357,7 +369,7 @@ export type GPULocalPermutationTestProps = {
   extendedNeighborScratch?: boolean;
   /**
    * Optional number of rows per permutation dispatch. Rows are split into consecutive tiles, one
-   * dispatch each, with the tile base passed as a pipeline constant. Draw streams are keyed by the
+   * dispatch each, with the tile base passed in a runtime uniform. Draw streams are keyed by the
    * global row index, so results are identical for every tile size. Omitted: one dispatch.
    */
   rowTileSize?: number;
@@ -538,7 +550,7 @@ type LocalPermutationReplayInputs = {
   bindings: readonly WGSLKernelBinding[];
   observedRaw: GraphDataView<'float32'>;
   /** One-row count of negative analysis values, set for `'localG'` and `'localGStar'`: the replay of a rejected test is unavailable, like the live test. */
-  negativeCount?: GraphDataView<'float32'>;
+  negativeCount?: GraphDataView<'uint32'>;
 };
 
 /**
@@ -593,6 +605,8 @@ export class GPULocalPermutationTest implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPULocalPermutationTestProps;
+  /** Conservative bound including published primitives and all row tiles. */
+  readonly estimatedCommandNodeCount: number;
 
   /** Views from the latest recording graph lowering, for internal lens replay only. @internal */
   replayInputs?: LocalPermutationReplayInputs;
@@ -603,9 +617,10 @@ export class GPULocalPermutationTest implements GPUCommandNodeProducer {
     this.props = props;
     const rows = validatePermutationInputs({
       ...props,
+      analysisCount: props.output.analysisCount,
+      islandCount: props.output.islandCount,
       id,
-      operation: OPERATION,
-      islandCount: props.output.islandCount
+      operation: OPERATION
     });
     if (
       ![
@@ -660,6 +675,18 @@ export class GPULocalPermutationTest implements GPUCommandNodeProducer {
       validatePackedUint32View(props.output.permutationCounts, `${id} permutationCounts`);
     }
     resolveGPUIslandPolicy(id, props.islands);
+    if (props.rowTileSize !== undefined) validateCapacity(id, 'rowTileSize', props.rowTileSize);
+    const chunks = getGPUSpatialWeightsChunks(props.weights);
+    const tileCount = chunks.reduce(
+      (total, chunk) =>
+        total +
+        Math.ceil(chunk.rowCount / Math.min(props.rowTileSize ?? chunk.rowCount, chunk.rowCount)),
+      0
+    );
+    this.estimatedCommandNodeCount =
+      LOCAL_PERMUTATION_FIXED_COMMAND_NODE_ALLOWANCE + 3 * chunks.length + tileCount;
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
+
     validateCapacity(
       id,
       'maximumNeighbors',
@@ -712,10 +739,12 @@ export class GPULocalPermutationTest implements GPUCommandNodeProducer {
         props.output.status.invalidCount.length
       );
     }
+    validateDisjointWritableViews(id, {...props.output, status: undefined, ...props.output.status});
     validateGraphOutputsDisjointFromInputs(
       id,
       [
         props.output.exceedances,
+        props.output.analysisCount,
         props.output.permutationCounts,
         props.output.pseudoPValues,
         props.output.observed,
@@ -781,6 +810,7 @@ export class GPULocalPermutationTest implements GPUCommandNodeProducer {
       props.mask,
       parameters,
       props.output.exceedances,
+      props.output.analysisCount,
       props.output.permutationCounts,
       props.output.pseudoPValues,
       props.output.observed,
@@ -792,6 +822,31 @@ export class GPULocalPermutationTest implements GPUCommandNodeProducer {
       props.output.status.overflow,
       props.output.status.invalidCount
     ]);
+    validatePermutationInputBindings(graph, {...props, id, operation: OPERATION}, [
+      props.output.exceedances,
+      props.output.analysisCount,
+      props.output.permutationCounts,
+      props.output.pseudoPValues,
+      props.output.observed,
+      props.output.significant,
+      props.output.adjustedPValues,
+      props.output.classes,
+      props.output.quadrants,
+      props.output.islandCount,
+      ...Object.values(props.output.status)
+    ]);
+    if (
+      getLocalStatisticSpec(statistic, props.joinCase).bivariate ||
+      props.stopAfterExceedances !== undefined
+    ) {
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        'two-column local inference scratch',
+        props.values.length * 8,
+        'reduce rows or request larger device bindings'
+      );
+    }
     const rows = props.values.length;
     const alternative = resolvePermutationAlternative(id, props.alternative);
     const multiplier = getAlternativeMultiplier(alternative);
@@ -804,6 +859,7 @@ export class GPULocalPermutationTest implements GPUCommandNodeProducer {
     const bivariate = spec.bivariate;
     const inputs = getPermutationInputNodes<Parameters>(graph, {
       ...props,
+      analysisCount: props.output.analysisCount,
       islandCount: props.output.islandCount,
       id: `${id}-inputs`,
       operation: OPERATION,
@@ -824,9 +880,8 @@ export class GPULocalPermutationTest implements GPUCommandNodeProducer {
     const dataBinding: WGSLKernelBinding = pairs
       ? {name: 'pairs', view: pairs, type: 'f32', access: 'read'}
       : {name: 'compactX', view: compactX, type: 'f32', access: 'read'};
-    const getConstantsWGSL = (capacity: number, rowStart?: number) => `const ROWS: u32 = ${rows}u;
-const CAPACITY: u32 = ${capacity}u;
-${rowStart === undefined ? '' : `const WEIGHTS_ROW_START: u32 = ${rowStart}u;\n`}const INVALID_POSITION: u32 = ${PERMUTATION_INVALID_POSITION}u;
+    const getConstantsWGSL = (capacity?: number) => `const ROWS: u32 = ${rows}u;
+${capacity === undefined ? '' : `const CAPACITY: u32 = ${capacity}u;\n`}const INVALID_POSITION: u32 = ${PERMUTATION_INVALID_POSITION}u;
 const MAXIMUM_NEIGHBORS: u32 = ${maximumNeighbors}u;
 const NOT_TESTED: u32 = ${GPU_LOCAL_PERMUTATION_NOT_TESTED}u;
 ${PERMUTATION_FLOAT_WGSL}
@@ -846,6 +901,7 @@ fn getDrawnB(fx: f32, fy: f32, dx: f32, dy: f32) -> f32 {
   return ${spec.drawnB ?? '0.0'};
 }`;
     const constantsWGSL = getConstantsWGSL(chunkWeights[0].weights.neighbors.length);
+    const rowConstantsWGSL = getConstantsWGSL();
     // Reads the compacted x and y of a position (y is 0 for univariate statistics).
     const accessWGSL = pairs
       ? `fn getX(position: u32) -> f32 { return pairs[pairsOffset + 2u * position]; }
@@ -973,14 +1029,12 @@ fn getY(position: u32) -> f32 { return 0.0 * f32(position); }`;
       }),
       ...chunkWeights.map((chunk, chunkIndex) => {
         const chunkIdSuffix = isWholeWeights ? '' : `-${chunkIndex}`;
-        const chunkRowStart = isWholeWeights ? undefined : 'WEIGHTS_ROW_START';
-        const chunkConstantsWGSL = isWholeWeights
-          ? constantsWGSL
-          : getConstantsWGSL(chunk.weights.neighbors.length, chunk.rowStart);
+        const chunkRowStart = 'WEIGHTS_ROW_START';
+        const chunkConstantsWGSL = rowConstantsWGSL;
         const chunkNeighborLoopWGSL = getNeighborLoopWGSL(chunkRowStart);
-        const wrapChunkBody = (body: string) =>
-          isWholeWeights ? body : `{ let index = index + WEIGHTS_ROW_START;\n${body}\n}`;
-        return createWGSLKernelNode<Parameters>(graph, {
+        const wrapChunkBody = (body: string) => body;
+        return createSpatialStatisticsRowNode<Parameters>(graph, {
+          rowBase: chunk.rowStart,
           id: `${id}-observed${chunkIdSuffix}`,
           operation: OPERATION,
           variant: 'observed',
@@ -1041,23 +1095,22 @@ ${accessWGSL}`,
       })
     );
     for (const [chunkIndex, chunk] of chunkWeights.entries()) {
-      const chunkKernelOptions = isWholeWeights
-        ? kernelOptions
-        : {
-            ...kernelOptions,
-            constantsWGSL: getConstantsWGSL(chunk.weights.neighbors.length, chunk.rowStart),
-            neighborLoopWGSL: getNeighborLoopWGSL('WEIGHTS_ROW_START')
-          };
+      const chunkKernelOptions = {
+        ...kernelOptions,
+        constantsWGSL: rowConstantsWGSL,
+        neighborLoopWGSL: getNeighborLoopWGSL('WEIGHTS_ROW_START')
+      };
       const permuteKernel = getLocalPermutationKernelWGSL(chunkKernelOptions);
       const chunkRows = chunk.rowCount;
       const tileRowCount = Math.max(1, Math.min(props.rowTileSize ?? chunkRows, chunkRows));
       for (let tileBase = 0; tileBase < chunkRows; tileBase += tileRowCount) {
-        const tiled = tileRowCount < chunkRows || !isWholeWeights;
         const tileRows = Math.min(tileRowCount, chunkRows - tileBase);
         const globalBase = chunk.rowStart + tileBase;
         const idSuffix = `${isWholeWeights ? '' : `-chunk${chunkIndex}`}${tileRowCount < chunkRows ? `-${tileBase}` : ''}`;
         nodes.push(
-          createWGSLKernelNode<Parameters>(graph, {
+          createSpatialStatisticsRowNode<Parameters>(graph, {
+            rowBase: globalBase,
+            weightsRowStart: chunk.rowStart,
             id: `${id}-permute${idSuffix}`,
             operation: OPERATION,
             variant: 'permute',
@@ -1077,14 +1130,7 @@ ${accessWGSL}`,
               }
             ],
             invocationCount: tileRows,
-            ...(tiled
-              ? {
-                  constants: {TILE_ROW_BASE: globalBase},
-                  declarations: `override TILE_ROW_BASE: u32;\n${permuteKernel.declarations}`,
-                  // The block shadows the local invocation row with the global row index.
-                  body: `{ let index = index + TILE_ROW_BASE;\n${permuteKernel.body}\n}`
-                }
-              : permuteKernel)
+            ...permuteKernel
           })
         );
       }
@@ -1121,16 +1167,16 @@ ${accessWGSL}`,
         ? createTransientView(graph, `${id}-observed-geary`, 'float32', rows)
         : undefined);
     if (observedView) {
-      const count = 'totals[totalsOffset]';
+      const count = 'rowPositions[rowPositionsOffset + ROWS]';
       const sumSquaresX = `totals[totalsOffset + ${PERMUTATION_TOTAL.sumSquares}u]`;
       const sumSquaresY = `totals[totalsOffset + ${PERMUTATION_TOTAL.sumSquaresY}u]`;
       const observedWGSL = {
-        localMoran: `(${count} - 1.0) * raw / ${sumSquaresX}`,
-        localGeary: `raw * ${count} / ${sumSquaresX}`,
+        localMoran: `multiplyBySpatialCount(raw, max(${count}, 1u) - 1u) / ${sumSquaresX}`,
+        localGeary: `multiplyBySpatialCount(raw, ${count}) / ${sumSquaresX}`,
         localG: 'raw / (totals[totalsOffset + 1u] - compactX[compactXOffset + position])',
         localGStar: 'raw / totals[totalsOffset + 1u]',
-        localBivariateMoran: `(${count} - 1.0) * raw / sqrt(${sumSquaresX} * ${sumSquaresY})`,
-        localLeeL: `${count} * raw / sqrt(${sumSquaresX} * ${sumSquaresY})`,
+        localBivariateMoran: `multiplyBySpatialCount(raw, max(${count}, 1u) - 1u) / sqrt(${sumSquaresX} * ${sumSquaresY})`,
+        localLeeL: `multiplyBySpatialCount(raw, ${count}) / sqrt(${sumSquaresX} * ${sumSquaresY})`,
         localJoinCount: 'raw',
         localBivariateJoinCount: 'raw'
       }[statistic];
@@ -1174,7 +1220,7 @@ ${accessWGSL}`,
         this.replayInputs.negativeCount = negative.negativeCount;
       }
       const invalidBindings: WGSLKernelBinding[] = [
-        {name: 'negativeCount', view: negative.negativeCount, type: 'f32', access: 'read'},
+        {name: 'negativeCount', view: negative.negativeCount, type: 'u32', access: 'read'},
         {name: 'exceedances', view: props.output.exceedances, type: 'u32', access: 'read_write'},
         {
           name: 'overflow',
@@ -1217,14 +1263,14 @@ ${accessWGSL}`,
           invocationCount: rows,
           declarations: `const NOT_TESTED: u32 = ${GPU_LOCAL_PERMUTATION_NOT_TESTED}u;
 ${PERMUTATION_FLOAT_WGSL}`,
-          body: `let invalid = negativeCount[negativeCountOffset] > 0.0;
+          body: `let invalid = negativeCount[negativeCountOffset] > 0u;
   if (invalid) {
     exceedances[exceedancesOffset + index] = NOT_TESTED;
     ${permutationCounts ? 'permutationCounts[permutationCountsOffset + index] = NOT_TESTED;' : ''}
     ${props.output.observed ? 'observed[observedOffset + index] = getQuietNaN(index);' : ''}
   }
   if (index == 0u) {
-    ${props.output.status.invalidCount ? 'invalidCount[invalidCountOffset] = u32(negativeCount[negativeCountOffset]);' : ''}
+    ${props.output.status.invalidCount ? 'invalidCount[invalidCountOffset] = negativeCount[negativeCountOffset];' : ''}
     if (invalid) {
       atomicMax(&overflow[overflowOffset], 1u);
     }
@@ -1365,8 +1411,16 @@ const NOT_TESTED: u32 = ${GPU_LOCAL_PERMUTATION_NOT_TESTED}u;${sequential ? `\nc
     const multiplier = getAlternativeMultiplier(
       resolvePermutationAlternative(id, props.alternative)
     );
-    const matrix = createTransientView(graph, `${id}-geary-mean-matrix`, 'float32', 2 * rows);
-    const sums = createTransientView(graph, `${id}-geary-mean-sums`, 'float32', 2);
+    const matrix = createTransientView(graph, `${id}-geary-mean-matrix`, 'float32', rows);
+    const finiteFlags = createTransientView(graph, `${id}-geary-finite`, 'uint32', rows);
+    // One binding preserves the float sum bits and the exact integer count for classification.
+    const sums = createTransientView(graph, `${id}-geary-mean-sums`, 'uint32', 2);
+    const sumValue = graph.createDataView(sums.buffer, {format: 'float32', length: 1});
+    const finiteCount = graph.createDataView(sums.buffer, {
+      format: 'uint32',
+      length: 1,
+      byteOffset: 4
+    });
     const stopAfter = props.stopAfterExceedances;
     // Sequential stopping: a stopped row (count equal to the target) is compared as min(m h, L) / L.
     const unadjustedNumeratorWGSL =
@@ -1387,16 +1441,17 @@ const NOT_TESTED: u32 = ${GPU_LOCAL_PERMUTATION_NOT_TESTED}u;${sequential ? `\nc
         variant: 'geary-mean-inputs',
         bindings: [
           {name: 'observedView', view: observedView, type: 'f32', access: 'read'},
-          {name: 'matrix', view: matrix, type: 'f32', access: 'read_write'}
+          {name: 'matrix', view: matrix, type: 'f32', access: 'read_write'},
+          {name: 'finiteFlags', view: finiteFlags, type: 'u32', access: 'read_write'}
         ],
         invocationCount: rows,
         declarations: `const ROWS: u32 = ${rows}u;
 ${PERMUTATION_FLOAT_WGSL}`,
-        // Column 0: the local value of every row with one; column 1: how many such rows.
+        // Finite values and exact indicators are reduced independently, one row-sized binding each.
         body: `let value = observedView[observedViewOffset + index];
   let finite = isFiniteFloat(value);
   matrix[matrixOffset + index] = select(0.0, value, finite);
-  matrix[matrixOffset + ROWS + index] = select(0.0, 1.0, finite);`
+  finiteFlags[finiteFlagsOffset + index] = u32(finite);`
       }),
       ...getColumnSumNodes<Parameters>(graph, {
         id: `${id}-geary-mean`,
@@ -1405,9 +1460,15 @@ ${PERMUTATION_FLOAT_WGSL}`,
         rows,
         blockCount: Math.ceil(rows / BLOCK_ROWS),
         first: 0,
-        count: 2,
-        totals: sums
+        count: 1,
+        totals: sumValue
       }),
+      ...new GPUReduction({
+        id: `${id}-geary-finite-count`,
+        input: finiteFlags,
+        output: finiteCount,
+        operation: 'sum'
+      }).getCommandNodes(graph),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-geary-classes`,
         operation: OPERATION,
@@ -1416,7 +1477,7 @@ ${PERMUTATION_FLOAT_WGSL}`,
           {name: 'observedView', view: observedView, type: 'f32', access: 'read'},
           {name: 'compactX', view: compactX, type: 'f32', access: 'read'},
           {name: 'rowPositions', view: rowPositions, type: 'u32', access: 'read'},
-          {name: 'sums', view: sums, type: 'f32', access: 'read'},
+          {name: 'sums', view: sums, type: 'u32', access: 'read'},
           {name: 'parameters', view: props.parameters, type: 'u32', access: 'read'},
           adjustedPValues
             ? {name: 'adjustedPValues', view: adjustedPValues, type: 'f32', access: 'read'}
@@ -1441,7 +1502,7 @@ ${PERMUTATION_FLOAT_WGSL}`,
         // Codes of GPU_LOCAL_GEARY_CLASS. NaN p-values (rows not tested) compare false and stay 0.
         body: `let value = observedView[observedViewOffset + index];
   let position = rowPositions[rowPositionsOffset + index];
-  let mean = sums[sumsOffset] / sums[sumsOffset + 1u];
+  let mean = divideBySpatialCount(bitcast<f32>(sums[sumsOffset]), sums[sumsOffset + 1u]);
   ${adjustedPValues ? '' : 'let count = exceedances[exceedancesOffset + index];'}
   var code = 0u;
   if (isFiniteFloat(value) && position != INVALID_POSITION && ${adjustedPValues ? 'isFiniteFloat(adjustedPValues[adjustedPValuesOffset + index]) && ' : 'count != NOT_TESTED && '}isFiniteFloat(mean)) {

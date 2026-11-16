@@ -9,16 +9,14 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {
-  createWGSLKernelNode,
-  type WGSLKernelBinding
-} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {type WGSLKernelBinding} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {createStatisticsKernelNode as createWGSLKernelNode} from '../spatial-weights/statistics-kernel-node';
+import {SPATIAL_STATISTICS_COUNTS_WGSL} from '../spatial-weights/spatial-statistics-counts-wgsl';
 import {getGPUSpatialWeightsNeighborLoopWGSL} from '../spatial-weights/spatial-weights';
 import {
   getGPUSpatialWeightsChunkDispatches,
   resolveGPUIslandPolicy,
   validateGPUSpatialWeightsOrChunks,
-  wrapGPUSpatialWeightsChunkBody,
   type GPUChunkedSpatialWeights,
   type GPUIslandPolicy,
   type GPUSpatialWeights
@@ -34,8 +32,13 @@ import {
 } from '../../analysis-core/kernels/wgsl-common';
 import {
   validateCapacity,
-  validateSinglePackedView
+  validateSinglePackedView,
+  validateGPUStorageBindingByteLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {getGPUSpatialWeightsOrChunksViews} from '../spatial-weights/gpu-chunked-spatial-weights';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateGraphChunkGroupKernelSupport} from '../../analysis-core/kernels/graph-chunk-groups';
+import {createSpatialStatisticsRowNode} from '../spatial-weights/spatial-statistics-row-dispatch';
 import {
   createFloat32ValuesNodes,
   type GPUFloat32OrUint32Values,
@@ -44,6 +47,9 @@ import {
 
 /** Rows reduced by one workgroup in the first level of the deterministic global sums. */
 const BLOCK_ROWS = 4096;
+
+/** uint32 row addresses leave one full reduction block for strided-loop increments and trailing counts. */
+export const SPATIAL_AUTOCORRELATION_MAXIMUM_ROW_COUNT = 0xffffffff - BLOCK_ROWS;
 
 /** Threads of the moment-sum workgroups. */
 const MOMENT_WORKGROUP_SIZE = 256;
@@ -65,6 +71,8 @@ export type SpatialAutocorrelationInputProps = {
   parameters: GraphDataView<'float32'>;
   mask?: GraphDataView<'uint32'>;
   globalStatistics?: GraphDataView<'float32'>;
+  /** Exact [analysisCount, islandCount], including fixed population counts when supplied. */
+  globalCounts?: GraphDataView<'uint32'>;
   /**
    * Opt-in island pass. When omitted, no island pass runs, no row is classified as an island and
    * the island count is 0 (the behavior of external callers that predate islands). When given,
@@ -84,6 +92,7 @@ export type SpatialAutocorrelationInputs<Parameters> = {
    * {@link SPATIAL_AUTOCORRELATION_RESIDUAL_MEAN_SLOT}).
    */
   statistics: GraphDataView<'float32'>;
+  counts: GraphDataView<'uint32'>;
 };
 
 /** Index of the island count inside the moments that follow the centered values. @internal */
@@ -131,8 +140,9 @@ export function validateSpatialAutocorrelationInputs(
   if (props.weights.status?.overflow) {
     validatePackedUint32View(props.weights.status.overflow, `${id} weights.status.overflow`);
   }
-  // Counts and ranks are compared as f32 inside the kernels.
-  validateCapacity(id, 'weights row count', rows, 1, 2 ** 24 - 1);
+  // Counts reduce in uint32. Conversion to f32 happens only for statistical arithmetic and the
+  // existing float32 summary layout; no rank or row address goes through f32.
+  validateCapacity(id, 'weights row count', rows, 1, SPATIAL_AUTOCORRELATION_MAXIMUM_ROW_COUNT);
   if (props.values.length !== rows) {
     throw new Error(`${id} values length must equal the weights row count`);
   }
@@ -148,6 +158,10 @@ export function validateSpatialAutocorrelationInputs(
       throw new Error(`${id} mask length must equal the weights row count`);
     }
   }
+  if (props.globalCounts) {
+    validateSinglePackedView(props.globalCounts, ['uint32'], `${id} output.globalCounts`);
+    validateCapacity(id, 'output.globalCounts length', props.globalCounts.length, 2, 2);
+  }
   if (props.globalStatistics) {
     validateSinglePackedView(props.globalStatistics, ['float32'], `${id} output.globalStatistics`);
     validateCapacity(
@@ -160,6 +174,39 @@ export function validateSpatialAutocorrelationInputs(
   return rows;
 }
 
+/** Checks every packed binding and row-proportional moment scratch before any declarations. @internal */
+export function validateSpatialAutocorrelationBindings<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: SpatialAutocorrelationInputProps,
+  outputs: readonly (GraphDataView | undefined)[] = []
+): void {
+  validateGraphChunkGroupKernelSupport(graph, props.id, 8);
+  validateGraphChunkBindingRanges(
+    graph,
+    props.id,
+    Object.fromEntries(
+      [
+        ...getGPUSpatialWeightsOrChunksViews(props.weights),
+        props.weights.status?.overflow,
+        props.values,
+        props.parameters,
+        props.mask,
+        props.globalStatistics,
+        props.globalCounts,
+        ...outputs
+      ].map((view, index) => [`binding ${index}`, view])
+    )
+  );
+
+  validateGPUStorageBindingByteLength(
+    graph.device,
+    props.id,
+    'statistics scratch',
+    (props.values.length + 6) * 4,
+    'reduce packed values rows or request larger device bindings'
+  );
+}
+
 /**
  * Parameter-free WGSL helpers: finiteness test, runtime quiet NaN, and the two-sided normal
  * p-value. Included by {@link getSpatialAutocorrelationSharedWGSL}.
@@ -168,6 +215,7 @@ export function validateSpatialAutocorrelationInputs(
  */
 export const SPATIAL_AUTOCORRELATION_FLOAT_WGSL = /* wgsl */ `
 ${IS_FINITE_FLOAT_WGSL}
+${SPATIAL_STATISTICS_COUNTS_WGSL}
 
 // A runtime operand keeps the quiet-NaN bit pattern out of constant evaluation.
 ${GET_QUIET_NAN_SEEDED_WGSL}
@@ -266,6 +314,7 @@ export function getSpatialAutocorrelationInputNodes<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: SpatialAutocorrelationInputProps & {operation: string}
 ): SpatialAutocorrelationInputs<Parameters> {
+  validateSpatialAutocorrelationBindings(graph, props);
   const {id, operation, parameters, mask, weights} = props;
   const valuesInput = createFloat32ValuesNodes(graph, `${id}-values`, props.values);
   const values = valuesInput.view;
@@ -291,6 +340,7 @@ export function getSpatialAutocorrelationInputNodes<Parameters>(
   );
   const squarePartials = createTransientView(graph, `${id}-square-partials`, 'float32', blockCount);
   const statistics = createTransientView(graph, `${id}-statistics`, 'float32', rows + 6);
+  const counts = props.globalCounts ?? createTransientView(graph, `${id}-counts`, 'uint32', 2);
   const rowStates = hasIslandPass
     ? createTransientView(graph, `${id}-row-states`, 'uint32', rows)
     : undefined;
@@ -322,7 +372,8 @@ ${
     // Row states: 0 missing, 1 tested, 2 island. A neighbor counts when it is a valid row.
     nodes.push(
       ...dispatches.map(dispatch =>
-        createWGSLKernelNode<Parameters>(graph, {
+        createSpatialStatisticsRowNode<Parameters>(graph, {
+          rowBase: dispatch.rowStart,
           id: `${id}-row-states${dispatch.idSuffix}`,
           operation,
           variant: 'row-states',
@@ -337,19 +388,14 @@ ${
           invocationCount: dispatch.rowCount,
           declarations: `${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}
 const ROWS: u32 = ${rows}u;
-const CAPACITY: u32 = ${dispatch.weights.neighbors.length}u;
-${dispatch.constantsWGSL}
 ${isRawRowValidWGSL}`,
-          body: wrapGPUSpatialWeightsChunkBody(
-            dispatch,
-            `if (!isRawRowValid(index)) {
+          body: `if (!isRawRowValid(index)) {
     rowStates[rowStatesOffset + index] = ${ROW_STATE_MISSING}u;
     return;
   }
   var hasNeighbor = false;
-  ${getGPUSpatialWeightsNeighborLoopWGSL('isRawRowValid(neighbor)', 'hasNeighbor = true; break;', 'index', dispatch.rowStartWGSL)}
+  ${getGPUSpatialWeightsNeighborLoopWGSL('isRawRowValid(neighbor)', 'hasNeighbor = true; break;', 'index', 'WEIGHTS_ROW_START')}
   rowStates[rowStatesOffset + index] = select(${ROW_STATE_ISLAND}u, ${ROW_STATE_TESTED}u, hasNeighbor);`
-          )
         })
       )
     );
@@ -388,14 +434,14 @@ var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;
 var<workgroup> partialCounts: array<u32, ${MOMENT_WORKGROUP_SIZE}>;
 var<workgroup> partialIslands: array<u32, ${MOMENT_WORKGROUP_SIZE}>;`,
       // No early return: every invocation of a workgroup must reach the barriers.
-      body: `let block = index / WORKGROUP_SIZE;
+      body: `let blockIndex = index / WORKGROUP_SIZE;
   let isInRange = index < INVOCATION_COUNT;
   var sum = 0.0;
   var count = 0u;
   var islands = 0u;
   if (isInRange) {
-    let end = min((block + 1u) * BLOCK_ROWS, ROW_COUNT);
-    for (var row = block * BLOCK_ROWS + localInvocationIndex; row < end; row += WORKGROUP_SIZE) {
+    let end = min((blockIndex + 1u) * BLOCK_ROWS, ROW_COUNT);
+    for (var row = blockIndex * BLOCK_ROWS + localInvocationIndex; row < end; row += WORKGROUP_SIZE) {
       if (isRowValid(row)) {
         sum += values[valuesOffset + row];
         count++;
@@ -416,9 +462,9 @@ var<workgroup> partialIslands: array<u32, ${MOMENT_WORKGROUP_SIZE}>;`,
     workgroupBarrier();
   }
   if (isInRange && localInvocationIndex == 0u) {
-    valuePartials[valuePartialsOffset + block] = partialSums[0];
-    countPartials[countPartialsOffset + block] = partialCounts[0];
-    ${islandPartials ? 'islandPartials[islandPartialsOffset + block] = partialIslands[0];' : ''}
+    valuePartials[valuePartialsOffset + blockIndex] = partialSums[0];
+    countPartials[countPartialsOffset + blockIndex] = partialCounts[0];
+    ${islandPartials ? 'islandPartials[islandPartialsOffset + blockIndex] = partialIslands[0];' : ''}
   }`
     }),
     createWGSLKernelNode<Parameters>(graph, {
@@ -438,7 +484,8 @@ var<workgroup> partialIslands: array<u32, ${MOMENT_WORKGROUP_SIZE}>;`,
               }
             ]
           : []),
-        {name: 'statistics', view: statistics, type: 'f32', access: 'read_write'}
+        {name: 'statistics', view: statistics, type: 'f32', access: 'read_write'},
+        {name: 'counts', view: counts, type: 'u32', access: 'read_write'}
       ],
       workgroupSize: MOMENT_WORKGROUP_SIZE,
       invocationCount: MOMENT_WORKGROUP_SIZE,
@@ -453,10 +500,10 @@ var<workgroup> partialIslands: array<u32, ${MOMENT_WORKGROUP_SIZE}>;`,
       body: `var sum = 0.0;
   var count = 0u;
   var islands = 0u;
-  for (var block = localInvocationIndex; block < BLOCK_COUNT; block += WORKGROUP_SIZE) {
-    sum += valuePartials[valuePartialsOffset + block];
-    count += countPartials[countPartialsOffset + block];
-    ${islandPartials ? 'islands += islandPartials[islandPartialsOffset + block];' : ''}
+  for (var blockIndex = localInvocationIndex; blockIndex < BLOCK_COUNT; blockIndex += WORKGROUP_SIZE) {
+    sum += valuePartials[valuePartialsOffset + blockIndex];
+    count += countPartials[countPartialsOffset + blockIndex];
+    ${islandPartials ? 'islands += islandPartials[islandPartialsOffset + blockIndex];' : ''}
   }
   partialSums[localInvocationIndex] = sum;
   partialCounts[localInvocationIndex] = count;
@@ -473,9 +520,11 @@ var<workgroup> partialIslands: array<u32, ${MOMENT_WORKGROUP_SIZE}>;`,
   if (localInvocationIndex == 0u) {
     // The count is exact in u32 and converted to f32 only here. The mean is provisional: the
     // deviation pass corrects it.
+    counts[countsOffset] = partialCounts[0];
+    counts[countsOffset + 1u] = partialIslands[0];
     let total = f32(partialCounts[0]);
     statistics[statisticsOffset + MOMENTS] = total;
-    statistics[statisticsOffset + MOMENTS + 1u] = select(getQuietNaN(index), partialSums[0] / total, total >= 1.0);
+    statistics[statisticsOffset + MOMENTS + 1u] = select(getQuietNaN(index), divideBySpatialCount(partialSums[0], partialCounts[0]), total >= 1.0);
     statistics[statisticsOffset + MOMENTS + ${SPATIAL_AUTOCORRELATION_ISLAND_COUNT_SLOT}u] = f32(partialIslands[0]);
   }`
     }),
@@ -496,13 +545,13 @@ var<workgroup> partialIslands: array<u32, ${MOMENT_WORKGROUP_SIZE}>;`,
 var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;`,
       // Stores the deviation of every row from the provisional mean and sums them: the sum
       // measures the rounding error of that mean.
-      body: `let block = index / WORKGROUP_SIZE;
+      body: `let blockIndex = index / WORKGROUP_SIZE;
   let isInRange = index < INVOCATION_COUNT;
   var sum = 0.0;
   if (isInRange) {
     let provisionalMean = statistics[statisticsOffset + MOMENTS + 1u];
-    let end = min((block + 1u) * BLOCK_ROWS, ROW_COUNT);
-    for (var row = block * BLOCK_ROWS + localInvocationIndex; row < end; row += WORKGROUP_SIZE) {
+    let end = min((blockIndex + 1u) * BLOCK_ROWS, ROW_COUNT);
+    for (var row = blockIndex * BLOCK_ROWS + localInvocationIndex; row < end; row += WORKGROUP_SIZE) {
       let valid = isRowValid(row);
       let deviation = values[valuesOffset + row] - provisionalMean;
       statistics[statisticsOffset + row] = select(getQuietNaN(row), deviation, valid);
@@ -518,7 +567,7 @@ var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;`,
     workgroupBarrier();
   }
   if (isInRange && localInvocationIndex == 0u) {
-    deviationPartials[deviationPartialsOffset + block] = partialSums[0];
+    deviationPartials[deviationPartialsOffset + blockIndex] = partialSums[0];
   }`
     }),
     createWGSLKernelNode<Parameters>(graph, {
@@ -529,6 +578,7 @@ var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;`,
         {name: 'deviationPartials', view: deviationPartials, type: 'f32', access: 'read'},
         {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
         {name: 'statistics', view: statistics, type: 'f32', access: 'read_write'},
+        {name: 'counts', view: counts, type: 'u32', access: 'read_write'},
         ...(overflow
           ? [{name: 'overflow', view: overflow, type: 'u32' as const, access: 'read' as const}]
           : [])
@@ -542,8 +592,8 @@ const BLOCK_COUNT: u32 = ${blockCount}u;
 const WORKGROUP_SIZE: u32 = ${MOMENT_WORKGROUP_SIZE}u;
 var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;`,
       body: `var sum = 0.0;
-  for (var block = localInvocationIndex; block < BLOCK_COUNT; block += WORKGROUP_SIZE) {
-    sum += deviationPartials[deviationPartialsOffset + block];
+  for (var blockIndex = localInvocationIndex; blockIndex < BLOCK_COUNT; blockIndex += WORKGROUP_SIZE) {
+    sum += deviationPartials[deviationPartialsOffset + blockIndex];
   }
   partialSums[localInvocationIndex] = sum;
   workgroupBarrier();
@@ -559,12 +609,15 @@ var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;`,
     // Mean of the first-pass deviations: what the center pass subtracts from each stored deviation.
     var residualMean = 0.0;
     if (total >= 1.0) {
-      residualMean = partialSums[0] / total;
+      residualMean = divideBySpatialCount(partialSums[0], counts[countsOffset]);
     }
     if (readParameter(1u) != 0.0) {
       // Fixed moments: center on the given mean, again through the stored deviations.
       residualMean = readParameter(3u) - mean;
-      total = readParameter(2u);
+      let packedCount = (u32(readParameter(5u)) << 16u) | u32(readParameter(6u));
+      if (readParameter(7u) == 1.0) { counts[countsOffset] = packedCount; }
+      else { counts[countsOffset] = u32(readParameter(2u)); }
+      total = f32(counts[countsOffset]);
       mean = readParameter(3u);
     } else {
       mean += residualMean;
@@ -599,13 +652,13 @@ var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;`,
       declarations: `${blockDeclarations}
 var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;`,
       // Centers each row and reduces the squared deviations of its block in the same pass.
-      body: `let block = index / WORKGROUP_SIZE;
+      body: `let blockIndex = index / WORKGROUP_SIZE;
   let isInRange = index < INVOCATION_COUNT;
   var sum = 0.0;
   if (isInRange) {
     let residualMean = statistics[statisticsOffset + MOMENTS + ${SPATIAL_AUTOCORRELATION_RESIDUAL_MEAN_SLOT}u];
-    let end = min((block + 1u) * BLOCK_ROWS, ROW_COUNT);
-    for (var row = block * BLOCK_ROWS + localInvocationIndex; row < end; row += WORKGROUP_SIZE) {
+    let end = min((blockIndex + 1u) * BLOCK_ROWS, ROW_COUNT);
+    for (var row = blockIndex * BLOCK_ROWS + localInvocationIndex; row < end; row += WORKGROUP_SIZE) {
       let valid = isRowValid(row);
       // The stored first-pass deviation minus the mean of those deviations. It is read back from
       // memory, not recomputed as (x - mean1) - mean2, which a shader compiler may reassociate to
@@ -626,7 +679,7 @@ var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;`,
     workgroupBarrier();
   }
   if (isInRange && localInvocationIndex == 0u) {
-    squarePartials[squarePartialsOffset + block] = partialSums[0];
+    squarePartials[squarePartialsOffset + blockIndex] = partialSums[0];
   }`
     }),
     createWGSLKernelNode<Parameters>(graph, {
@@ -637,6 +690,7 @@ var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;`,
         {name: 'squarePartials', view: squarePartials, type: 'f32', access: 'read'},
         {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
         {name: 'statistics', view: statistics, type: 'f32', access: 'read_write'},
+        {name: 'counts', view: counts, type: 'u32', access: 'read_write'},
         ...(props.globalStatistics
           ? [
               {
@@ -657,8 +711,8 @@ const BLOCK_COUNT: u32 = ${blockCount}u;
 const WORKGROUP_SIZE: u32 = ${MOMENT_WORKGROUP_SIZE}u;
 var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;`,
       body: `var sum = 0.0;
-  for (var block = localInvocationIndex; block < BLOCK_COUNT; block += WORKGROUP_SIZE) {
-    sum += squarePartials[squarePartialsOffset + block];
+  for (var blockIndex = localInvocationIndex; blockIndex < BLOCK_COUNT; blockIndex += WORKGROUP_SIZE) {
+    sum += squarePartials[squarePartialsOffset + blockIndex];
   }
   partialSums[localInvocationIndex] = sum;
   workgroupBarrier();
@@ -672,10 +726,10 @@ var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;`,
     let count = statistics[statisticsOffset + MOMENTS];
     let mean = statistics[statisticsOffset + MOMENTS + 1u];
     var sumOfSquares = partialSums[0];
-    var variance = select(getQuietNaN(index), sumOfSquares / count, count >= 1.0);
+    var variance = select(getQuietNaN(index), divideBySpatialCount(sumOfSquares, counts[countsOffset]), count >= 1.0);
     if (readParameter(1u) != 0.0) {
       variance = readParameter(4u);
-      sumOfSquares = variance * count;
+      sumOfSquares = multiplyBySpatialCount(variance, counts[countsOffset]);
     }
     statistics[statisticsOffset + MOMENTS + 2u] = variance;
     statistics[statisticsOffset + MOMENTS + 3u] = sumOfSquares;
@@ -691,5 +745,5 @@ var<workgroup> partialSums: array<f32, ${MOMENT_WORKGROUP_SIZE}>;`,
   }`
     })
   );
-  return {nodes, statistics};
+  return {nodes, statistics, counts};
 }

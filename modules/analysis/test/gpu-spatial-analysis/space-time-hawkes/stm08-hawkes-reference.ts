@@ -135,16 +135,18 @@ function evaluateEvent(
   while (first < row && sorted[first].time < event.time - window.maximumLag) {
     first++;
   }
+  let parentEnd = row;
+  while (parentEnd > first && sorted[parentEnd - 1].time === event.time) parentEnd--;
   let cut = false;
-  if (row - first > window.maximumParents) {
-    first = row - window.maximumParents;
+  if (parentEnd - first > window.maximumParents) {
+    first = parentEnd - window.maximumParents;
     cut = true;
   }
   let intensity = background;
   let weightedLag = 0;
   let weightedDistance = 0;
   let parentTotal = 0;
-  for (let parent = first; parent < row; parent++) {
+  for (let parent = first; parent < parentEnd; parent++) {
     const lag = event.time - sorted[parent].time;
     const distanceSquared = (event.x - sorted[parent].x) ** 2 + (event.y - sorted[parent].y) ** 2;
     if (!(lag > 0) || distanceSquared > window.maximumDistance ** 2) {

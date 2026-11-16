@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {evaluateGPUAnalysisParameterCondition} from './analysis-parameter-conditions';
+
 import type {
   GPUAnalysisColumnProfile,
   GPUAnalysisColumnStatistics,
@@ -1566,13 +1568,12 @@ function isRoleRequired(
   if (typeof role.required === 'boolean') {
     return role.required;
   }
-  const value = parameterValues?.[role.required.whenParameter];
-  return value !== undefined && role.required.equals.includes(value);
+  return evaluateGPUAnalysisParameterCondition(role.required, parameterValues);
 }
 
 /**
  * Assigns distinct columns to the roles of one input. Required roles go first, the role with the
- * fewest preferred (then fewest accepted) candidates first, then optional roles. A role is required when `required` is true, or when its `whenParameter` holds
+ * fewest preferred (then fewest accepted) candidates first, then optional roles. A role is required when `required` is true, or when its shared parameter condition holds
  * one of the listed values in `parameterValues`. A role that takes several columns gets as many
  * as its minimum (at least one) and the user adds more; required roles are topped up with
  * `accepted` columns, optional roles are filled only from `preferred` columns so that an optional

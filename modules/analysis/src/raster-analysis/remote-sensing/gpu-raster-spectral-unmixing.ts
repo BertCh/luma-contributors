@@ -8,7 +8,10 @@ import type {
   GPUCommandNode,
   GPUCommandNodeProducer
 } from '@luma.gl/graph/gpu-core';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  createWGSLKernelNode,
+  getWGSLFloatLiteral
+} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
   validateRequirement
@@ -212,7 +215,7 @@ ${
       var mapping = 0.0;
       for (var member = 0u; member < ${members}u; member++) { mapping = max(mapping, abs(candidate[member] - coefficients[member]) * lipschitz); }
       coefficients = candidate; performed = iteration + 1u;
-      if (mapping <= ${props.tolerance ?? 1e-5} * max(1.0, gradientScale)) { code = 0u; break; }
+      if (mapping <= ${getWGSLFloatLiteral(props.tolerance ?? 1e-5)} * max(1.0, gradientScale)) { code = 0u; break; }
     }
     residualValue = 0.0;
     for (var band = 0u; band < ${bands}u; band++) { var error = -response[band]; for (var member = 0u; member < ${members}u; member++) { error += design[member * ${bands}u + band] * coefficients[member]; } residualValue += error * error; }

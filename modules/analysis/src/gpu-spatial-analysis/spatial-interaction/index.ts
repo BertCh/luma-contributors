@@ -17,3 +17,10 @@ export type {
 } from './cpu-spatial-interaction-operation';
 export {GPUSpatialInteractionOperation} from './gpu-spatial-interaction-operation';
 export type {SpatialInteractionOperationProps} from './gpu-spatial-interaction-operation';
+
+export {
+  GPU_SPATIAL_INTERACTION_DENSE_MAXIMUM_PAIRS,
+  GPU_SPATIAL_INTERACTION_DENSE_MAXIMUM_GROUPS,
+  GPU_SPATIAL_INTERACTION_SPARSE_MAXIMUM_PAIRS,
+  GPU_SPATIAL_INTERACTION_SPARSE_MAXIMUM_GROUPS
+} from './gpu-spatial-interaction';

@@ -3,46 +3,57 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
-  getViewBindingRange,
   type GraphDataView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer
 } from '@luma.gl/graph/gpu-core';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
-  validateGPUStorageBindingByteLength,
   validateRequirement,
-  validateSinglePackedView,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {
-  RASTER_FINITE_WGSL,
-  rasterBinding,
-  validateRasterGraph,
-  validateRasterViews
-} from '../remote-sensing/raster-kernel-utils';
+import {SCALED_QUOTIENT_WGSL} from '../../analysis-core/kernels/scaled-quotient-wgsl';
+import {RASTER_FINITE_WGSL, rasterBinding} from '../remote-sensing/raster-kernel-utils';
 import {
   getRasterEmbeddingDecodeWGSL,
   validateRasterEmbeddingQuantized,
+  MAXIMUM_RASTER_EMBEDDING_DIMENSIONS,
   validateRasterEmbeddingShape,
   validateRasterEmbeddingVectors
 } from './raster-embedding-common';
 
+import {
+  createRasterEmbeddingKernelNodes,
+  getRasterEmbeddingChunkProps,
+  planRasterEmbeddingChunks,
+  validateRasterEmbeddingBindings,
+  validateRasterEmbeddingViews,
+  type PackedEmbeddingProps,
+  type RasterEmbeddingChunk,
+  type RasterEmbeddingKernel,
+  type RasterEmbeddingView
+} from './raster-embedding-chunks';
+
 /** Caller-owned outputs of {@link GPURasterEmbeddingDequantize}. */
-export type GPURasterEmbeddingDequantizeOutput = {
+export type GPURasterEmbeddingDequantizeOutput<
+  FloatRows extends RasterEmbeddingView<'float32'> = GraphDataView<'float32'>,
+  UintRows extends RasterEmbeddingView<'uint32'> = GraphDataView<'uint32'>
+> = {
   /** Decoded vectors, `pixel * dimensions + band`; every component of an invalid pixel is NaN. */
-  vectors: GraphDataView<'float32'>;
+  vectors: FloatRows;
   /** One `uint32` per pixel: 0 for a masked or invalid pixel, else 1. */
-  validity?: GraphDataView<'uint32'>;
+  validity?: UintRows;
 };
 
 /** Properties of {@link GPURasterEmbeddingDequantize}. */
-export type GPURasterEmbeddingDequantizeProps = {
+export type GPURasterEmbeddingDequantizeProps<
+  FloatRows extends RasterEmbeddingView<'float32'> = GraphDataView<'float32'>,
+  UintRows extends RasterEmbeddingView<'uint32'> = GraphDataView<'uint32'>
+> = {
   id?: string;
   /** Pixels of the raster, row-major. */
   pixelCount: number;
-  /** Bands (vector length), in `[1, 128]`. */
+  /** Bands (vector length), in `[1, 1024]`. */
   dimensions: number;
   /** Defaults to AlphaEarth. TESSERA accepts all signed bytes, including -128. */
   format?: 'alphaearth-int8' | 'tessera-int8' | 'float16';
@@ -52,14 +63,14 @@ export type GPURasterEmbeddingDequantizeProps = {
    * uploaded as is has this layout. For `float16`, two IEEE binary16 components occupy each word,
    * low half first. Pad the last word; padding is ignored. Interleave band-sequential files on the host.
    */
-  quantized: GraphDataView<'uint32'>;
+  quantized: UintRows;
   /** Required only for TESSERA: one float32 multiplier per pixel (not per component). */
-  scales?: GraphDataView<'float32'>;
+  scales?: FloatRows;
   /** Optional per-pixel QA; zero invalidates the whole vector. */
-  mask?: GraphDataView<'uint32'>;
+  mask?: UintRows;
   /** Divide each decoded vector by its length, so dot products are cosines. Defaults to false. */
   normalize?: boolean;
-  output: GPURasterEmbeddingDequantizeOutput;
+  output: GPURasterEmbeddingDequantizeOutput<FloatRows, UintRows>;
 };
 
 /**
@@ -83,16 +94,32 @@ export type GPURasterEmbeddingDequantizeProps = {
  * Integer-field decoding preserves subnormals without requiring `shader-f16`.
  * AlphaEarth's formula is documented at https://arxiv.org/html/2507.22291v2#S22.SS1 .
  *
+ * Pixel fields accept GraphVectorView chunks with matching complete-pixel boundaries; shared tables stay packed.
+ * Each chunk has its own workgroup count and uses the same pipeline.
+ *
  * Per-frame: the contents of the views. Compile-time: `pixelCount`, `dimensions`, `format`, `normalize` and
  * which optional views exist.
  */
-export class GPURasterEmbeddingDequantize implements GPUCommandNodeProducer {
+export class GPURasterEmbeddingDequantize<
+  FloatRows extends RasterEmbeddingView<'float32'> = GraphDataView<'float32'>,
+  UintRows extends RasterEmbeddingView<'uint32'> = GraphDataView<'uint32'>
+> implements GPUCommandNodeProducer
+{
   readonly id: string;
+  private readonly chunks: readonly RasterEmbeddingChunk[];
+  readonly estimatedCommandNodeCount: number;
 
-  constructor(readonly props: GPURasterEmbeddingDequantizeProps) {
+  constructor(readonly props: GPURasterEmbeddingDequantizeProps<FloatRows, UintRows>) {
     const id = props.id ?? 'raster-embedding-dequantize';
     this.id = id;
-    validateRasterEmbeddingShape(id, props.pixelCount, props.dimensions);
+    const {pixelCount, dimensions} = props;
+    validateRasterEmbeddingShape(
+      id,
+      props.pixelCount,
+      props.dimensions,
+      MAXIMUM_RASTER_EMBEDDING_DIMENSIONS,
+      false
+    );
     const format = props.format ?? 'alphaearth-int8';
     validateRequirement(
       id,
@@ -105,7 +132,6 @@ export class GPURasterEmbeddingDequantize implements GPUCommandNodeProducer {
       'scales must be supplied exactly when format is tessera-int8'
     );
     if (props.scales) {
-      validateSinglePackedView(props.scales, ['float32'], `${id} scales`);
       validateRequirement(
         id,
         props.scales.length === props.pixelCount,
@@ -113,7 +139,6 @@ export class GPURasterEmbeddingDequantize implements GPUCommandNodeProducer {
       );
     }
     if (props.mask) {
-      validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
       validateRequirement(
         id,
         props.mask.length === props.pixelCount,
@@ -121,7 +146,6 @@ export class GPURasterEmbeddingDequantize implements GPUCommandNodeProducer {
       );
     }
     if (format === 'float16') {
-      validateSinglePackedView(props.quantized, ['uint32'], `${id} quantized`);
       validateRequirement(
         id,
         props.quantized.length === Math.ceil((props.pixelCount * props.dimensions) / 2),
@@ -143,10 +167,29 @@ export class GPURasterEmbeddingDequantize implements GPUCommandNodeProducer {
       props.dimensions
     );
     if (props.output.validity) {
-      validateSinglePackedView(props.output.validity, ['uint32'], `${id} output.validity`);
       validateViewLength(id, 'output.validity', props.output.validity, props.pixelCount);
     }
-    validateRasterViews(id, this.getInputs(), this.getOutputs());
+    validateRasterEmbeddingViews(id, this.getInputs(), this.getOutputs());
+    this.chunks = planRasterEmbeddingChunks(
+      id,
+      pixelCount,
+      {
+        'output.vectors': {view: props.output.vectors, format: 'float32', components: dimensions},
+        quantized: {
+          view: props.quantized,
+          format: 'uint32',
+          components: dimensions,
+          componentsPerWord: props.format === 'float16' ? 2 : 4
+        },
+        scales: {view: props.scales, format: 'float32', components: 1},
+        mask: {view: props.mask, format: 'uint32', components: 1},
+        'output.validity': {view: props.output.validity, format: 'uint32', components: 1}
+      },
+      'output.vectors',
+      1
+    );
+    this.estimatedCommandNodeCount =
+      1 + this.chunks.filter(chunk => chunk.pixelCount > 0).length * 1;
   }
 
   private getInputs() {
@@ -162,32 +205,41 @@ export class GPURasterEmbeddingDequantize implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {id, props} = this;
+    validateRasterEmbeddingBindings(
+      graph,
+      this.id,
+      this.getInputs(),
+      this.getOutputs(),
+      this.estimatedCommandNodeCount - 1,
+      this.props,
+      2 +
+        Number(Boolean(this.props.mask)) +
+        Number(Boolean(this.props.scales)) +
+        Number(Boolean(this.props.output.validity)),
+      this.chunks
+    );
+    const kernels = this.chunks.flatMap((chunk, chunkIndex) =>
+      chunk.pixelCount === 0
+        ? []
+        : this.getChunkKernels(graph, getRasterEmbeddingChunkProps(this.props, chunk), chunkIndex)
+    );
+    return createRasterEmbeddingKernelNodes(graph, this.id, kernels);
+  }
+
+  private getChunkKernels<Parameters>(
+    graph: GPUCommandGraph<Parameters>,
+    props: PackedEmbeddingProps<GPURasterEmbeddingDequantizeProps>,
+    chunkIndex: number
+  ): RasterEmbeddingKernel[] {
+    const id = `${this.id}-chunk-${chunkIndex}`;
     const {pixelCount, dimensions, quantized, output} = props;
-    for (const [name, view] of Object.entries({
-      quantized,
-      scales: props.scales,
-      mask: props.mask,
-      'output.vectors': output.vectors,
-      'output.validity': output.validity
-    })) {
-      if (!view) continue;
-      validateGPUStorageBindingByteLength(
-        graph.device,
-        id,
-        name,
-        getViewBindingRange(view).size,
-        'tile the embedding raster'
-      );
-    }
-    validateRasterGraph(id, graph, this.getInputs(), this.getOutputs());
     const format = props.format ?? 'alphaearth-int8';
     return [
-      createWGSLKernelNode<Parameters>(graph, {
+      {
         id,
         operation: 'GPURasterEmbeddingDequantize',
         invocationCount: pixelCount,
-        workgroupSize: 64,
+        pixelCount,
         bindings: [
           rasterBinding('quantized', quantized),
           ...(props.scales ? [rasterBinding('scales', props.scales)] : []),
@@ -195,7 +247,7 @@ export class GPURasterEmbeddingDequantize implements GPUCommandNodeProducer {
           rasterBinding('vectors', output.vectors, true),
           ...(output.validity ? [rasterBinding('validity', output.validity, true)] : [])
         ],
-        declarations: `${RASTER_FINITE_WGSL}${getRasterEmbeddingDecodeWGSL('quantized')}
+        declarations: `${RASTER_FINITE_WGSL}${SCALED_QUOTIENT_WGSL}${getRasterEmbeddingDecodeWGSL('quantized')}
 fn readEmbeddingHalf(element: u32) -> f32 {
   let word = quantized[quantizedOffset + (element >> 1u)];
   let halfBits = (word >> ((element & 1u) * 16u)) & 65535u;
@@ -206,8 +258,7 @@ fn readEmbeddingHalf(element: u32) -> f32 {
   if (exponent != 0u) { magnitude = bitcast<f32>(((exponent + 112u) << 23u) | (fraction << 13u)); }
   return bitcast<f32>(bitcast<u32>(magnitude) | ((halfBits & 32768u) << 16u));
 }`,
-        body: `var values: array<f32, ${dimensions}>;
-var largestMagnitude = 0.0;
+        body: `var largestMagnitude = 0.0;
 var isValid = ${props.mask ? 'mask[maskOffset + index] != 0u' : 'true'};
 ${props.scales ? 'let pixelScale = scales[scalesOffset + index];\nisValid = isValid && finite(pixelScale);' : ''}
 for (var band = 0u; band < ${dimensions}u; band++) {
@@ -220,7 +271,7 @@ for (var band = 0u; band < ${dimensions}u; band++) {
   let value = ${format === 'tessera-int8' ? 'f32(byte) * pixelScale' : 'getEmbeddingValue(byte)'};`
   }
   isValid = isValid && finite(value);
-  values[band] = value;
+  vectors[vectorsOffset + index * ${dimensions}u + band] = value;
   largestMagnitude = max(largestMagnitude, abs(value));
 }
 ${
@@ -228,18 +279,18 @@ ${
     ? `var squaredLength = 0.0;
 if (isValid && largestMagnitude > 0.0) {
   for (var band = 0u; band < ${dimensions}u; band++) {
-    values[band] /= largestMagnitude;
-    squaredLength += values[band] * values[band];
+    vectors[vectorsOffset + index * ${dimensions}u + band] = getScaledQuotient(vectors[vectorsOffset + index * ${dimensions}u + band], largestMagnitude, 1.0, 0);
+    squaredLength += vectors[vectorsOffset + index * ${dimensions}u + band] * vectors[vectorsOffset + index * ${dimensions}u + band];
   }
 }
 let scale = inverseSqrt(select(1.0, squaredLength, squaredLength > 0.0));`
     : 'let scale = 1.0;'
 }
 for (var band = 0u; band < ${dimensions}u; band++) {
-  vectors[vectorsOffset + index * ${dimensions}u + band] = select(missing(), values[band] * scale, isValid);
+  vectors[vectorsOffset + index * ${dimensions}u + band] = select(missing(), vectors[vectorsOffset + index * ${dimensions}u + band] * scale, isValid);
 }
 ${output.validity ? 'validity[validityOffset + index] = select(0u, 1u, isValid);' : ''}`
-      })
+      }
     ];
   }
 }

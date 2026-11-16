@@ -18,8 +18,16 @@ import {
 import {GET_NAN_WGSL, IS_FINITE_FLOAT_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
   GPU_REGION_PARTITION_EVALUATION_LAYOUT,
-  GPURegionPartitionEvaluation
+  GPURegionPartitionEvaluation,
+  getGPURegionPartitionEvaluationMaximumRowCount
 } from '../spatial-regionalization/gpu-region-partition-evaluation';
+
+import {validateSpatialStatisticsBindings} from '../spatial-weights/spatial-statistics-bindings';
+import {
+  validateCapacity,
+  validateMaximumCount,
+  validateGraphOutputsDisjointFromInputs
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 
 const OPERATION = 'GPUGeographicalDetector';
 /** Labels reduced by one thread of the tile pass. */
@@ -129,6 +137,12 @@ export class GPUGeographicalDetector implements GPUCommandNodeProducer {
     const id = props.id ?? 'geographical-detector';
     this.id = id;
     this.props = props;
+    validateCapacity(id, 'labelCapacity', props.labelCapacity ?? props.labels.length);
+    validateGraphOutputsDisjointFromInputs(
+      id,
+      [props.output.summary],
+      [props.values, props.labels]
+    );
     validateSinglePackedView(props.values, ['float32'], `${id} values`);
     validateSinglePackedView(props.labels, ['uint32'], `${id} labels`);
     validateRequirement(
@@ -149,6 +163,18 @@ export class GPUGeographicalDetector implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
+    validateSpatialStatisticsBindings(graph, id, props, {
+      'label offsets scratch': ((props.labelCapacity ?? props.labels.length) + 1) * 4,
+      'partition summary': GPU_REGION_PARTITION_EVALUATION_LAYOUT.length * 4,
+      'analysis labels': props.labels.length * 4,
+      'mean tiles': Math.ceil((props.labelCapacity ?? props.labels.length) / LABEL_TILE) * 8
+    });
+    validateMaximumCount(
+      id,
+      'labels rows',
+      props.labels.length,
+      getGPURegionPartitionEvaluationMaximumRowCount(graph.device)
+    );
     validateGraphViewsBelongToGraph(id, graph, [props.values, props.labels, props.output.summary]);
     const labelCapacity = props.labelCapacity ?? props.labels.length;
     const tileCount = Math.ceil(labelCapacity / LABEL_TILE);

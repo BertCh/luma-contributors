@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateSpatialOutputViews} from '../spatial-clustering/spatial-output-validation';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {getGraphOutputViews} from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {Device} from '@luma.gl/core';
 import {
   createTransientView,
@@ -20,6 +23,7 @@ import {
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
   validateSinglePackedView,
+  validateGPUStorageBindingByteLength,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPUSpatialWeights} from '../spatial-weights/spatial-weights';
@@ -261,6 +265,16 @@ export class GPURegionPartitionEvaluation implements GPUCommandNodeProducer {
         'output.invalidRowCount must hold one row'
       );
     }
+    validateSpatialOutputViews(
+      this.id,
+      Object.fromEntries(
+        getGraphOutputViews(props.output).map((view, index) => [`output[${index}]`, view])
+      ),
+      [
+        [output.regionSizes, output.regionMeans],
+        [output.summary, output.invalidRowCount]
+      ]
+    );
     validateGraphOutputsDisjointFromInputs(
       id,
       [
@@ -294,6 +308,19 @@ export class GPURegionPartitionEvaluation implements GPUCommandNodeProducer {
       output.invalidRowCount,
       ...(weights ? getGPUSpatialWeightsOrChunksViews(weights) : [])
     ]);
+    validateGraphChunkBindingRanges(graph, id, {
+      values,
+      labels,
+      ...Object.fromEntries(
+        getGraphOutputViews(output).map((view, index) => [`output[${index}]`, view])
+      ),
+      ...Object.fromEntries(
+        (weights ? getGPUSpatialWeightsOrChunksViews(weights) : []).map((view, index) => [
+          `weights[${index}]`,
+          view
+        ])
+      )
+    });
     const rows = labels.length;
     const columnCount = props.columnCount ?? 1;
     const labelCapacity = props.labelCapacity ?? rows;
@@ -316,6 +343,22 @@ export class GPURegionPartitionEvaluation implements GPUCommandNodeProducer {
       labelCapacity * columnCount,
       getGPURegionPartitionEvaluationMaximumRegionValueCount(graph.device)
     );
+    for (const [name, byteLength] of [
+      ['region table scratch', labelCapacity * columnCount * 4],
+      ['label offsets', (labelCapacity + 1) * 4],
+      ['row scratch', rows * 4],
+      ['link counts', weights ? rows * 8 : 0],
+      ['row tile counts', Math.ceil(rows / SUMMARY_TILE) * 20],
+      ['row tile sums', Math.ceil(rows / SUMMARY_TILE) * columnCount * 4],
+      ['label tile counts', Math.ceil(labelCapacity / SUMMARY_TILE) * 12]
+    ] as const)
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        name,
+        byteLength,
+        'reduce rows, labelCapacity or columnCount'
+      );
     const sizes =
       output.regionSizes ?? createTransientView(graph, `${id}-sizes`, 'uint32', labelCapacity);
     const within =

@@ -12,7 +12,6 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
   validateGPUStorageBindingByteLength,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -40,6 +39,9 @@ import {
   getLineGeometryOutputViews,
   validateLineGeometryOutput
 } from './line-geometry-output';
+
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateGeometryScratchByteLengths} from '../geometry-edit/geometry-storage-validation';
 
 const OPERATION = 'GPULineChunk';
 
@@ -225,12 +227,23 @@ export class GPULineChunk implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id, coordinateSystem, lineCapacity} = this;
     const {output} = props;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.positions,
-      props.lineOffsets,
-      props.parameters,
-      ...getLineGeometryOutputViews(output)
-    ]);
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(
+        [
+          props.positions,
+          props.lineOffsets,
+          props.parameters,
+          ...getLineGeometryOutputViews(output)
+        ].map((view, index) => [String(index), view])
+      )
+    );
+    validateGeometryScratchByteLengths(graph, id, {
+      rowMeasures: props.positions.length * 4,
+      lineCountsAndScan: (props.lineOffsets.length - 1) * 4,
+      pieceRecords: lineCapacity * LINE_PIECE_STRIDE * 4
+    });
     const rowCount = props.positions.length;
     const lineCount = props.lineOffsets.length - 1;
     if (props.mode === 'chunk' && output.status.requiredCount) {

@@ -239,6 +239,17 @@ it('validates both operation forms at construction, with deferred GPU contributo
   expect(() =>
     constructNetworkOperationContributor(new GPUNetworkCentralityOperation(PROPS), shapes)
   ).not.toThrow();
+  const sampled = constructNetworkOperationContributor(
+    new GPUNetworkCentralityOperation({
+      ...PROPS,
+      sampling: 'sampled',
+      output: {...PROPS.output, status: {approximation: 'approximation'}}
+    }),
+    shapes
+  );
+  expect(sampled).toMatchObject({
+    props: {sampling: 'sampled', output: {status: {approximation: {format: 'uint32', length: 1}}}}
+  });
   expect(() =>
     constructNetworkOperationContributor(
       new GPUNetworkCentralityOperation({...PROPS, maximumIterations: 0}),
@@ -283,4 +294,16 @@ it('distinguishes a zero-cycle failure from round exhaustion in the exact CPU tw
   expect(result.zeroWeightCycle[0]).toBe(1);
   expect(result.converged[0]).toBe(0);
   expect(result).toHaveProperty('iterationLimitReached', Uint32Array.of(0));
+});
+
+it('reports deliberate sampling independently of convergence', () => {
+  const {forward, reverse} = buildCentralityCSRs(2, [[0, 1, 1]]);
+  const input = {topology: forward, reverseTopology: reverse, pivotNodes: Uint32Array.of(0)};
+  expect(Array.from(computeNetworkCentralityOnCPU(input).approximation)).toEqual([0]);
+  expect(
+    Array.from(computeNetworkCentralityOnCPU(input, {sampling: 'sampled'}).approximation)
+  ).toEqual([1]);
+  expect(() => computeNetworkCentralityOnCPU(input, {sampling: 'invalid' as never})).toThrow(
+    /sampling/
+  );
 });

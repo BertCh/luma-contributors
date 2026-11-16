@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateNetworkViewBindings, validateNetworkWritableViews} from './network-view-utils';
+
 import {
   createTransientView,
   GPUReduction,
@@ -14,9 +16,9 @@ import {createWGSLKernelNode} from '../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
   validateMaximumCount
 } from '../analysis-core/kernels/gpu-contributor-utils';
+import {SCALED_QUOTIENT_WGSL} from '../analysis-core/kernels/scaled-quotient-wgsl';
 import {IS_FINITE_FLOAT_WGSL} from '../analysis-core/kernels/wgsl-common';
 import {
   validatePointProcessPositive,
@@ -88,6 +90,13 @@ export class GPUNetworkKernelDensity implements GPUCommandNodeProducer {
   constructor(props: GPUNetworkKernelDensityProps) {
     this.id = props.id ?? 'network-kernel-density';
     this.props = props;
+    validateNetworkWritableViews(this.id, props.output, [
+      {outputs: {intensity: props.output.intensity, status: props.output.status}},
+      {
+        outputs: {invalidCount: props.output.ports?.status.invalidCount},
+        inputs: {status: props.output.status}
+      }
+    ]);
     const queryCount = props.quadratureLengths.length;
     const {id} = this;
     validateCapacity(id, 'eventCount', props.eventCount, 1, MAXIMUM_EVENT_COUNT);
@@ -98,7 +107,7 @@ export class GPUNetworkKernelDensity implements GPUCommandNodeProducer {
       queryCount * props.eventCount,
       MAXIMUM_DISTANCE_COUNT
     );
-    validatePointProcessPositive(props.bandwidth);
+    validatePointProcessPositive(props.bandwidth, id, 'bandwidth');
     validatePointProcessView(props.distances, 'float32', queryCount * props.eventCount);
     validatePointProcessView(props.quadratureLengths, 'float32', queryCount);
     if (props.excludedEventIds) {
@@ -121,20 +130,28 @@ export class GPUNetworkKernelDensity implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
     const queryCount = props.quadratureLengths.length;
-    validateGraphViewsBelongToGraph(id, graph, [
+    validateNetworkViewBindings(id, graph, [
       props.distances,
       props.quadratureLengths,
       props.excludedEventIds,
       ...getOutputViews(props.output)
     ]);
+    validateNetworkViewBindings(id, graph, [], {
+      invalidEvents: props.eventCount * 4,
+      shapeMass: props.eventCount * 4
+    });
     const invalidEvents = createTransientView(
       graph,
       `${id}-invalid-events`,
       'uint32',
       props.eventCount
     );
+    // The common 1 / bandwidth factor cancels in the corrected intensity. Keep its mass in
+    // unscaled shape units so a representable final density survives an underflowing kernel.
+    const shapeMass = createTransientView(graph, `${id}-shape-mass`, 'float32', props.eventCount);
     const declarations = `${IS_FINITE_FLOAT_WGSL}
-fn kernel(distance: f32) -> f32 { return max(0.0, 1.0 - distance / ${Math.fround(props.bandwidth)}f) / ${Math.fround(props.bandwidth)}f; }
+${SCALED_QUOTIENT_WGSL}
+fn kernelShape(distance: f32) -> f32 { return max(0.0, 1.0 - getScaledQuotient(distance, ${Math.fround(props.bandwidth)}f, 1.0, 0)); }
 fn validDistance(distance: f32) -> bool { return distance >= 0.0 && (isFiniteFloat(distance) || bitcast<u32>(distance) == 0x7f800000u); }`;
     const nodes: GPUCommandNode<Parameters>[] = [
       createWGSLKernelNode(graph, {
@@ -146,6 +163,7 @@ fn validDistance(distance: f32) -> bool { return distance >= 0.0 && (isFiniteFlo
           {name: 'distances', view: props.distances, type: 'f32', access: 'read'},
           {name: 'lengths', view: props.quadratureLengths, type: 'f32', access: 'read'},
           {name: 'mass', view: props.output.kernelMass, type: 'f32', access: 'read_write'},
+          {name: 'shapeMass', view: shapeMass, type: 'f32', access: 'read_write'},
           {name: 'invalidEvents', view: invalidEvents, type: 'u32', access: 'read_write'}
         ],
         declarations,
@@ -155,10 +173,13 @@ fn validDistance(distance: f32) -> bool { return distance >= 0.0 && (isFiniteFlo
     let length = lengths[lengthsOffset + query];
     let distance = distances[distancesOffset + query * ${props.eventCount}u + index];
     valid = valid && validDistance(distance) && isFiniteFloat(length) && length >= 0.0;
-    if (isFiniteFloat(distance) && length > 0.0) { total += length * kernel(distance); }
+    if (isFiniteFloat(distance) && length > 0.0) { total += length * kernelShape(distance); }
   }
   valid = valid && isFiniteFloat(total) && total > 0.0;
-  mass[massOffset + index] = select(bitcast<f32>(0x7fc00000u | (index & 0u)), total, valid);
+  shapeMass[shapeMassOffset + index] = total;
+  var publishedMass = bitcast<f32>(0x7fc00000u | (index & 0u));
+  if (valid) { publishedMass = getScaledQuotient(total, ${Math.fround(props.bandwidth)}f, 1.0, 0); }
+  mass[massOffset + index] = publishedMass;
   invalidEvents[invalidEventsOffset + index] = select(1u, 0u, valid);`
       }),
       createWGSLKernelNode(graph, {
@@ -168,7 +189,7 @@ fn validDistance(distance: f32) -> bool { return distance >= 0.0 && (isFiniteFlo
         invocationCount: queryCount,
         bindings: [
           {name: 'distances', view: props.distances, type: 'f32', access: 'read'},
-          {name: 'mass', view: props.output.kernelMass, type: 'f32', access: 'read'},
+          {name: 'shapeMass', view: shapeMass, type: 'f32', access: 'read'},
           {name: 'invalidEvents', view: invalidEvents, type: 'u32', access: 'read'},
           ...(props.excludedEventIds
             ? [
@@ -187,10 +208,11 @@ fn validDistance(distance: f32) -> bool { return distance >= 0.0 && (isFiniteFlo
         body: `var total = 0.0;
   var valid = true;
   for (var event = 0u; event < ${props.eventCount}u; event++) {
-    valid = valid && invalidEvents[invalidEventsOffset + event] == 0u;
+    let eventValid = invalidEvents[invalidEventsOffset + event] == 0u;
+    valid = valid && eventValid;
     ${props.excludedEventIds ? 'if (excluded[excludedOffset + index] == event) { continue; }' : ''}
     let distance = distances[distancesOffset + index * ${props.eventCount}u + event];
-    if (isFiniteFloat(distance)) { total += kernel(distance) / mass[massOffset + event]; }
+    if (eventValid && isFiniteFloat(distance)) { total += getScaledQuotient(kernelShape(distance), shapeMass[shapeMassOffset + event], 1.0, 0); }
   }
   valid = valid && isFiniteFloat(total);
   intensity[intensityOffset + index] = select(bitcast<f32>(0x7fc00000u | (index & 0u)), total, valid);

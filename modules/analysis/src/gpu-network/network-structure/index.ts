@@ -26,3 +26,5 @@ export type {
   GPUNetworkStronglyConnectedComponentsProps,
   GPUNetworkStronglyConnectedComponentsOutput
 } from './gpu-network-strongly-connected-components';
+
+export type {GPUNetworkStructureOperationProps} from './gpu-network-structure-operation';

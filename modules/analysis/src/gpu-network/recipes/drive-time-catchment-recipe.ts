@@ -8,6 +8,7 @@ import {
   type GPUCommandGraph,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getBinarySearchWGSL} from '../../analysis-core/kernels/binary-search-wgsl';
 import {getSortKeyBits} from '../../analysis-core/kernels/sorted-segment-sums';
 import {GPUGroupStatistics} from '../../dataframe-analysis/group-statistics/index';
@@ -84,7 +85,7 @@ export type GPUDriveTimeIsochroneOptions = {
   costBreaks: GraphDataView<'float32'>;
   /** `getGPUNetworkIsochronesParameterValues` view (12 elements). */
   parameters: GraphDataView<'float32'>;
-  /** Raster size and caller-owned isoband outputs. */
+  /** Min-mode raster size and caller-owned isoband outputs. Source paths are provided by the recipe. */
   raster?: GPUNetworkIsochronesRaster;
   /**
    * Cell-outline path (positions must be longitude/latitude). Set `cellOutline.rings` for isochrone
@@ -375,7 +376,7 @@ export type GPUDriveTimeCatchmentRecipeOutput = GPURecipeResult & {
   /**
    * Facility start nodes (`2 * facilityCount` rows, two edge endpoints per facility: the edge
    * source, then the edge target). A row is `0xffffffff` when the facility is unsnapped or no
-   * edge lets it drive to that endpoint (the source of a one-way edge).
+   * edge lets it drive there and the facility is not coincident with that endpoint.
    */
   startNodes: GraphDataView<'uint32'>;
   /** Cost from each facility to its start nodes, aligned with `startNodes`; -1 on a missing row. */
@@ -437,7 +438,8 @@ export type GPUDriveTimeCatchmentRecipeOutput = GPURecipeResult & {
  * end nodes of its edge. Driving that road from one end to the other costs the weight of the
  * cheapest passable edge going that way, and is not possible when the topology has no such edge.
  * So a facility starts at the edge target with cost `(1 - f) * w(source -> target)` and at the
- * edge source with cost `f * w(target -> source)`, and a one-way edge gives one start row. The
+ * edge source with cost `f * w(target -> source)`, and a one-way edge gives one interior start row; an endpoint coincident with the facility
+ * is always seeded at zero cost. The
  * demand time is the smallest of `cost[source] + f * w(source -> target)`,
  * `cost[target] + (1 - f) * w(target -> source)`, and, for every facility snapped to the same
  * road, the way straight along it: `(f - f_facility) * w(source -> target)` when the demand is
@@ -446,7 +448,8 @@ export type GPUDriveTimeCatchmentRecipeOutput = GPURecipeResult & {
  * sorted by road (the published `GPUSort`, keyed by the smallest edge row between the two end
  * nodes) and each demand point binary-searches its own road, so it is compared only with the
  * facilities snapped to that road: no demand point scans every facility, and the facility count
- * needs no cap.
+ * needs no cap. A demand point coincident with an endpoint uses that node cost without
+ * traversing a direction, even if the opposite road direction is unavailable.
  *
  * Bands are classified in network space (exact at the snapped edge, no polygon approximation):
  * isoband output has a GPU-written, data-dependent triangle count that `GPUPointInPolygonJoin`
@@ -593,7 +596,7 @@ export function addDriveTimeCatchmentRecipe<Parameters>(
 
   // Adapter: the start rows of each facility, honouring edge direction. A facility reaches the
   // target of its road by driving source -> target and the source by driving target -> source,
-  // each at the cost of an edge that goes that way; a direction with no edge gets no start row.
+  // each at the cost of an edge that goes that way; a direction with no edge gets no start row unless the facility is already at that endpoint.
   // The roads of the facilities are kept so the demand adapter can find facilities on its road.
   const facilityRoads = addSnappedRoadNodes(graph, {
     id: `${id}-facility-roads`,
@@ -619,12 +622,12 @@ export function addDriveTimeCatchmentRecipe<Parameters>(
       body: `let fraction = fractions[fractionsOffset + index];
   let forwardCost = roadCosts[roadCostsOffset + 2u * index];
   let reverseCost = roadCosts[roadCostsOffset + 2u * index + 1u];
-  let useSource = reverseCost >= 0.0;
-  let useTarget = forwardCost >= 0.0;
+  let useSource = reverseCost >= 0.0 || fraction == 0.0;
+  let useTarget = forwardCost >= 0.0 || fraction == 1.0;
   startNodes[startNodesOffset + 2u * index] = select(NONE, roads[roadsOffset + 2u * index], useSource);
-  startCosts[startCostsOffset + 2u * index] = select(-1.0, fraction * reverseCost, useSource);
+  startCosts[startCostsOffset + 2u * index] = select(-1.0, fraction * max(reverseCost, 0.0), useSource);
   startNodes[startNodesOffset + 2u * index + 1u] = select(NONE, roads[roadsOffset + 2u * index + 1u], useTarget);
-  startCosts[startCostsOffset + 2u * index + 1u] = select(-1.0, (1.0 - fraction) * forwardCost, useTarget);`
+  startCosts[startCostsOffset + 2u * index + 1u] = select(-1.0, (1.0 - fraction) * max(forwardCost, 0.0), useTarget);`
     })
   );
   // Facilities sorted by road key, so a demand point finds the facilities on its road by a
@@ -720,6 +723,141 @@ export function addDriveTimeCatchmentRecipe<Parameters>(
       !isochrones.joinDemand || Boolean(isochrones.cellOutline?.rings?.output.polygons),
       'isochrones.joinDemand needs cellOutline.rings.output.polygons'
     );
+    let raster = isochrones.raster;
+    if (raster) {
+      validateRequirement(
+        ID,
+        (raster.mode ?? 'min') === 'min',
+        'isochrones.raster.mode must be min to include direct travel from snapped facilities'
+      );
+      validateRequirement(
+        ID,
+        !raster.sourcePaths,
+        'isochrones.raster.sourcePaths is owned by the drive-time facility adapter'
+      );
+      // Each facility contributes a zero-cost snapped origin and its two directed endpoint
+      // paths. Reuse the isochrone splatter, so direct on-road travel reaches the raster even
+      // when both original endpoint costs exceed an early band. No second routing search.
+      const pathPositions = createTransientView(
+        graph,
+        `${id}-source-path-positions`,
+        'float32x2',
+        3 * facilityCount
+      );
+      const pathCosts = createTransientView(
+        graph,
+        `${id}-source-path-costs`,
+        'float32',
+        3 * facilityCount
+      );
+      const pathAssignments = createTransientView(
+        graph,
+        `${id}-source-path-assignments`,
+        'uint32',
+        3 * facilityCount
+      );
+      const pathOffsets = createTransientView(
+        graph,
+        `${id}-source-path-offsets`,
+        'uint32',
+        3 * facilityCount + 1
+      );
+      const pathNeighbors = createTransientView(
+        graph,
+        `${id}-source-path-neighbors`,
+        'uint32',
+        2 * facilityCount
+      );
+      const pathWeights = createTransientView(
+        graph,
+        `${id}-source-path-weights`,
+        'float32',
+        2 * facilityCount
+      );
+      graph.add(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-source-path-geometry`,
+          operation: 'GPURecipeDriveTimeCatchment',
+          invocationCount: facilityCount,
+          bindings: [
+            {name: 'roads', view: facilityRoads.nodes, type: 'u32', access: 'read'},
+            {name: 'fractions', view: facilityFractions, type: 'f32', access: 'read'},
+            {name: 'positions', view: topology.nodePositions, type: 'f32', access: 'read'},
+            {name: 'startNodes', view: startNodes, type: 'u32', access: 'read'},
+            {name: 'pathPositions', view: pathPositions, type: 'f32', access: 'read_write'},
+            {name: 'pathCosts', view: pathCosts, type: 'f32', access: 'read_write'},
+            {name: 'pathAssignments', view: pathAssignments, type: 'u32', access: 'read_write'}
+          ],
+          declarations: `const NODE_COUNT: u32 = ${nodeCount}u;`,
+          body: `let sourceNode = roads[roadsOffset + 2u * index];
+  let targetNode = roads[roadsOffset + 2u * index + 1u];
+  let valid = sourceNode < NODE_COUNT && targetNode < NODE_COUNT;
+  var startPoint = vec2f(0.0);
+  var endPoint = vec2f(0.0);
+  if (valid) {
+    startPoint = vec2f(positions[positionsOffset + 2u * sourceNode], positions[positionsOffset + 2u * sourceNode + 1u]);
+    endPoint = vec2f(positions[positionsOffset + 2u * targetNode], positions[positionsOffset + 2u * targetNode + 1u]);
+  }
+  let point = mix(startPoint, endPoint, vec2f(fractions[fractionsOffset + index]));
+  let offset = pathPositionsOffset + 6u * index;
+  pathPositions[offset] = point.x;
+  pathPositions[offset + 1u] = point.y;
+  pathPositions[offset + 2u] = startPoint.x;
+  pathPositions[offset + 3u] = startPoint.y;
+  pathPositions[offset + 4u] = endPoint.x;
+  pathPositions[offset + 5u] = endPoint.y;
+  // A runtime bitcast preserves infinity without an invalid WGSL constant expression.
+  var infinityBits = 0x7f800000u;
+  let infinity = bitcast<f32>(infinityBits);
+  pathCosts[pathCostsOffset + 3u * index] = select(infinity, 0.0, valid);
+  pathCosts[pathCostsOffset + 3u * index + 1u] = infinity;
+  pathCosts[pathCostsOffset + 3u * index + 2u] = infinity;
+  let assignment = select(2u * index + 1u, 2u * index, startNodes[startNodesOffset + 2u * index] != 0xffffffffu);
+  pathAssignments[pathAssignmentsOffset + 3u * index] = assignment;
+  pathAssignments[pathAssignmentsOffset + 3u * index + 1u] = assignment;
+  pathAssignments[pathAssignmentsOffset + 3u * index + 2u] = assignment;`
+        })
+      );
+      graph.add(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-source-path-topology`,
+          operation: 'GPURecipeDriveTimeCatchment',
+          invocationCount: facilityCount,
+          bindings: [
+            {name: 'roadCosts', view: facilityRoads.costs, type: 'f32', access: 'read'},
+            {name: 'fractions', view: facilityFractions, type: 'f32', access: 'read'},
+            {name: 'offsets', view: pathOffsets, type: 'u32', access: 'read_write'},
+            {name: 'neighbors', view: pathNeighbors, type: 'u32', access: 'read_write'},
+            {name: 'weights', view: pathWeights, type: 'f32', access: 'read_write'}
+          ],
+          declarations: `const FACILITY_COUNT: u32 = ${facilityCount}u;`,
+          body: `let fraction = fractions[fractionsOffset + index];
+  let forwardCost = roadCosts[roadCostsOffset + 2u * index];
+  let reverseCost = roadCosts[roadCostsOffset + 2u * index + 1u];
+  offsets[offsetsOffset + 3u * index] = 2u * index;
+  offsets[offsetsOffset + 3u * index + 1u] = 2u * index + 2u;
+  offsets[offsetsOffset + 3u * index + 2u] = 2u * index + 2u;
+  if (index + 1u == FACILITY_COUNT) { offsets[offsetsOffset + 3u * FACILITY_COUNT] = 2u * FACILITY_COUNT; }
+  neighbors[neighborsOffset + 2u * index] = 3u * index + 1u;
+  neighbors[neighborsOffset + 2u * index + 1u] = 3u * index + 2u;
+  weights[weightsOffset + 2u * index] = select(-1.0, fraction * max(reverseCost, 0.0), reverseCost >= 0.0 || fraction == 0.0);
+  weights[weightsOffset + 2u * index + 1u] = select(-1.0, (1.0 - fraction) * max(forwardCost, 0.0), forwardCost >= 0.0 || fraction == 1.0);`
+        })
+      );
+      raster = {
+        ...raster,
+        sourcePaths: {
+          topology: {
+            offsets: pathOffsets,
+            neighbors: pathNeighbors,
+            weights: pathWeights,
+            nodePositions: pathPositions
+          },
+          costs: pathCosts,
+          assignments: pathAssignments
+        }
+      };
+    }
     builder.add(
       new GPUNetworkIsochrones({
         id: `${id}-isochrones`,
@@ -731,7 +869,7 @@ export function addDriveTimeCatchmentRecipe<Parameters>(
         assignments,
         costBreaks: isochrones.costBreaks,
         parameters: isochrones.parameters,
-        raster: isochrones.raster,
+        raster,
         cellOutline: isochrones.cellOutline
       })
     );
@@ -870,14 +1008,14 @@ ${getBinarySearchWGSL('sortedFacilityKeys')}`,
     let fraction = fractions[fractionsOffset + index];
     let forwardCost = roadCosts[roadCostsOffset + 2u * index];
     let reverseCost = roadCosts[roadCostsOffset + 2u * index + 1u];
-    if (forwardCost >= 0.0) {
-      let viaSource = nodeCosts[nodeCostsOffset + sourceNode] + fraction * forwardCost;
+    if (forwardCost >= 0.0 || fraction == 0.0) {
+      let viaSource = nodeCosts[nodeCostsOffset + sourceNode] + fraction * max(forwardCost, 0.0);
       if (viaSource < best) {
         best = viaSource;
       }
     }
-    if (reverseCost >= 0.0) {
-      let viaTarget = nodeCosts[nodeCostsOffset + targetNode] + (1.0 - fraction) * reverseCost;
+    if (reverseCost >= 0.0 || fraction == 1.0) {
+      let viaTarget = nodeCosts[nodeCostsOffset + targetNode] + (1.0 - fraction) * max(reverseCost, 0.0);
       if (viaTarget < best) {
         best = viaTarget;
       }

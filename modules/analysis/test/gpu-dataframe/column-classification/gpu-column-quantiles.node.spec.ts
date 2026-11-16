@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {createTransientView, GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
 import {GPUColumnQuantiles} from '../../../src/dataframe-analysis/column-classification/gpu-column-quantiles';
 import type {GPUColumnQuantilesProps} from '../../../src/dataframe-analysis/column-classification/gpu-column-quantiles';
@@ -58,9 +58,9 @@ it('GPUColumnQuantiles validates its inputs', () => {
   expectThrows(() => ({quantileCount: 1.5}), /quantileCount/);
   expectThrows(
     graph => ({
-      values: createVectorView('chunks', 'float32', [view(graph, 'float32', 5)]) as never
+      values: createVectorView('chunks', 'float32', [view(graph, 'float32', 10)]) as never
     }),
-    /must be one packed view/
+    /output.outputMask must match the source topology/
   );
   expectThrows(graph => ({values: view(graph, 'float32', 0)}), /at least one row/);
   expectThrows(
@@ -129,7 +129,7 @@ it('GPUColumnQuantiles rejects outputs that alias inputs and foreign graphs', ()
     () =>
       new GPUColumnQuantiles({
         ...props,
-        output: {...props.output, quantiles: props.values}
+        output: {...props.output, quantiles: props.values as GraphDataView<'float32'>}
       })
   ).toThrow(/share buffers/);
   expect(

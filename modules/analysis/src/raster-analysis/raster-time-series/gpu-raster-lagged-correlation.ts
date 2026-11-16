@@ -8,18 +8,21 @@ import type {
   GPUCommandNode,
   GPUCommandNodeProducer
 } from '@luma.gl/graph/gpu-core';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  createRasterTimeSeriesNodes,
+  planRasterTimeSeriesChunks,
+  rasterTimeSeriesBinding as rasterBinding,
+  validateRasterTimeSeriesViews as validateRasterViews,
+  validateRasterTimeSeriesGraph as validateRasterGraph,
+  type RasterTimeSeriesScalarView as RasterScalarView,
+  type RasterTimeSeriesView,
+  type RasterTimeSeriesChunkPlan
+} from './raster-time-series-chunks-b';
 import {
   validateCapacity,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {
-  RASTER_FINITE_WGSL,
-  rasterBinding,
-  validateRasterGraph,
-  validateRasterViews,
-  type RasterScalarView
-} from '../remote-sensing/raster-kernel-utils';
+import {RASTER_FINITE_WGSL} from '../remote-sensing/raster-kernel-utils';
 
 /** Slices: lag loops run over the series inside one invocation. */
 export const MAXIMUM_LAGGED_CORRELATION_SLICE_COUNT = 256;
@@ -44,14 +47,14 @@ export function getGPURasterLaggedCorrelationParameterValues(
 }
 
 /** Properties of {@link GPURasterLaggedCorrelation}. */
-export type GPURasterLaggedCorrelationProps = {
+export type GPURasterLaggedCorrelationProps<Rows extends RasterScalarView = GraphDataView> = {
   id?: string;
   cellCount: number;
   sliceCount: number;
   /** Cell-major `cell * sliceCount + slice`; nonfinite samples are missing. */
-  values: GraphDataView<'float32'>;
+  values: RasterTimeSeriesView<'float32', Rows>;
   /** Per-observation QA; zero rejects the sample. */
-  mask?: GraphDataView<'uint32'>;
+  mask?: RasterTimeSeriesView<'uint32', Rows>;
   /** The reference series, one value per slice, nonfinite where missing (for example Nino3.4). */
   referenceIndex: GraphDataView<'float32'>;
   /** Float32, see {@link getGPURasterLaggedCorrelationParameterValues}. */
@@ -63,11 +66,11 @@ export type GPURasterLaggedCorrelationProps = {
   lags: readonly number[];
   output: {
     /** `cell * lags.length + lagIndex`: Pearson correlation on the pairwise-complete samples; NaN unless status is 0. */
-    correlations: GraphDataView<'float32'>;
+    correlations: RasterTimeSeriesView<'float32', Rows>;
     /** Same layout: 0 computed, 1 fewer than `minimumPairCount` pairs, 2 zero variance. */
-    status: GraphDataView<'uint32'>;
+    status: RasterTimeSeriesView<'uint32', Rows>;
     /** Optional, same layout: valid pairs used. */
-    pairCount?: GraphDataView<'uint32'>;
+    pairCount?: RasterTimeSeriesView<'uint32', Rows>;
   };
 };
 
@@ -78,11 +81,19 @@ export type GPURasterLaggedCorrelationProps = {
  *
  * Per-frame: `parameters`, `referenceIndex`. Compile-time: `cellCount`, `sliceCount`, `lags`,
  * which optional views exist.
+ *
+ * Cell-major views accept matching chunks of complete cell records; shared tables stay packed.
  */
-export class GPURasterLaggedCorrelation implements GPUCommandNodeProducer {
+export class GPURasterLaggedCorrelation<Rows extends RasterScalarView = GraphDataView>
+  implements GPUCommandNodeProducer
+{
   readonly id: string;
+  readonly props: GPURasterLaggedCorrelationProps<Rows>;
+  readonly chunkPlan: RasterTimeSeriesChunkPlan;
+  readonly estimatedCommandNodeCount: number;
 
-  constructor(readonly props: GPURasterLaggedCorrelationProps) {
+  constructor(props: GPURasterLaggedCorrelationProps<Rows> & {values: Rows}) {
+    this.props = props;
     const id = props.id ?? 'raster-lagged-correlation';
     this.id = id;
     const {cellCount, sliceCount, lags} = props;
@@ -119,7 +130,15 @@ export class GPURasterLaggedCorrelation implements GPUCommandNodeProducer {
       props.parameters.length >= GPU_RASTER_LAGGED_CORRELATION_PARAMETER_LENGTH,
       `parameters must hold ${GPU_RASTER_LAGGED_CORRELATION_PARAMETER_LENGTH} entries`
     );
-    validateRasterViews(id, this.getInputs(), this.getOutputs());
+    this.chunkPlan = planRasterTimeSeriesChunks(this.id, props.cellCount, {
+      values: {view: props.values, entriesPerCell: props.sliceCount},
+      mask: {view: props.mask, entriesPerCell: props.sliceCount},
+      'output.correlations': {view: props.output.correlations, entriesPerCell: props.lags.length},
+      'output.status': {view: props.output.status, entriesPerCell: props.lags.length},
+      'output.pairCount': {view: props.output.pairCount, entriesPerCell: props.lags.length}
+    });
+    this.estimatedCommandNodeCount = this.chunkPlan.estimatedCommandNodeCount;
+    validateRasterViews(this.id, this.getInputs(), this.getOutputs(), this.chunkPlan);
   }
 
   private getInputs(): RasterScalarView[] {
@@ -139,24 +158,23 @@ export class GPURasterLaggedCorrelation implements GPUCommandNodeProducer {
     const {sliceCount: slices, values, mask, referenceIndex, parameters, lags, output} = props;
     validateRasterGraph(id, graph, this.getInputs(), this.getOutputs());
     const lagCount = lags.length;
-    return [
-      createWGSLKernelNode<Parameters>(graph, {
-        id,
-        operation: 'GPURasterLaggedCorrelation',
-        invocationCount: props.cellCount,
-        workgroupSize: 16,
-        bindings: [
-          rasterBinding('values', values),
-          rasterBinding('referenceIndex', referenceIndex),
-          rasterBinding('parameters', parameters),
-          ...(mask ? [rasterBinding('mask', mask)] : []),
-          rasterBinding('correlations', output.correlations, true),
-          rasterBinding('status', output.status, true),
-          ...(output.pairCount ? [rasterBinding('pairCount', output.pairCount, true)] : [])
-        ],
-        declarations: `${RASTER_FINITE_WGSL}
+    return createRasterTimeSeriesNodes<Parameters>(graph, this.chunkPlan, {
+      id,
+      operation: 'GPURasterLaggedCorrelation',
+      invocationCount: props.cellCount,
+      workgroupSize: 16,
+      bindings: [
+        rasterBinding('values', values),
+        rasterBinding('referenceIndex', referenceIndex),
+        rasterBinding('parameters', parameters),
+        ...(mask ? [rasterBinding('mask', mask)] : []),
+        rasterBinding('correlations', output.correlations, true),
+        rasterBinding('status', output.status, true),
+        ...(output.pairCount ? [rasterBinding('pairCount', output.pairCount, true)] : [])
+      ],
+      declarations: `${RASTER_FINITE_WGSL}
 const LAGS = array<i32, ${lagCount}>(${lags.map(lag => `${lag}`).join(', ')});`,
-        body: `let minimumPairs = parameters[parametersOffset];
+      body: `let minimumPairs = parameters[parametersOffset];
 for (var lagIndex = 0u; lagIndex < ${lagCount}u; lagIndex++) {
   let lag = LAGS[lagIndex];
   var count = 0u;
@@ -206,7 +224,6 @@ for (var lagIndex = 0u; lagIndex < ${lagCount}u; lagIndex++) {
   status[statusOffset + index * ${lagCount}u + lagIndex] = code;
   ${output.pairCount ? `pairCount[pairCountOffset + index * ${lagCount}u + lagIndex] = count;` : ''}
 }`
-      })
-    ];
+    });
   }
 }

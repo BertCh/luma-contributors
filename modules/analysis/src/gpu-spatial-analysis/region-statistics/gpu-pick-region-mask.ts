@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateSpatialStatisticsWritableDispatches} from '../spatial-weights/spatial-statistics-writable-dispatches';
+import {validateSpatialStatisticsBindings} from '../spatial-weights/spatial-statistics-bindings';
 import {
   validatePackedUint32View,
   type GPUCommandGraph,
@@ -65,6 +67,11 @@ export class GPUPickRegionMask implements GPUCommandNodeProducer {
     if (output.mask.length < 1 || !output.status.overflow) {
       throw new Error(`${id} output.mask and output.status.overflow are required`);
     }
+    validateSpatialStatisticsWritableDispatches(
+      id,
+      {mask: output.mask, overflow: output.status.overflow},
+      []
+    );
     validateGraphOutputsDisjointFromInputs(id, [output.mask, output.status.overflow], [picks]);
   }
 
@@ -72,6 +79,11 @@ export class GPUPickRegionMask implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateSpatialStatisticsBindings(graph, this.id, {
+      picks: this.props.picks,
+      mask: this.props.output.mask,
+      overflow: this.props.output.status.overflow
+    });
     const {id, props} = this;
     const {picks: result, batchIndex} = props;
     const outputMask = props.output.mask;

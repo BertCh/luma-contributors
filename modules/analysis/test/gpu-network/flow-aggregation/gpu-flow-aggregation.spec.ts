@@ -3,7 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Buffer, Device} from '@luma.gl/core';
-import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {
+  GPUCommandGraph,
+  type CompiledGPUCommandGraph,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {
@@ -15,7 +19,7 @@ import {
   GPU_FLOW_AGGREGATION_NO_ZONE,
   type GPUFlowAggregationProps
 } from '../../../src/gpu-network/flow-aggregation/index';
-import {getGPUPointDensityHexagonGridSize} from '../../../src/gpu-spatial-analysis/point-density/index';
+import {getGPUPointDensityHexagonGridSize} from '../../../src/gpu-spatial-analysis/point-density/point-density-hexagon';
 import {
   getGPUTimeWindowFilterParameterValues,
   getGPUTimeWindowFilterWordParameterValues,
@@ -25,6 +29,7 @@ import {
 } from '../../../src/dataframe-analysis/time-window-filter/index';
 import {
   createInputBuffer,
+  createVectorView,
   createOutputBuffer,
   readFloat32,
   readUint32,
@@ -1056,4 +1061,736 @@ it('GPUFlowAggregation measures atomic versus sorted sum cost on 1M rows', async
     harness.destroy();
   }
   for (const buffer of buffers) buffer.destroy();
+});
+
+it('aggregates lexicographic flow keys above 65535 zones without uint32 collisions', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  if (!device) return;
+  const origins = new Uint32Array([
+    65536,
+    0,
+    65536,
+    32768,
+    0,
+    65536,
+    131071,
+    65536,
+    131072,
+    NO_ZONE
+  ]);
+  const destinations = new Uint32Array([1, 1, 2, 1, 1, 1, 65536, 1, 0, 0]);
+  const inputWeights = new Float32Array([2, 5, -1, 10, 5, 0, 10, 0, 999, 999]);
+  const buffers = [origins, destinations, inputWeights].map(values =>
+    createInputBuffer(device, values)
+  );
+  try {
+    for (const hasWeights of [false, true]) {
+      for (const topCount of [3, 6]) {
+        const fixture = createHarness(device, {
+          id: `large-zone-flows-${hasWeights}-${topCount}`,
+          zoneCount: 131072,
+          topCount,
+          pairCapacity: 32,
+          hasWeights,
+          createProps: graph => ({
+            zones: {kind: 'ids', zoneCount: 131072},
+            originZoneIds: importGraphBuffer(
+              graph,
+              'large-origin-input',
+              buffers[0],
+              'uint32',
+              origins.length
+            ),
+            destinationZoneIds: importGraphBuffer(
+              graph,
+              'large-destination-input',
+              buffers[1],
+              'uint32',
+              origins.length
+            ),
+            weights: hasWeights
+              ? importGraphBuffer(
+                  graph,
+                  'large-weight-input',
+                  buffers[2],
+                  'float32',
+                  origins.length
+                )
+              : undefined
+          })
+        });
+        try {
+          // Closed-form groups. (0,1), (32768,1) and (65536,1) collided in uint32 packed keys.
+          const expectedOrigins = hasWeights
+            ? [0, 32768, 131071, 65536, 65536]
+            : [65536, 0, 32768, 65536, 131071];
+          const expectedDestinations = hasWeights ? [1, 1, 65536, 1, 2] : [1, 1, 1, 2, 65536];
+          const expectedIds = hasWeights ? [1, 3, 6, 0, 2] : [0, 1, 3, 2, 6];
+          const expectedCounts = hasWeights ? [2, 1, 1, 3, 1] : [3, 2, 1, 1, 1];
+          const expectedWeights = hasWeights ? [10, 10, 10, 2, -1] : expectedCounts;
+          for (let encoding = 0; encoding < 2; encoding++) {
+            fixture.submit();
+            const result = await fixture.read();
+            const count = Math.min(topCount, 5);
+            const pad = (values: number[], value: number) => [
+              ...values.slice(0, count),
+              ...Array(topCount - count).fill(value)
+            ];
+            expect(result.ids).toEqual(pad(expectedIds, NO_ZONE));
+            expect(result.originZones).toEqual(pad(expectedOrigins, NO_ZONE));
+            expect(result.destinationZones).toEqual(pad(expectedDestinations, NO_ZONE));
+            expect(result.counts).toEqual(pad(expectedCounts, 0));
+            expect(result.weights).toEqual(pad(expectedWeights, 0));
+            expect(result.count).toBe(count);
+            expect(result.requiredCount).toBe(5);
+            expect(result.pairOverflow).toBe(0);
+            expect(result.overflow).toBe(topCount < 5 ? 1 : 0);
+            expect(result.zoneOutCounts.reduce((sum, value) => sum + value, 0)).toBe(8);
+            expect(result.zoneInCounts[1]).toBe(6);
+            expect(result.zoneOutCounts[65536]).toBe(4);
+          }
+        } finally {
+          fixture.destroy();
+        }
+      }
+    }
+  } finally {
+    for (const buffer of buffers) buffer.destroy();
+  }
+});
+
+it('keeps pair-capacity overflow separate from top-K counts with large zone IDs', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  if (!device) return;
+  const origins = createInputBuffer(device, new Uint32Array([0, 32768, 65536, 131071]));
+  const destinations = createInputBuffer(device, new Uint32Array([1, 1, 1, 1]));
+  const fixture = createHarness(device, {
+    id: 'large-zone-pair-overflow',
+    zoneCount: 131072,
+    topCount: 4,
+    pairCapacity: 2,
+    hasWeights: false,
+    createProps: graph => ({
+      zones: {kind: 'ids', zoneCount: 131072},
+      originZoneIds: importGraphBuffer(graph, 'overflow-origins', origins, 'uint32', 4),
+      destinationZoneIds: importGraphBuffer(
+        graph,
+        'overflow-destinations',
+        destinations,
+        'uint32',
+        4
+      )
+    })
+  });
+  try {
+    fixture.submit();
+    const result = await fixture.read();
+    expect(result.requiredCount).toBe(2);
+    expect(result.count).toBe(2);
+    expect(result.pairOverflow).toBe(1);
+    expect(result.overflow).toBe(1);
+    expect(result.zoneInCounts[1]).toBe(4);
+    expect(result.counts.slice(0, 2)).toEqual([1, 1]);
+  } finally {
+    fixture.destroy();
+    origins.destroy();
+    destinations.destroy();
+  }
+});
+
+it('flow chunk parameters preserve row bases, source offsets and unequal chunk boundaries', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  if (!device) return;
+  const buffers: Buffer[] = [];
+  const fixture = createHarness(device, {
+    id: 'flow-chunk-parameters',
+    zoneCount: 4,
+    topCount: 4,
+    pairCapacity: 16,
+    hasWeights: true,
+    createProps: graph => {
+      const positions = [0.25, 0.25, 0.25, 0.25, 0.75, 0.25, 0.75, 0.25, 0.25, 0.75, 0.25, 0.75];
+      const destinations = [0.75, 0.25, 0.75, 0.25, 0.25, 0.25, 0.25, 0.25, 0.75, 0.75, 0.75, 0.75];
+      const chunks = <Format extends 'float32' | 'float32x2'>(
+        name: string,
+        format: Format,
+        values: number[],
+        lengths: number[]
+      ) => {
+        const components = format === 'float32x2' ? 2 : 1;
+        let rowStart = 0;
+        return createVectorView(
+          name,
+          format,
+          lengths.map((length, index) => {
+            const padding = index + 1;
+            const data = new Float32Array((padding + length) * components).fill(999);
+            data.set(
+              values.slice(rowStart * components, (rowStart + length) * components),
+              padding * components
+            );
+            rowStart += length;
+            const buffer = createInputBuffer(device, data);
+            buffers.push(buffer);
+            const backing = importGraphBuffer(
+              graph,
+              `${name}-${index}`,
+              buffer,
+              format,
+              padding + length
+            );
+            return graph.createDataView(backing.buffer, {
+              format,
+              byteOffset: padding * components * 4,
+              length
+            });
+          })
+        );
+      };
+      return {
+        zones: {kind: 'grid', bounds: [0, 0, 1, 1], gridSize: [2, 2]},
+        origins: chunks('unequal-origins', 'float32x2', positions, [1, 3, 2]),
+        destinations: chunks('unequal-destinations', 'float32x2', destinations, [2, 1, 3]),
+        weights: chunks('unequal-weights', 'float32', [1, 2, 3, 4, 5, 6], [3, 1, 2])
+      };
+    }
+  });
+  try {
+    for (let encoding = 0; encoding < 2; encoding++) {
+      fixture.submit();
+      const result = await fixture.read();
+      expect(result.ids).toEqual([11, 4, 1, NO_ZONE]);
+      expect(result.counts).toEqual([2, 2, 2, 0]);
+      expect(result.weights).toEqual([11, 7, 3, 0]);
+      expect(result.originZones).toEqual([2, 1, 0, NO_ZONE]);
+      expect(result.destinationZones).toEqual([3, 0, 1, NO_ZONE]);
+      expect(result.requiredCount).toBe(3);
+      expect(result.overflow).toBe(0);
+    }
+  } finally {
+    fixture.destroy();
+    for (const buffer of buffers) buffer.destroy();
+  }
+});
+
+/** Compact-only harness: huge zone IDs never require a zone-sized CPU or GPU allocation. */
+function createSparseFlowReviewHarness(
+  device: Device,
+  origins: Uint32Array,
+  destinations: Uint32Array,
+  inputWeights: Float32Array,
+  capacity: number,
+  sumOrder: 'sorted' | 'atomic',
+  columnStride?: number
+) {
+  const graph = new GPUCommandGraph(device);
+  const buffers: Buffer[] = [];
+  const input = <Format extends 'uint32' | 'float32'>(
+    name: string,
+    format: Format,
+    values: Uint32Array | Float32Array
+  ) => {
+    const buffer = createInputBuffer(device, values);
+    buffers.push(buffer);
+    return importGraphBuffer(graph, name, buffer, format, values.length);
+  };
+  const outputs: {
+    name: string;
+    buffer: Buffer;
+    offset: number;
+    length: number;
+    format: 'uint32' | 'float32';
+  }[] = [];
+  const output = <Format extends 'uint32' | 'float32'>(
+    name: string,
+    format: Format,
+    length: number
+  ) => {
+    const buffer = createOutputBuffer(device, length);
+    buffers.push(buffer);
+    outputs.push({name, buffer, offset: 0, length, format});
+    return importGraphBuffer(graph, name, buffer, format, length);
+  };
+  const ids = output('ids', 'uint32', capacity);
+  const count = output('count', 'uint32', 1);
+  const overflow = output('overflow', 'uint32', 1);
+  const requiredCount = output('requiredCount', 'uint32', 1);
+  const pairOverflow = output('pairOverflow', 'uint32', 1);
+  let originOutput: GraphDataView<'uint32'>;
+  let destinationOutput: GraphDataView<'uint32'>;
+  if (columnStride === undefined) {
+    originOutput = output('origins', 'uint32', capacity);
+    destinationOutput = output('destinations', 'uint32', capacity);
+  } else {
+    const buffer = createOutputBuffer(device, columnStride / 4 + capacity);
+    buffers.push(buffer);
+    const backing = importGraphBuffer(
+      graph,
+      'shared-columns',
+      buffer,
+      'uint32',
+      columnStride / 4 + capacity
+    );
+    originOutput = graph.createDataView(backing.buffer, {format: 'uint32', length: capacity});
+    destinationOutput = graph.createDataView(backing.buffer, {
+      format: 'uint32',
+      byteOffset: columnStride,
+      length: capacity
+    });
+    outputs.push(
+      {name: 'origins', buffer, offset: 0, length: capacity, format: 'uint32'},
+      {name: 'destinations', buffer, offset: columnStride / 4, length: capacity, format: 'uint32'}
+    );
+  }
+  const counts = output('counts', 'uint32', capacity);
+  const weights = output('weights', 'float32', capacity);
+  let compiled: CompiledGPUCommandGraph<void>;
+  try {
+    graph.add(
+      new GPUFlowAggregation({
+        zones: {kind: 'ids', zoneCount: 0xfffffffe},
+        pairCapacity: 32,
+        sumOrder,
+        originZoneIds: input('source-origins', 'uint32', origins),
+        destinationZoneIds: input('source-destinations', 'uint32', destinations),
+        weights: input('source-weights', 'float32', inputWeights),
+        output: {
+          ids,
+          status: {count, overflow, requiredCount, pairOverflow},
+          flowOriginZoneIds: originOutput,
+          flowDestinationZoneIds: destinationOutput,
+          flowCounts: counts,
+          flowWeights: weights
+        }
+      })
+    );
+    compiled = graph.compile();
+  } catch (error) {
+    for (const buffer of buffers) buffer.destroy();
+    throw error;
+  }
+  return {
+    async run(): Promise<Record<string, number[]>> {
+      for (const entry of outputs)
+        entry.buffer.write(new Uint32Array(entry.offset + entry.length).fill(GARBAGE));
+      submitGraph(device, compiled, undefined);
+      const result: Record<string, number[]> = {};
+      for (const entry of outputs) {
+        const values =
+          entry.format === 'uint32'
+            ? await readUint32(entry.buffer, entry.offset + entry.length)
+            : await readFloat32(entry.buffer, entry.offset + entry.length);
+        result[entry.name] = values.slice(entry.offset);
+      }
+      return result;
+    },
+    destroy() {
+      compiled.destroy();
+      for (const buffer of buffers) buffer.destroy();
+    }
+  };
+}
+
+it('large unsigned zone tuples cross local, workgroup and radix boundaries with stable ties', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  if (!device) return;
+  for (const runLengths of [
+    [18, 13],
+    [18, 240, 257, 7]
+  ]) {
+    const tuples = [
+      [0x80000000, 1],
+      [0xfffffffd, 0x80000000],
+      [1, 0xfffffffd],
+      [0x80000000, 0xfffffffd]
+    ];
+    const origins: number[] = [],
+      destinations: number[] = [],
+      weights: number[] = [],
+      representatives: number[] = [];
+    for (const [group, length] of runLengths.entries()) {
+      representatives.push(origins.length);
+      for (let row = 0; row < length; row++) {
+        origins.push(tuples[group][0]);
+        destinations.push(tuples[group][1]);
+        weights.push(row === 0 ? 1 : 0);
+      }
+    }
+    // Both missing keys and the first ID outside the accepted range must reject their rows.
+    origins.push(NO_ZONE, 0xfffffffe, 0);
+    destinations.push(0, 1, NO_ZONE);
+    weights.push(999, 999, 999);
+    const order = runLengths.length === 2 ? [0, 1] : [2, 0, 3, 1];
+    for (const capacity of [1, 6])
+      for (const sumOrder of ['sorted', 'atomic'] as const) {
+        const fixture = createSparseFlowReviewHarness(
+          device,
+          Uint32Array.from(origins),
+          Uint32Array.from(destinations),
+          Float32Array.from(weights),
+          capacity,
+          sumOrder
+        );
+        try {
+          const count = Math.min(capacity, runLengths.length);
+          const pad = (values: number[], empty: number) => [
+            ...values.slice(0, count),
+            ...Array(capacity - count).fill(empty)
+          ];
+          const expected = {
+            ids: pad(
+              order.map(group => representatives[group]),
+              NO_ZONE
+            ),
+            origins: pad(
+              order.map(group => tuples[group][0]),
+              NO_ZONE
+            ),
+            destinations: pad(
+              order.map(group => tuples[group][1]),
+              NO_ZONE
+            ),
+            counts: pad(
+              order.map(group => runLengths[group]),
+              0
+            ),
+            weights: pad(
+              order.map(() => 1),
+              0
+            ),
+            count: [count],
+            requiredCount: [runLengths.length],
+            overflow: [capacity < runLengths.length ? 1 : 0],
+            pairOverflow: [0]
+          };
+          expect(await fixture.run()).toEqual(expected);
+          expect(await fixture.run()).toEqual(expected);
+        } finally {
+          fixture.destroy();
+        }
+      }
+  }
+});
+
+it('flow shared output buffers reject adjacent slices and accept independent aligned bindings', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  if (!device) return;
+  const origins = new Uint32Array([0x80000000, 0x80000000]);
+  const destinations = new Uint32Array([0xfffffffd, 0xfffffffd]);
+  const weights = new Float32Array([0.25, 0.5]);
+  expect(() =>
+    createSparseFlowReviewHarness(device, origins, destinations, weights, 1, 'sorted', 4)
+  ).toThrow(/aligned binding byte ranges/);
+  const fixture = createSparseFlowReviewHarness(
+    device,
+    origins,
+    destinations,
+    weights,
+    1,
+    'sorted',
+    256
+  );
+  try {
+    expect(await fixture.run()).toEqual({
+      ids: [0],
+      origins: [0x80000000],
+      destinations: [0xfffffffd],
+      counts: [2],
+      weights: [0.75],
+      count: [1],
+      requiredCount: [1],
+      overflow: [0],
+      pairOverflow: [0]
+    });
+  } finally {
+    fixture.destroy();
+  }
+});
+
+it('packed and unequal empty flow chunks beyond 256-byte offsets match every CPU-oracle output', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  if (!device) return;
+  const rowCount = 522;
+  const originIds = Array.from({length: rowCount}, (_, row) => row % 4);
+  const destinationIds = Array.from({length: rowCount}, (_, row) => (row * 3 + 1) % 4);
+  const positions = (ids: number[]) =>
+    ids.flatMap(zone => [zone % 2 ? 0.75 : 0.25, zone >= 2 ? 0.75 : 0.25]);
+  const originPositions = positions(originIds),
+    destinationPositions = positions(destinationIds);
+  const weights = createOrderSensitiveWeights(137, rowCount);
+  const oracle = computeFlowAggregation({
+    zones: {kind: 'ids', zoneCount: 4},
+    originZoneIds: originIds,
+    destinationZoneIds: destinationIds,
+    weights: Array.from(weights),
+    sumMode: 'tree'
+  });
+  let packed: FlowResult | undefined;
+  for (const chunked of [false, true]) {
+    const buffers: Buffer[] = [];
+    const fixture = createHarness(device, {
+      id: `flow-empty-offset-${chunked}`,
+      zoneCount: 4,
+      topCount: 6,
+      pairCapacity: 16,
+      hasWeights: true,
+      createProps: graph => {
+        const chunks = <Format extends 'float32' | 'float32x2'>(
+          name: string,
+          format: Format,
+          data: ArrayLike<number>,
+          lengths: number[]
+        ) => {
+          const components = format === 'float32x2' ? 2 : 1;
+          let rowBase = 0;
+          const views = lengths.map((length, index) => {
+            const padding = 70 + index;
+            const values = new Float32Array((padding + length) * components).fill(999);
+            for (let component = 0; component < length * components; component++)
+              values[padding * components + component] = data[rowBase * components + component];
+            rowBase += length;
+            const buffer = createInputBuffer(device, values);
+            buffers.push(buffer);
+            const backing = importGraphBuffer(
+              graph,
+              `${name}-${index}`,
+              buffer,
+              format,
+              padding + length
+            );
+            return graph.createDataView(backing.buffer, {
+              format,
+              byteOffset: padding * components * 4,
+              length
+            });
+          });
+          return chunked ? createVectorView(name, format, views) : views[0];
+        };
+        return {
+          sumOrder: 'sorted',
+          zones: {kind: 'grid', bounds: [0, 0, 1, 1], gridSize: [2, 2]},
+          origins: chunks(
+            'review-origins',
+            'float32x2',
+            originPositions,
+            chunked ? [0, 1, 17, 0, 240, 264, 0] : [rowCount]
+          ),
+          destinations: chunks(
+            'review-destinations',
+            'float32x2',
+            destinationPositions,
+            chunked ? [16, 0, 240, 1, 0, 255, 10] : [rowCount]
+          ),
+          weights: chunks(
+            'review-weights',
+            'float32',
+            weights,
+            chunked ? [0, 3, 256, 0, 1, 262, 0] : [rowCount]
+          )
+        };
+      }
+    });
+    try {
+      for (let encoding = 0; encoding < 2; encoding++) {
+        fixture.submit();
+        const result = await fixture.read();
+        expectMatchesOracle(result, oracle, 6, true);
+        expect(result.zoneOutCounts).toEqual([131, 131, 130, 130]);
+        if (packed) expect(result).toEqual(packed);
+        else packed = result;
+      }
+    } finally {
+      fixture.destroy();
+      for (const buffer of buffers) buffer.destroy();
+    }
+  }
+});
+
+it('skewed flow chunks launch their own workgroups and preserve closed-form aggregates', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  if (!device) return;
+  const lengths = [1000000, ...Array(1023).fill(1)];
+  const rowCount = 1001023;
+  const buffers: Buffer[] = [];
+  const fixture = createHarness(device, {
+    id: 'flow-skewed-dispatch',
+    zoneCount: 4,
+    topCount: 2,
+    pairCapacity: 8,
+    maximumProbeCount: 1,
+    hasWeights: true,
+    createProps: graph => {
+      const origins = lengths.map((length, index) => {
+        const values = new Float32Array(length * 2).fill(0.25);
+        const buffer = createInputBuffer(device, values);
+        buffers.push(buffer);
+        return importGraphBuffer(graph, `skewed-origin-${index}`, buffer, 'float32x2', length);
+      });
+      const weights = lengths.map((length, index) => {
+        const buffer = createInputBuffer(device, new Float32Array(length).fill(0.125));
+        buffers.push(buffer);
+        return importGraphBuffer(graph, `skewed-weight-${index}`, buffer, 'float32', length);
+      });
+      const destinations = new Float32Array(rowCount * 2);
+      for (let row = 0; row < rowCount; row++) {
+        destinations[row * 2] = 0.75;
+        destinations[row * 2 + 1] = 0.25;
+      }
+      const buffer = createInputBuffer(device, destinations);
+      buffers.push(buffer);
+      return {
+        zones: {kind: 'grid', bounds: [0, 0, 1, 1], gridSize: [2, 2]},
+        origins: createVectorView('skewed-origin-vector', 'float32x2', origins),
+        destinations: importGraphBuffer(graph, 'skewed-destination', buffer, 'float32x2', rowCount),
+        weights: createVectorView('skewed-weight-vector', 'float32', weights)
+      };
+    }
+  });
+  try {
+    for (const pattern of [/origin-zones/, /contributions/]) {
+      const nodes = fixture.compiled.preflight.nodes.filter(node => pattern.test(node.id));
+      expect(nodes.reduce((total, node) => total + node.maximumInvocationCount, 0)).toBe(rowCount);
+      expect(nodes.reduce((total, node) => total + node.maximumWorkgroupCount, 0)).toBe(4930);
+    }
+    const started = performance.now();
+    fixture.submit();
+    const result = await fixture.read();
+    console.log(
+      `flow skewed chunks: 4930 workgroups per chunked pass; ${performance.now() - started} ms submit/read`
+    );
+    expect(result).toEqual({
+      ids: [1, NO_ZONE],
+      count: 1,
+      requiredCount: 1,
+      overflow: 0,
+      pairOverflow: 0,
+      drawInstanceCount: 1,
+      originZones: [0, NO_ZONE],
+      destinationZones: [1, NO_ZONE],
+      counts: [rowCount, 0],
+      weights: [rowCount / 8, 0],
+      zoneOutCounts: [rowCount, 0, 0, 0],
+      zoneInCounts: [0, rowCount, 0, 0],
+      zoneOutWeights: [rowCount / 8, 0, 0, 0],
+      zoneInWeights: [0, rowCount / 8, 0, 0]
+    });
+  } finally {
+    fixture.destroy();
+    for (const buffer of buffers) buffer.destroy();
+  }
+});
+
+it('finite float32 literal bounds compile and preserve a closed-form grid result', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  if (!device) return;
+  const buffer = createInputBuffer(device, new Float32Array([0, 0, 0, 0]));
+  const fixture = createHarness(device, {
+    id: 'flow-f32-literal-limit',
+    zoneCount: 1,
+    topCount: 1,
+    pairCapacity: 8,
+    hasWeights: false,
+    createProps: graph => {
+      const positions = importGraphBuffer(graph, 'literal-limit-positions', buffer, 'float32x2', 2);
+      return {
+        zones: {
+          kind: 'grid',
+          bounds: [0, 0, 3.4028234663852886e38, 3.4028234663852886e38],
+          gridSize: [1, 1]
+        },
+        origins: positions,
+        destinations: positions
+      };
+    }
+  });
+  try {
+    fixture.submit();
+    const result = await fixture.read();
+    expect(result.ids).toEqual([0]);
+    expect(result.counts).toEqual([2]);
+    expect(result.weights).toEqual([2]);
+    expect(result.originZones).toEqual([0]);
+    expect(result.destinationZones).toEqual([0]);
+    expect(result.zoneOutCounts).toEqual([2]);
+    expect(result.zoneInCounts).toEqual([2]);
+    expect(result.requiredCount).toBe(1);
+    expect(result.overflow).toBe(0);
+  } finally {
+    fixture.destroy();
+    buffer.destroy();
+  }
+});
+
+it('hexagon signed cell clamp values remain outside the largest supported axis', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  if (!device) return;
+  const graph = new GPUCommandGraph<void>(device);
+  const positionsBuffer = createInputBuffer(device, new Float32Array([0, 0, 1e20, 0]));
+  const positions = importGraphBuffer(
+    graph,
+    'signed-clamp-positions',
+    positionsBuffer,
+    'float32x2',
+    2
+  );
+  const outputBuffers: Buffer[] = [];
+  const outputs = new Map<string, Buffer>();
+  const output = (name: string) => {
+    const buffer = createOutputBuffer(device, 1);
+    outputBuffers.push(buffer);
+    outputs.set(name, buffer);
+    return importGraphBuffer(graph, `signed-clamp-${name}`, buffer, 'uint32', 1);
+  };
+  let compiled: CompiledGPUCommandGraph<void> | undefined;
+  try {
+    graph.add(
+      new GPUFlowAggregation({
+        zones: {kind: 'hexagon', bounds: [0, 0, 1e20, 1], gridSize: [2147483520, 1], radius: 1},
+        origins: positions,
+        destinations: positions,
+        pairCapacity: 8,
+        output: {
+          ids: output('ids'),
+          status: {
+            count: output('count'),
+            overflow: output('overflow'),
+            requiredCount: output('requiredCount'),
+            pairOverflow: output('pairOverflow')
+          },
+          flowOriginZoneIds: output('origin'),
+          flowDestinationZoneIds: output('destination'),
+          flowCounts: output('counts')
+        }
+      })
+    );
+    compiled = graph.compile();
+    for (let repeat = 0; repeat < 2; repeat++) {
+      submitGraph(device, compiled, undefined);
+      const result: Record<string, number[]> = {};
+      for (const [name, buffer] of outputs) result[name] = await readUint32(buffer, 1);
+      expect(result).toEqual({
+        ids: [0],
+        count: [1],
+        overflow: [0],
+        requiredCount: [1],
+        pairOverflow: [0],
+        origin: [0],
+        destination: [0],
+        counts: [1]
+      });
+    }
+  } finally {
+    compiled?.destroy();
+    positionsBuffer.destroy();
+    for (const buffer of outputBuffers) buffer.destroy();
+  }
 });

@@ -47,6 +47,8 @@ export type SpatialJoinRun = {
 export type SpatialJoinRunOptions = {
   spatialSort: boolean;
   candidateCapacity: number;
+  /** Optional fixed-size candidate scratch page for paging benchmarks. */
+  candidateTileCapacity?: number;
   leafCapacity?: number;
   spatialSortCurve?: 'morton' | 'hilbert';
   /** Hilbert processing order of the query points; omitted keeps the join default. */
@@ -121,6 +123,7 @@ export function createPolygonJoinRun(
         )
       },
       candidateCapacity: options.candidateCapacity,
+      candidateTileCapacity: options.candidateTileCapacity,
       leafCapacity: options.leafCapacity,
       spatialSort: options.spatialSort,
       spatialSortCurve: options.spatialSortCurve,

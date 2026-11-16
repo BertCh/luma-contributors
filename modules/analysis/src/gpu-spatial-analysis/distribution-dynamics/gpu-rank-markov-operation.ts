@@ -14,6 +14,7 @@ export type RankMarkovOperationProps = {
   mask?: string;
   mode?: 'full-rank' | 'geographic-rank';
   tieOrder?: 'giddy' | 'row-id';
+  rankingMethod?: 'auto' | 'pairwise' | 'sorted';
   output: {
     ranks: string;
     counts: string;
@@ -93,6 +94,7 @@ export class GPURankMarkovOperation extends GPUContributorOperation {
           mask: props.mask === undefined ? undefined : getView<'uint32'>('mask'),
           mode: props.mode,
           tieOrder: props.tieOrder,
+          rankingMethod: props.rankingMethod,
           output: {
             ranks: getView<'uint32'>('ranks'),
             counts: getView<'uint32'>('counts'),

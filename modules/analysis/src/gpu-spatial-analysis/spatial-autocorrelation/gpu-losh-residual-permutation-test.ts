@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateSpatialStatisticsBindings} from '../spatial-weights/spatial-statistics-bindings';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -52,15 +54,27 @@ export class GPULOSHResidualPermutationTest implements GPUCommandNodeProducer {
       throw new Error(`${this.id}: an explicit greater, lesser or two-sided tail is required`);
     }
     new GPULocalSpatialHeteroscedasticity(props);
+    validateDisjointWritableViews(this.id, {
+      statistic: props.output.statistic,
+      status: props.output.status,
+      normalizedResiduals: props.output.normalizedResiduals,
+      residualCount: props.output.residualCount,
+      exceedances: props.output.inference.exceedances,
+      pseudoPValues: props.output.inference.pseudoPValues,
+      adjustedPValues: props.output.inference.adjustedPValues,
+      significant: props.output.inference.significant,
+      ...props.output.inference.status
+    });
     const outputs = [
       props.output.statistic,
       props.output.status,
       props.output.normalizedResiduals,
+      props.output.residualCount,
       props.output.inference.exceedances,
       props.output.inference.pseudoPValues,
       props.output.inference.adjustedPValues,
       props.output.inference.significant,
-      props.output.inference.status.overflow
+      ...Object.values(props.output.inference.status)
     ].filter(view => view !== undefined);
     for (let index = 0; index < outputs.length; index++) {
       validateGraphOutputsDisjointFromInputs(this.id, [outputs[index]], outputs.slice(index + 1));
@@ -82,6 +96,10 @@ export class GPULOSHResidualPermutationTest implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateSpatialStatisticsBindings(graph, this.id, this.props, {
+      'row scratch': this.props.values.length * 4,
+      'permutation sums': Math.ceil(this.props.values.length / 4096) * 8 * 4
+    });
     const {props, id} = this;
     const normalizedResiduals =
       props.output.normalizedResiduals ??

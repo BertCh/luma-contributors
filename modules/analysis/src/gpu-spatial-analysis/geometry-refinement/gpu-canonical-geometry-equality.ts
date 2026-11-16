@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateRefinementShaderNumber} from './refinement-storage-validation';
 import type {
   GPUCommandGraph,
   GPUCommandNode,
@@ -15,8 +17,7 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateSinglePackedView,
-  validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 
 export type GPUCanonicalGeometryEqualityProps = {
@@ -37,6 +38,7 @@ export class GPUCanonicalGeometryEquality implements GPUCommandNodeProducer {
   constructor(props: GPUCanonicalGeometryEqualityProps) {
     this.id = props.id ?? 'canonical-geometry-equality';
     this.props = props;
+    validateRefinementShaderNumber(this.id, 'tolerance', props.tolerance ?? 0);
     for (const tree of [props.left, props.right]) {
       validateSinglePackedView(tree.positions, ['float32x2'], this.id);
       validateSinglePackedView(tree.nodes, ['uint32x4'], this.id);
@@ -59,12 +61,18 @@ export class GPUCanonicalGeometryEquality implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
-    validateGraphViewsBelongToGraph(id, graph, [
-      ...Object.values(props.left),
-      ...Object.values(props.right),
-      props.pairs,
-      props.output
-    ]);
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(
+        [
+          ...Object.values(props.left),
+          ...Object.values(props.right),
+          props.pairs,
+          props.output
+        ].map((view, index) => [`binding.${index}`, view])
+      )
+    );
     return [
       createWGSLKernelNode(graph, {
         id,

@@ -9,15 +9,28 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  createWGSLKernelNode,
+  getWGSLFloatLiteral
+} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
   validateSinglePackedView,
-  validateRequirement,
-  validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {RASTER_FINITE_WGSL, createRasterArgmaxNodes, rasterBinding} from './raster-kernel-utils';
+import {validateRasterWritableDispatches} from '../raster-time-series/raster-time-series-chunks-b';
+import {
+  validateRasterStorageBindings,
+  validateRasterRegistrationFFT
+} from './raster-binding-validation';
+import {
+  createMaskedRegistrationMeanNodes,
+  createMaskedRegistrationRefinementNodes,
+  MASKED_REGISTRATION_REDUCTION_WORKGROUP_SIZE,
+  MASKED_REGISTRATION_MEAN_WORD_COUNT,
+  MASKED_REGISTRATION_MOMENT_WORD_COUNT
+} from './raster-masked-registration-reductions';
 import type {GPURasterRegistrationProps} from './gpu-raster-registration';
 
 /** Masked mode side length: six padded (about twice the side, rounded to a power of two) correlation fields plus FFT scratch must fit device storage (512 gives 1024 squared padded cells). */
@@ -92,10 +105,39 @@ export function validateMaskedRegistrationProps(
     validateSinglePackedView(view, [view.format], id);
     validateRequirement(id, view.length >= 1, 'output views must not be empty');
   }
-  validateGraphOutputsDisjointFromInputs(id, outputs, inputs);
-  outputs.forEach((view, index) =>
-    validateGraphOutputsDisjointFromInputs(id, [view], outputs.slice(index + 1))
+  validateRegistrationWritableViews(props, id);
+}
+
+/** Caller inputs are consumed before output stages; status is read-only only in periodic finish. */
+export function validateRegistrationWritableViews(
+  props: GPURasterRegistrationProps,
+  id: string
+): void {
+  const inputs = [props.reference, props.moving, props.referenceMask, props.movingMask].filter(
+    view => view !== undefined
   );
+  const outputs = Object.values(props.output).filter(view => view !== undefined);
+  const masked = props.mode === 'masked-linear';
+  validateRasterWritableDispatches(id, inputs, outputs, [
+    {inputs, outputs: []},
+    {
+      inputs: [],
+      outputs: [
+        props.output.status,
+        ...(props.output.secondPeakRatio ? [props.output.secondPeakRatio] : [])
+      ]
+    },
+    {
+      inputs: masked ? [] : [props.output.status],
+      outputs: [
+        props.output.shift,
+        props.output.peak,
+        ...(masked
+          ? [props.output.status, ...(props.output.overlap ? [props.output.overlap] : [])]
+          : [])
+      ]
+    }
+  ]);
 }
 
 function getPaddedDimension(length: number): number {
@@ -107,13 +149,6 @@ export function getMaskedRegistrationNodes<Parameters>(
   props: GPURasterRegistrationProps,
   id: string
 ): GPUCommandNode<Parameters>[] {
-  validateGraphViewsBelongToGraph(id, graph, [
-    props.reference,
-    props.moving,
-    props.referenceMask,
-    props.movingMask,
-    ...Object.values(props.output)
-  ]);
   const width = props.grid.width;
   const height = props.grid.height;
   const count = width * height;
@@ -128,6 +163,36 @@ export function getMaskedRegistrationNodes<Parameters>(
   const radius = upsample === 1 ? 0 : Math.ceil(upsample / 2);
   const candidateWidth = radius * 2 + 1;
   const candidateCount = candidateWidth ** 2;
+  validateRasterStorageBindings(
+    graph,
+    id,
+    [
+      props.reference,
+      props.moving,
+      ...[props.referenceMask, props.movingMask].filter(view => view !== undefined),
+      ...Object.values(props.output).filter(view => view !== undefined)
+    ],
+    {
+      'masked FFT input and spectrum fields': paddedCount * 3 * 8,
+      'masked correlation fields': paddedCount * 6 * 8,
+      'masked statistics': 16,
+      'masked scores and supports': searchCount * 4,
+      'masked coarse shift': 8,
+      'masked refinement scores and supports': candidateCount * 4,
+      'masked argmax scalars': 4,
+      'masked argmax partials': Math.ceil(searchCount / 256) * 4,
+      'masked mean partials':
+        Math.ceil(count / MASKED_REGISTRATION_REDUCTION_WORKGROUP_SIZE) *
+        MASKED_REGISTRATION_MEAN_WORD_COUNT *
+        4,
+      'masked refinement moments':
+        Math.ceil(count / MASKED_REGISTRATION_REDUCTION_WORKGROUP_SIZE) *
+        candidateCount *
+        MASKED_REGISTRATION_MOMENT_WORD_COUNT *
+        4
+    }
+  );
+  validateRasterRegistrationFFT(graph, id, paddedWidth, paddedHeight, 6);
   const scalar = (view: GraphDataView<'float32x2'>) =>
     graph.createDataView(view.buffer, {
       format: 'float32',
@@ -185,29 +250,7 @@ export function getMaskedRegistrationNodes<Parameters>(
     `finite(referenceValues[referenceValuesOffset + ${source}])${props.referenceMask ? ` && referenceValidity[referenceValidityOffset + ${source}] != 0u` : ''}`;
   const movingValid = (source: string) =>
     `finite(movingValues[movingValuesOffset + ${source}])${props.movingMask ? ` && movingValidity[movingValidityOffset + ${source}] != 0u` : ''}`;
-  nodes.push(
-    createWGSLKernelNode(graph, {
-      id: `${id}-masked-statistics`,
-      operation: 'GPURasterRegistration',
-      // Serial running means over every cell of a grid of at most 512 x 512 = 262,144 cells. A
-      // parallel sum would change the float32 rounding of the means; this becomes the slowest
-      // node of the pipeline well above that size, which MAXIMUM_MASKED_REGISTRATION_DIMENSION prevents.
-      invocationCount: 1,
-      bindings: [
-        rasterBinding('referenceValues', props.reference),
-        rasterBinding('movingValues', props.moving),
-        ...maskBindings,
-        rasterBinding('statistics', statistics, true)
-      ],
-      declarations: RASTER_FINITE_WGSL,
-      body: `var referenceMean = 0.0; var movingMean = 0.0; var referenceCount = 0u; var movingCount = 0u;
-for (var cell = 0u; cell < ${count}u; cell++) {
-  if (${referenceValid('cell')}) { referenceCount++; referenceMean = referenceMean * (1.0 - 1.0 / f32(referenceCount)) + referenceValues[referenceValuesOffset + cell] / f32(referenceCount); }
-  if (${movingValid('cell')}) { movingCount++; movingMean = movingMean * (1.0 - 1.0 / f32(movingCount)) + movingValues[movingValuesOffset + cell] / f32(movingCount); }
-}
-statistics[statisticsOffset] = referenceMean; statistics[statisticsOffset + 1u] = movingMean; statistics[statisticsOffset + 2u] = f32(referenceCount); statistics[statisticsOffset + 3u] = f32(movingCount);`
-    })
-  );
+  nodes.push(...createMaskedRegistrationMeanNodes(graph, props, id, statistics));
   nodes.push(
     createWGSLKernelNode(graph, {
       id: `${id}-masked-pack`,
@@ -296,7 +339,7 @@ products[productsOffset + index * 2u] = dot(first, second); products[productsOff
 let coordinate = vec2<u32>((shift + vec2<i32>(${paddedWidth}, ${paddedHeight})) % vec2<i32>(${paddedWidth}, ${paddedHeight})); let cell = coordinate.y * ${paddedWidth}u + coordinate.x;
 var moments: array<f32, 6>; for (var channel = 0u; channel < 6u; channel++) { moments[channel] = correlations[correlationsOffset + (channel * ${paddedCount}u + cell) * 2u]; }
 let support = max(0.0, floor(moments[0] + 0.5)); supports[supportsOffset + index] = u32(support); var score = missing();
-let required = max(${props.minimumOverlapCount ?? 3}.0, ceil(min(statistics[statisticsOffset + 2u], statistics[statisticsOffset + 3u]) * ${props.minimumOverlapFraction ?? 0.3}));
+let required = max(${props.minimumOverlapCount ?? 3}.0, ceil(min(statistics[statisticsOffset + 2u], statistics[statisticsOffset + 3u]) * ${getWGSLFloatLiteral(props.minimumOverlapFraction ?? 0.3)}));
 if (support >= required) { let referenceVariance = moments[3] - moments[1] * moments[1] / support; let movingVariance = moments[4] - moments[2] * moments[2] / support;
   if (referenceVariance > max(1e-12, abs(moments[3]) * 1e-6) && movingVariance > max(1e-12, abs(moments[4]) * 1e-6)) { score = clamp((moments[5] - moments[1] * moments[2] / support) / sqrt(referenceVariance * movingVariance), -1.0, 1.0); }
 }
@@ -352,7 +395,7 @@ scores[scoresOffset + index] = score;`
       declarations: RASTER_FINITE_WGSL,
       body: `let best = bestScore[bestScoreOffset]; let secondary = secondaryScore[secondaryScoreOffset]; let selected = bestIndex[bestIndexOffset];
 let coordinate = vec2<i32>(i32(selected % ${searchWidth}u), i32(selected / ${searchWidth}u));
-var code = 0u; if (best < ${props.minimumCorrelation ?? 0}) { code = 3u; } else if (best - secondary <= max(abs(best), 1e-12) * ${props.ambiguityTolerance ?? 1e-4}) { code = 2u; }
+var code = 0u; if (best < ${getWGSLFloatLiteral(props.minimumCorrelation ?? 0)}) { code = 3u; } else if (best - secondary <= max(abs(best), 1e-12) * ${getWGSLFloatLiteral(props.ambiguityTolerance ?? 1e-4)}) { code = 2u; }
 ${props.output.secondPeakRatio ? 'var ratio = missing(); if (code != 3u && best > 0.0) { ratio = clamp(max(secondary, 0.0) / best, 0.0, 1.0); } secondPeakRatio[secondPeakRatioOffset] = ratio;' : ''}
 coarse[coarseOffset] = f32(coordinate.x - ${maximumShift[0]}); coarse[coarseOffset + 1u] = f32(coordinate.y - ${maximumShift[1]}); status[statusOffset] = code;`
     })
@@ -386,70 +429,31 @@ function getMaskedRefinementNodes<Parameters>(
   radius: number,
   upsample: number
 ): GPUCommandNode<Parameters>[] {
-  const width = props.grid.width;
-  const height = props.grid.height;
-  const count = width * height;
   const candidateCount = candidateWidth ** 2;
-  const maximumShift = props.maximumShift ?? [width - 1, height - 1];
   const shiftOutput = graph.createDataView(props.output.shift.buffer, {
     format: 'float32',
     byteOffset: props.output.shift.byteOffset,
     length: props.output.shift.length * 2
   });
   return [
-    createWGSLKernelNode(graph, {
-      id: `${id}-masked-refine`,
-      operation: 'GPURasterRegistration',
-      // One invocation per refinement candidate (at most 33 x 33), each looping over every
-      // reference cell (at most 262,144): parallel over candidates only. Splitting the cell loop
-      // needs per-group Welford moments and a deterministic combine; not done here.
-      invocationCount: candidateCount,
-      workgroupSize: 32,
-      bindings: [
-        rasterBinding('reference', props.reference),
-        rasterBinding('moving', props.moving),
-        ...(props.referenceMask ? [rasterBinding('referenceValidity', props.referenceMask)] : []),
-        ...(props.movingMask ? [rasterBinding('movingValidity', props.movingMask)] : []),
-        rasterBinding('coarse', coarse),
-        rasterBinding('statistics', statistics),
-        rasterBinding('refined', refined, true),
-        rasterBinding('refinedSupport', refinedSupport, true)
-      ],
-      declarations: RASTER_FINITE_WGSL,
-      body: `let shift = vec2<f32>(coarse[coarseOffset], coarse[coarseOffset + 1u]) + (vec2<f32>(f32(index % ${candidateWidth}u), f32(index / ${candidateWidth}u)) - vec2<f32>(${radius}.0)) / ${upsample}.0;
-refined[refinedOffset + index] = missing(); refinedSupport[refinedSupportOffset + index] = 0u;
-if (any(abs(shift) > vec2<f32>(${maximumShift[0]}.0, ${maximumShift[1]}.0))) { return; }
-var support = 0u; var referenceMean = 0.0; var movingMean = 0.0; var covariance = 0.0; var referenceVariance = 0.0; var movingVariance = 0.0;
-for (var cell = 0u; cell < ${count}u; cell++) {
-  let referenceValue = reference[referenceOffset + cell] - statistics[statisticsOffset];
-  if (!finite(referenceValue) ${props.referenceMask ? '|| referenceValidity[referenceValidityOffset + cell] == 0u' : ''}) { continue; }
-  let coordinate = vec2<f32>(f32(cell % ${width}u), f32(cell / ${width}u)) - shift;
-  if (any(coordinate < vec2<f32>(0.0)) || any(coordinate > vec2<f32>(${width - 1}.0, ${height - 1}.0))) { continue; }
-  let lower = vec2<i32>(floor(coordinate)); let fraction = fract(coordinate); var movingValue = 0.0; var valid = true;
-  for (var corner = 0u; corner < 4u; corner++) {
-    let offset = vec2<i32>(i32(corner % 2u), i32(corner / 2u));
-    let weight = select(1.0 - fraction.x, fraction.x, offset.x != 0) * select(1.0 - fraction.y, fraction.y, offset.y != 0);
-    if (weight <= 0.0) { continue; }
-    let position = lower + offset;
-    if (any(position < vec2<i32>(0)) || any(position >= vec2<i32>(${width}, ${height}))) { valid = false; break; }
-    let source = u32(position.y) * ${width}u + u32(position.x); let value = moving[movingOffset + source];
-    if (!finite(value) ${props.movingMask ? '|| movingValidity[movingValidityOffset + source] == 0u' : ''}) { valid = false; break; }
-    movingValue += weight * (value - statistics[statisticsOffset + 1u]);
-  }
-  if (!valid) { continue; }
-  support++; let referenceDifference = referenceValue - referenceMean; let movingDifference = movingValue - movingMean;
-  referenceMean += referenceDifference / f32(support); movingMean += movingDifference / f32(support);
-  covariance += referenceDifference * (movingValue - movingMean); referenceVariance += referenceDifference * (referenceValue - referenceMean); movingVariance += movingDifference * (movingValue - movingMean);
-}
-refinedSupport[refinedSupportOffset + index] = support;
-let required = max(${props.minimumOverlapCount ?? 3}.0, ceil(min(statistics[statisticsOffset + 2u], statistics[statisticsOffset + 3u]) * ${props.minimumOverlapFraction ?? 0.3}));
-if (f32(support) >= required && referenceVariance > 1e-12 && movingVariance > 1e-12) { refined[refinedOffset + index] = clamp(covariance / sqrt(referenceVariance * movingVariance), -1.0, 1.0); }`
-    }),
+    ...createMaskedRegistrationRefinementNodes(
+      graph,
+      props,
+      id,
+      coarse,
+      statistics,
+      refined,
+      refinedSupport,
+      candidateWidth,
+      radius,
+      upsample
+    ),
     createWGSLKernelNode(graph, {
       id: `${id}-masked-finish`,
       operation: 'GPURasterRegistration',
       // Serial over the refinement candidates (at most 33 x 33 = 1089), the tie rule prefers the
       // candidate nearest the coarse peak; the loop is bounded by the upsample factor, not by raster size.
+      // contract-allow: single-invocation tie selection over at most (MAXIMUM_MASKED_UPSAMPLE_FACTOR + 1) squared candidates.
       invocationCount: 1,
       bindings: [
         rasterBinding('refined', refined),
@@ -466,7 +470,7 @@ for (var candidate = 0u; candidate < ${candidateCount}u; candidate++) {
   let score = refined[refinedOffset + candidate]; let offset = vec2<i32>(i32(candidate % ${candidateWidth}u) - ${radius}, i32(candidate / ${candidateWidth}u) - ${radius}); let distance = u32(offset.x * offset.x + offset.y * offset.y);
   if (finite(score) && (score > best || (score == best && distance < bestDistance))) { best = score; selected = candidate; bestDistance = distance; }
 }
-var code = status[statusOffset]; if (code == 0u && best < ${props.minimumCorrelation ?? 0}) { code = 3u; }
+var code = status[statusOffset]; if (code == 0u && best < ${getWGSLFloatLiteral(props.minimumCorrelation ?? 0)}) { code = 3u; }
 let valid = code == 0u; let result = vec2<f32>(coarse[coarseOffset], coarse[coarseOffset + 1u]) + (vec2<f32>(f32(selected % ${candidateWidth}u), f32(selected / ${candidateWidth}u)) - vec2<f32>(${radius}.0)) / ${upsample}.0;
 shift[shiftOffset] = select(missing(), result.x, valid); shift[shiftOffset + 1u] = select(missing(), result.y, valid); peak[peakOffset] = select(missing(), best, valid); status[statusOffset] = code;
 ${props.output.overlap ? 'overlap[overlapOffset] = select(0u, refinedSupport[refinedSupportOffset + selected], valid);' : ''}`

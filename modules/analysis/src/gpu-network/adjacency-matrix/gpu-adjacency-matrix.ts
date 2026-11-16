@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {SCALED_QUOTIENT_WGSL} from '../../analysis-core/kernels/scaled-quotient-wgsl';
+
+import {validateNetworkViewBindings, validateNetworkWritableViews} from '../network-view-utils';
+
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -21,9 +25,9 @@ import type {WGSLKernelBinding} from '../../analysis-core/kernels/wgsl-kernel-no
 import {
   captureGraphCommandNodes,
   validateCapacity,
+  validateFiniteNumber,
   validateSinglePackedView,
-  validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 
 /** Number of words of the per-frame `parameters` view: `[rowStart, rowEnd, colStart, colEnd]`. */
@@ -45,6 +49,11 @@ export type GPUAdjacencyMatrixSettings = {
   /** Matrix resolution `R` of the {@link GPUAdjacencyMatrix}, used to bound the window extents. */
   resolution: number;
 };
+
+/** Shader weight scales must remain positive, representable float32 literals. */
+const ADJACENCY_MATRIX_MINIMUM_WEIGHT_SCALE = 2 ** -149;
+/** Largest finite float32 scale; larger values generate an invalid infinite WGSL literal. */
+const ADJACENCY_MATRIX_MAXIMUM_WEIGHT_SCALE = (2 - 2 ** -23) * 2 ** 127;
 
 /**
  * Packs the per-frame zoom window into the four `uint32` words of the `parameters` view.
@@ -185,6 +194,23 @@ export class GPUAdjacencyMatrix implements GPUCommandNodeProducer {
   constructor(props: GPUAdjacencyMatrixProps) {
     this.id = props.id ?? 'adjacency-matrix';
     this.props = props;
+    validateNetworkWritableViews(this.id, props.output, [
+      ...(getFusedBinBindingCount(props) <=
+      (props.topology.offsets.buffer.graph as GPUCommandGraph).device.limits
+        .maxStorageBuffersPerShaderStage
+        ? [{outputs: {counts: props.output.counts, weightSums: props.output.weightSums}}]
+        : []),
+      {
+        outputs: {
+          maximumCount: props.output.maximumCount,
+          maximumWeightSum: props.output.maximumWeightSum
+        },
+        inputs: {
+          counts: props.output.maximumCount ? props.output.counts : undefined,
+          weightSums: props.output.maximumWeightSum ? props.output.weightSums : undefined
+        }
+      }
+    ]);
     const {id} = this;
     this.nodeCount = validateGPUNetworkTopology(id, props.topology).nodeCount;
     this.resolution = props.resolution;
@@ -196,6 +222,13 @@ export class GPUAdjacencyMatrix implements GPUCommandNodeProducer {
     if (!Number.isFinite(this.weightScale) || this.weightScale <= 0) {
       throw new Error(`${id} weightScale must be positive and finite`);
     }
+    validateFiniteNumber(
+      id,
+      'weightScale',
+      this.weightScale,
+      ADJACENCY_MATRIX_MINIMUM_WEIGHT_SCALE,
+      ADJACENCY_MATRIX_MAXIMUM_WEIGHT_SCALE
+    );
     for (const [name, view, length] of [
       ['nodeMask', props.nodeMask, this.nodeCount],
       ['order', props.order, this.nodeCount],
@@ -276,7 +309,7 @@ export class GPUAdjacencyMatrix implements GPUCommandNodeProducer {
     const {id, props, nodeCount, resolution} = this;
     const {output} = props;
     const {offsets, neighbors, weights} = props.topology;
-    validateGraphViewsBelongToGraph(id, graph, [
+    validateNetworkViewBindings(id, graph, [
       ...getGPUNetworkTopologyViews(props.topology),
       props.nodeMask,
       props.edgeMask,
@@ -290,6 +323,7 @@ export class GPUAdjacencyMatrix implements GPUCommandNodeProducer {
     if (output.texture && output.texture.texture.graph !== graph) {
       throw new Error(`${id} views must belong to the target graph`);
     }
+    validateNetworkViewBindings(id, graph, [], {textureConversion: resolution * resolution * 4});
     const operation = 'GPUAdjacencyMatrix';
     const directed = Boolean(props.directed);
     const mirror = !directed && Boolean(props.mirrorSlots);
@@ -413,7 +447,7 @@ export class GPUAdjacencyMatrix implements GPUCommandNodeProducer {
           invocationCount: nodeCount,
           declarations: `const NODE_COUNT: u32 = ${nodeCount}u;
 const RESOLUTION: u32 = ${resolution}u;
-const WEIGHT_SCALE: f32 = ${Math.fround(this.weightScale)};
+const WEIGHT_SCALE: f32 = ${Math.fround(this.weightScale).toExponential(9)}f;
 // Rounds the float32 product half up. The product feeds only floor() and comparisons, so no
 // compiler can fuse it into an addition, and above 2^23 (where every float32 is an integer and
 // adding 0.5 would round to the even neighbour) the product is returned as it is.
@@ -474,14 +508,7 @@ fn getBin(position: u32, start: u32, end: u32) -> u32 {
     if (output.weightSums) {
       binTargets.push({kind: 'weight', view: output.weightSums});
     }
-    const fusedBindingCount =
-      2 +
-      windowBinding.length +
-      Number(Boolean(props.order)) +
-      Number(Boolean(props.nodeMask)) +
-      Number(Boolean(props.edgeMask)) +
-      Number(binTargets.length > 1) +
-      binTargets.length;
+    const fusedBindingCount = getFusedBinBindingCount(props);
     if (
       binTargets.length === 1 ||
       fusedBindingCount <= graph.device.limits.maxStorageBuffersPerShaderStage
@@ -586,7 +613,8 @@ fn getBin(position: u32, start: u32, end: u32) -> u32 {
             }
           ],
           invocationCount: resolution * resolution,
-          body: `valuesOut[valuesOutOffset + index] = f32(source[sourceOffset + index]) / ${scale}${scale === 1 ? '.0' : ''};`
+          declarations: SCALED_QUOTIENT_WGSL,
+          body: `valuesOut[valuesOutOffset + index] = getScaledQuotient(f32(source[sourceOffset + index]), ${scale.toExponential(9)}f, 1.0, 0);`
         })
       );
       const texture = output.texture;
@@ -606,4 +634,16 @@ fn getBin(position: u32, start: u32, end: u32) -> u32 {
     }
     return nodes;
   }
+}
+
+/** Must match the optional read bindings and count/weight targets of the fused bin dispatch. */
+function getFusedBinBindingCount(props: GPUAdjacencyMatrixProps): number {
+  return (
+    3 +
+    Number(Boolean(props.parameters)) +
+    Number(Boolean(props.order)) +
+    Number(Boolean(props.nodeMask)) +
+    Number(Boolean(props.edgeMask)) +
+    2 * Number(Boolean(props.output.weightSums))
+  );
 }

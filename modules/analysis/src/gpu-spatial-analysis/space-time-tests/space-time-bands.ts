@@ -43,7 +43,7 @@ export function validateSpaceTimeBandEdges(
   }
   edges.forEach((edge, index) => {
     // Edges compare as float32 on the GPU: two edges that round together would make an empty band.
-    if (!Number.isFinite(edge) || edge < 0) {
+    if (!Number.isFinite(Math.fround(edge)) || edge < 0) {
       throw new Error(`${id} ${name} edges must be finite and non-negative`);
     }
     if (index > 0 && Math.fround(edge) <= Math.fround(edges[index - 1])) {

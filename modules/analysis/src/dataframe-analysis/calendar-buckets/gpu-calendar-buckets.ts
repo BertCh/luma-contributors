@@ -3,14 +3,20 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  createGraphChunkGroupKernelNode,
+  validateGraphChunkGroupKernelSupport
+} from '../../analysis-core/kernels/graph-chunk-groups';
+
+import {
+  getBoundedDispatchLayout,
+  GraphDataView,
+  GraphVectorView,
   type GPUCommandGraph,
-  type GPUCommandNode,
-  type GraphDataView
+  type GPUCommandNode
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   createFillNode,
-  createWGSLKernelNode,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
@@ -20,11 +26,18 @@ import {
 } from '../../analysis-core/contracts/temporal-context';
 import type {ArrowAnalyticsTimeUnit} from '../../analysis-core/graph-support/arrow-analytics-normalization';
 import {
-  validateGPUStorageBindingByteLength,
+  getGraphViewChunks,
+  validateCommandNodeBudget,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  planGraphChunkDispatch,
+  validateGraphChunkBindingRanges,
+  validateGraphChunkDispatchBindings,
+  type GraphChunkDispatchPlan,
+  validateDisjointWritableViews
+} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {
   GPU_CALENDAR_BUCKETS_MATRIX_LENGTH,
   GPU_CALENDAR_BUCKETS_MAXIMUM_DAYS,
@@ -34,11 +47,19 @@ import {
 const OPERATION = 'GPUCalendarBuckets';
 /** Storage bindings a kernel may use on the WebGPU default limit. */
 const MAXIMUM_BINDINGS = 8;
+/** Fixed workgroup size keeps every row chunk on the same pipeline specialization. */
+const WORKGROUP_SIZE = 256;
 /** The decode reads Int64 words and turns them into civil dates, so it needs a Unix-epoch count. */
 const TEMPORAL_CONTEXT_SUPPORT: GPUTemporalContextSupport = Object.freeze({
   encodings: Object.freeze(['int64-words'] as const),
   unixEpoch: true
 });
+
+/** Preserves packed row types by default and the caller's chunked view kind when requested. */
+type GPUCalendarBucketsRowView<
+  Format extends GraphDataView['format'],
+  Rows extends GraphDataView | GraphVectorView
+> = Rows extends GraphVectorView ? GraphVectorView<Format> : GraphDataView<Format>;
 
 /**
  * Caller-owned output columns of {@link GPUCalendarBuckets}. Each is optional and which ones are
@@ -46,33 +67,34 @@ const TEMPORAL_CONTEXT_SUPPORT: GPUTemporalContextSupport = Object.freeze({
  * row; a masked or invalid row writes `0xffffffff` to `uint32` columns and `-2^31` to `year` and
  * `isoWeekYear`.
  */
-export type GPUCalendarBucketsOutput = {
-  /** Proleptic Gregorian year of the local time, astronomical numbering (year 0 exists). */
-  year?: GraphDataView<'sint32'>;
-  /** Month, 1 to 12. */
-  month?: GraphDataView<'uint32'>;
-  /** Day of the month, 1 to 31. */
-  dayOfMonth?: GraphDataView<'uint32'>;
-  /** Hour, 0 to 23. */
-  hour?: GraphDataView<'uint32'>;
-  /** Minute, 0 to 59. */
-  minute?: GraphDataView<'uint32'>;
-  /** Weekday, 0 to 6, where 0 is the `firstDayOfWeek` parameter (Monday by default). */
-  weekday?: GraphDataView<'uint32'>;
-  /** Day of the year, 1 to 366. */
-  dayOfYear?: GraphDataView<'uint32'>;
-  /** ISO 8601 week number, 1 to 53 (weeks start on Monday, week 1 contains the first Thursday). */
-  isoWeek?: GraphDataView<'uint32'>;
-  /** ISO 8601 week-based year, which differs from `year` around January 1. */
-  isoWeekYear?: GraphDataView<'sint32'>;
-  /** Quarter of the year, 1 to 4. */
-  quarter?: GraphDataView<'uint32'>;
-  /**
-   * Hour by weekday count matrix, `weekday * 24 + hour`, at least 168 elements. It is cleared on
-   * every encoding, then every valid row adds one. The counts are exact integers.
-   */
-  hourWeekdayCounts?: GraphDataView<'uint32'>;
-};
+export type GPUCalendarBucketsOutput<Rows extends GraphDataView | GraphVectorView = GraphDataView> =
+  {
+    /** Proleptic Gregorian year of the local time, astronomical numbering (year 0 exists). */
+    year?: GPUCalendarBucketsRowView<'sint32', Rows>;
+    /** Month, 1 to 12. */
+    month?: GPUCalendarBucketsRowView<'uint32', Rows>;
+    /** Day of the month, 1 to 31. */
+    dayOfMonth?: GPUCalendarBucketsRowView<'uint32', Rows>;
+    /** Hour, 0 to 23. */
+    hour?: GPUCalendarBucketsRowView<'uint32', Rows>;
+    /** Minute, 0 to 59. */
+    minute?: GPUCalendarBucketsRowView<'uint32', Rows>;
+    /** Weekday, 0 to 6, where 0 is the `firstDayOfWeek` parameter (Monday by default). */
+    weekday?: GPUCalendarBucketsRowView<'uint32', Rows>;
+    /** Day of the year, 1 to 366. */
+    dayOfYear?: GPUCalendarBucketsRowView<'uint32', Rows>;
+    /** ISO 8601 week number, 1 to 53 (weeks start on Monday, week 1 contains the first Thursday). */
+    isoWeek?: GPUCalendarBucketsRowView<'uint32', Rows>;
+    /** ISO 8601 week-based year, which differs from `year` around January 1. */
+    isoWeekYear?: GPUCalendarBucketsRowView<'sint32', Rows>;
+    /** Quarter of the year, 1 to 4. */
+    quarter?: GPUCalendarBucketsRowView<'uint32', Rows>;
+    /**
+     * Hour by weekday count matrix, `weekday * 24 + hour`, at least 168 elements. It is cleared on
+     * every encoding, then every valid row adds one. The counts are exact integers.
+     */
+    hourWeekdayCounts?: GraphDataView<'uint32'>;
+  };
 
 /**
  * Time zone transition table read by {@link GPUCalendarBuckets}; build it with
@@ -100,54 +122,55 @@ export type GPUCalendarBucketsTimeZone = {
  * (needs a new graph): the row count, the unit, which outputs are present, and whether `mask`,
  * `utcOffsets` and `timeZone` are present, and the length of the `timeZone` table.
  */
-export type GPUCalendarBucketsProps = {
-  /** Prefix for generated node IDs. Defaults to `'calendar-buckets'`. */
-  id?: string;
-  /**
-   * Epoch times as signed 64-bit two's complement words, one `uint32x2` `(low, high)` row per row
-   * (for example from `getInt64TimeWords`), in the unit given by `unit`. Times before 1970 are
-   * negative.
-   */
-  timestamps: GraphDataView<'uint32x2'>;
-  /**
-   * Unit of `timestamps`: `'second'`, `'millisecond'`, `'microsecond'` or `'nanosecond'`, the unit
-   * of an Arrow timestamp column. Defaults to `'millisecond'`. Compile-time (a new graph). Times
-   * are floored to whole milliseconds before the calendar decode, so a negative sub-millisecond
-   * time lands in the earlier millisecond. The time zone `transitions` stay epoch milliseconds.
-   */
-  unit?: ArrowAnalyticsTimeUnit;
-  /**
-   * Temporal context of `timestamps`, for example the `temporalContext` of an Arrow upload. Supplies
-   * the unit. It must be `'int64-words'` counted from the Unix epoch, and an explicit `unit` must
-   * agree with it. Its `timeZone` is not applied: local time comes from `parameters`, `utcOffsets`
-   * or `timeZone` below.
-   */
-  temporalContext?: GPUTemporalContext;
-  /** Optional packed `uint32` row mask; zero makes the row invalid. */
-  mask?: GraphDataView<'uint32'>;
-  /**
-   * Optional UTC offset in minutes per row (`sint32`, within `[-1440, 1440]`), which overrides the
-   * fixed offset in `parameters`. This is the only way to express daylight saving time: the caller
-   * precomputes each row's offset from its zone rules. An out-of-range offset makes the row invalid.
-   */
-  utcOffsets?: GraphDataView<'sint32'>;
-  /**
-   * Optional time zone transition table. Each row binary-searches its instant in `transitions`
-   * (signed 64-bit compare, the last transition at or before the row) and uses that offset, so
-   * daylight saving time needs no per-row CPU offsets. Mutually exclusive with `utcOffsets`; it
-   * overrides the fixed offset in `parameters`. A table offset beyond +-86400 seconds makes the
-   * row invalid. Build it with `getGPUTimeZoneTransitionTable`.
-   */
-  timeZone?: GPUCalendarBucketsTimeZone;
-  /**
-   * Per-frame `sint32` view of at least 2 elements written with
-   * `getGPUCalendarBucketsParameterValues`: the fixed UTC offset in minutes (a fixed offset, not a
-   * zone) and the first day of the week.
-   */
-  parameters: GraphDataView<'sint32'>;
-  /** Caller-owned outputs. At least one must be present. */
-  output: GPUCalendarBucketsOutput;
-};
+export type GPUCalendarBucketsProps<Rows extends GraphDataView | GraphVectorView = GraphDataView> =
+  {
+    /** Prefix for generated node IDs. Defaults to `'calendar-buckets'`. */
+    id?: string;
+    /**
+     * Epoch times as signed 64-bit two's complement words, one `uint32x2` `(low, high)` row per row
+     * (for example from `getInt64TimeWords`), in the unit given by `unit`. Times before 1970 are
+     * negative.
+     */
+    timestamps: GPUCalendarBucketsRowView<'uint32x2', Rows>;
+    /**
+     * Unit of `timestamps`: `'second'`, `'millisecond'`, `'microsecond'` or `'nanosecond'`, the unit
+     * of an Arrow timestamp column. Defaults to `'millisecond'`. Compile-time (a new graph). Times
+     * are floored to whole milliseconds before the calendar decode, so a negative sub-millisecond
+     * time lands in the earlier millisecond. The time zone `transitions` stay epoch milliseconds.
+     */
+    unit?: ArrowAnalyticsTimeUnit;
+    /**
+     * Temporal context of `timestamps`, for example the `temporalContext` of an Arrow upload. Supplies
+     * the unit. It must be `'int64-words'` counted from the Unix epoch, and an explicit `unit` must
+     * agree with it. Its `timeZone` is not applied: local time comes from `parameters`, `utcOffsets`
+     * or `timeZone` below.
+     */
+    temporalContext?: GPUTemporalContext;
+    /** Optional packed `uint32` row mask; zero makes the row invalid. */
+    mask?: GPUCalendarBucketsRowView<'uint32', Rows>;
+    /**
+     * Optional UTC offset in minutes per row (`sint32`, within `[-1440, 1440]`), which overrides the
+     * fixed offset in `parameters`. This is the only way to express daylight saving time: the caller
+     * precomputes each row's offset from its zone rules. An out-of-range offset makes the row invalid.
+     */
+    utcOffsets?: GPUCalendarBucketsRowView<'sint32', Rows>;
+    /**
+     * Optional time zone transition table. Each row binary-searches its instant in `transitions`
+     * (signed 64-bit compare, the last transition at or before the row) and uses that offset, so
+     * daylight saving time needs no per-row CPU offsets. Mutually exclusive with `utcOffsets`; it
+     * overrides the fixed offset in `parameters`. A table offset beyond +-86400 seconds makes the
+     * row invalid. Build it with `getGPUTimeZoneTransitionTable`.
+     */
+    timeZone?: GPUCalendarBucketsTimeZone;
+    /**
+     * Per-frame `sint32` view of at least 2 elements written with
+     * `getGPUCalendarBucketsParameterValues`: the fixed UTC offset in minutes (a fixed offset, not a
+     * zone) and the first day of the week.
+     */
+    parameters: GraphDataView<'sint32'>;
+    /** Caller-owned outputs. At least one must be present. */
+    output: GPUCalendarBucketsOutput<Rows>;
+  };
 
 type OutputSpec = {
   name: keyof GPUCalendarBucketsOutput;
@@ -197,37 +220,51 @@ const COLUMN_OUTPUTS: readonly {
  * weekday matrix counts only valid rows, with integer `atomicAdd`, so it is deterministic.
  *
  * Because WebGPU allows 8 storage bindings per kernel, the outputs are split over as many decode
- * kernels as needed; each recomputes the (cheap) decode. Inputs must be single packed views.
+ * kernels as needed; each recomputes the (cheap) decode. Row inputs and columns may be chunked
+ * with matching ordered chunk lengths. Parameters, the time zone table and the count matrix stay
+ * packed. Every chunk must fit the device storage binding limit; total rows fit uint32 counts.
  */
-export class GPUCalendarBuckets implements GPUCommandNodeProducer {
+export class GPUCalendarBuckets<
+  Props extends GPUCalendarBucketsProps<GraphDataView | GraphVectorView> = GPUCalendarBucketsProps
+> implements GPUCommandNodeProducer
+{
   /** Prefix for every node ID. */
   readonly id: string;
   /** Validated properties. */
-  readonly props: GPUCalendarBucketsProps;
+  readonly props: Props & GPUCalendarBucketsProps<Props['timestamps']>;
   /** Number of input rows. */
   readonly rowCount: number;
   /** Unit of `timestamps`, from `temporalContext` or `unit`. */
   readonly unit: ArrowAnalyticsTimeUnit;
 
-  constructor(props: GPUCalendarBucketsProps) {
+  readonly estimatedCommandNodeCount: number;
+  private readonly chunkPlan: GraphChunkDispatchPlan;
+
+  constructor(props: Props) {
     this.id = props.id ?? 'calendar-buckets';
-    this.props = props;
+    this.props = props as Props & GPUCalendarBucketsProps<Props['timestamps']>;
     const id = this.id;
     const {output} = props;
     this.unit = resolveCalendarUnit(id, props);
-    validateSinglePackedView(props.timestamps, ['uint32x2'], `${id} timestamps`);
+    for (const chunk of getGraphViewChunks(props.timestamps)) {
+      validateSinglePackedView(chunk, ['uint32x2'], `${id} timestamps`);
+    }
     this.rowCount = props.timestamps.length;
     if (this.rowCount < 1) {
       throw new Error(`${id} needs at least one row`);
     }
     if (props.mask) {
-      validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
+      for (const chunk of getGraphViewChunks(props.mask)) {
+        validateSinglePackedView(chunk, ['uint32'], `${id} mask`);
+      }
       if (props.mask.length !== this.rowCount) {
         throw new Error(`${id} mask length must equal timestamps length`);
       }
     }
     if (props.utcOffsets) {
-      validateSinglePackedView(props.utcOffsets, ['sint32'], `${id} utcOffsets`);
+      for (const chunk of getGraphViewChunks(props.utcOffsets)) {
+        validateSinglePackedView(chunk, ['sint32'], `${id} utcOffsets`);
+      }
       if (props.utcOffsets.length !== this.rowCount) {
         throw new Error(`${id} utcOffsets length must equal timestamps length`);
       }
@@ -262,11 +299,13 @@ export class GPUCalendarBuckets implements GPUCommandNodeProducer {
         continue;
       }
       outputCount++;
-      validateSinglePackedView(
-        view,
-        [column.signed ? 'sint32' : 'uint32'],
-        `${id} output.${column.name}`
-      );
+      for (const chunk of getGraphViewChunks(view)) {
+        validateSinglePackedView(
+          chunk,
+          [column.signed ? 'sint32' : 'uint32'],
+          `${id} output.${column.name}`
+        );
+      }
       if (view.length < this.rowCount) {
         throw new Error(`${id} output.${column.name} must hold one row per timestamp`);
       }
@@ -288,24 +327,136 @@ export class GPUCalendarBuckets implements GPUCommandNodeProducer {
       throw new Error(`${id} needs at least one output`);
     }
     validateGraphOutputsDisjointFromInputs(id, this.getOutputViews(), this.getInputViews());
+    // Preserve packed output capacity: only its row prefix participates in row dispatch.
+    const columns = Object.fromEntries(
+      COLUMN_OUTPUTS.map(({name}) => {
+        const view = output[name];
+        return [
+          name,
+          view instanceof GraphDataView && view.length > this.rowCount
+            ? new GraphDataView(view.buffer, {...view, length: this.rowCount})
+            : view
+        ];
+      })
+    );
+    this.chunkPlan = planGraphChunkDispatch(id, {
+      timestamps: props.timestamps,
+      mask: props.mask,
+      utcOffsets: props.utcOffsets,
+      ...columns
+    });
+    const inputBindingCount =
+      2 +
+      Number(Boolean(props.mask)) +
+      Number(Boolean(props.utcOffsets)) +
+      (props.timeZone ? 2 : 0);
+    const packedMatrix = output.hourWeekdayCounts;
+    const matrixWrites = packedMatrix
+      ? new GraphDataView(packedMatrix.buffer, {
+          ...packedMatrix,
+          length: GPU_CALENDAR_BUCKETS_MATRIX_LENGTH
+        })
+      : undefined;
+    const writableFields = [
+      ...COLUMN_OUTPUTS.filter(column => output[column.name]).map(column => columns[column.name]),
+      ...(packedMatrix ? [packedMatrix] : [])
+    ];
+    const dispatches = [];
+    for (
+      let first = 0;
+      first < writableFields.length;
+      first += MAXIMUM_BINDINGS - inputBindingCount
+    ) {
+      dispatches.push(writableFields.slice(first, first + MAXIMUM_BINDINGS - inputBindingCount));
+    }
+    {
+      const writableOutputs: Readonly<Record<string, GraphDataView | GraphVectorView | undefined>> =
+        {...columns, hourWeekdayCounts: matrixWrites};
+      const publicationPasses: readonly (readonly (
+        | GraphDataView
+        | GraphVectorView
+        | undefined
+      )[])[] = dispatches;
+      // Model all logical writes as separate chunks; only the explicit publication groups coexist.
+      const writableWordChunks = Object.values(writableOutputs)
+        .flatMap(view => (view ? getGraphViewChunks(view) : []))
+        .map(
+          view =>
+            new GraphDataView(view.buffer, {
+              format: 'uint32',
+              length: (view.length * view.rowByteLength) / 4,
+              byteOffset: view.byteOffset,
+              byteStride: 4,
+              rowByteLength: 4
+            })
+        );
+      const writableWordCount = writableWordChunks.reduce(
+        (total, chunk) => total + chunk.length,
+        0
+      );
+      validateDisjointWritableViews(id, {
+        outputs: new GraphVectorView({
+          id: `${id}-writable-ranges`,
+          name: 'outputs',
+          format: 'uint32',
+          length: writableWordCount,
+          valueLength: writableWordCount,
+          stride: 1,
+          byteStride: 4,
+          rowByteLength: 4,
+          data: writableWordChunks
+        })
+      });
+      for (const fields of publicationPasses) {
+        validateDisjointWritableViews(
+          id,
+          Object.fromEntries(fields.map((view, index) => [String(index), view]))
+        );
+      }
+    }
+    this.estimatedCommandNodeCount =
+      Number(Boolean(output.hourWeekdayCounts)) +
+      this.chunkPlan.nonemptyChunkCount *
+        Math.ceil(outputCount / (MAXIMUM_BINDINGS - inputBindingCount));
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
   }
 
   /** Returns the optional fill node of the matrix, then the decode kernels in output order. */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {props, id, rowCount, unit} = this;
+    const {props, id, unit, chunkPlan} = this;
     const {output} = props;
-    validateGraphViewsBelongToGraph(id, graph, [...this.getInputViews(), ...this.getOutputViews()]);
-    // The Int64 timestamps are the widest row-proportional binding (8 bytes a row; the decoded
-    // columns are 4 bytes a row), about 16.7 million rows on a default device.
-    validateGPUStorageBindingByteLength(
-      graph.device,
+    validateGraphChunkDispatchBindings(graph, id, chunkPlan);
+    validateGraphChunkBindingRanges(graph, id, {
+      parameters: props.parameters,
+      transitions: props.timeZone?.transitions,
+      zoneOffsets: props.timeZone?.offsets,
+      hourWeekdayCounts: output.hourWeekdayCounts
+    });
+    validateGraphChunkGroupKernelSupport(
+      graph,
       id,
-      'timestamps',
-      rowCount * props.timestamps.rowByteLength,
-      'reduce timestamps.length or process the rows in several calls'
+      Math.min(
+        MAXIMUM_BINDINGS,
+        2 +
+          Number(Boolean(props.mask)) +
+          Number(Boolean(props.utcOffsets)) +
+          (props.timeZone ? 2 : 0) +
+          Object.values(output).filter(Boolean).length
+      ),
+      WORKGROUP_SIZE
     );
+    for (const chunk of chunkPlan.chunks) {
+      if (chunk.length > 0)
+        getBoundedDispatchLayout(
+          id,
+          chunk.length,
+          WORKGROUP_SIZE,
+          graph.device.limits.maxComputeWorkgroupsPerDimension
+        );
+    }
+
     const nodes: GPUCommandNode<Parameters>[] = [];
     const specs: OutputSpec[] = [];
     for (const column of COLUMN_OUTPUTS) {
@@ -313,7 +464,7 @@ export class GPUCalendarBuckets implements GPUCommandNodeProducer {
         specs.push({
           name: column.name,
           type: column.signed ? 'i32' : 'u32',
-          write: `${column.name}Out[${column.name}OutOffset + index] = fields.${column.field};`
+          write: `${column.name}Out[${column.name}OutBase + index] = fields.${column.field};`
         });
       }
     }
@@ -343,60 +494,75 @@ export class GPUCalendarBuckets implements GPUCommandNodeProducer {
       type,
       access: 'read'
     });
-    const inputBindings: WGSLKernelBinding[] = [
-      read('timestamps', props.timestamps, 'u32'),
-      read('params', props.parameters, 'i32')
-    ];
-    if (props.mask) {
-      inputBindings.push(read('rowMask', props.mask, 'u32'));
-    }
-    if (props.utcOffsets) {
-      inputBindings.push(read('rowOffsets', props.utcOffsets, 'i32'));
-    }
-    if (props.timeZone) {
-      inputBindings.push(
-        read('zoneTransitions', props.timeZone.transitions, 'u32'),
-        read('zoneOffsets', props.timeZone.offsets, 'i32')
-      );
-    }
-    const perKernel = MAXIMUM_BINDINGS - inputBindings.length;
-    for (let first = 0, step = 0; first < specs.length; first += perKernel, step++) {
-      const group = specs.slice(first, first + perKernel);
-      nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-decode-${step}`,
-          operation: OPERATION,
-          variant: 'decode',
-          bindings: [
-            ...inputBindings,
-            ...group.map(
-              (spec): WGSLKernelBinding => ({
-                name: `${spec.name}Out`,
-                view: output[spec.name] as GraphDataView,
-                type: spec.type,
-                access: 'read_write'
-              })
-            )
-          ],
-          invocationCount: rowCount,
-          declarations: `${props.timeZone ? `const TRANSITION_COUNT: u32 = ${props.timeZone.transitions.length}u;\n` : ''}${CALENDAR_WGSL}${UNIT_WGSL[unit]}${props.timeZone ? ZONE_WGSL : ''}`,
-          body: `let time = toEpochMilliseconds(vec2<u32>(timestamps[timestampsOffset + 2u * index], timestamps[timestampsOffset + 2u * index + 1u]));
+    for (const chunk of chunkPlan.chunks) {
+      if (chunk.length === 0) continue;
+      const inputBindings: WGSLKernelBinding[] = [
+        read('timestamps', chunk.views['timestamps'], 'u32'),
+        read('params', props.parameters, 'i32')
+      ];
+      if (props.mask) {
+        inputBindings.push(read('rowMask', chunk.views['mask'], 'u32'));
+      }
+      if (props.utcOffsets) {
+        inputBindings.push(read('rowOffsets', chunk.views['utcOffsets'], 'i32'));
+      }
+      if (props.timeZone) {
+        inputBindings.push(
+          read('zoneTransitions', props.timeZone.transitions, 'u32'),
+          read('zoneOffsets', props.timeZone.offsets, 'i32')
+        );
+      }
+      const perKernel = MAXIMUM_BINDINGS - inputBindings.length;
+      for (let first = 0, step = 0; first < specs.length; first += perKernel, step++) {
+        const group = specs.slice(first, first + perKernel);
+        nodes.push(
+          createGraphChunkGroupKernelNode<Parameters>(graph, {
+            id: `${id}-decode-${step}-chunk-${chunk.chunkIndex}`,
+            operation: OPERATION,
+            variant: 'decode',
+            bindings: [
+              ...inputBindings,
+              ...group.map(
+                (spec): WGSLKernelBinding => ({
+                  name: `${spec.name}Out`,
+                  view:
+                    spec.name === 'hourWeekdayCounts'
+                      ? output.hourWeekdayCounts!
+                      : chunk.views[spec.name],
+                  type: spec.type,
+                  access: 'read_write'
+                })
+              )
+            ],
+            invocationCount: chunk.length,
+            workgroupSize: WORKGROUP_SIZE,
+            declarations: `${CALENDAR_WGSL}${UNIT_WGSL[unit]}${props.timeZone ? ZONE_WGSL : ''}`,
+            body: `if (index >= getChunkParameter(1u)) { return; }
+  let timestampsBase = arrayLength(&timestamps) - 2u * getChunkParameter(1u);
+  ${props.mask ? 'let rowMaskBase = arrayLength(&rowMask) - getChunkParameter(1u);' : ''}
+  ${props.utcOffsets ? 'let rowOffsetsBase = arrayLength(&rowOffsets) - getChunkParameter(1u);' : ''}
+  ${group
+    .filter(spec => spec.name !== 'hourWeekdayCounts')
+    .map(spec => `let ${spec.name}OutBase = arrayLength(&${spec.name}Out) - getChunkParameter(1u);`)
+    .join('\n  ')}
+  let time = toEpochMilliseconds(vec2<u32>(timestamps[timestampsBase + 2u * index], timestamps[timestampsBase + 2u * index + 1u]));
   let offsetMilliseconds = ${
     props.timeZone
       ? 'getZoneOffsetMilliseconds(time)'
-      : `minutesToMilliseconds(${props.utcOffsets ? 'rowOffsets[rowOffsetsOffset + index]' : 'params[paramsOffset]'})`
+      : `minutesToMilliseconds(${props.utcOffsets ? 'rowOffsets[rowOffsetsBase + index]' : 'params[paramsOffset]'})`
   };
   let firstDay = u32(((params[paramsOffset + 1u] % 7) + 7) % 7);
   var fields = decodeCalendar(time, offsetMilliseconds, firstDay);
-  ${props.mask ? 'if (rowMask[rowMaskOffset + index] == 0u) {\n    fields = invalidCalendar();\n  }' : ''}
+  ${props.mask ? 'if (rowMask[rowMaskBase + index] == 0u) {\n    fields = invalidCalendar();\n  }' : ''}
   ${group.map(spec => spec.write).join('\n  ')}`
-        })
-      );
+          })
+        );
+      }
     }
     return nodes;
   }
 
-  private getInputViews(): GraphDataView[] {
+  private getInputViews(): (GraphDataView | GraphVectorView)[] {
     const {props} = this;
     return [
       props.timestamps,
@@ -405,11 +571,14 @@ export class GPUCalendarBuckets implements GPUCommandNodeProducer {
       props.timeZone?.transitions,
       props.timeZone?.offsets,
       props.parameters
-    ].filter(view => Boolean(view)) as GraphDataView[];
+    ].filter(view => Boolean(view)) as (GraphDataView | GraphVectorView)[];
   }
 
-  private getOutputViews(): GraphDataView[] {
-    return Object.values(this.props.output).filter(view => Boolean(view)) as GraphDataView[];
+  private getOutputViews(): (GraphDataView | GraphVectorView)[] {
+    return Object.values(this.props.output).filter(view => Boolean(view)) as (
+      | GraphDataView
+      | GraphVectorView
+    )[];
   }
 }
 
@@ -620,7 +789,7 @@ fn lessOrEqualInt64(a: vec2<u32>, b: vec2<u32>) -> bool {
 // offset in force.
 fn getZoneOffsetMilliseconds(time: vec2<u32>) -> i32 {
   var low = 0u;
-  var high = TRANSITION_COUNT;
+  var high = (arrayLength(&zoneTransitions) - zoneTransitionsOffset) / 2u;
   loop {
     if (low >= high) {
       break;

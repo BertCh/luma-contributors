@@ -8,22 +8,40 @@ import type {
   GPUCommandNodeProducer,
   GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {createTransientView, doGraphDataViewsOverlap} from '@luma.gl/graph/gpu-core';
+import {createTransientView, GraphVectorView} from '@luma.gl/graph/gpu-core';
 import {
   flattenPointCloudAttribute,
   readPointCloudAttribute,
   writePointCloudAttribute
 } from './pointcloud-attribute';
-import {getPointCloudKernelNodes} from './pointcloud-kernel-nodes';
+import {
+  validatePointCloudPackedViews,
+  validatePointCloudScratchBindings
+} from './pointcloud-kernel-nodes';
 import {
   validateCapacity,
-  validateGraphOutputsDisjointFromInputs,
+  validateCommandNodeBudget,
   validateRequirement,
   validateViewLength
 } from '../analysis-core/kernels/gpu-contributor-utils';
 
+import {
+  planGraphChunkDispatch,
+  validateGraphChunkBindingRanges,
+  type GraphChunkDispatchViews
+} from '../analysis-core/kernels/graph-chunk-dispatch';
+
+import {
+  getPointCloudRuntimeKernelNodes,
+  validatePointCloudDispatchParameterBindings,
+  validatePointCloudChunkViews
+} from './pointcloud-chunk-kernel-nodes';
+
+// Eight bindings plus one source-row word and the common three words fit this fixed slot.
+const POINT_CLOUD_VOXEL_MAXIMUM_DISPATCH_WORD_COUNT = 12;
+
 type AttributeFormat = 'float32' | 'float32x2' | 'float32x3' | 'float32x4';
-export type GPUPointCloudVoxelMergeProps = {
+type GPUPointCloudVoxelMergePackedProps = {
   id?: string;
   /** Caller certifies every point contributes to exactly one part; halo replicas must be excluded before reduction. All parts use the identical grid. */
   partitionPolicy: 'disjoint-owned-rows';
@@ -54,6 +72,19 @@ export type GPUPointCloudVoxelMergeProps = {
   status: GraphDataView<'uint32'>;
 };
 
+type PointCloudVoxelChunkedProps<Value> =
+  Value extends GraphDataView<infer Format>
+    ? GraphDataView<Format> | GraphVectorView<Format>
+    : Value extends readonly (infer Element)[]
+      ? readonly PointCloudVoxelChunkedProps<Element>[]
+      : Value extends object
+        ? {[Key in keyof Value]: PointCloudVoxelChunkedProps<Value[Key]>}
+        : Value;
+
+/** All voxel-aligned fields accept identical ordered chunks; parts stay disjoint sufficient statistics. */
+export type GPUPointCloudVoxelMergeProps =
+  PointCloudVoxelChunkedProps<GPUPointCloudVoxelMergePackedProps>;
+
 /** `GPUPointCloudVoxelMerge` status bit 1: the merged count overflows uint32. */
 export const GPU_POINT_CLOUD_VOXEL_MERGE_STATUS_COUNT_OVERFLOW = 1;
 /** `GPUPointCloudVoxelMerge` status bit 2: a global representative row ID overflows. */
@@ -62,45 +93,184 @@ export const GPU_POINT_CLOUD_VOXEL_MERGE_STATUS_REPRESENTATIVE_OVERFLOW = 2;
 /** Explicit associative sufficient-statistic merge; no concatenation or halo deduplication is inferred. */
 export class GPUPointCloudVoxelMerge implements GPUCommandNodeProducer {
   readonly id: string;
+  readonly estimatedCommandNodeCount: number;
+  private readonly chunkContributors?: readonly GPUPointCloudVoxelMerge[];
+  private readonly chunkViews?: GraphChunkDispatchViews;
   constructor(readonly props: GPUPointCloudVoxelMergeProps) {
     this.id = props.id ?? 'gpu-pointcloud-voxel-merge';
-    validateCapacity(this.id, 'parts.length', props.parts.length);
     validateRequirement(
       this.id,
       props.partitionPolicy === 'disjoint-owned-rows',
       "partitionPolicy must be 'disjoint-owned-rows'"
     );
-    const outputs = [
-      props.counts,
-      props.centroids,
-      props.representatives,
-      props.status,
-      ...(props.attribute ? [props.attribute.means, props.attribute.counts] : [])
-    ];
-    // Distinct passes publish metadata, centroids and attributes; their final records must not alias.
-    for (const [index, output] of outputs.entries()) {
-      validateRequirement(
+    const views = {
+      counts: props.counts,
+      centroids: props.centroids,
+      representatives: props.representatives,
+      status: props.status,
+      attributeMeans: props.attribute?.means,
+      attributeCounts: props.attribute?.counts,
+      ...Object.fromEntries(
+        props.parts.flatMap((part, index) => [
+          [`part-${index}-counts`, part.counts],
+          [`part-${index}-centroids`, part.centroids],
+          [`part-${index}-representatives`, part.representatives],
+          [`part-${index}-attributeMeans`, part.attribute?.means],
+          [`part-${index}-attributeCounts`, part.attribute?.counts]
+        ])
+      )
+    };
+    if (Object.values(views).some(view => view instanceof GraphVectorView)) {
+      validateCapacity(this.id, 'parts.length', props.parts.length);
+      const plan = planGraphChunkDispatch(this.id, views);
+      const last = props.parts.length - 1;
+      const metadataNames = props.parts.flatMap((_, index) => [
+        `part-${index}-counts`,
+        `part-${index}-representatives`
+      ]);
+      validatePointCloudChunkViews(
         this.id,
-        !outputs.slice(0, index).some(previous => doGraphDataViewsOverlap(previous, output)),
-        'output views must not overlap each other'
+        plan,
+        Object.keys(views).filter(name => name.startsWith('part-')),
+        ['counts', 'centroids', 'representatives', 'status', 'attributeMeans', 'attributeCounts'],
+        {},
+        [
+          {
+            inputNames: [`part-${last}-counts`, `part-${last}-representatives`],
+            outputNames: ['counts', 'representatives', 'status']
+          },
+          {inputNames: metadataNames, outputNames: ['status']},
+          {
+            inputNames: [`part-${last}-counts`, `part-${last}-centroids`],
+            outputNames: ['centroids']
+          },
+          ...(props.attribute
+            ? [
+                {
+                  inputNames: [`part-${last}-attributeMeans`, `part-${last}-attributeCounts`],
+                  outputNames: ['attributeMeans', 'attributeCounts']
+                }
+              ]
+            : [])
+        ]
       );
+      this.chunkViews = views;
+      this.chunkContributors = plan.chunks.map(
+        chunk =>
+          new GPUPointCloudVoxelMerge({
+            id: `${this.id}-chunk-${chunk.chunkIndex}`,
+            partitionPolicy: props.partitionPolicy,
+            counts: chunk.views['counts'],
+            centroids: chunk.views['centroids'],
+            representatives: chunk.views['representatives'],
+            status: chunk.views['status'],
+            ...(props.attribute
+              ? {
+                  attribute: {
+                    means: chunk.views['attributeMeans'],
+                    counts: chunk.views['attributeCounts']
+                  }
+                }
+              : {}),
+            parts: props.parts.map((part, index) => ({
+              sourceRowOffset: part.sourceRowOffset,
+              counts: chunk.views[`part-${index}-counts`],
+              centroids: chunk.views[`part-${index}-centroids`],
+              representatives: chunk.views[`part-${index}-representatives`],
+              ...(part.attribute
+                ? {
+                    attribute: {
+                      means: chunk.views[`part-${index}-attributeMeans`],
+                      counts: chunk.views[`part-${index}-attributeCounts`]
+                    }
+                  }
+                : {})
+            }))
+          } as GPUPointCloudVoxelMergePackedProps)
+      );
+      this.estimatedCommandNodeCount = this.chunkContributors.reduce(
+        (count, contributor) =>
+          count + (contributor.props.counts.length ? contributor.estimatedCommandNodeCount : 0),
+        0
+      );
+      validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
+      return;
     }
-    validateGraphOutputsDisjointFromInputs(
+    const packedProps = props as GPUPointCloudVoxelMergePackedProps;
+    validateCapacity(this.id, 'parts.length', packedProps.parts.length);
+    this.estimatedCommandNodeCount = packedProps.counts.length
+      ? 2 +
+        (packedProps.attribute ? 2 : 0) +
+        packedProps.parts.length * (packedProps.attribute ? 6 : 4)
+      : 0;
+    validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
+    validateRequirement(
       this.id,
-      outputs,
-      props.parts.flatMap(part => [
-        part.counts,
-        part.centroids,
-        part.representatives,
-        part.attribute?.means,
-        part.attribute?.counts
+      packedProps.partitionPolicy === 'disjoint-owned-rows',
+      "partitionPolicy must be 'disjoint-owned-rows'"
+    );
+    const outputs = [
+      packedProps.counts,
+      packedProps.centroids,
+      packedProps.representatives,
+      packedProps.status,
+      ...(packedProps.attribute ? [packedProps.attribute.means, packedProps.attribute.counts] : [])
+    ];
+    const inputs = Object.fromEntries(
+      packedProps.parts.flatMap((part, partIndex) => [
+        [`parts[${partIndex}].counts`, part.counts],
+        [`parts[${partIndex}].centroids`, part.centroids],
+        [`parts[${partIndex}].representatives`, part.representatives],
+        [`parts[${partIndex}].attribute.means`, part.attribute?.means],
+        [`parts[${partIndex}].attribute.counts`, part.attribute?.counts]
       ])
     );
-    const length = props.counts.length;
-    validateViewLength(this.id, 'centroids', props.centroids, length);
-    validateViewLength(this.id, 'representatives', props.representatives, length);
-    validateViewLength(this.id, 'status', props.status, length);
-    for (const [partIndex, part] of props.parts.entries()) {
+    const lastPart = packedProps.parts.at(-1)!;
+    const metadataInputs = Object.fromEntries(
+      packedProps.parts.flatMap((part, index) => [
+        [`count ${index}`, part.counts],
+        [`representative ${index}`, part.representatives]
+      ])
+    );
+    validatePointCloudPackedViews(
+      this.id,
+      inputs,
+      Object.fromEntries(outputs.map((view, index) => [`output ${index}`, view])),
+      [
+        {
+          inputs: {counts: lastPart.counts, representatives: lastPart.representatives},
+          outputs: {
+            counts: packedProps.counts,
+            representatives: packedProps.representatives,
+            status: packedProps.status
+          }
+        },
+        {inputs: metadataInputs, outputs: {status: packedProps.status}},
+        {
+          inputs: {counts: lastPart.counts, centroids: lastPart.centroids},
+          outputs: {centroids: packedProps.centroids}
+        },
+        ...(packedProps.attribute
+          ? [
+              {
+                inputs: {
+                  attributeCounts: lastPart.attribute?.counts,
+                  attributeMeans: lastPart.attribute?.means
+                },
+                outputs: {
+                  attributeCounts: packedProps.attribute.counts,
+                  attributeMeans: packedProps.attribute.means
+                }
+              }
+            ]
+          : [])
+      ]
+    );
+    const length = packedProps.counts.length;
+    validateViewLength(this.id, 'centroids', packedProps.centroids, length);
+    validateViewLength(this.id, 'representatives', packedProps.representatives, length);
+    validateViewLength(this.id, 'status', packedProps.status, length);
+    for (const [partIndex, part] of packedProps.parts.entries()) {
       const name = `parts[${partIndex}]`;
       validateViewLength(this.id, `${name}.counts`, part.counts, length);
       validateViewLength(this.id, `${name}.centroids`, part.centroids, length);
@@ -108,26 +278,79 @@ export class GPUPointCloudVoxelMerge implements GPUCommandNodeProducer {
       validateCapacity(this.id, `${name}.sourceRowOffset`, part.sourceRowOffset, 0, 0xfffffffe);
       validateRequirement(
         this.id,
-        Boolean(part.attribute) === Boolean(props.attribute),
+        Boolean(part.attribute) === Boolean(packedProps.attribute),
         `${name}.attribute must be present exactly when attribute is`
       );
-      if (part.attribute && props.attribute) {
+      if (part.attribute && packedProps.attribute) {
         validateRequirement(
           this.id,
-          part.attribute.means.format === props.attribute.means.format,
+          part.attribute.means.format === packedProps.attribute.means.format,
           `${name}.attribute.means must have the format of attribute.means`
         );
         validateViewLength(this.id, `${name}.attribute.means`, part.attribute.means, length);
         validateViewLength(this.id, `${name}.attribute.counts`, part.attribute.counts, length);
-        validateViewLength(this.id, 'attribute.means', props.attribute.means, length);
-        validateViewLength(this.id, 'attribute.counts', props.attribute.counts, length);
+        validateViewLength(this.id, 'attribute.means', packedProps.attribute.means, length);
+        validateViewLength(this.id, 'attribute.counts', packedProps.attribute.counts, length);
       }
     }
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {parts, counts, centroids, representatives, status, attribute} = this.props;
+    if (this.chunkContributors) {
+      if (!this.estimatedCommandNodeCount) return [];
+      validateGraphChunkBindingRanges(graph, this.id, this.chunkViews!);
+      validatePointCloudDispatchParameterBindings(
+        graph,
+        this.id,
+        POINT_CLOUD_VOXEL_MAXIMUM_DISPATCH_WORD_COUNT,
+        1
+      );
+      for (const contributor of this.chunkContributors)
+        validatePointCloudScratchBindings(graph, this.id, {
+          'chunked voxel means': contributor.props.centroids.length * 12,
+          'chunked voxel attribute means': contributor.props.attribute
+            ? contributor.props.attribute.means.length *
+              contributor.props.attribute.means.rowByteLength
+            : 0
+        });
+      return this.chunkContributors.flatMap(contributor =>
+        contributor.props.counts.length ? [...contributor.getCommandNodes(graph)] : []
+      );
+    }
+    const {parts, counts, centroids, representatives, status, attribute} = this
+      .props as GPUPointCloudVoxelMergePackedProps;
+    if (!counts.length) return [];
+    validateGraphChunkBindingRanges(graph, this.id, {
+      counts,
+      centroids,
+      representatives,
+      status,
+      'attribute.means': attribute?.means,
+      'attribute.counts': attribute?.counts,
+      ...Object.fromEntries(
+        parts.flatMap((part, partIndex) => [
+          [`parts[${partIndex}].counts`, part.counts],
+          [`parts[${partIndex}].centroids`, part.centroids],
+          [`parts[${partIndex}].representatives`, part.representatives],
+          [`parts[${partIndex}].attribute.means`, part.attribute?.means],
+          [`parts[${partIndex}].attribute.counts`, part.attribute?.counts]
+        ])
+      )
+    });
+    validatePointCloudScratchBindings(graph, this.id, {
+      'voxel counts, representatives and status': counts.length * 4,
+      'voxel means': counts.length * 12,
+      'voxel attribute means': attribute
+        ? attribute.means.length * attribute.means.rowByteLength
+        : 0
+    });
+    validatePointCloudDispatchParameterBindings(
+      graph,
+      this.id,
+      POINT_CLOUD_VOXEL_MAXIMUM_DISPATCH_WORD_COUNT,
+      1
+    );
     const nodes: GPUCommandNode<Parameters>[] = [];
     let previousCounts = createTransientView(
       graph,
@@ -147,14 +370,9 @@ export class GPUPointCloudVoxelMerge implements GPUCommandNodeProducer {
       'uint32',
       counts.length
     );
-    let previousStatus = createTransientView(
-      graph,
-      `${this.id}-status-initial`,
-      'uint32',
-      counts.length
-    );
+    const previousStatus = status;
     nodes.push(
-      ...getPointCloudKernelNodes(graph, {
+      ...getPointCloudRuntimeKernelNodes(graph, {
         id: `${this.id}-clear`,
         length: counts.length,
         inputs: {},
@@ -177,7 +395,7 @@ export class GPUPointCloudVoxelMerge implements GPUCommandNodeProducer {
 
     if (previousAttributeCount && previousAttributeMean)
       nodes.push(
-        ...getPointCloudKernelNodes(graph, {
+        ...getPointCloudRuntimeKernelNodes(graph, {
           id: `${this.id}-attribute-clear`,
           length: counts.length,
           inputs: {},
@@ -201,26 +419,24 @@ export class GPUPointCloudVoxelMerge implements GPUCommandNodeProducer {
             'uint32',
             counts.length
           );
-      const nextStatus = final
-        ? status
-        : createTransientView(graph, `${this.id}-status-${partIndex}`, 'uint32', counts.length);
+      const nextStatus = status;
       nodes.push(
-        ...getPointCloudKernelNodes(graph, {
+        ...getPointCloudRuntimeKernelNodes(graph, {
           id: `${this.id}-metadata-${partIndex}`,
           length: counts.length,
           inputs: {
             previousCounts,
             previousRepresentatives,
-            previousStatus,
             partCounts: part.counts,
             partRepresentatives: part.representatives
           },
           outputs: {nextCounts, nextRepresentatives, nextStatus},
-          body: `let first=readPreviousCounts(index);let second=readPartCounts(index);let overflow=first>0xffffffffu-second;let representative=readPartRepresentatives(index);let invalid=second>0u&&representative>=0xffffffffu-${part.sourceRowOffset}u;writeNextCounts(index,first+second);writeNextRepresentatives(index,min(readPreviousRepresentatives(index),select(0xffffffffu,representative+${part.sourceRowOffset}u,second>0u&&!invalid)));writeNextStatus(index,readPreviousStatus(index)|select(0u,${GPU_POINT_CLOUD_VOXEL_MERGE_STATUS_COUNT_OVERFLOW}u,overflow)|select(0u,${GPU_POINT_CLOUD_VOXEL_MERGE_STATUS_REPRESENTATIVE_OVERFLOW}u,invalid));`
+          runtimeWords: [part.sourceRowOffset],
+          body: `let first=readPreviousCounts(index);let second=readPartCounts(index);let overflow=first>0xffffffffu-second;let representative=readPartRepresentatives(index);let invalid=second>0u&&representative>=0xffffffffu-readDispatchParameter(0u);writeNextCounts(index,first+second);writeNextRepresentatives(index,min(readPreviousRepresentatives(index),select(0xffffffffu,representative+readDispatchParameter(0u),second>0u&&!invalid)));writeNextStatus(index,readNextStatus(index)|select(0u,${GPU_POINT_CLOUD_VOXEL_MERGE_STATUS_COUNT_OVERFLOW}u,overflow)|select(0u,${GPU_POINT_CLOUD_VOXEL_MERGE_STATUS_REPRESENTATIVE_OVERFLOW}u,invalid));`
         })
       );
       nodes.push(
-        ...getPointCloudKernelNodes(graph, {
+        ...getPointCloudRuntimeKernelNodes(graph, {
           id: `${this.id}-centroid-${partIndex}`,
           length: counts.length,
           inputs: {
@@ -251,7 +467,7 @@ export class GPUPointCloudVoxelMerge implements GPUCommandNodeProducer {
               counts.length * components
             );
         nodes.push(
-          ...getPointCloudKernelNodes(graph, {
+          ...getPointCloudRuntimeKernelNodes(graph, {
             id: `${this.id}-attribute-${partIndex}`,
             length: counts.length,
             inputs: {
@@ -270,7 +486,6 @@ export class GPUPointCloudVoxelMerge implements GPUCommandNodeProducer {
       previousCounts = nextCounts;
       previousMeans = nextMeans;
       previousRepresentatives = nextRepresentatives;
-      previousStatus = nextStatus;
     });
     return nodes;
   }

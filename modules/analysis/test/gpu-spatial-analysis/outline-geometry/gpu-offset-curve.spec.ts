@@ -10,6 +10,7 @@ import {
   GPUOffsetCurve
 } from '../../../src/gpu-spatial-analysis/outline-geometry/index';
 import {createGeometryFixture} from './geometry-fixture';
+import {getCompactOffsetExpected} from './compact-offset-oracle';
 import {OFFSET_CURVE_REFERENCE_CASES} from './offset-curve-reference';
 import {requireTestDevice} from '../../utils/require-test-device';
 
@@ -60,36 +61,12 @@ for (const referenceCase of OFFSET_CURVE_REFERENCE_CASES) {
         actual.push([result['output'][2 * row], result['output'][2 * row + 1]]);
       }
     }
-    // GEOS repeats the first point at the end of a closed ring; the contributor emits each corner once.
-    const expected = ring ? referenceCase.expected.slice(0, -1) : referenceCase.expected;
-    const matches = (a: number[], b: number[]) =>
-      Math.abs(a[0] - b[0]) < 2e-4 && Math.abs(a[1] - b[1]) < 2e-4;
-    if (ring && referenceCase.distance < 0) {
-      // On the outside of a ring GEOS leaves the corner at the ring's first vertex open and its
-      // mitre output drops it; the contributor closes it, so GEOS's points must all be present.
-      expect(actual.length).toBeGreaterThanOrEqual(expected.length);
-      for (const point of expected) {
-        expect(
-          actual.some(candidate => matches(candidate, point)),
-          `missing ${point}`
-        ).toBe(true);
-      }
-    } else if (ring) {
-      expect(actual.length, 'point count').toBe(expected.length);
-      for (const point of expected) {
-        expect(
-          actual.some(candidate => matches(candidate, point)),
-          `missing ${point}`
-        ).toBe(true);
-      }
-    } else {
-      expect(actual.length, 'point count').toBe(expected.length);
-      expected.forEach((point, index) => {
-        expect(matches(actual[index], point), `point ${index} ${actual[index]} vs ${point}`).toBe(
-          true
-        );
-      });
-    }
+    const expected = getCompactOffsetExpected(referenceCase);
+    expect(actual.length, 'point count').toBe(expected.length);
+    expected.forEach((point, index) => {
+      expect(Math.abs(actual[index][0] - point[0]), `point ${index} x`).toBeLessThan(2e-4);
+      expect(Math.abs(actual[index][1] - point[1]), `point ${index} y`).toBeLessThan(2e-4);
+    });
     // Padding rows repeat the last real point, so drawing the whole buffer adds no geometry.
     if (!ring) {
       const lastVertex = vertices.length - 1;

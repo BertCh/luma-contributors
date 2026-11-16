@@ -4,22 +4,25 @@
 
 import type {
   GraphDataView,
+  GraphVectorView,
   GPUCommandGraph,
   GPUCommandNode,
   GPUCommandNodeProducer
 } from '@luma.gl/graph/gpu-core';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  createRasterTimeSeriesKernelNode,
+  planRasterTimeSeriesChunks,
+  validateRasterTimeSeriesBindings,
+  validateRasterTimeSeriesViews,
+  type RasterTimeSeriesField,
+  type RasterTimeSeriesScalarView
+} from './raster-time-series-chunks';
 import {
   validateCapacity,
+  validateCommandNodeBudget,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {
-  RASTER_FINITE_WGSL,
-  rasterBinding,
-  validateRasterGraph,
-  validateRasterViews,
-  type RasterScalarView
-} from '../remote-sensing/raster-kernel-utils';
+import {RASTER_FINITE_WGSL, rasterBinding} from '../remote-sensing/raster-kernel-utils';
 import {
   GPU_RASTER_SNAPSHOT_COVARIANCE_PARAMETER_LENGTH,
   MAXIMUM_SNAPSHOT_COVARIANCE_SLICE_COUNT
@@ -29,16 +32,18 @@ import {
 export const MAXIMUM_EOF_PROJECTION_MODE_COUNT = 32;
 
 /** Properties of {@link GPURasterEOFProjection}. */
-export type GPURasterEOFProjectionProps = {
+export type GPURasterEOFProjectionProps<
+  Rows extends GraphDataView<'float32'> | GraphVectorView<'float32'> = GraphDataView<'float32'>
+> = {
   id?: string;
   cellCount: number;
   sliceCount: number;
   modeCount: number;
   /** The same field given to `GPURasterSnapshotCovariance`, cell-major. */
-  values: GraphDataView<'float32'>;
-  mask?: GraphDataView<'uint32'>;
+  values: Rows;
+  mask?: RasterTimeSeriesField<'uint32', Rows>;
   /** The same area weights given to `GPURasterSnapshotCovariance`. */
-  weights?: GraphDataView<'float32'>;
+  weights?: RasterTimeSeriesField<'float32', Rows>;
   /** The parameters view of `GPURasterSnapshotCovariance`. */
   parameters: GraphDataView<'float32'>;
   /** Mode-major `mode * sliceCount + slice` temporal modes from the CPU eigendecomposition. */
@@ -53,9 +58,9 @@ export type GPURasterEOFProjectionProps = {
   componentSpace?: 'weighted' | 'value';
   output: {
     /** Cell-major `cell * modeCount + mode`; NaN for an excluded cell or a mode with a zero singular value. */
-    eofs: GraphDataView<'float32'>;
+    eofs: RasterTimeSeriesField<'float32', Rows>;
     /** Per cell: 0 projected, 1 excluded (missing sample, out of range or invalid weight). */
-    status: GraphDataView<'uint32'>;
+    status: RasterTimeSeriesField<'uint32', Rows>;
   };
 };
 
@@ -65,14 +70,22 @@ export type GPURasterEOFProjectionProps = {
  * inputs come from `getGPURasterSnapshotEOFDecomposition`, the CPU eigen step after readback.
  * A spatial EOF has the sign of its temporal mode, so the sign convention is fixed on the CPU.
  *
+ * Cell-major fields accept packed views or matching vector chunks of complete cell records.
+ * Shared date, model and parameter tables remain packed.
+ *
  * Per-frame: `parameters`, `temporalModes`, `singularValues` (buffers the caller updates).
  * Compile-time: `cellCount`, `sliceCount`, `modeCount`, `componentSpace`, optional views.
  */
-export class GPURasterEOFProjection implements GPUCommandNodeProducer {
+export class GPURasterEOFProjection<
+  Rows extends GraphDataView<'float32'> | GraphVectorView<'float32'> = GraphDataView<'float32'>
+> implements GPUCommandNodeProducer
+{
   readonly id: string;
+  readonly estimatedCommandNodeCount: number;
+  private readonly chunkProps: readonly GPURasterEOFProjectionProps<Rows>[];
   readonly componentSpace: 'weighted' | 'value';
 
-  constructor(readonly props: GPURasterEOFProjectionProps) {
+  constructor(readonly props: GPURasterEOFProjectionProps<Rows>) {
     const id = props.id ?? 'raster-eof-projection';
     this.id = id;
     this.componentSpace = props.componentSpace ?? 'weighted';
@@ -123,10 +136,19 @@ export class GPURasterEOFProjection implements GPUCommandNodeProducer {
       props.output.status.length >= cellCount,
       'output.status must hold one entry per cell'
     );
-    validateRasterViews(id, this.getInputs(), this.getOutputs());
+    this.chunkProps = planRasterTimeSeriesChunks(id, props, {
+      values: props.sliceCount,
+      mask: props.sliceCount,
+      weights: 1,
+      'output.eofs': props.modeCount,
+      'output.status': 1
+    });
+    this.estimatedCommandNodeCount = this.chunkProps.length * 1;
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
+    validateRasterTimeSeriesViews(id, this.getInputs(), this.getOutputs());
   }
 
-  private getInputs(): RasterScalarView[] {
+  private getInputs(): RasterTimeSeriesScalarView[] {
     const {values, mask, weights, parameters, temporalModes, singularValues} = this.props;
     return [
       values,
@@ -138,20 +160,33 @@ export class GPURasterEOFProjection implements GPUCommandNodeProducer {
     ];
   }
 
-  private getOutputs(): RasterScalarView[] {
+  private getOutputs(): RasterTimeSeriesScalarView[] {
     return [this.props.output.eofs, this.props.output.status];
   }
 
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {props, id, componentSpace} = this;
+    validateRasterTimeSeriesBindings(graph, this.id, [...this.getInputs(), ...this.getOutputs()]);
+    return this.chunkProps.flatMap((props, chunkIndex) =>
+      this.getChunkCommandNodes(graph, {
+        ...props,
+        id: `${this.id}-chunk-${chunkIndex}`
+      } as unknown as GPURasterEOFProjectionProps)
+    );
+  }
+
+  private getChunkCommandNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>,
+    props: GPURasterEOFProjectionProps
+  ): readonly GPUCommandNode<Parameters>[] {
+    const {componentSpace} = this;
+    const id = props.id!;
     const {sliceCount: slices, modeCount: modes, values, mask, weights, parameters, output} = props;
-    validateRasterGraph(id, graph, this.getInputs(), this.getOutputs());
     const scaleExpression =
       componentSpace === 'weighted' && weights ? 'sqrt(weights[weightsOffset + index])' : '1.0';
     return [
-      createWGSLKernelNode<Parameters>(graph, {
+      createRasterTimeSeriesKernelNode<Parameters>(graph, {
         id,
         operation: 'GPURasterEOFProjection',
         invocationCount: props.cellCount,

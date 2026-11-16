@@ -4,6 +4,7 @@
 
 import {
   createTransientView,
+  getViewBindingRange,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -12,13 +13,15 @@ import {
 import {
   getGraphOutputViews,
   validateCapacity,
-  validateGPUStorageBindingByteLength,
+  validateFiniteNumber,
+  validateSinglePackedView,
   validateRequirement
 } from '../analysis-core/kernels/gpu-contributor-utils';
 import {createWGSLKernelNode} from '../analysis-core/kernels/wgsl-kernel-nodes';
 import {IS_FINITE_VALUE_WGSL} from '../analysis-core/kernels/wgsl-common';
 import {createStableLexicographicIndexSortNodes} from '../analysis-core/kernels/stable-lexicographic-index-sort';
 import {createSortedSegmentOffsetsNode} from '../analysis-core/kernels/sorted-segment-offsets';
+import {validateGraphChunkBindingRanges} from '../analysis-core/kernels/graph-chunk-dispatch';
 import {
   getRasterBandViews,
   getRasterBufferBandNodes,
@@ -27,9 +30,17 @@ import {
 } from './raster-band-utils';
 import {validateRasterCellSizeMode, type GPURasterCellSizeMode} from '../analysis-core/raster-grid';
 import {getRasterRowAreaScaleWGSL} from './raster-grid/raster-cell-area-scale';
-import {validateRasterExpansionGraph, validateRasterExpansionViews} from './raster-expansion-utils';
-import type {GPURasterBufferBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import {validateRasterExpansionGraph} from './raster-expansion-utils';
+import {
+  GPURaster,
+  type GPURasterBufferBand,
+  type GPURasterMetadata
+} from '@luma.gl/graph/gpu-raster';
 import type {GPURasterFractionalCoverageProps} from './gpu-raster-fractional-coverage';
+import {
+  validateRasterFractionalBindingByteLength,
+  validateRasterFractionalWritableViews
+} from './fractional-coverage/raster-fractional-tile-kernel';
 
 /**
  * Slot of the affine determinant in the georeference view of `GPURasterFractionalCoverage`
@@ -116,6 +127,8 @@ const MAXIMUM_ZONES = 65536;
 const OPERATION = 'GPURasterFractionalZonalDistribution';
 const RECORD_WORDS = 7;
 const SUMMARY_WORDS = 11;
+/** The published automatic sort uses local bitonic sorting through 256 rows, radix above it. */
+const LOCAL_SORT_MAXIMUM_TUPLES = 256;
 const NUMBER_SOURCE = `${IS_FINITE_VALUE_WGSL}
 fn missingValue(seed: u32) -> f32 { return bitcast<f32>(0x7fc00000u | (seed & 0u)); }`;
 
@@ -133,12 +146,50 @@ export class GPURasterFractionalZonalDistribution implements GPUCommandNodeProdu
   constructor(props: GPURasterFractionalZonalDistributionProps) {
     this.id = props.id ?? 'raster-fractional-zonal-distribution';
     this.props = props;
-    validateRasterExpansionViews(
-      this.id,
-      props.grid,
-      getInputViews(props),
-      getGraphOutputViews(props.output)
-    );
+    validateFiniteNumber(this.id, 'input.scale', props.input.scale ?? 1);
+    validateFiniteNumber(this.id, 'input.offset', props.input.offset ?? 0);
+    new GPURaster({id: `${this.id} input`, metadata: props.grid, bands: [props.input]});
+    for (const view of [...getInputViews(props), ...getGraphOutputViews(props.output)]) {
+      validateSinglePackedView(view, [view.format], this.id);
+    }
+    validateRasterFractionalWritableViews(this.id, props.output, getInputViews(props), [
+      [props.output.quantiles, props.output.quantileValidity, props.probabilities],
+      [
+        props.output.means,
+        props.output.populationVariances,
+        props.output.sampleVariances,
+        props.output.effectiveSampleSizes
+      ],
+      [
+        props.output.weightSums,
+        props.output.squaredWeightSums,
+        props.output.coveredArea,
+        props.output.validArea
+      ],
+      [props.output.validity, props.output.status]
+    ]);
+    for (const [name, view] of Object.entries(props.output)) {
+      validateSinglePackedView(
+        view,
+        name === 'status' || name === 'validity' || name === 'quantileValidity'
+          ? ['uint32']
+          : ['float32'],
+        `${this.id} output.${name}`
+      );
+    }
+    for (const [name, view] of Object.entries(props.coverage)) {
+      if (name !== 'status') {
+        validateSinglePackedView(
+          view as GraphDataView,
+          name === 'fractions' ? ['float32'] : ['uint32'],
+          `${this.id} coverage.${name}`
+        );
+      }
+    }
+    for (const [name, view] of Object.entries(props.coverage.status)) {
+      validateSinglePackedView(view, ['uint32'], `${this.id} coverage.status.${name}`);
+    }
+    validateSinglePackedView(props.probabilities, ['float32'], `${this.id} probabilities`);
     for (const [name, view] of Object.entries({
       observationWeights: props.observationWeights,
       cellAreas: props.cellAreas
@@ -228,6 +279,16 @@ export class GPURasterFractionalZonalDistribution implements GPUCommandNodeProdu
     const {coverage, output, zoneCount, probabilities} = props;
     const capacity = coverage.zoneIds.length;
     const cellCount = props.grid.width * props.grid.height;
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(
+        [...getInputViews(props), ...getGraphOutputViews(output)].map((view, index) => [
+          `view.${index}`,
+          view
+        ])
+      )
+    );
     // Slot 6 of the coverage georeference is the affine determinant; read per frame when supplied.
     const cellArea = props.parameters
       ? `abs(georeference[georeferenceOffset + ${GEOREFERENCE_DETERMINANT_SLOT}u])`
@@ -254,20 +315,38 @@ export class GPURasterFractionalZonalDistribution implements GPUCommandNodeProdu
       ...getInputViews(props),
       ...getGraphOutputViews(output)
     ]);
-    validateGPUStorageBindingByteLength(
-      graph.device,
-      id,
-      'records',
-      capacity * RECORD_WORDS * 4,
-      'reduce tuple capacity'
-    );
-    validateGPUStorageBindingByteLength(
-      graph.device,
-      id,
-      'summary',
-      zoneCount * SUMMARY_WORDS * 4,
-      'reduce zone count'
-    );
+    // Include the alignment prefix of caller subviews and every derived allocation before
+    // canonicalizing the band or declaring sort scratch, so failure leaves the graph unchanged.
+    for (const view of [...getInputViews(props), ...getGraphOutputViews(output)]) {
+      validateRasterFractionalBindingByteLength(
+        graph.device,
+        id,
+        view.buffer.id,
+        getViewBindingRange(view).size,
+        'reduce the packed input or output size',
+        view.buffer.byteLength
+      );
+    }
+    for (const [name, bytes] of [
+      ['canonical raster band', cellCount * 4],
+      ['records', capacity * RECORD_WORDS * 4],
+      ['tuple columns', capacity * 4],
+      [
+        'sort scratch',
+        (capacity <= LOCAL_SORT_MAXIMUM_TUPLES ? 2 ** Math.ceil(Math.log2(capacity)) : capacity) * 4
+      ],
+      ['segment offsets', (zoneCount + 1) * 4],
+      ['summary', zoneCount * SUMMARY_WORDS * 4],
+      ['control', 3 * 4]
+    ] as const) {
+      validateRasterFractionalBindingByteLength(
+        graph.device,
+        id,
+        name,
+        bytes,
+        'reduce tuple capacity, zoneCount or grid dimensions'
+      );
+    }
     const band = getRasterBufferBandNodes(graph, id, props.input, props.grid, true);
     const records = createTransientView(graph, `${id}-records`, 'uint32', capacity * RECORD_WORDS);
     const control = createTransientView(graph, `${id}-control`, 'uint32', 3);

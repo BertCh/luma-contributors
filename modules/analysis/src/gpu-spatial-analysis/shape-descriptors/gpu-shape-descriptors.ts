@@ -15,7 +15,9 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
+  validateFiniteNumber,
+  validateGPUStorageBindingByteLength,
+  validateRequirement,
   validateCapacity,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -28,7 +30,55 @@ import {
   createOrientationNode,
   GPU_SHAPE_DESCRIPTORS_PARAMETER_LENGTH
 } from './shape-descriptors-kernels';
-import {canUseMonotoneChainConvexity, getMonotoneChainConvexityNodes} from './convexity-hull';
+import {
+  canUseMonotoneChainConvexity,
+  getMonotoneChainConvexityNodes,
+  validateMonotoneChainConvexityScratch
+} from './convexity-hull';
+import {GEOMETRY_STATS_STRIDE} from '../geometry-measures/geometry-measures-kernels';
+import {getCoreDefaultBuffer} from '../../analysis-core/network-topology';
+import {
+  validateDisjointWritableViews,
+  validateGraphChunkBindingRanges
+} from '../../analysis-core/kernels/graph-chunk-dispatch';
+
+/** Logical writes in separate passes may share an aligned prefix, but may never alias. */
+function validateShapeDescriptorLogicalOutputs(
+  id: string,
+  outputs: Readonly<Record<string, GraphDataView | undefined>>
+): void {
+  const fields = Object.entries(outputs).filter((entry): entry is [string, GraphDataView] =>
+    Boolean(entry[1])
+  );
+  for (let firstIndex = 0; firstIndex < fields.length; firstIndex++) {
+    const [firstName, first] = fields[firstIndex];
+    if (first.length === 0) continue;
+    const firstBuffer = first.buffer.defaultBuffer
+      ? getCoreDefaultBuffer(first.buffer.defaultBuffer)
+      : first.buffer;
+    for (let secondIndex = firstIndex + 1; secondIndex < fields.length; secondIndex++) {
+      const [secondName, second] = fields[secondIndex];
+      if (second.length === 0) continue;
+      const secondBuffer = second.buffer.defaultBuffer
+        ? getCoreDefaultBuffer(second.buffer.defaultBuffer)
+        : second.buffer;
+      validateRequirement(
+        id,
+        firstBuffer !== secondBuffer ||
+          first.byteOffset + first.length * first.rowByteLength <= second.byteOffset ||
+          second.byteOffset + second.length * second.rowByteLength <= first.byteOffset,
+        `${firstName} and ${secondName} logical byte ranges must not overlap`
+      );
+    }
+  }
+}
+
+import {
+  SHAPE_MOMENT_TILED_MINIMUM_ROW_COUNT,
+  canUseShapeMomentTiles,
+  getShapeMomentTileNodes,
+  validateShapeMomentTileScratch
+} from './shape-moment-tiles';
 
 const OPERATION = 'GPUShapeDescriptors';
 
@@ -66,9 +116,12 @@ export function getGPUShapeDescriptorsParameterValues(
   }
   const sliverThreshold =
     settings.sliverThreshold ?? GPU_SHAPE_DESCRIPTORS_DEFAULT_SLIVER_THRESHOLD;
-  if (!Number.isFinite(sliverThreshold) || sliverThreshold < 0) {
-    throw new Error('Shape descriptors sliverThreshold must be a non-negative finite number');
-  }
+  validateFiniteNumber('shape-descriptors', 'sliverThreshold', sliverThreshold, 0);
+  validateRequirement(
+    'shape-descriptors',
+    sliverThreshold >= 0,
+    'sliverThreshold must be non-negative'
+  );
   target.set([sliverThreshold, 0, 0, 0]);
   return target;
 }
@@ -152,6 +205,10 @@ export type GPUShapeDescriptorsProps = GPUPolygonGeometryFields & {
   spatialContext?: GPUSpatialContext;
   /** Hull algorithm behind `output.convexity`. Default `'auto'`. */
   convexityMethod?: GPUShapeDescriptorsConvexityMethod;
+  /** Auto uses deterministic 256-edge tiles above 4,096 rows when scratch fits the device.
+   * Serial retains the compensated per-feature reference. Tiled explicitly requires its scratch.
+   * Both routes match shape descriptors within the documented f32 tolerance. */
+  momentMethod?: 'auto' | 'serial' | 'tiled';
   /**
    * Compile-time upper bound on the vertices of any single feature (all its rings), known to the
    * caller from its data. With `convexityMethod: 'auto'`, a bound of at least
@@ -224,6 +281,11 @@ export class GPUShapeDescriptors implements GPUCommandNodeProducer {
       }
     }
     this.featureCount = props.featureOffsets.length - 1;
+    validateRequirement(
+      id,
+      ['auto', 'serial', 'tiled'].includes(props.momentMethod ?? 'auto'),
+      "momentMethod must be 'auto', 'serial' or 'tiled'"
+    );
     const convexityMethod = props.convexityMethod ?? 'auto';
     if (!['auto', 'gift-wrapping', 'monotone-chain'].includes(convexityMethod)) {
       throw new Error(`${id} convexityMethod must be 'auto', 'gift-wrapping' or 'monotone-chain'`);
@@ -272,6 +334,30 @@ export class GPUShapeDescriptors implements GPUCommandNodeProducer {
         throw new Error(`${id} output.${name} must hold ${this.featureCount} rows`);
       }
     }
+    validateShapeDescriptorLogicalOutputs(id, props.output);
+    validateDisjointWritableViews(id, {
+      areas: props.output.areas,
+      perimeters: props.output.perimeters
+    });
+    if (props.output.polsbyPopper || props.output.schwartzberg || props.output.sliver) {
+      validateDisjointWritableViews(id, {
+        areas: props.output.areas,
+        perimeters: props.output.perimeters,
+        polsbyPopper: props.output.polsbyPopper,
+        schwartzberg: props.output.schwartzberg,
+        sliver: props.output.sliver
+      });
+    }
+    validateDisjointWritableViews(id, {
+      elongation: props.output.elongation,
+      orientation: props.output.orientation,
+      clockwise: props.output.clockwise
+    });
+    if (props.output.convexity)
+      validateDisjointWritableViews(id, {
+        areas: props.output.areas,
+        convexity: props.output.convexity
+      });
     validateGraphOutputsDisjointFromInputs(
       id,
       columns.map(([, view]) => view as GraphDataView),
@@ -294,15 +380,36 @@ export class GPUShapeDescriptors implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id, featureCount} = this;
     const {output} = props;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.positions,
-      props.ringOffsets,
-      props.featureOffsets,
-      props.polygonOffsets,
-      props.parameters,
-      ...Object.values(output)
-    ]);
+    validateGraphChunkBindingRanges(graph, id, {
+      positions: props.positions,
+      ringOffsets: props.ringOffsets,
+      featureOffsets: props.featureOffsets,
+      polygonOffsets: props.polygonOffsets,
+      parameters: props.parameters,
+      ...Object.fromEntries(Object.entries(output).map(([name, view]) => [`output.${name}`, view]))
+    });
+    // The nested geometry measure's feature record is larger than our scalar, centroid and
+    // four-word moment planes. Validate it before declaring even those smaller resources.
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'geometry measure feature scratch',
+      featureCount * GEOMETRY_STATS_STRIDE * 4,
+      'reduce the feature count'
+    );
+    if (output.convexity && this.useMonotoneChainConvexity) {
+      validateMonotoneChainConvexityScratch(graph.device, id, props.positions.length, featureCount);
+    }
     const needsMoments = Boolean(output.elongation || output.orientation || output.clockwise);
+    const ringCount = props.ringOffsets.length - 1;
+    const useTiledMoments =
+      needsMoments &&
+      ((props.momentMethod ?? 'auto') === 'tiled' ||
+        ((props.momentMethod ?? 'auto') === 'auto' &&
+          props.positions.length >= SHAPE_MOMENT_TILED_MINIMUM_ROW_COUNT &&
+          canUseShapeMomentTiles(graph.device, props.positions.length, ringCount)));
+    if (useTiledMoments)
+      validateShapeMomentTileScratch(graph.device, id, props.positions.length, ringCount);
     const needsCompactness = Boolean(output.polsbyPopper || output.schwartzberg || output.sliver);
     const needsAreas = needsCompactness || Boolean(output.convexity) || Boolean(output.areas);
     const needsPerimeters = needsCompactness || Boolean(output.perimeters);
@@ -343,12 +450,21 @@ export class GPUShapeDescriptors implements GPUCommandNodeProducer {
     if (needsMoments && centroids) {
       const moments = createTransientView(graph, `${id}-moments`, 'float32x4', featureCount);
       nodes.push(
-        createMomentsNode<Parameters>(graph, {
-          ...ringInputs,
-          id: `${id}-moments`,
-          centroids,
-          moments
-        }),
+        ...(useTiledMoments
+          ? getShapeMomentTileNodes(graph, {
+              ...ringInputs,
+              id: `${id}-moments`,
+              centroids,
+              moments
+            })
+          : [
+              createMomentsNode<Parameters>(graph, {
+                ...ringInputs,
+                id: `${id}-moments`,
+                centroids,
+                moments
+              })
+            ]),
         createOrientationNode<Parameters>(graph, {
           id: `${id}-orientation`,
           operation: OPERATION,

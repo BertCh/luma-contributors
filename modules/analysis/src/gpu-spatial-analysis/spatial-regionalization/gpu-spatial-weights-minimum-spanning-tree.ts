@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateSpatialOutputViews} from '../spatial-clustering/spatial-output-validation';
 import {
   createTransientView,
   GPUCompaction,
@@ -20,7 +21,9 @@ import {
   validateCompactOutput,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validateSinglePackedView
+  validateSinglePackedView,
+  validateGPUStorageBindingByteLength,
+  validateCommandNodeBudget
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPUCompactOutput} from '../../analysis-core/kernels/gpu-contributor-types';
 import {
@@ -28,10 +31,15 @@ import {
   validateGPUSpatialWeights
 } from '../spatial-weights/spatial-weights';
 import {IS_FINITE_FLOAT_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {createStandardizeColumnsNode} from './regionalization-inputs';
 import {REGIONALIZATION_CSR_WGSL, REGIONALIZATION_NONE_WGSL} from './regionalization-wgsl';
 
 const OPERATION = 'GPUSpatialWeightsMinimumSpanningTree';
+/** Standardization, compaction and final publishing, including published primitive scans. */
+const SPANNING_TREE_FIXED_NODE_ALLOWANCE = 128;
+/** Each Boruvka round selects/hooks/relabels, with no more than log2(rows)+1 pointer jumps. */
+const SPANNING_TREE_ROUND_NODE_ALLOWANCE = 7;
 
 /** Largest supported attribute column count. */
 export const GPU_MINIMUM_SPANNING_TREE_MAXIMUM_COLUMNS = 32;
@@ -137,6 +145,7 @@ export type GPUSpatialWeightsMinimumSpanningTreeOutput = {
 export class GPUSpatialWeightsMinimumSpanningTree implements GPUCommandNodeProducer {
   /** Prefix for every node ID. */
   readonly id: string;
+  readonly estimatedCommandNodeCount: number;
   /** Validated properties. */
   readonly props: GPUSpatialWeightsMinimumSpanningTreeProps;
 
@@ -203,6 +212,41 @@ export class GPUSpatialWeightsMinimumSpanningTree implements GPUCommandNodeProdu
         throw new Error(`${id} output.edgeDissimilarities must hold one entry per edge slot`);
       }
     }
+    const rounds = Math.max(1, Math.ceil(Math.log2(rows)));
+    this.estimatedCommandNodeCount =
+      SPANNING_TREE_FIXED_NODE_ALLOWANCE + rounds * (SPANNING_TREE_ROUND_NODE_ALLOWANCE + rounds);
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
+    validateSpatialOutputViews(
+      id,
+      {
+        treeEdgeFlags: output.treeEdgeFlags,
+        componentLabels: output.componentLabels,
+        standardizedValues: output.standardizedValues,
+        status: output.status,
+        edgeIds: output.edges?.ids,
+        count: output.edges?.status.count,
+        overflow: output.edges?.status.overflow,
+        requiredCount: output.edges?.status.requiredCount,
+        edgeEndpoints: output.edgeEndpoints,
+        edgeDissimilarities: output.edgeDissimilarities
+      },
+      [
+        [
+          output.edges?.ids.length ? output.edges.ids : undefined,
+          output.edges?.status.count,
+          output.edges?.status.overflow,
+          output.edges?.status.requiredCount
+        ],
+        ...(output.edgeEndpoints || output.edgeDissimilarities
+          ? [
+              {
+                read: [output.edges?.ids, output.edges?.status.count],
+                write: [output.edgeEndpoints, output.edgeDissimilarities]
+              }
+            ]
+          : [])
+      ]
+    );
     validateGraphOutputsDisjointFromInputs(
       id,
       [
@@ -213,6 +257,7 @@ export class GPUSpatialWeightsMinimumSpanningTree implements GPUCommandNodeProdu
         output.edges?.ids,
         output.edges?.status.count,
         output.edges?.status.overflow,
+        output.edges?.status.requiredCount,
         output.edgeEndpoints,
         output.edgeDissimilarities
       ],
@@ -245,6 +290,33 @@ export class GPUSpatialWeightsMinimumSpanningTree implements GPUCommandNodeProdu
     const rows = weights.offsets.length - 1;
     const capacity = weights.neighbors.length;
     const columnCount = props.columnCount ?? 1;
+    validateGraphChunkBindingRanges(graph, id, {
+      values: props.values,
+      offsets: weights.offsets,
+      neighbors: weights.neighbors,
+      treeEdgeFlags: output.treeEdgeFlags,
+      componentLabels: output.componentLabels,
+      standardizedValues: output.standardizedValues,
+      status: output.status,
+      edgeIds: output.edges?.ids,
+      count: output.edges?.status.count,
+      overflow: output.edges?.status.overflow,
+      requiredCount: output.edges?.status.requiredCount,
+      edgeEndpoints: output.edgeEndpoints,
+      edgeDissimilarities: output.edgeDissimilarities
+    });
+    for (const [name, byteLength] of [
+      ['standardized table', rows * columnCount * 4],
+      ['row scratch', Math.max(1, rows) * 4],
+      ['slot costs and compaction', Math.max(1, capacity) * 4]
+    ] as const)
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        name,
+        byteLength,
+        'reduce row or neighbor slot counts'
+      );
     const standardize = props.standardize !== false;
     const csrBindings = [
       {name: 'offsets', view: weights.offsets, type: 'u32' as const, access: 'read' as const},

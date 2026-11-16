@@ -43,19 +43,25 @@ export const MOB07_HOME_RANGE_RECURSION_AUDIT_CASES: readonly KernelAuditCase[] 
   ),
   {
     exportName: 'GPUUtilizationVolumeIsopleths',
-    name: 'maximum cell count with every output',
-    build: ({graph, view}) =>
+    name: 'maximum binding-supported cell count with every output',
+    build: ({graph, view, device}) => {
+      const cellCount = Math.min(
+        GPU_UTILIZATION_VOLUME_ISOPLETHS_MAXIMUM_CELLS,
+        Math.floor(device.limits.maxStorageBufferBindingSize / 4),
+        Math.floor(device.limits.maxBufferSize / 4)
+      );
       graph.add(
         new GPUUtilizationVolumeIsopleths({
-          density: view('float32', GPU_UTILIZATION_VOLUME_ISOPLETHS_MAXIMUM_CELLS),
+          density: view('float32', cellCount),
           parameters: view('float32', 4),
           output: {
-            volume: view('float32', GPU_UTILIZATION_VOLUME_ISOPLETHS_MAXIMUM_CELLS),
-            inside: view('uint32', GPU_UTILIZATION_VOLUME_ISOPLETHS_MAXIMUM_CELLS),
+            volume: view('float32', cellCount),
+            inside: view('uint32', cellCount),
             totalMass: view('float32', 1)
           }
         })
-      )
+      );
+    }
   },
   ...(['float32', 'uint32x2'] as const).map(
     (timestampFormat): KernelAuditCase => ({

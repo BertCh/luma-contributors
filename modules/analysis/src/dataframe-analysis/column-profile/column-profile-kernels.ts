@@ -21,6 +21,11 @@ import {
   GPU_COLUMN_PROFILE_STATISTIC,
   GPU_COLUMN_PROFILE_STATISTIC_COUNT
 } from './column-profile-parameters';
+import {
+  validateGPUStorageBindingByteLength,
+  validateMaximumCount
+} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 
 /** Workgroup size of the reduction kernels. */
@@ -30,7 +35,7 @@ export const COLUMN_PROFILE_ROWS_PER_INVOCATION = 8;
 /** Rows reduced by one workgroup tile. */
 export const COLUMN_PROFILE_TILE_SIZE =
   COLUMN_PROFILE_WORKGROUP_SIZE * COLUMN_PROFILE_ROWS_PER_INVOCATION;
-/** Floats per moment record: `[count, nullCount, finiteCount, mean, m2, sum, origin]`. */
+/** Words per moment record (three uint32 counts followed by four float32 bit patterns): `[count, nullCount, finiteCount, mean, m2, sum, origin]`. */
 const RECORD_STRIDE = 7;
 /** Keys per column: `[minimumKey, maximumKey, finiteMinimumKey, finiteMaximumKey]`. */
 const KEY_STRIDE = 4;
@@ -72,8 +77,8 @@ export type ColumnProfileNodeProps = {
 };
 
 /**
- * Moment record merged by a fixed-order tree: `count` and `nullCount` are integers held in f32
- * (exact below 2^24), `(finiteCount, mean, m2)` follow the Chan, Golub and LeVeque pairwise
+ * Moment record merged by a fixed-order tree: counts remain uint32 through both reduction levels;
+ * `(finiteCount, mean, m2)` follow the Chan, Golub and LeVeque pairwise
  * update with the mean stored relative to the first finite value (`origin`). Keeping the
  * origin separate avoids rounding small mean updates at the scale of an offset such as an
  * epoch timestamp. Only the public mean adds the origin back; M2 never does.
@@ -82,9 +87,9 @@ export type ColumnProfileNodeProps = {
  */
 const MOMENTS_WGSL = /* wgsl */ `
 struct Moments {
-  count: f32,
-  nullCount: f32,
-  finiteCount: f32,
+  count: u32,
+  nullCount: u32,
+  finiteCount: u32,
   mean: f32,
   m2: f32,
   sum: f32,
@@ -92,7 +97,7 @@ struct Moments {
 }
 
 fn emptyMoments() -> Moments {
-  return Moments(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+  return Moments(0u, 0u, 0u, 0.0, 0.0, 0.0, 0.0);
 }
 
 fn mergeMoments(left: Moments, right: Moments) -> Moments {
@@ -100,12 +105,12 @@ fn mergeMoments(left: Moments, right: Moments) -> Moments {
   result.count = left.count + right.count;
   result.nullCount = left.nullCount + right.nullCount;
   result.sum = left.sum + right.sum;
-  if (right.finiteCount == 0.0) {
+  if (right.finiteCount == 0u) {
     result.finiteCount = left.finiteCount;
     result.origin = left.origin;
     result.mean = left.mean;
     result.m2 = left.m2;
-  } else if (left.finiteCount == 0.0) {
+  } else if (left.finiteCount == 0u) {
     result.finiteCount = right.finiteCount;
     result.origin = right.origin;
     result.mean = right.mean;
@@ -115,8 +120,8 @@ fn mergeMoments(left: Moments, right: Moments) -> Moments {
     let delta = (right.origin - left.origin) + (right.mean - left.mean);
     result.origin = left.origin;
     result.finiteCount = count;
-    result.mean = left.mean + delta * (right.finiteCount / count);
-    result.m2 = left.m2 + right.m2 + delta * delta * (left.finiteCount * right.finiteCount / count);
+    result.mean = left.mean + delta * (f32(right.finiteCount) / f32(count));
+    result.m2 = left.m2 + right.m2 + delta * delta * (f32(left.finiteCount) * f32(right.finiteCount) / f32(count));
   }
   return result;
 }
@@ -309,6 +314,51 @@ var<private> columnCategoryBases: array<u32, ${columns.length}> = ${list(columns
 /** Reads the column that the current per-column kernel processes. */
 const READ_COLUMN_WGSL = 'let column = columnCursor[columnCursorOffset];';
 
+/** Preflights caller views and every scratch binding before declaring resources. @internal */
+function validateColumnProfileBindings<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: ColumnProfileNodeProps
+): void {
+  const {id, columns, output} = props;
+  validateGraphChunkBindingRanges(graph, id, {
+    ...Object.fromEntries(
+      columns.map((column, index) => [`columns[${index}].values`, column.values])
+    ),
+    mask: props.mask,
+    parameters: props.parameters,
+    ...output
+  });
+  const columnCount = columns.length;
+  const tileCount = Math.ceil(props.rowCount / COLUMN_PROFILE_TILE_SIZE);
+  const scratchLengths = {
+    partials: columnCount * tileCount * RECORD_STRIDE,
+    records: columnCount * RECORD_STRIDE,
+    keys: columnCount * KEY_STRIDE,
+    domains: columnCount * DOMAIN_STRIDE,
+    registers: output.hyperLogLogRegisters ? 0 : columnCount * 2 ** props.hyperLogLogPrecision,
+    categoryCounts:
+      output.histograms || output.topCategories ? getColumnProfileCategoryTotal(columns) : 0,
+    columnCursor: 1
+  };
+  for (const [name, length] of Object.entries(scratchLengths)) {
+    if (length > 0) {
+      validateMaximumCount(
+        id,
+        `${name} scratch byteLength`,
+        length * 4,
+        graph.device.limits.maxBufferSize
+      );
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        `${name} scratch`,
+        length * Uint32Array.BYTES_PER_ELEMENT,
+        'reduce the column row count or category count'
+      );
+    }
+  }
+}
+
 /**
  * Returns every command node of a column profile, in execution order.
  *
@@ -322,6 +372,7 @@ export function getColumnProfileNodes<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: ColumnProfileNodeProps
 ): GPUCommandNode<Parameters>[] {
+  validateColumnProfileBindings(graph, props);
   const {id, operation, columns, rowCount, mask, parameters, output} = props;
   const {histogramBinCount, hyperLogLogPrecision, topCategoryCount} = props;
   const columnCount = columns.length;
@@ -339,8 +390,8 @@ export function getColumnProfileNodes<Parameters>(
     createTransientView(graph, `${id}-${name}`, 'uint32', length);
   const f32 = (name: string, length: number) =>
     createTransientView(graph, `${id}-${name}`, 'float32', length);
-  const partials = f32('partials', columnCount * tileCount * RECORD_STRIDE);
-  const records = f32('records', columnCount * RECORD_STRIDE);
+  const partials = u32('partials', columnCount * tileCount * RECORD_STRIDE);
+  const records = u32('records', columnCount * RECORD_STRIDE);
   const keys = u32('keys', columnCount * KEY_STRIDE);
   const domains = f32('domains', columnCount * DOMAIN_STRIDE);
   const registers = output.hyperLogLogRegisters ?? u32('registers', columnCount * registerCount);
@@ -430,7 +481,7 @@ export function getColumnProfileNodes<Parameters>(
       id: `${id}-moments-merge`,
       operation,
       variant: 'moments-merge',
-      bindings: [read('partials', partials, 'f32'), write('records', records, 'f32')],
+      bindings: [read('partials', partials, 'u32'), write('records', records)],
       invocationCount: columnCount * COLUMN_PROFILE_WORKGROUP_SIZE,
       workgroupSize: COLUMN_PROFILE_WORKGROUP_SIZE,
       guardIndex: false,
@@ -446,7 +497,7 @@ ${MOMENTS_WGSL}`,
       let base = partialsOffset + (column * TILE_COUNT + tile) * ${RECORD_STRIDE}u;
       accumulated = mergeMoments(
         accumulated,
-        Moments(partials[base], partials[base + 1u], partials[base + 2u], partials[base + 3u], partials[base + 4u], partials[base + 5u], partials[base + 6u])
+        Moments(partials[base], partials[base + 1u], partials[base + 2u], bitcast<f32>(partials[base + 3u]), bitcast<f32>(partials[base + 4u]), bitcast<f32>(partials[base + 5u]), bitcast<f32>(partials[base + 6u]))
       );
     }
   }
@@ -458,10 +509,10 @@ ${MOMENTS_WGSL}`,
     records[base] = record.count;
     records[base + 1u] = record.nullCount;
     records[base + 2u] = record.finiteCount;
-    records[base + 3u] = record.mean;
-    records[base + 4u] = record.m2;
-    records[base + 5u] = record.sum;
-    records[base + 6u] = record.origin;
+    records[base + 3u] = bitcast<u32>(record.mean);
+    records[base + 4u] = bitcast<u32>(record.m2);
+    records[base + 5u] = bitcast<u32>(record.sum);
+    records[base + 6u] = bitcast<u32>(record.origin);
   }`
     })
   );
@@ -684,7 +735,7 @@ function getMomentTileNode<Parameters>(
     rowCount: number;
     tileCount: number;
     maskBinding: WGSLKernelBinding[];
-    partials: GraphDataView<'float32'>;
+    partials: GraphDataView<'uint32'>;
     keys: GraphDataView<'uint32'>;
     columnCursor: GraphDataView<'uint32'>;
     columnConstants: string;
@@ -696,33 +747,33 @@ function getMomentTileNode<Parameters>(
   const rowBody = isNumeric
     ? `let bits = bitcast<u32>(value);
       if ((bits & 0x7fffffffu) > 0x7f800000u) {
-        accumulated.nullCount = accumulated.nullCount + 1.0;
+        accumulated.nullCount = accumulated.nullCount + 1u;
       } else {
-        accumulated.count = accumulated.count + 1.0;
+        accumulated.count = accumulated.count + 1u;
         let key = getOrderedKey(value);
         minimumKey = min(minimumKey, key);
         maximumKey = max(maximumKey, key);
         if ((bits & 0x7fffffffu) != 0x7f800000u) {
           finiteMinimumKey = min(finiteMinimumKey, key);
           finiteMaximumKey = max(finiteMaximumKey, key);
-          if (accumulated.finiteCount == 0.0) {
+          if (accumulated.finiteCount == 0u) {
             accumulated.origin = value;
           }
           let shiftedValue = value - accumulated.origin;
-          let count = accumulated.finiteCount + 1.0;
+          let count = accumulated.finiteCount + 1u;
           let delta = shiftedValue - accumulated.mean;
           accumulated.finiteCount = count;
-          accumulated.mean = accumulated.mean + delta / count;
+          accumulated.mean = accumulated.mean + delta / f32(count);
           accumulated.m2 = accumulated.m2 + delta * (shiftedValue - accumulated.mean);
           accumulated.sum = accumulated.sum + value;
         }
       }`
     : `if (value == ${GPU_COLUMN_PROFILE_NULL_CATEGORY}u) {
-        accumulated.nullCount = accumulated.nullCount + 1.0;
+        accumulated.nullCount = accumulated.nullCount + 1u;
       } else {
-        accumulated.count = accumulated.count + 1.0;
+        accumulated.count = accumulated.count + 1u;
         if (value >= categoryCount) {
-          accumulated.finiteCount = accumulated.finiteCount + 1.0;
+          accumulated.finiteCount = accumulated.finiteCount + 1u;
         }
         minimumKey = min(minimumKey, value);
         maximumKey = max(maximumKey, value);
@@ -734,7 +785,7 @@ function getMomentTileNode<Parameters>(
     bindings: [
       read('values', column.values, isNumeric ? 'f32' : 'u32'),
       ...maskBinding,
-      write('partials', props.partials, 'f32'),
+      write('partials', props.partials),
       write('keys', props.keys, 'atomic<u32>'),
       read('columnCursor', props.columnCursor, 'u32')
     ],
@@ -783,10 +834,10 @@ var<workgroup> sharedKeys: array<atomic<u32>, ${KEY_STRIDE}>;`,
     partials[base] = record.count;
     partials[base + 1u] = record.nullCount;
     partials[base + 2u] = record.finiteCount;
-    partials[base + 3u] = record.mean;
-    partials[base + 4u] = record.m2;
-    partials[base + 5u] = record.sum;
-    partials[base + 6u] = record.origin;
+    partials[base + 3u] = bitcast<u32>(record.mean);
+    partials[base + 4u] = bitcast<u32>(record.m2);
+    partials[base + 5u] = bitcast<u32>(record.sum);
+    partials[base + 6u] = bitcast<u32>(record.origin);
     let keyBase = keysOffset + column * ${KEY_STRIDE}u;
     atomicMin(&keys[keyBase], atomicLoad(&sharedKeys[0]));
     atomicMax(&keys[keyBase + 1u], atomicLoad(&sharedKeys[1]));
@@ -889,7 +940,7 @@ function getFinishNode<Parameters>(
     registerCount: number;
     hyperLogLogPrecision: number;
     histogramBinCount: number;
-    records: GraphDataView<'float32'>;
+    records: GraphDataView<'uint32'>;
     keys: GraphDataView<'uint32'>;
     registers: GraphDataView<'uint32'>;
     categoryCounts?: GraphDataView<'uint32'>;
@@ -902,9 +953,10 @@ function getFinishNode<Parameters>(
   const copyHistogram = !isNumeric && output.histograms && props.categoryCounts;
   const stat = GPU_COLUMN_PROFILE_STATISTIC;
   const bindings: WGSLKernelBinding[] = [
-    read('records', props.records, 'f32'),
+    read('records', props.records, 'u32'),
     read('keys', props.keys, 'u32'),
-    read('registers', props.registers, 'u32'),
+    // Registers and statistics may occupy disjoint writable ranges in one buffer.
+    write('registers', props.registers, 'u32'),
     write('statistics', output.statistics, 'f32')
   ];
   if (output.counts) {
@@ -926,7 +978,7 @@ function getFinishNode<Parameters>(
     statistics[statisticsBase + ${stat.sum}u] = select(nan, sum, hasFinite);
     statistics[statisticsBase + ${stat.mean}u] = select(nan, mean, hasFinite);
     statistics[statisticsBase + ${stat.variance}u] = variance;
-    statistics[statisticsBase + ${stat.sampleVariance}u] = select(nan, m2 / (finiteCount - 1.0), finiteCount >= 2.0);
+    statistics[statisticsBase + ${stat.sampleVariance}u] = select(nan, m2 / f32(exactFiniteCount - min(exactFiniteCount, 1u)), exactFiniteCount >= 2u);
     statistics[statisticsBase + ${stat.standardDeviation}u] = select(nan, sqrt(variance), hasFinite);
     statistics[statisticsBase + ${stat.overflowCount}u] = 0.0;`
     : `let hasValues = count > 0.0;
@@ -991,12 +1043,15 @@ var<workgroup> sharedZeroCounts: array<u32, ${COLUMN_PROFILE_WORKGROUP_SIZE}>;`,
   }
   if (local == 0u) {
     let recordBase = recordsOffset + column * ${RECORD_STRIDE}u;
-    let count = records[recordBase];
-    let nullCount = records[recordBase + 1u];
-    let finiteCount = records[recordBase + 2u];
-    let mean = records[recordBase + 6u] + records[recordBase + 3u];
-    let m2 = records[recordBase + 4u];
-    let sum = records[recordBase + 5u];
+    let exactCount = records[recordBase];
+    let count = f32(exactCount);
+    let exactNullCount = records[recordBase + 1u];
+    let nullCount = f32(exactNullCount);
+    let exactFiniteCount = records[recordBase + 2u];
+    let finiteCount = f32(exactFiniteCount);
+    let mean = bitcast<f32>(records[recordBase + 6u]) + bitcast<f32>(records[recordBase + 3u]);
+    let m2 = bitcast<f32>(records[recordBase + 4u]);
+    let sum = bitcast<f32>(records[recordBase + 5u]);
     let keyBase = keysOffset + column * ${KEY_STRIDE}u;
     let minimumKey = keys[keyBase];
     let maximumKey = keys[keyBase + 1u];
@@ -1025,8 +1080,8 @@ var<workgroup> sharedZeroCounts: array<u32, ${COLUMN_PROFILE_WORKGROUP_SIZE}>;`,
     statistics[statisticsBase + ${stat.distinctEstimate}u] = estimate;
     ${
       output.counts
-        ? `countsOut[countsOutOffset + column * 2u] = u32(count);
-    countsOut[countsOutOffset + column * 2u + 1u] = u32(nullCount);`
+        ? `countsOut[countsOutOffset + column * 2u] = exactCount;
+    countsOut[countsOutOffset + column * 2u + 1u] = exactNullCount;`
         : ''
     }
     columnCursor[columnCursorOffset] = (column + 1u) % COLUMN_COUNT;

@@ -2,6 +2,15 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  validateInterpolationPredictionViews,
+  validateInterpolationOutputPasses,
+  validateInterpolationOutputsDisjointFromInputs
+} from './interpolation-view-validation';
+
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateGPUStorageBindingByteLength} from '../../analysis-core/kernels/gpu-contributor-utils';
+
 import type {
   GPUCommandGraph,
   GPUCommandNode,
@@ -17,7 +26,6 @@ import {
   validateCapacity,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {validatePredictionViews} from '../../analysis-core/kernels/gpu-prediction-utils';
 import {GPU_VECCHIA_PARAMETER_LENGTH} from './vecchia-parameters';
 import {GPULocalKriging} from './gpu-local-kriging';
 import {
@@ -122,7 +130,22 @@ export class GPUVecchiaLogLikelihood implements GPUCommandNodeProducer {
     validateViewLength(id, 'output.logLikelihood', output.logLikelihood, 2);
     validateViewLength(id, 'output.status', output.status, 3);
     validateViewLength(id, 'parameters', parameters, GPU_VECCHIA_PARAMETER_LENGTH);
-    validatePredictionViews(
+    validateInterpolationOutputPasses(id, output, [
+      {write: {conditionals: output.conditionals, conditionalStatus: output.conditionalStatus}},
+      {
+        read: {conditionals: output.conditionals, conditionalStatus: output.conditionalStatus},
+        write: {siteTerms: output.siteTerms, siteStatus: output.siteStatus, status: output.status}
+      },
+      {read: {status: output.status}, write: {logLikelihood: output.logLikelihood}}
+    ]);
+    validateInterpolationOutputsDisjointFromInputs(id, Object.values(output), [
+      positions,
+      observations,
+      neighborhoodOffsets,
+      neighborhoods,
+      parameters
+    ]);
+    validateInterpolationPredictionViews(
       id,
       [positions, observations, neighborhoodOffsets, neighborhoods, parameters],
       [
@@ -155,6 +178,28 @@ export class GPUVecchiaLogLikelihood implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, rowCount} = this;
+    validateGraphChunkBindingRanges(graph, id, {
+      positions: props.positions,
+      observations: props.observations,
+      neighborhoodOffsets: props.neighborhoodOffsets,
+      neighborhoods: props.neighborhoods,
+      parameters: props.parameters,
+      ...props.output
+    });
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'fixed-point words',
+      3 * 4,
+      'reduce the likelihood cell count'
+    );
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'fixed-point scale',
+      4,
+      'use a device with storage bindings'
+    );
     const {observations, neighborhoodOffsets, parameters, output} = props;
     return [
       ...this.kriging.getCommandNodes(graph),

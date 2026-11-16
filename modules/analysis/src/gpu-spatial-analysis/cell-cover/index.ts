@@ -12,3 +12,5 @@ export type {
   GPUCellCoverOutput,
   GPUCellCoverProps
 } from './gpu-cell-cover';
+
+export {GPU_CELL_COVER_S2_MAXIMUM_LEVEL} from './s2-cell-cover';

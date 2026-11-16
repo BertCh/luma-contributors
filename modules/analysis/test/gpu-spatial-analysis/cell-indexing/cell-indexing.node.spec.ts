@@ -119,7 +119,7 @@ it('GPUPointToCell validates props', () => {
   device.destroy();
 });
 
-it('GPUPointToCell emits one deterministic node per family', () => {
+it('GPUPointToCell emits a parameter upload and deterministic key node per family', () => {
   const device = createNullWebGPUDevice();
   for (const [family, {minimum}] of Object.entries(GPU_CELL_INDEX_RESOLUTION_RANGES)) {
     const graph = new GPUCommandGraph(device);
@@ -130,14 +130,14 @@ it('GPUPointToCell emits one deterministic node per family', () => {
     });
     const contributor = new GPUPointToCell(props);
     const first = contributor.getCommandNodes(graph).map(node => node.id);
-    expect(first).toEqual([`cells-${family}-keys`]);
+    expect(first).toEqual([`cells-${family}-chunks-upload`, `cells-${family}-keys`]);
     // Without validity or mask the same kernel is emitted.
     const minimal = new GPUPointToCell({
       ...props,
       id: `min-${family}`,
       output: {cells: props.output.cells}
     });
-    expect(minimal.getCommandNodes(graph).length).toBe(1);
+    expect(minimal.getCommandNodes(graph).length).toBe(2);
   }
   expect(new GPUPointToCell(createProps(new GPUCommandGraph(device))).id).toBe('point-to-cell');
   device.destroy();
@@ -298,20 +298,27 @@ it('GPUCellGeometry validates props and emits deterministic nodes', () => {
     a5: 5
   });
   const contributor = new GPUCellGeometry(createGeometryProps({id: 'geometry'}));
-  expect(contributor.getCommandNodes(graph).map(node => node.id)).toEqual(['geometry-geometry']);
+  const nodes = contributor.getCommandNodes(graph);
+  expect(nodes.map(node => node.id)).toEqual(['geometry-chunks-upload', 'geometry-geometry-0']);
+  expect(nodes.map(node => node.type)).toEqual(['copy', 'compute']);
+  expect(nodes[1].workload?.maximumInvocationCount).toBe(8);
+  for (const node of nodes) graph.add(node);
   expectThrows({family: 'bogus' as never}, /family/);
   expectThrows({wordOrder: 'big' as never}, /wordOrder/);
   expectThrows({maximumVertexCount: 5}, /maximumVertexCount/);
   expectThrows({maximumVertexCount: 17}, /maximumVertexCount/);
   expectThrows({maximumVertexCount: 7}, /boundaries length/);
   expectThrows({cells: view('float32x2') as never}, /cells/);
-  expectThrows({output: {}}, /needs output.centers or output.boundaries/);
+  expectThrows({output: {}}, /cell-geometry output needs centers or boundaries/);
   expectThrows({output: {vertexCounts: view('uint32')}}, /needs output.boundaries/);
-  expectThrows({output: {centers: view('float32x2', 7)}}, /centers length/);
+  expectThrows(
+    {output: {centers: view('float32x2', 7)}},
+    /cell-geometry centers must match cells row count and chunk topology/
+  );
   expectThrows({output: {boundaries: view('float32x2', 47)}}, /boundaries length/);
   expectThrows(
     {output: {boundaries: view('float32x2', 48), vertexCounts: view('uint32', 7)}},
-    /vertexCounts length/
+    /cell-geometry vertexCounts must match cells row count and chunk topology/
   );
   const shared = view('uint32x2');
   expectThrows(

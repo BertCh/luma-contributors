@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {TRAJECTORY_MAXIMUM_CANDIDATE_CAPACITY} from '../trajectory-analysis/trajectory-counts-wgsl';
+import {
+  validateTrajectoryBindings,
+  validateTrajectoryOutputRanges,
+  validateTrajectoryWritableDispatches
+} from '../trajectory-analysis/trajectory-binding-validation';
 import {
   createTransientView,
   GPUCompaction,
@@ -231,12 +237,24 @@ export class GPUTrajectoryClosestApproach implements GPUCommandNodeProducer {
       ['cellSize', props.cellSize],
       ['timeCellSize', props.timeCellSize]
     ] as const) {
-      if (!(Number.isFinite(value) && value > 0)) {
+      if (!(Number.isFinite(Math.fround(value)) && Math.fround(value) > 0)) {
         throw new Error(`${id} ${name} must be a positive finite number`);
       }
     }
-    validateCapacity(id, 'entryCapacity', props.entryCapacity);
-    validateCapacity(id, 'hitCapacity', props.hitCapacity);
+    validateCapacity(
+      id,
+      'entryCapacity',
+      props.entryCapacity,
+      1,
+      TRAJECTORY_MAXIMUM_CANDIDATE_CAPACITY
+    );
+    validateCapacity(
+      id,
+      'hitCapacity',
+      props.hitCapacity,
+      1,
+      TRAJECTORY_MAXIMUM_CANDIDATE_CAPACITY
+    );
     const {pairs, status} = props.output;
     validateCompactOutput(id, pairs);
     for (const [name, view] of [
@@ -267,6 +285,18 @@ export class GPUTrajectoryClosestApproach implements GPUCommandNodeProducer {
         }
       }
     }
+    validateTrajectoryOutputRanges(this.id, this.props.output);
+    validateTrajectoryWritableDispatches(id, [
+      {ids: pairs.ids, partners: pairs.partners},
+      {
+        minimumDistances: pairs.minimumDistances,
+        closestTimes: pairs.closestTimes,
+        firstTimes: pairs.firstTimes,
+        durations: pairs.durations
+      },
+      {...props.output.status},
+      {...pairs.status}
+    ]);
     validateGraphOutputsDisjointFromInputs(id, this.getOutputs(), this.getInputs());
   }
 
@@ -304,6 +334,7 @@ export class GPUTrajectoryClosestApproach implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateTrajectoryBindings(graph, this.id, this.props);
     const {id, props, trackCount} = this;
     const {pairs, status} = props.output;
     validateGraphViewsBelongToGraph(id, graph, [...this.getInputs(), ...this.getOutputs()]);

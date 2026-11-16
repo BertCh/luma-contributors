@@ -43,7 +43,7 @@ export function getGPUTrajectoryClockParameterValues(
   if (typeof clock.start === 'bigint') {
     throw new Error('Float32 clocks must be numbers, not bigints');
   }
-  if (!Number.isFinite(clock.start)) {
+  if (!Number.isFinite(Math.fround(clock.start))) {
     throw new Error('Trajectory clock start must be finite');
   }
   target.set([clock.start, clock.step, 0, 0]);
@@ -76,7 +76,7 @@ export function getGPUTrajectoryClockWordParameterValues(
 }
 
 function checkStep(clock: GPUTrajectoryClockSettings): void {
-  if (!Number.isFinite(clock.step) || clock.step <= 0) {
+  if (!Number.isFinite(Math.fround(clock.step)) || Math.fround(clock.step) <= 0) {
     throw new Error('Trajectory clock step must be finite and positive');
   }
 }

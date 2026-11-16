@@ -3,6 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  validateNetworkViewBindings,
+  validateNetworkOutputsDisjointFromInputs,
+  validateNetworkWritableViews
+} from '../network-view-utils';
+import {
   createTransientView,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -11,13 +16,14 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {createMaskedWeakComponentNodes} from '../../analysis-core/kernels/masked-weak-components';
 import {createFillNode, createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {createLoadBalancedSegmentSumNodes} from '../../analysis-core/kernels/load-balanced-for-each';
+import {
+  getLoadBalancedTileCount,
+  createLoadBalancedSegmentSumNodes
+} from '../../analysis-core/kernels/load-balanced-for-each';
 import type {WGSLKernelBinding} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
-  validateSinglePackedView,
-  validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getGPUNetworkTopologyViews,
@@ -330,7 +336,8 @@ export class GPUNetworkStatistics implements GPUCommandNodeProducer {
         `${id} output must contain exactly ${getGPUNetworkStatisticsLength(this.degreeBinCount)} rows`
       );
     }
-    validateGraphOutputsDisjointFromInputs(
+    validateNetworkWritableViews(id, props.output);
+    validateNetworkOutputsDisjointFromInputs(
       id,
       [props.output],
       [
@@ -347,14 +354,25 @@ export class GPUNetworkStatistics implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, nodeCount, degreeBinCount} = this;
-    validateGraphViewsBelongToGraph(id, graph, [
-      ...getGPUNetworkTopologyViews(props.topology),
-      props.nodeMask,
-      props.edgeMask,
-      props.communities,
-      props.parameters,
-      props.output
-    ]);
+    validateNetworkViewBindings(
+      id,
+      graph,
+      [
+        ...getGPUNetworkTopologyViews(props.topology),
+        props.nodeMask,
+        props.edgeMask,
+        props.communities,
+        props.parameters,
+        props.output
+      ],
+      {
+        maskedNeighbors: props.topology.neighbors.length * 4,
+        nodeColumns: nodeCount * 4,
+        componentChanged: 4,
+        segmentCarries: getLoadBalancedTileCount(nodeCount, props.topology.neighbors.length) * 8,
+        finishPartials: Math.ceil(nodeCount / WORKGROUP_SIZE) * 12
+      }
+    );
     const directed = Boolean(props.directed);
     // Undirected, a self-loop adds 2 to a degree (networkx; review B-15).
     const countTwice = !directed;

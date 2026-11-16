@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateNetworkViewBindings, validateNetworkWritableViews} from '../network-view-utils';
+
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -11,7 +13,6 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {validateGPUStatusPort} from '../../analysis-core/contracts/index';
 import {
-  getCoreDefaultBuffer,
   getGPUNetworkTopologyViews,
   validateGPUNetworkTopology,
   type GPUNetworkTopology
@@ -22,7 +23,6 @@ import {
   validateCommandNodeBudget,
   validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
@@ -161,13 +161,18 @@ export class GPUNetworkCostTable implements GPUCommandNodeProducer {
    * Validates the topology, `costLimit` and output layout.
    *
    * @throws If a view has the wrong format or length, `laneCount` is not an integer in
-   * `[1, nodeCount]`, `laneCount * nodeCount` does not fit in uint32, or an output shares a buffer
-   * with an input or with another output.
+   * `[1, nodeCount]`, `laneCount * nodeCount` does not fit in uint32, outputs overlap, or an output
+   * shares a physical buffer with an input.
    */
   constructor(props: GPUNetworkCostTableProps) {
     const id = props.id ?? 'network-cost-table';
     this.id = id;
     this.props = props;
+    validateNetworkWritableViews(this.id, props.output, [
+      {outputs: {offsets: props.output.offsets}},
+      {outputs: {targets: props.output.targets, costs: props.output.costs}},
+      {outputs: {status: props.output.status}}
+    ]);
     const {output} = props;
     const {nodeCount, edgeCount} = validateGPUNetworkTopology(id, props.topology, {weights: true});
     this.nodeCount = nodeCount;
@@ -225,24 +230,6 @@ export class GPUNetworkCostTable implements GPUCommandNodeProducer {
     validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     const outputs = getOutputs(props);
     validateGraphOutputsDisjointFromInputs(id, outputs, getInputs(props));
-    const outputBuffers = outputs
-      .filter(view => view !== undefined)
-      .map(view =>
-        view.buffer.defaultBuffer ? getCoreDefaultBuffer(view.buffer.defaultBuffer) : view.buffer
-      );
-    const inputBuffers = new Set(
-      getInputs(props)
-        .filter(view => view !== undefined)
-        .map(view =>
-          view.buffer.defaultBuffer ? getCoreDefaultBuffer(view.buffer.defaultBuffer) : view.buffer
-        )
-    );
-    validateRequirement(
-      id,
-      new Set(outputBuffers).size === outputBuffers.length &&
-        outputBuffers.every(buffer => !inputBuffers.has(buffer)),
-      'outputs must use separate buffers from each other and from inputs'
-    );
   }
 
   /**
@@ -256,7 +243,7 @@ export class GPUNetworkCostTable implements GPUCommandNodeProducer {
     const {id, props, nodeCount, laneCount, batchCount, capacity} = this;
     const {output} = props;
     const {offsets, neighbors, weights} = props.topology;
-    validateGraphViewsBelongToGraph(id, graph, [...getInputs(props), ...getOutputs(props)]);
+    validateNetworkViewBindings(id, graph, [...getInputs(props), ...getOutputs(props)]);
     const batchNodeCount = laneCount * nodeCount;
     validateGPUStorageBindingByteLength(
       graph.device,
@@ -267,6 +254,11 @@ export class GPUNetworkCostTable implements GPUCommandNodeProducer {
     );
     const converged = output.status?.converged;
     const iterationLimitReached = output.status?.iterationLimitReached;
+    validateNetworkViewBindings(id, graph, [], {
+      state: STATE_WORDS * 4,
+      lanes: laneCount * 4,
+      frontier: laneCount * nodeCount * 8
+    });
     const state = createTransientView(graph, `${id}-state`, 'uint32', STATE_WORDS);
     const seeds = createTransientView(graph, `${id}-seeds`, 'uint32', laneCount);
     const scratch = createTransientView(graph, `${id}-scratch`, 'float32', batchNodeCount);

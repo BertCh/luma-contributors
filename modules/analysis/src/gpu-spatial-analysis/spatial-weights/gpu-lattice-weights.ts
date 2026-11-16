@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateSpatialStatisticsBindings} from './spatial-statistics-bindings';
 import {createSaturatedScanTotalNodes} from '../../analysis-core/kernels/scan-total';
 import {
   createTransientView,
@@ -155,9 +156,22 @@ export class GPULatticeWeights implements GPUCommandNodeProducer {
         throw new Error(`${id} mask length must equal width * height`);
       }
     }
-    if (validateGPUSpatialWeightsOutput(id, props.output) !== rows) {
+    const writableOutput = getLatticeWritableOutput(props.output);
+    if (
+      validateGPUSpatialWeightsOutput(id, writableOutput, [
+        ['offsets', 'overflow', 'requiredCount'],
+        ['neighbors', 'weights', 'distances']
+      ]) !== rows
+    ) {
       throw new Error(`${id} output rows must equal width * height`);
     }
+    // Emit reads the offsets while writing all edge fields. Metal forbids a shared physical
+    // read/write storage buffer even when those logical byte ranges are disjoint.
+    validateGraphOutputsDisjointFromInputs(
+      id,
+      [props.output.neighbors, props.output.weights, props.output.distances],
+      [props.output.offsets]
+    );
     this.outputWeights = describeGPUSpatialWeights(props.output, {
       information: {
         rowCount: rows,
@@ -172,7 +186,7 @@ export class GPULatticeWeights implements GPUCommandNodeProducer {
       id,
       [
         ...getGPUSpatialWeightsViews(props.output),
-        ...getGPUSpatialWeightsStatusViews(props.output)
+        ...getGPUSpatialWeightsStatusViews(writableOutput)
       ],
       [props.mask, props.cellSize instanceof GraphDataView ? props.cellSize : undefined]
     );
@@ -209,6 +223,14 @@ export class GPULatticeWeights implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateSpatialStatisticsBindings(
+      graph,
+      this.id,
+      {...this.props, output: getLatticeWritableOutput(this.props.output)},
+      {
+        'row scratch': this.props.width * this.props.height * 4
+      }
+    );
     const {id, props} = this;
     const {width, height, mask} = props;
     const weights = props.output;
@@ -217,7 +239,7 @@ export class GPULatticeWeights implements GPUCommandNodeProducer {
       mask,
       props.cellSize instanceof GraphDataView ? props.cellSize : undefined,
       ...getGPUSpatialWeightsViews(weights),
-      ...getGPUSpatialWeightsStatusViews(weights)
+      ...getGPUSpatialWeightsStatusViews(getLatticeWritableOutput(weights))
     ]);
     const rows = width * height;
     const capacity = weights.neighbors.length;
@@ -369,4 +391,12 @@ const CAPACITY: u32 = ${capacity}u;`,
       })
     ];
   }
+}
+
+/** Lattices have no candidate stage, so candidateOverflow is not bound or written. */
+function getLatticeWritableOutput(output: GPUSpatialWeightsOutput): GPUSpatialWeightsOutput {
+  return {
+    ...output,
+    status: {overflow: output.status.overflow, requiredCount: output.status.requiredCount}
+  };
 }

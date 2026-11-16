@@ -2,11 +2,14 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateInterpolationOutputsDisjointFromInputs} from './interpolation-view-validation';
+
 import {
   createTransientView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
+  type GraphVectorView,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {
@@ -21,22 +24,36 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
-  GPU_CORE_MAX_STORAGE_BUFFER_BINDING_SIZE,
   validateCapacity,
+  validateFiniteNumber,
+  validateNonZeroFiniteNumber,
   validateGPUStorageBindingByteLength,
   validateGraphViewsBelongToGraph,
+  validateSinglePackedView,
+  validateCommandNodeBudget,
   validateMaximumCount,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {
-  GPU_NEIGHBOR_SEARCH_MAXIMUM_K,
-  GPUNeighborSearch
-} from '../neighbor-search/gpu-neighbor-search';
+import {GPU_NEIGHBOR_SEARCH_MAXIMUM_K} from '../neighbor-search/gpu-neighbor-search';
 import {createNeighborSearchDerivedParameterNodes} from '../neighbor-search/neighbor-search-derived-parameters';
+import {getPackedPredictionAccessors} from '../../analysis-core/kernels/gpu-prediction-utils';
 import {
-  getPackedPredictionAccessors,
-  validatePredictionViews
-} from '../../analysis-core/kernels/gpu-prediction-utils';
+  planGraphChunkGroups,
+  createGraphChunkGroupKernelNode,
+  validateGraphChunkGroupKernelSupport,
+  sliceGraphChunkGroupView
+} from '../../analysis-core/kernels/graph-chunk-groups';
+import {
+  validateDisjointWritableViews,
+  validateGraphChunkBindingRanges,
+  type GraphChunkDispatchPlan
+} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {createPointNeighborGridIndexNodes} from '../../analysis-core/kernels/point-neighbor-grid-index';
+import {
+  getNeighborSearchLatticeWGSL,
+  getNearestNeighborSearchWGSL,
+  getInsertNeighborWGSL
+} from '../neighbor-search/neighbor-search-kernels';
 import {getEquilibratedSolveWGSL} from './equilibrated-solve-wgsl';
 import {
   getGPULocalKrigingParameterLength,
@@ -54,6 +71,11 @@ import {
 
 export {getPredictionCovarianceWGSL, validatePredictionCovariance};
 export type {GPUPredictionCovariance};
+
+/** Bounds the private augmented dense system (up to eight drift columns) and cubic solve work. */
+export const GPU_LOCAL_KRIGING_MAXIMUM_NEIGHBOR_COUNT = 32;
+/** Bounds the private quadrature weights and the quadratic within-support covariance evaluation. */
+export const GPU_LOCAL_KRIGING_MAXIMUM_SUPPORT_COUNT = 64;
 
 /**
  * Largest sample count that {@link GPULocalKrigingProps.sampleIndex} `'auto'` scans exhaustively.
@@ -86,6 +108,10 @@ const LOCAL_KRIGING_INDEX_MINIMUM_CANDIDATE_MARGIN = 8;
  * may be 2.5 steps off).
  */
 const LOCAL_KRIGING_INDEX_TIE_TOLERANCE = 1e-6;
+/** Covers the published shared grid build, bounds reduction, covariance upload and packing. */
+const LOCAL_KRIGING_SHARED_COMMAND_NODE_ALLOWANCE = 2048;
+/** Local dense systems retain the packed route's 32-thread workgroup size. */
+const LOCAL_KRIGING_QUERY_WORKGROUP_SIZE = 32;
 
 /** Candidates per query that the grid index lists. */
 function getSampleIndexCandidateCount(neighborCount: number): number {
@@ -125,7 +151,21 @@ export type GPULocalKrigingSampleIndex = 'auto' | 'brute-force' | 'grid';
  * Explicit local, planar prediction contract. Counts specialize the graph. Covariance parameters
  * always use a runtime buffer, supplied by the caller or initialized from the convenience props.
  */
-export type GPULocalKrigingProps = {
+export type GPULocalKrigingProps<
+  SupportRows extends
+    | GraphDataView<'float32x2' | 'float32x4'>
+    | GraphVectorView<'float32x2' | 'float32x4'> = GraphDataView<'float32x2' | 'float32x4'>,
+  ValueRows extends
+    | GraphDataView<'float32x4'>
+    | GraphVectorView<'float32x4'> = GraphDataView<'float32x4'>,
+  StatusRows extends GraphDataView<'uint32'> | GraphVectorView<'uint32'> = GraphDataView<'uint32'>,
+  WeightRows extends
+    | GraphDataView<'float32'>
+    | GraphVectorView<'float32'> = GraphDataView<'float32'>,
+  DriftRows extends
+    | GraphDataView<'float32' | 'float32x4'>
+    | GraphVectorView<'float32' | 'float32x4'> = GraphDataView<'float32' | 'float32x4'>
+> = {
   id?: string;
   /**
    * Coordinate space of `positions` and `supports`. Compile-time. Omitted means native planar
@@ -137,7 +177,7 @@ export type GPULocalKrigingProps = {
   /** Rows [value, observationErrorVariance, variableIndex (0..variableCount-1), validity (0 skips)]. */
   observations: GraphDataView<'float32x4'>;
   /** Query-major quadrature: float32x2 has equal weights; float32x4 stores [x,y,weight,reserved]. */
-  supports: GraphDataView<'float32x2' | 'float32x4'>;
+  supports: SupportRows;
   supportCount?: number;
   mode: 'simple' | 'ordinary' | 'universal' | 'external-drift' | 'co-kriging';
   /**
@@ -193,7 +233,7 @@ export type GPULocalKrigingProps = {
    * sample-query tests. `'auto'` scans only when there are at most
    * {@link GPU_LOCAL_KRIGING_BRUTE_FORCE_MAXIMUM_SAMPLE_COUNT} samples and at most that many tests,
    * and uses the grid otherwise, so it never runs an uncapped scan; it throws only when neither
-   * fits (more than 2^24 samples plus queries, beyond the grid's 128 MiB target binding). The grid
+   * fits (packed samples exceed the device binding limit). The grid
    * kernel binds as many storage buffers as the scan (sample positions travel in the candidate
    * binding) and splits the queries into chunks whose candidate rows fit one binding.
    */
@@ -217,13 +257,23 @@ export type GPULocalKrigingProps = {
   driftCount?: number;
   sampleDrift?: GraphDataView<'float32' | 'float32x4'>;
   /** Query-major support-averaged external drift, one row per query. */
-  queryDrift?: GraphDataView<'float32' | 'float32x4'>;
+  queryDrift?: DriftRows;
   output: {
     /** [prediction, latent point/block variance, pivot ratio, retained neighbor count]. */
-    values: GraphDataView<'float32x4'>;
+    values: ValueRows;
     /** 0 success; 1 invalid/missing/insufficient data; 2 singular or unreliable variance. */
-    status: GraphDataView<'uint32'>;
+    status: StatusRows;
     /** Optional query-major weights in neighbor order (distance, original row); padded with 0. */
+    weights?: WeightRows;
+  };
+};
+
+type PackedLocalKrigingProps = Omit<GPULocalKrigingProps, 'supports' | 'queryDrift' | 'output'> & {
+  supports: GraphDataView<'float32x2' | 'float32x4'>;
+  queryDrift?: GraphDataView<'float32' | 'float32x4'>;
+  output: {
+    values: GraphDataView<'float32x4'>;
+    status: GraphDataView<'uint32'>;
     weights?: GraphDataView<'float32'>;
   };
 };
@@ -242,7 +292,10 @@ export type GPULocalKrigingProps = {
  *
  * Compile-time: row counts, `neighborCount`, `supportCount`, `mode`, `driftCount`,
  * `variableCount`, `sampleIndex`, `spatialContext`, `searchRadius`, `means`, and which optional
- * views exist, and the covariance structure count. Per-frame: the contents of every view and
+ * views exist, and the covariance structure count. Supports, query drift and outputs may be
+ * chunked, with complete support/drift/weight groups in each query chunk. Shared sample views
+ * stay packed. A single sample grid build is reused by every internal/external query chunk;
+ * query lengths, row bases and binding offsets are uniforms, with exact per-node dispatch sizes. Per-frame: the contents of every view and
  * the covariance model (write `parameters` or call `setCovariance`). Convenience parameter buffers
  * are owned by the compiled graph and freed when it is destroyed.
  * Universal drift defaults to affine [1, x, y], centered/scaled locally, or uses up to eight
@@ -258,9 +311,26 @@ export type GPULocalKrigingProps = {
  * measurement errors smooth exact hits. All block quantities use the supplied normalized nonnegative
  * support quadrature, including the within-block covariance and process nugget.
  */
-export class GPULocalKriging implements GPUCommandNodeProducer {
+export class GPULocalKriging<
+  SupportRows extends
+    | GraphDataView<'float32x2' | 'float32x4'>
+    | GraphVectorView<'float32x2' | 'float32x4'> = GraphDataView<'float32x2' | 'float32x4'>,
+  ValueRows extends
+    | GraphDataView<'float32x4'>
+    | GraphVectorView<'float32x4'> = GraphDataView<'float32x4'>,
+  StatusRows extends GraphDataView<'uint32'> | GraphVectorView<'uint32'> = GraphDataView<'uint32'>,
+  WeightRows extends
+    | GraphDataView<'float32'>
+    | GraphVectorView<'float32'> = GraphDataView<'float32'>,
+  DriftRows extends
+    | GraphDataView<'float32' | 'float32x4'>
+    | GraphVectorView<'float32' | 'float32x4'> = GraphDataView<'float32' | 'float32x4'>
+> implements GPUCommandNodeProducer
+{
   readonly id: string;
-  readonly props: GPULocalKrigingProps;
+  readonly estimatedCommandNodeCount: number;
+  private readonly chunkPlan: GraphChunkDispatchPlan;
+  readonly props: GPULocalKrigingProps<SupportRows, ValueRows, StatusRows, WeightRows, DriftRows>;
   readonly neighborCount: number;
   readonly supportCount: number;
   readonly driftCount: number;
@@ -274,7 +344,9 @@ export class GPULocalKriging implements GPUCommandNodeProducer {
   readonly sampleIndex: 'supplied' | 'brute-force' | 'grid';
   private readonly covarianceParameters?: LocalKrigingParameterState;
 
-  constructor(props: GPULocalKrigingProps) {
+  constructor(
+    props: GPULocalKrigingProps<SupportRows, ValueRows, StatusRows, WeightRows, DriftRows>
+  ) {
     this.props = props;
     this.id = props.id ?? 'local-kriging';
     this.spatialContext = resolveGPUSpatialContext(
@@ -300,9 +372,27 @@ export class GPULocalKriging implements GPUCommandNodeProducer {
               ? (props.driftCount ?? 1)
               : 0;
     this.queryCount = props.supports.length / this.supportCount;
-    validateCapacity(this.id, 'neighborCount', this.neighborCount, 1);
-    validateCapacity(this.id, 'supportCount', this.supportCount, 1);
+    validateCapacity(
+      this.id,
+      'neighborCount',
+      this.neighborCount,
+      1,
+      GPU_LOCAL_KRIGING_MAXIMUM_NEIGHBOR_COUNT
+    );
+    validateCapacity(
+      this.id,
+      'supportCount',
+      this.supportCount,
+      1,
+      GPU_LOCAL_KRIGING_MAXIMUM_SUPPORT_COUNT
+    );
     validateCapacity(this.id, 'queryCount', this.queryCount, 0);
+    if (props.searchRadius !== undefined && props.searchRadius !== Infinity)
+      validateNonZeroFiniteNumber(this.id, 'searchRadius', props.searchRadius);
+    for (const [index, mean] of (props.means ?? []).entries())
+      validateFiniteNumber(this.id, `means[${index}]`, mean);
+    if (props.neighborhoods && !props.neighborhoodOffsets)
+      validateCapacity(this.id, 'neighborhoodCapacity', props.neighborhoodCapacity ?? 0);
     this.covarianceStructureCount =
       props.covarianceStructureCount ?? props.coregionalizationModels?.length ?? 1;
     if (props.covariance) {
@@ -323,8 +413,6 @@ export class GPULocalKriging implements GPUCommandNodeProducer {
       throw new Error(`${this.id} invalid parameters`);
     }
     if (
-      this.neighborCount > 32 ||
-      this.supportCount > 64 ||
       this.driftCount < 0 ||
       this.driftCount > 8 ||
       !Number.isInteger(this.driftCount) ||
@@ -443,17 +531,19 @@ export class GPULocalKriging implements GPUCommandNodeProducer {
       // 'auto' scans only within both the sample cut-over and the scan's work cap. Otherwise it
       // uses the grid, which binds as many storage buffers as the scan and chunks its candidate
       // rows, so it runs wherever the scan did. The grid needs at least one sample and one query
-      // (an empty side has no work) and its search targets (samples then centers) in one binding.
+      // (an empty side has no work). Only the packed sample records constrain the shared index.
       const bruteForceWork = sampleCount * this.queryCount;
       const scanFits =
         sampleCount <= GPU_LOCAL_KRIGING_BRUTE_FORCE_MAXIMUM_SAMPLE_COUNT &&
         bruteForceWork <= GPU_LOCAL_KRIGING_MAXIMUM_BRUTE_FORCE_WORK;
+      const bindingByteLimit = (props.positions.buffer.graph as GPUCommandGraph).device.limits
+        .maxStorageBufferBindingSize;
       const gridFits =
         sampleCount > 0 &&
         this.queryCount > 0 &&
-        (sampleCount + this.queryCount) * 8 <= GPU_CORE_MAX_STORAGE_BUFFER_BINDING_SIZE &&
+        sampleCount * 12 <= bindingByteLimit &&
         getSampleIndexChunkQueryCount(
-          GPU_CORE_MAX_STORAGE_BUFFER_BINDING_SIZE,
+          bindingByteLimit,
           sampleCount,
           getSampleIndexCandidateCount(this.neighborCount)
         ) > 0;
@@ -480,25 +570,66 @@ export class GPULocalKriging implements GPUCommandNodeProducer {
         );
       }
     }
-    validatePredictionViews(
+    this.chunkPlan = planGraphChunkGroups(
       this.id,
-      [
-        props.positions,
-        props.observations,
-        props.supports,
-        ...[props.sampleDrift, props.queryDrift].filter(
-          (view): view is GraphDataView<'float32' | 'float32x4'> => Boolean(view)
-        ),
-        ...(props.neighborhoods ? [props.neighborhoods] : []),
-        ...(props.neighborhoodOffsets ? [props.neighborhoodOffsets] : []),
-        ...(props.parameters ? [props.parameters] : [])
-      ],
-      [
-        props.output.values,
-        props.output.status,
-        ...(props.output.weights ? [props.output.weights] : [])
-      ]
+      {view: props.supports, rowsPerQuery: this.supportCount},
+      {
+        supports: {view: props.supports, rowsPerQuery: this.supportCount},
+        results: {view: props.output.values, allowPackedCapacity: true},
+        statuses: {view: props.output.status, allowPackedCapacity: true},
+        weights: props.output.weights
+          ? {
+              view: props.output.weights,
+              rowsPerQuery: this.neighborCount,
+              allowPackedCapacity: true
+            }
+          : undefined,
+        queryDrift:
+          this.suppliedDrift && props.queryDrift
+            ? {
+                view: props.queryDrift,
+                rowsPerQuery: props.queryDrift.format === 'float32' ? this.driftCount : 1
+              }
+            : undefined
+      }
     );
+    const sharedInputs = {
+      positions: props.positions,
+      observations: props.observations,
+      sampleDrift: props.sampleDrift,
+      neighborhoods: props.neighborhoods,
+      neighborhoodOffsets: props.neighborhoodOffsets,
+      parameters: props.parameters
+    };
+    for (const [name, view] of Object.entries(sharedInputs))
+      if (view) validateSinglePackedView(view, [view.format], `${this.id} ${name}`);
+    validateDisjointWritableViews(this.id, props.output);
+    validateInterpolationOutputsDisjointFromInputs(this.id, Object.values(props.output), [
+      ...Object.values(sharedInputs),
+      props.supports,
+      props.queryDrift
+    ]);
+    const owner = props.positions.buffer.graph as GPUCommandGraph;
+    const gridChunkLength = Math.max(
+      1,
+      Math.min(
+        props.sampleIndexChunkQueryCount ?? Infinity,
+        getSampleIndexChunkQueryCount(
+          owner.device.limits.maxStorageBufferBindingSize,
+          sampleCount,
+          getSampleIndexCandidateCount(this.neighborCount)
+        )
+      )
+    );
+    const dispatchCount =
+      this.sampleIndex === 'grid'
+        ? this.chunkPlan.chunks.reduce(
+            (total, chunk) => total + Math.ceil(chunk.length / gridChunkLength) * 2,
+            0
+          )
+        : this.chunkPlan.nonemptyChunkCount;
+    this.estimatedCommandNodeCount = LOCAL_KRIGING_SHARED_COMMAND_NODE_ALLOWANCE + dispatchCount;
+    validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
     if (!props.parameters) {
       this.covarianceParameters = {
         values: getGPULocalKrigingParameterValues({
@@ -551,8 +682,17 @@ export class GPULocalKriging implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id, driftCount} = this;
-    // Keep the existing eight-binding drift/weights combinations usable. When the runtime
-    // covariance would exceed the device limit, append it to a copy of the observation table.
+    validateGraphChunkBindingRanges(graph, id, {
+      positions: props.positions,
+      observations: props.observations,
+      supports: props.supports,
+      sampleDrift: props.sampleDrift,
+      queryDrift: props.queryDrift,
+      neighborhoods: props.neighborhoods,
+      neighborhoodOffsets: props.neighborhoodOffsets,
+      parameters: props.parameters,
+      ...props.output
+    });
     const bindingCount =
       6 +
       (this.suppliedDrift ? 2 : 0) +
@@ -562,10 +702,23 @@ export class GPULocalKriging implements GPUCommandNodeProducer {
     const shouldPackObservations =
       Boolean(this.covarianceParameters) &&
       bindingCount > graph.device.limits.maxStorageBuffersPerShaderStage;
+    validateGraphChunkGroupKernelSupport(
+      graph,
+      id,
+      bindingCount - Number(shouldPackObservations),
+      LOCAL_KRIGING_QUERY_WORKGROUP_SIZE
+    );
     const observationLength = props.observations.length * 4;
-    const packedLength =
-      observationLength + (props.parameters?.length ?? this.covarianceParameters!.values.length);
-    if (shouldPackObservations) {
+    const parameterLength = props.parameters?.length ?? this.covarianceParameters!.values.length;
+    const packedLength = observationLength + parameterLength;
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'covariance parameters',
+      parameterLength * 4,
+      'reduce covarianceStructureCount'
+    );
+    if (shouldPackObservations)
       validateGPUStorageBindingByteLength(
         graph.device,
         id,
@@ -573,26 +726,58 @@ export class GPULocalKriging implements GPUCommandNodeProducer {
         packedLength * 4,
         'reduce the sample count'
       );
+    const sampleCount = props.positions.length;
+    const candidateCount = getSampleIndexCandidateCount(this.neighborCount);
+    const deviceGridChunkLength = getSampleIndexChunkQueryCount(
+      graph.device.limits.maxStorageBufferBindingSize,
+      sampleCount,
+      candidateCount
+    );
+    const maximumInputChunkLength = this.chunkPlan.chunks.reduce(
+      (maximum, chunk) => Math.max(maximum, chunk.length),
+      0
+    );
+    const maximumGridChunkLength = Math.min(
+      maximumInputChunkLength,
+      props.sampleIndexChunkQueryCount ?? Infinity,
+      deviceGridChunkLength
+    );
+    if (this.sampleIndex === 'grid') {
+      validateRequirement(
+        id,
+        maximumGridChunkLength > 0,
+        "sampleIndex 'grid' candidate binding must hold at least one query and the packed sample positions"
+      );
+      const columns = Math.max(1, Math.ceil(Math.sqrt(sampleCount / 2)));
+      for (const [name, bytes] of Object.entries({
+        gridPositions: sampleCount * 8,
+        sortedTargets: sampleCount * 12,
+        cellOffsets: (columns * columns + 1) * 4,
+        candidateRows: maximumGridChunkLength * candidateCount * 4 + sampleCount * 8,
+        gridParameters: 12 * 4
+      }))
+        validateGPUStorageBindingByteLength(
+          graph.device,
+          id,
+          name,
+          bytes,
+          'reduce the packed sample count or query chunk size'
+        );
     }
     const sampleDriftStride = props.sampleDrift?.format === 'float32' ? driftCount : 4;
-    // The one definition of a usable sample, shared by the scan and the grid index mask.
-    const usableSampleWGSL = `fn isUsableSample(sample: u32) -> bool {
-  let observation = read_observations(sample);
-  let position = read_positions(sample);
+    const usableSampleWGSL = `fn isUsableSample(sampleIndex: u32) -> bool {
+  let observation = read_observations(sampleIndex);
+  let position = read_positions(sampleIndex);
   if (!(observation.w > 0.0) || !isFiniteValue(observation.x) || !isFiniteValue(observation.y) || observation.y < 0.0 || !isFiniteValue(position.x) || !isFiniteValue(position.y)) { return false; }
   ${props.mode === 'co-kriging' ? `if (!isFiniteValue(observation.z) || observation.z < 0.0 || observation.z >= ${this.variableCount}.0 || floor(observation.z) != observation.z) { return false; }` : ''}
-  ${this.suppliedDrift ? `for (var column = 0u; column < ${driftCount}u; column++) { if (!isFiniteValue(sampleDrift[sampleDriftOffset + sample * ${sampleDriftStride}u + column])) { return false; } }` : ''}
+  ${this.suppliedDrift ? `for (var column = 0u; column < ${driftCount}u; column++) { if (!isFiniteValue(sampleDrift[sampleDriftOffset + sampleIndex * ${sampleDriftStride}u + column])) { return false; } }` : ''}
   return true;
 }`;
-    // The grid runs one kriging kernel per query chunk; each reads its candidate rows, followed by
-    // a copy of the sample positions, from one binding, so it binds as many buffers as the scan.
-    const gridIndex =
-      this.sampleIndex === 'grid' ? this.getSampleIndexNodes(graph, usableSampleWGSL) : undefined;
     const uploaded = this.covarianceParameters
       ? createLocalKrigingParameterNodes(graph, id, this.covarianceParameters)
       : undefined;
     const parameters = props.parameters ?? uploaded!.parameters;
-    const parameterNodes = [...(uploaded?.nodes ?? [])];
+    const nodes: GPUCommandNode<Parameters>[] = [...(uploaded?.nodes ?? [])];
     let packedObservations: GraphDataView<'float32'> | undefined;
     if (shouldPackObservations) {
       packedObservations = createTransientView(
@@ -601,7 +786,7 @@ export class GPULocalKriging implements GPUCommandNodeProducer {
         'float32',
         packedLength
       );
-      parameterNodes.push(
+      nodes.push(
         createWGSLKernelNode(graph, {
           id: `${id}-pack-observations-covariance`,
           operation: 'GPULocalKriging',
@@ -612,33 +797,67 @@ export class GPULocalKriging implements GPUCommandNodeProducer {
             {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
             {name: 'packed', view: packedObservations, type: 'f32', access: 'read_write'}
           ],
-          body: `if (index < ${observationLength}u) {
-  packed[packedOffset + index] = observations[observationsOffset + index];
-} else {
-  packed[packedOffset + index] = parameters[parametersOffset + index - ${observationLength}u];
-}`
+          body: `if (index < ${observationLength}u) { packed[packedOffset + index] = observations[observationsOffset + index]; }
+else { packed[packedOffset + index] = parameters[parametersOffset + index - ${observationLength}u]; }`
         })
       );
     }
-    if (gridIndex) {
-      const nodes: GPUCommandNode<Parameters>[] = [...parameterNodes, ...gridIndex.nodes];
-      gridIndex.chunks.forEach((chunk, chunkIndex) => {
+    const grid =
+      this.sampleIndex === 'grid'
+        ? this.getSampleIndexNodes(graph, usableSampleWGSL, maximumGridChunkLength)
+        : undefined;
+    if (grid) nodes.push(...grid.nodes);
+    let dispatchIndex = 0;
+    for (const chunk of this.chunkPlan.chunks) {
+      const step = grid ? maximumGridChunkLength : Math.max(chunk.length, 1);
+      for (let queryStart = 0; queryStart < chunk.length; queryStart += step) {
+        const queryCount = Math.min(step, chunk.length - queryStart);
+        const borrow = (name: string, width: number) =>
+          chunk.views[name]
+            ? sliceGraphChunkGroupView(
+                graph,
+                chunk.views[name],
+                queryStart * width,
+                queryCount * width
+              )
+            : undefined;
+        const localProps: PackedLocalKrigingProps = {
+          ...props,
+          supports: borrow('supports', this.supportCount) as PackedLocalKrigingProps['supports'],
+          queryDrift: borrow(
+            'queryDrift',
+            props.queryDrift?.format === 'float32' ? driftCount : 1
+          ) as PackedLocalKrigingProps['queryDrift'],
+          output: {
+            values: borrow('results', 1) as GraphDataView<'float32x4'>,
+            status: borrow('statuses', 1) as GraphDataView<'uint32'>,
+            weights: borrow('weights', this.neighborCount) as GraphDataView<'float32'> | undefined
+          }
+        };
+        const nodeId = dispatchIndex === 0 ? id : `${id}-chunk-${dispatchIndex}`;
+        if (grid)
+          nodes.push(this.getGridCandidateNode(graph, localProps, grid, `${nodeId}-candidates`));
         nodes.push(
-          this.getKrigingKernelNode(graph, usableSampleWGSL, parameters, packedObservations, {
-            nodeId: chunkIndex === 0 ? id : `${id}-chunk-${chunkIndex}`,
-            queryStart: chunk.queryStart,
-            queryCount: chunk.queryCount,
-            candidateCapacity: gridIndex.capacity,
-            candidates: chunk.candidates
-          })
+          this.getKrigingKernelNode(
+            graph,
+            usableSampleWGSL,
+            parameters,
+            packedObservations,
+            grid
+              ? {
+                  nodeId,
+                  candidateCapacity: candidateCount,
+                  candidates: grid.candidates
+                }
+              : undefined,
+            localProps,
+            chunk.rowBase + queryStart
+          )
         );
-      });
-      return nodes;
+        dispatchIndex++;
+      }
     }
-    return [
-      ...parameterNodes,
-      this.getKrigingKernelNode(graph, usableSampleWGSL, parameters, packedObservations)
-    ];
+    return nodes;
   }
 
   /**
@@ -652,14 +871,15 @@ export class GPULocalKriging implements GPUCommandNodeProducer {
     packedObservations?: GraphDataView<'float32'>,
     grid?: {
       nodeId: string;
-      queryStart: number;
-      queryCount: number;
       candidateCapacity: number;
       candidates: GraphDataView<'uint32'>;
-    }
+    },
+    localProps?: PackedLocalKrigingProps,
+    rowBase: number = 0
   ): GPUCommandNode<Parameters> {
-    const {props, id, neighborCount, supportCount, driftCount} = this;
-    const queryCount = grid ? grid.queryCount : this.queryCount;
+    const {id, neighborCount, supportCount, driftCount} = this;
+    const props = localProps ?? (this.props as PackedLocalKrigingProps);
+    const queryCount = props.supports.length / supportCount;
     const sampleDriftStride = props.sampleDrift?.format === 'float32' ? driftCount : 4;
     const queryDriftStride = props.queryDrift?.format === 'float32' ? driftCount : 4;
     const candidateNeighbors = grid ? grid.candidates : props.neighborhoods;
@@ -729,7 +949,7 @@ export class GPULocalKriging implements GPUCommandNodeProducer {
     const targetVariable = props.mode === 'co-kriging' ? (props.targetVariable ?? 0) : 0;
     const means = props.means ?? Array.from({length: this.variableCount}, () => 0);
     // Ordinary co-kriging has one unbiasedness constraint per variable. A secondary variable with
-    // no retained sample in a neighbourhood has the vacuous constraint `0 = 0`: kept, it is a zero
+    // no retained sampleIndex in a neighbourhood has the vacuous constraint `0 = 0`: kept, it is a zero
     // row that fails the solve, so it is left out and the system reduces towards ordinary kriging
     // of the target (as gstat does). The constraint of the target variable is always kept, so a
     // neighbourhood without a target sample still fails (`sum of no weights = 1` cannot hold).
@@ -771,24 +991,23 @@ for (var variable = 0u; variable < DRIFT_COUNT; variable++) {
     const searchRadius = getWGSLFloatLiteral(
       Number.isFinite(props.searchRadius) ? props.searchRadius! : 3.402823e38
     );
-    // Keeps the nearest NEIGHBOR_COUNT usable samples by (distance(), visit order). The scan and
-    // the grid candidates both visit samples in ascending row, so ties go to the lower row.
-    const retainSample = `if (sample < SAMPLE_COUNT && isUsableSample(sample)) {
-  let position = read_positions(sample);
+    // Retain by (distance(), original sample row), independent of grid visit order.
+    const retainSample = `if (sampleIndex < SAMPLE_COUNT && isUsableSample(sampleIndex)) {
+  let position = read_positions(sampleIndex);
   let separation = distance(position, center);
   ${grid ? 'farthestCandidate = max(farthestCandidate, separation);' : ''}
   if (separation <= SEARCH_RADIUS) {
     var insertion = retained;
-    for (var neighbor = 0u; neighbor < retained; neighbor++) { if (separation < distances[neighbor]) { insertion = neighbor; break; } }
+    for (var neighbor = 0u; neighbor < retained; neighbor++) { if (separation < distances[neighbor] || (separation == distances[neighbor] && sampleIndex < neighbors[neighbor])) { insertion = neighbor; break; } }
     if (insertion < NEIGHBOR_COUNT) {
       var shift = min(retained, NEIGHBOR_COUNT - 1u);
       loop { if (shift <= insertion) { break; } neighbors[shift] = neighbors[shift - 1u]; distances[shift] = distances[shift - 1u]; shift--; }
-      neighbors[insertion] = sample; distances[insertion] = separation; retained = min(retained + 1u, NEIGHBOR_COUNT);
+      neighbors[insertion] = sampleIndex; distances[insertion] = separation; retained = min(retained + 1u, NEIGHBOR_COUNT);
     }
   }
 }`;
     // Grid candidates are the CANDIDATE_COUNT nearest usable samples by the index's float32
-    // `dx^2 + dy^2`, in ascending row. A sample outside a full candidate list has an index d^2 at
+    // `dx^2 + dy^2`; retention resolves distance() ties explicitly by original row. A sampleIndex outside a full candidate list has an index d^2 at
     // least that of the farthest candidate, so its distance() is at least the farthest candidate's
     // within rounding. When the farthest candidate is not clearly beyond the retained boundary (the
     // NEIGHBOR_COUNT-th distance, or the search radius when fewer are retained), a tie or near-tie
@@ -798,20 +1017,20 @@ for (var variable = 0u; variable < DRIFT_COUNT; variable++) {
       ? `var farthestCandidate = -1.0;
 var listed = 0u;
 for (var candidate = 0u; candidate < CANDIDATE_COUNT; candidate++) {
-  let sample = neighborhoods[neighborhoodsOffset + candidateQuery * CANDIDATE_COUNT + candidate];
-  if (sample < SAMPLE_COUNT) { listed++; }
+  let sampleIndex = neighborhoods[neighborhoodsOffset + candidateQuery * CANDIDATE_COUNT + candidate];
+  if (sampleIndex < SAMPLE_COUNT) { listed++; }
   ${retainSample}
 }
 let boundary = select(SEARCH_RADIUS, distances[NEIGHBOR_COUNT - 1u], retained == NEIGHBOR_COUNT);
 if (listed == CANDIDATE_COUNT && farthestCandidate <= boundary * ${getWGSLFloatLiteral(1 + LOCAL_KRIGING_INDEX_TIE_TOLERANCE)}) {
   retained = 0u;
-  for (var sample = 0u; sample < SAMPLE_COUNT; sample++) {
+  for (var sampleIndex = 0u; sampleIndex < SAMPLE_COUNT; sampleIndex++) {
     ${retainSample}
   }
 }`
-      : `${candidateOffsets ? `let candidateBegin = neighborhoodOffsets[neighborhoodOffsetsOffset + index];\nlet candidateEnd = neighborhoodOffsets[neighborhoodOffsetsOffset + index + 1u];\nif (candidateBegin > candidateEnd || candidateEnd > ${candidateNeighbors!.length}u) { return; }` : ''}
+      : `${candidateOffsets ? `let candidateBegin = neighborhoodOffsets[neighborhoodOffsetsOffset + queryIndex];\nlet candidateEnd = neighborhoodOffsets[neighborhoodOffsetsOffset + queryIndex + 1u];\nif (candidateBegin > candidateEnd || candidateEnd > arrayLength(&neighborhoods) - neighborhoodsOffset) { return; }` : ''}
 for (var candidate = ${candidateOffsets ? 'candidateBegin' : '0u'}; candidate < ${candidateOffsets ? 'candidateEnd' : candidateNeighbors ? `${candidateCapacity}u` : 'SAMPLE_COUNT'}; candidate++) {
-  let sample = ${candidateNeighbors ? `neighborhoods[neighborhoodsOffset + ${candidateOffsets ? '' : `index * ${candidateCapacity}u + `}candidate]` : 'candidate'};
+  let sampleIndex = ${candidateNeighbors ? `neighborhoods[neighborhoodsOffset + ${candidateOffsets ? '' : `queryIndex * ${candidateCapacity}u + `}candidate]` : 'candidate'};
   ${retainSample}
 }`;
     const supportAccessors = getPackedPredictionAccessors(
@@ -824,17 +1043,18 @@ for (var candidate = ${candidateOffsets ? 'candidateBegin' : '0u'}; candidate < 
     );
     const gridDeclarations = grid
       ? `const CANDIDATE_COUNT: u32 = ${grid.candidateCapacity}u;
-const QUERY_START: u32 = ${grid.queryStart}u;
-const POSITIONS_BASE: u32 = ${grid.queryCount * grid.candidateCapacity}u;
-fn read_positions(row: u32) -> vec2<f32> { return vec2<f32>(bitcast<f32>(neighborhoods[neighborhoodsOffset + POSITIONS_BASE + row * 2u]), bitcast<f32>(neighborhoods[neighborhoodsOffset + POSITIONS_BASE + row * 2u + 1u])); }`
+fn read_positions(row: u32) -> vec2<f32> { return vec2<f32>(bitcast<f32>(neighborhoods[arrayLength(&neighborhoods) - SAMPLE_COUNT * 2u + row * 2u]), bitcast<f32>(neighborhoods[arrayLength(&neighborhoods) - SAMPLE_COUNT * 2u + row * 2u + 1u])); }`
       : '';
-    return createWGSLKernelNode(graph, {
-      id: grid ? grid.nodeId : id,
+    return createGraphChunkGroupKernelNode(graph, {
+      id: grid ? grid.nodeId : rowBase === 0 ? id : `${id}-chunk-${rowBase}`,
+      pipelineId: id,
+      rowBase,
+      totalLength: this.queryCount,
       operation: 'GPULocalKriging',
       variant: props.mode,
       bindings,
       invocationCount: queryCount,
-      workgroupSize: 32,
+      workgroupSize: LOCAL_KRIGING_QUERY_WORKGROUP_SIZE,
       declarations: `${supportAccessors}\n${gridDeclarations}\nconst SEARCH_RADIUS: f32 = ${searchRadius};\n${GET_NAN_WGSL}\n${IS_FINITE_VALUE_WGSL}\n${usableSampleWGSL}
 ${getEquilibratedSolveWGSL(neighborCount + driftCount)}\n${covarianceWGSL}
 const NEIGHBOR_COUNT: u32 = ${neighborCount}u;
@@ -844,7 +1064,8 @@ const SAMPLE_COUNT: u32 = ${props.positions.length}u;
 const TARGET_VARIABLE: u32 = ${targetVariable}u;
 const MEANS: array<f32, ${means.length}> = array<f32, ${means.length}>(${means.map(getWGSLFloatLiteral).join(', ')});
 `,
-      body: `${grid ? 'let candidateQuery = index;\n{\nlet index = index + QUERY_START;' : ''}
+      body: `let queryIndex = getChunkParameter(0u) + index;
+${grid ? 'let candidateQuery = index;' : ''}
 write_results(index, vec4<f32>(getNaN(), getNaN(), 0.0, 0.0));
 statuses[statusesOffset + index] = 1u;
 ${props.output.weights ? 'for (var column = 0u; column < NEIGHBOR_COUNT; column++) { weights[weightsOffset + index * NEIGHBOR_COUNT + column] = 0.0; }' : ''}
@@ -936,63 +1157,40 @@ if (!isFiniteValue(prediction) || !isFiniteValue(variance) || variance < -1e-4 *
 write_results(index, vec4<f32>(prediction, max(variance, 0.0), pivotRatio, f32(retained)));
 statuses[statusesOffset + index] = 0u;
 ${props.output.weights ? 'for (var row = 0u; row < retained; row++) { weights[weightsOffset + index * NEIGHBOR_COUNT + row] = solution[row]; }' : ''}
-${grid ? '}' : ''}`
+`
     });
   }
 
-  /**
-   * Grid-index candidates: one pass writes the support centers and a mask of the usable samples,
-   * then, per query chunk, a `GPUNeighborSearch` kNN cross join lists the `neighborCount` plus
-   * margin nearest usable samples of every center (ascending sample row, the order of the
-   * exhaustive scan). The search targets are the samples followed by the centers (masked out), so
-   * the derived bounds cover the queries and no query falls outside the lattice. No radius is
-   * applied in the search: the nearest candidates followed by the kernel's `searchRadius` test
-   * retain the same rows as a scan. A last pass per chunk copies the CSR into fixed-width rows
-   * padded with 0xffffffff, followed by the sample positions, in one binding of at most the
-   * device's `maxStorageBufferBindingSize`.
-   */
+  /** Builds usable sample positions and the published grid once for all query dispatches. */
   private getSampleIndexNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>,
-    usableSampleWGSL: string
-  ): {
-    nodes: GPUCommandNode<Parameters>[];
-    chunks: {queryStart: number; queryCount: number; candidates: GraphDataView<'uint32'>}[];
-    capacity: number;
-  } {
-    const {props, id, queryCount, supportCount} = this;
+    usableSampleWGSL: string,
+    maximumChunkQueryCount: number
+  ) {
+    const {props, id} = this;
     const sampleCount = props.positions.length;
-    const targetCount = sampleCount + queryCount;
-    const k = getSampleIndexCandidateCount(this.neighborCount);
-    const bindingByteLimit = graph.device.limits.maxStorageBufferBindingSize;
-    validateGPUStorageBindingByteLength(
-      graph.device,
-      id,
-      "sampleIndex 'grid' search targets (samples plus queries, float32x2)",
-      targetCount * 8,
-      "use sampleIndex 'brute-force' or supply neighborhoods"
+    const candidateCount = getSampleIndexCandidateCount(this.neighborCount);
+    const parameters = createNeighborSearchDerivedParameterNodes(graph, {
+      id: `${id}-index-parameters`,
+      operation: 'GPULocalKriging',
+      positions: props.positions,
+      radius: Infinity
+    });
+    const gridPositions = createTransientView(
+      graph,
+      `${id}-index-unit-positions`,
+      'float32x2',
+      sampleCount
     );
-    const deviceChunkQueryCount = getSampleIndexChunkQueryCount(bindingByteLimit, sampleCount, k);
-    validateRequirement(
-      id,
-      deviceChunkQueryCount > 0,
-      `sampleIndex 'grid' candidate binding needs ${sampleCount * 8 + k * 4} bytes for one query (sample positions plus ${k} candidates), above the device maxStorageBufferBindingSize of ${bindingByteLimit}`
-    );
-    const chunkQueryCount = Math.min(
-      deviceChunkQueryCount,
-      props.sampleIndexChunkQueryCount ?? deviceChunkQueryCount
-    );
-    const targets = createTransientView(graph, `${id}-index-targets`, 'float32x2', targetCount);
-    const mask = createTransientView(graph, `${id}-index-mask`, 'uint32', targetCount);
-    const centers = createTransientView(graph, `${id}-index-centers`, 'float32x2', queryCount);
-    const prepare = createWGSLKernelNode<Parameters>(graph, {
+    const latticeWGSL = getNeighborSearchLatticeWGSL('knn', parameters.gridSize);
+    const prepare = createWGSLKernelNode(graph, {
       id: `${id}-index-prepare`,
       operation: 'GPULocalKriging',
       variant: 'sample-index-prepare',
-      invocationCount: targetCount,
+      invocationCount: sampleCount,
       bindings: [
         {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
         {name: 'observations', view: props.observations, type: 'f32', access: 'read'},
-        {name: 'supports', view: props.supports, type: 'f32', access: 'read'},
         ...(this.suppliedDrift
           ? [
               {
@@ -1003,156 +1201,111 @@ ${grid ? '}' : ''}`
               }
             ]
           : []),
-        {name: 'targets', view: targets, type: 'f32', access: 'read_write'},
-        {name: 'mask', view: mask, type: 'u32', access: 'read_write'},
-        {name: 'centers', view: centers, type: 'f32', access: 'read_write'}
+        {name: 'parameters', view: parameters.parameters, type: 'f32', access: 'read'},
+        {name: 'gridPositions', view: gridPositions, type: 'f32', access: 'read_write'}
       ],
-      declarations: `${getPackedPredictionAccessors({positions: 2, observations: 4, supports: props.supports.format === 'float32x4' ? 4 : 2})}
-${GET_NAN_WGSL}
-${IS_FINITE_VALUE_WGSL}
-${usableSampleWGSL}
-const SAMPLE_COUNT: u32 = ${sampleCount}u;
-const SUPPORT_COUNT: u32 = ${supportCount}u;
-fn getSupportCenter(query: u32) -> vec2<f32> {
-  // The same weighted mean as the kriging kernel; an unusable support gives NaN (an empty row).
-  var center = vec2<f32>(0.0);
-  var supportWeightSum = 0.0;
-  for (var support = 0u; support < SUPPORT_COUNT; support++) {
-    let supportValue = read_supports(query * SUPPORT_COUNT + support);
-    let point = supportValue.xy;
-    let weight = ${props.supports.format === 'float32x4' ? 'supportValue.z' : '1.0'};
-    if (!isFiniteValue(weight) || weight < 0.0) { return vec2<f32>(getNaN()); }
-    supportWeightSum += weight;
-    if (!isFiniteValue(point.x) || !isFiniteValue(point.y)) { return vec2<f32>(getNaN()); }
-    center += point * weight;
-  }
-  if (!(supportWeightSum > 0.0) || !isFiniteValue(supportWeightSum)) { return vec2<f32>(getNaN()); }
-  return center / supportWeightSum;
+      // Keep spans relative to the origin: at large float32 coordinates adding one cell to
+      // a constant axis can round back to its origin. Other grid callers keep their mapping.
+      declarations: `${getPackedPredictionAccessors({positions: 2, observations: 4})}\n${GET_NAN_WGSL}\n${IS_FINITE_VALUE_WGSL}\n${latticeWGSL}\n${usableSampleWGSL}
+fn getKrigingGridUnitPosition(lattice: Lattice, position: vec2<f32>) -> vec2<f32> {
+  let width = max(lattice.maximumX - lattice.minimumX, lattice.cellWidth * f32(COLUMNS));
+  let height = max(lattice.maximumY - lattice.minimumY, lattice.cellHeight * f32(ROWS));
+  return (position - vec2<f32>(lattice.minimumX, lattice.minimumY)) / vec2<f32>(width, height);
 }`,
-      body: `var point = vec2<f32>(getNaN());
-  var usable = false;
-  if (index < SAMPLE_COUNT) {
-    usable = isUsableSample(index);
-    point = read_positions(index);
-  } else {
-    point = getSupportCenter(index - SAMPLE_COUNT);
-    centers[centersOffset + (index - SAMPLE_COUNT) * 2u] = point.x;
-    centers[centersOffset + (index - SAMPLE_COUNT) * 2u + 1u] = point.y;
-  }
-  targets[targetsOffset + index * 2u] = point.x;
-  targets[targetsOffset + index * 2u + 1u] = point.y;
-  mask[maskOffset + index] = select(0u, 1u, usable);`
+      body: `let lattice = readLattice(); var unitPosition = vec2<f32>(getNaN());
+if (lattice.valid && isUsableSample(index)) { unitPosition = getKrigingGridUnitPosition(lattice, read_positions(index)); }
+gridPositions[gridPositionsOffset + index * 2u] = unitPosition.x;
+gridPositions[gridPositionsOffset + index * 2u + 1u] = unitPosition.y;`
     });
-    const parameters = createNeighborSearchDerivedParameterNodes<Parameters>(graph, {
-      id: `${id}-index-parameters`,
+    const index = createPointNeighborGridIndexNodes(graph, {
+      id: `${id}-index`,
+      positions: gridPositions,
+      gridSize: parameters.gridSize,
+      rowCount: sampleCount
+    });
+    const sortedTargets = createTransientView(
+      graph,
+      `${id}-index-sorted-targets`,
+      'uint32',
+      sampleCount * 3
+    );
+    const candidates = createTransientView(
+      graph,
+      `${id}-index-rows`,
+      'uint32',
+      maximumChunkQueryCount * candidateCount + sampleCount * 2
+    );
+    const pack = createWGSLKernelNode(graph, {
+      id: `${id}-index-pack-targets`,
       operation: 'GPULocalKriging',
-      positions: targets,
-      radius: Infinity
+      variant: 'sample-index-pack-targets',
+      invocationCount: sampleCount,
+      bindings: [
+        {name: 'positions', view: props.positions, type: 'u32', access: 'read'},
+        {name: 'rows', view: index.sortedRows, type: 'u32', access: 'read'},
+        {name: 'count', view: index.gridCount, type: 'u32', access: 'read'},
+        {name: 'sortedTargets', view: sortedTargets, type: 'u32', access: 'read_write'},
+        {name: 'candidates', view: candidates, type: 'u32', access: 'read_write'}
+      ],
+      body: `if (index < count[countOffset]) {
+  let row = rows[rowsOffset + index];
+  sortedTargets[sortedTargetsOffset + index * 3u] = positions[positionsOffset + row * 2u];
+  sortedTargets[sortedTargetsOffset + index * 3u + 1u] = positions[positionsOffset + row * 2u + 1u];
+  sortedTargets[sortedTargetsOffset + index * 3u + 2u] = row;
+}
+let positionsBase = arrayLength(&candidates) - ${sampleCount * 2}u;
+candidates[positionsBase + index * 2u] = positions[positionsOffset + index * 2u];
+candidates[positionsBase + index * 2u + 1u] = positions[positionsOffset + index * 2u + 1u];`
     });
-    const nodes: GPUCommandNode<Parameters>[] = [prepare, ...parameters.nodes];
-    const chunks: {
-      queryStart: number;
-      queryCount: number;
-      candidates: GraphDataView<'uint32'>;
-    }[] = [];
-    for (let queryStart = 0; queryStart < queryCount; queryStart += chunkQueryCount) {
-      const chunkIndex = chunks.length;
-      const suffix = chunkIndex === 0 ? '' : `-chunk-${chunkIndex}`;
-      const chunkCount = Math.min(chunkQueryCount, queryCount - queryStart);
-      let chunkCenters = centers;
-      if (chunkCount !== queryCount) {
-        chunkCenters = createTransientView(
-          graph,
-          `${id}-index-centers${suffix || '-chunk-0'}`,
-          'float32x2',
-          chunkCount
-        );
-        nodes.push(
-          createWGSLKernelNode<Parameters>(graph, {
-            id: `${id}-index-centers${suffix || '-chunk-0'}`,
-            operation: 'GPULocalKriging',
-            variant: 'sample-index-chunk-centers',
-            invocationCount: chunkCount * 2,
-            bindings: [
-              {name: 'centers', view: centers, type: 'f32', access: 'read'},
-              {name: 'chunkCenters', view: chunkCenters, type: 'f32', access: 'read_write'}
-            ],
-            body: `chunkCenters[chunkCentersOffset + index] = centers[centersOffset + ${queryStart * 2}u + index];`
-          })
-        );
-      }
-      const offsets = createTransientView(
-        graph,
-        `${id}-index-offsets${suffix}`,
-        'uint32',
-        chunkCount + 1
-      );
-      const neighbors = createTransientView(
-        graph,
-        `${id}-index-neighbors${suffix}`,
-        'uint32',
-        chunkCount * k
-      );
-      const candidates = createTransientView(
-        graph,
-        `${id}-index-rows${suffix}`,
-        'uint32',
-        chunkCount * k + sampleCount * 2
-      );
-      const search = new GPUNeighborSearch({
-        id: `${id}-index${suffix}`,
-        spatialContext: this.spatialContext,
-        mode: 'knn',
-        k,
-        positions: targets,
-        queryPositions: chunkCenters,
-        mask,
-        parameters: parameters.parameters,
-        gridSize: parameters.gridSize,
-        output: {
-          offsets,
-          neighbors,
-          weights: createTransientView(
-            graph,
-            `${id}-index-weights${suffix}`,
-            'float32',
-            chunkCount * k
-          ),
-          status: {
-            overflow: createTransientView(graph, `${id}-index-overflow${suffix}`, 'uint32', 1)
-          }
-        }
-      });
-      // Fixed-width rows padded with 0xffffffff, then the sample positions as float32 bits: one
-      // kriging binding for candidates and positions, so the grid binds no more than the scan.
-      const pad = createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-index-rows${suffix}`,
-        operation: 'GPULocalKriging',
-        variant: 'sample-index-rows',
-        invocationCount: chunkCount + sampleCount,
-        bindings: [
-          {name: 'offsets', view: offsets, type: 'u32', access: 'read'},
-          {name: 'neighbors', view: neighbors, type: 'u32', access: 'read'},
-          {name: 'positions', view: props.positions, type: 'u32', access: 'read'},
-          {name: 'rows', view: candidates, type: 'u32', access: 'read_write'}
-        ],
-        body: `if (index < ${chunkCount}u) {
-    let begin = offsets[offsetsOffset + index];
-    let count = min(offsets[offsetsOffset + index + 1u] - begin, ${k}u);
-    for (var slot = 0u; slot < ${k}u; slot++) {
-      var sample = 0xffffffffu;
-      if (slot < count) { sample = neighbors[neighborsOffset + begin + slot]; }
-      rows[rowsOffset + index * ${k}u + slot] = sample;
-    }
-  } else {
-    let sample = index - ${chunkCount}u;
-    rows[rowsOffset + ${chunkCount * k}u + sample * 2u] = positions[positionsOffset + sample * 2u];
-    rows[rowsOffset + ${chunkCount * k}u + sample * 2u + 1u] = positions[positionsOffset + sample * 2u + 1u];
-  }`
-      });
-      nodes.push(...search.getCommandNodes(graph), pad);
-      chunks.push({queryStart, queryCount: chunkCount, candidates});
-    }
-    return {nodes, chunks, capacity: k};
+    return {
+      nodes: [...parameters.nodes, prepare, ...index.nodes, pack],
+      candidates,
+      sortedTargets,
+      cellOffsets: index.cellOffsets,
+      parameters: parameters.parameters,
+      gridSize: parameters.gridSize
+    };
+  }
+
+  /** Lists exact grid candidates into reusable query-sized scratch; shared sample tail is untouched. */
+  private getGridCandidateNode<Parameters>(
+    graph: GPUCommandGraph<Parameters>,
+    props: PackedLocalKrigingProps,
+    grid: Omit<ReturnType<GPULocalKriging['getSampleIndexNodes']>, 'nodes'>,
+    id: string
+  ): GPUCommandNode<Parameters> {
+    const candidateCount = getSampleIndexCandidateCount(this.neighborCount);
+    const latticeWGSL = getNeighborSearchLatticeWGSL('knn', grid.gridSize);
+    return createGraphChunkGroupKernelNode(graph, {
+      id,
+      pipelineId: `${this.id}-index-candidates`,
+      operation: 'GPULocalKriging',
+      variant: 'sample-index-candidates',
+      invocationCount: props.supports.length / this.supportCount,
+      workgroupSize: LOCAL_KRIGING_QUERY_WORKGROUP_SIZE,
+      bindings: [
+        {name: 'supports', view: props.supports, type: 'f32', access: 'read'},
+        {name: 'parameters', view: grid.parameters, type: 'f32', access: 'read'},
+        {name: 'cellOffsets', view: grid.cellOffsets, type: 'u32', access: 'read'},
+        {name: 'sortedTargets', view: grid.sortedTargets, type: 'u32', access: 'read'},
+        {name: 'candidates', view: grid.candidates, type: 'u32', access: 'read_write'}
+      ],
+      declarations: `${getPackedPredictionAccessors({supports: props.supports.format === 'float32x4' ? 4 : 2})}\n${latticeWGSL}\n${IS_FINITE_VALUE_WGSL}\n${getInsertNeighborWGSL(candidateCount)}`,
+      body: `for (var slot = 0u; slot < K; slot++) { candidates[candidatesOffset + index * K + slot] = 0xffffffffu; }
+var center = vec2<f32>(0.0); var weightSum = 0.0;
+for (var support = 0u; support < ${this.supportCount}u; support++) {
+  let value = read_supports(index * ${this.supportCount}u + support);
+  let weight = ${props.supports.format === 'float32x4' ? 'value.z' : '1.0'};
+  if (!isFiniteValue(value.x) || !isFiniteValue(value.y) || !isFiniteValue(weight) || weight < 0.0) { return; }
+  center += value.xy * weight; weightSum += weight;
+}
+if (!(weightSum > 0.0) || !isFiniteValue(weightSum)) { return; }
+center /= weightSum;
+let x = center.x; let y = center.y; let lattice = readLattice();
+if (!lattice.valid || cellOffsets[cellOffsetsOffset + CELL_COUNT] == 0u) { return; }
+var found = 0u; var bestDistances: array<f32, ${candidateCount}>; var bestIds: array<u32, ${candidateCount}>;
+${getNearestNeighborSearchWGSL('true')}
+for (var slot = 0u; slot < found; slot++) { candidates[candidatesOffset + index * K + slot] = bestIds[slot]; }`
+    });
   }
 }

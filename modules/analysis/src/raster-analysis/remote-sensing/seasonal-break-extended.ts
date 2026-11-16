@@ -3,16 +3,23 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPUCommandGraph, GPUCommandNode} from '@luma.gl/graph/gpu-core';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  createRasterTimeSeriesNodes,
+  rasterTimeSeriesBinding as rasterBinding,
+  type RasterTimeSeriesScalarView,
+  type RasterTimeSeriesChunkPlan
+} from '../raster-time-series/raster-time-series-chunks-b';
 import type {GPURasterSeasonalBreakProps} from './gpu-raster-seasonal-break';
-import {RASTER_FINITE_WGSL, rasterBinding, getRasterLeastSquaresWGSL} from './raster-kernel-utils';
+import {getWGSLFloatLiteral} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {RASTER_FINITE_WGSL, getRasterLeastSquaresWGSL} from './raster-kernel-utils';
 import {getGPURasterDateAxisBinding} from '../raster-time-series/raster-irregular-date-axis';
 
 /** Bounded dummy/harmonic regression, cyclic decomposition and fixed-history monitoring. */
 export function createExtendedSeasonalBreakNodes<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   id: string,
-  props: GPURasterSeasonalBreakProps,
+  props: GPURasterSeasonalBreakProps<RasterTimeSeriesScalarView>,
+  chunkPlan: RasterTimeSeriesChunkPlan,
   axisDeclarations = ''
 ): GPUCommandNode<Parameters>[] {
   const slices = props.sliceCount;
@@ -22,22 +29,23 @@ export function createExtendedSeasonalBreakNodes<Parameters>(
   const seasonalBasis =
     props.seasonality === 'dummy'
       ? `return select(0.0, 1.0, slice % ${props.period}u == column - 1u);`
-      : `let angle = 6.283185307179586 * ${props.dateAxis ? 'rasterSliceYears(slice)' : 'f32(slice)'} / ${props.period}; return select(sin(angle), cos(angle), column == 2u);`;
+      : `let angle = 6.283185307179586 * ${props.dateAxis ? 'rasterSliceYears(slice)' : 'f32(slice)'} / ${getWGSLFloatLiteral(props.period)}; return select(sin(angle), cos(angle), column == 2u);`;
   const sliceTime = props.dateAxis ? 'rasterSliceYears(slice)' : `f32(slice) / ${slices}.0`;
-  return [
-    createWGSLKernelNode<Parameters>(graph, {
-      id,
-      operation: 'GPURasterSeasonalBreak',
-      variant: 'extended-seasonal-decomposition-monitoring',
-      invocationCount: props.cellCount,
-      workgroupSize: 2,
-      bindings: [
-        rasterBinding('values', props.values),
-        ...(props.mask ? [rasterBinding('mask', props.mask)] : []),
-        ...(props.dateAxis ? [getGPURasterDateAxisBinding(props.dateAxis)] : []),
-        ...Object.entries(props.output).map(([name, view]) => rasterBinding(name, view, true))
-      ],
-      declarations: `${RASTER_FINITE_WGSL}${getRasterLeastSquaresWGSL(history, columns, true)}${axisDeclarations}
+  return createRasterTimeSeriesNodes<Parameters>(graph, chunkPlan, {
+    id,
+    operation: 'GPURasterSeasonalBreak',
+    variant: 'extended-seasonal-decomposition-monitoring',
+    invocationCount: props.cellCount,
+    workgroupSize: 2,
+    bindings: [
+      rasterBinding('values', props.values),
+      ...(props.mask ? [rasterBinding('mask', props.mask)] : []),
+      ...(props.dateAxis ? [getGPURasterDateAxisBinding(props.dateAxis)] : []),
+      ...Object.entries(props.output)
+        .filter(([, view]) => view !== undefined)
+        .map(([name, view]) => rasterBinding(name, view, true))
+    ],
+    declarations: `${RASTER_FINITE_WGSL}${getRasterLeastSquaresWGSL(history, columns, true)}${axisDeclarations}
 fn isObserved(cell: u32, slice: u32) -> bool {
   let source = cell * ${slices}u + slice;
   return finite(values[valuesOffset + source]) ${props.mask ? '&& mask[maskOffset + source] != 0u' : ''};
@@ -75,7 +83,7 @@ fn fitModel(design: array<f32, ${history * columns}>, response: array<f32, ${his
       residual[row] = response[row] - prediction;
     }
     result.iterations = iteration + 1u;
-    if (maximumChange <= ${props.tolerance ?? 1e-5} * (1.0 + maximumCoefficient)) { result.converged = true; break; }
+    if (maximumChange <= ${getWGSLFloatLiteral(props.tolerance ?? 1e-5)} * (1.0 + maximumCoefficient)) { result.converged = true; break; }
   }
   for (var row = 0u; row < ${history}u; row++) { result.residual += residual[row] * residual[row]; }
   result.valid = finite(result.residual);
@@ -84,7 +92,7 @@ fn fitModel(design: array<f32, ${history * columns}>, response: array<f32, ${his
   }
   return result;
 }`,
-      body: `var training: array<u32, ${Math.ceil(history / 32)}>;
+    body: `var training: array<u32, ${Math.ceil(history / 32)}>;
 var response: array<f32, ${history}>; var design: array<f32, ${history * columns}>;
 var rejected = false;
 for (var slice = 0u; slice < ${slices}u; slice++) {
@@ -138,7 +146,7 @@ else if (count >= ${Math.max(baselineColumns + 1, props.minimumSegmentLength * 2
       if (!candidate.valid) { continue; }
       converged = converged && candidate.converged;
       let candidateGain = baselineScore - (f32(count) * log(max(candidate.residual, residualFloor) / f32(count)) + ${baselineColumns + 2}.0 * log(f32(count)));
-      if (candidateGain > max(gain, ${props.minimumBICGain ?? 0})) {
+      if (candidateGain > max(gain, ${getWGSLFloatLiteral(props.minimumBICGain ?? 0)})) {
         chosen = candidate.coefficients; gain = candidateGain; boundary = split; selectedResidual = candidate.residual; selectedColumns = ${columns}u;
       }
     }
@@ -166,7 +174,7 @@ for (var slice = 0u; slice < ${slices}u; slice++) {
         if (!finite(score)) { code = 2u; }
         else {
           maximumScore = max(maximumScore, abs(score));
-          if (abs(score) >= ${props.monitoring.threshold}) {
+          if (abs(score) >= ${getWGSLFloatLiteral(props.monitoring.threshold)}) {
             let direction = sign(score); consecutive = select(1u, consecutive + 1u, direction == previousSign); previousSign = direction;
             if (alarm < 0.0 && consecutive >= ${props.monitoring.minimumConsecutive}u) { alarm = f32(slice + 1u - ${props.monitoring.minimumConsecutive}u); }
           } else { consecutive = 0u; previousSign = 0.0; }
@@ -187,6 +195,5 @@ diagnostics[diagnosticOffset] = f32(iterations); diagnostics[diagnosticOffset + 
 diagnostics[diagnosticOffset + 3u] = residualScale; diagnostics[diagnosticOffset + 4u] = alarm; diagnostics[diagnosticOffset + 5u] = maximumScore;`
     : ''
 }`
-    })
-  ];
+  });
 }

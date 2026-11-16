@@ -3,7 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GEODESIC_WGSL} from '../geometry-measures/geodesic-wgsl';
-import {NEIGHBOR_SEARCH_FLOAT_WGSL} from './neighbor-search-wgsl';
+import {
+  NEIGHBOR_SEARCH_CANONICAL_LONGITUDE_WGSL,
+  NEIGHBOR_SEARCH_FLOAT_WGSL
+} from './neighbor-search-wgsl';
 
 /** Word of the packed parameters holding `timeRadius`, followed by `minimumTime` and `maximumTime`. @internal */
 export const GPU_NEIGHBOR_SEARCH_TIME_RADIUS_WORD = 12;
@@ -798,35 +801,7 @@ export function getGeodesicNearestNeighborSearchWGSL(
  * @internal
  */
 export const GEODESIC_WRAPPED_LONGITUDE_BOUND_WGSL = /* wgsl */ `
-// Reduce the stored f32 angle exactly modulo a turn. Floating quotient/product reduction can
-// erase the remainder for large angles (the stored f32 near 1e20 is -88 degrees, not zero).
-// For fractional angles, use integer significand units. For integer angles, modular powers of
-// two need at most seven iterations even at the largest finite f32 exponent.
-fn getNeighborSearchCanonicalLongitude(longitude: f32) -> f32 {
-  if (abs(longitude) <= 180.0) { return longitude; }
-  let bits = bitcast<u32>(longitude);
-  let exponent = (bits >> 23u) & 255u;
-  let significand = (bits & 0x7fffffu) | 0x800000u;
-  var wrapped: f32;
-  if (exponent < 150u) {
-    let fractionalBits = 150u - exponent;
-    let turnUnits = 360u << fractionalBits;
-    let remainder = significand % turnUnits;
-    let centered = select(i32(remainder), i32(remainder) - i32(turnUnits), remainder > turnUnits / 2u);
-    wrapped = f32(centered) * bitcast<f32>((127u - fractionalBits) << 23u);
-  } else {
-    var remainingExponent = exponent - 150u;
-    var power = 2u;
-    var remainder = significand % 360u;
-    while (remainingExponent > 0u) {
-      if ((remainingExponent & 1u) != 0u) { remainder = (remainder * power) % 360u; }
-      power = (power * power) % 360u;
-      remainingExponent >>= 1u;
-    }
-    wrapped = f32(select(i32(remainder), i32(remainder) - 360, remainder > 180u));
-  }
-  return select(wrapped, -wrapped, (bits & 0x80000000u) != 0u);
-}
+${NEIGHBOR_SEARCH_CANONICAL_LONGITUDE_WGSL}
 
 // Preserve the established lookup for queries inside the lattice. Outside it, use the
 // equivalent longitude nearest its midpoint, so three shifted cap intervals cover every cell.

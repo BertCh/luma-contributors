@@ -25,13 +25,18 @@ export const GPU_STREAMLINES_UINT32_PARAMETER_LENGTH = 4;
 /** Per-frame settings of {@link GPUStreamlines}. */
 export type GPUStreamlinesSettings = {
   /**
-   * Field placement `[originX, originY, cellWidth, cellHeight]`; row 0 has the smallest y. A cell
-   * size that is zero or not finite throws.
+   * Field placement `[originX, originY, cellWidth, cellHeight]`, not min/max bounds. The origin
+   * is an outer corner; sample `(column, row)` is at origin + `(column + 0.5, row + 0.5)` times
+   * cell size. Positive cellHeight puts row zero at the smallest y; signed cell sizes determine
+   * the direction of increasing indices. Zero or non-finite sizes throw. Sampling is bilinear
+   * between centers, clamped inside the outer bounds. No grid affine changes this placement.
    */
   fieldExtent: readonly [number, number, number, number];
   /**
    * Occupancy grid placement `[originX, originY, cellWidth, cellHeight]`. The cell size is the
    * separation distance between streamlines; seeds and traced points stay inside the grid.
+   * Cell `(column, row)` is the half-open rectangle from origin + `(column, row)` times cell
+   * size to origin + `(column + 1, row + 1)` times cell size. Both cell sizes must be positive.
    */
   gridExtent: readonly [number, number, number, number];
   /** Integration step in world units. */

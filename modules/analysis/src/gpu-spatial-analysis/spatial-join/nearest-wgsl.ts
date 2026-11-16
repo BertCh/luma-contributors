@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getStorageTopKAccessors} from '../../analysis-core/kernels/storage-backed-top-k';
+
+import {NEAREST_PRIVATE_NEIGHBOR_CAPACITY} from './nearest-types';
+
 import type {NearestSide} from './nearest-types';
 import {forEachEdge, getMinimumRingVertices} from './spatial-predicate-wgsl';
 import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
@@ -263,7 +267,7 @@ fn ${p}Contains(q: vec2f, f: u32) -> bool {
 }`
       : '';
   return `
-const ${P}_VERTEX_COUNT: u32 = ${side.vertexCount}u;
+${kind === 'points' ? '' : `const ${P}_VERTEX_COUNT: u32 = ${side.vertexCount}u;`}
 fn ${p}RingStart(f: u32) -> u32 { return ${ringStart}; }
 fn ${p}RingEnd(f: u32) -> u32 { return ${ringEnd}; }
 fn ${p}RingVertexStart(r: u32) -> u32 { return ${vertexStart}; }
@@ -358,13 +362,13 @@ export type NearestTraversalOptions = {
   internalNodeCount: number;
   /** Maximum traversal stack depth. */
   stackSize: number;
-  /** Row of the first query of this dispatch. Unused when `scratchChunk` is set. */
-  chunkFirstRow: number;
+  /** Tail slot holding the per-dispatch first row and count. */
+  dispatchWord: number;
   /**
    * Set when the `topk` scratch holds only one chunk of this dispatch's queries. The chunk's first
    * query (relative to the dispatch) is then read from `topk[CURSOR_WORD]`, a GPU word, and the
-   * dispatch's first row and query count are pipeline overrides (`CHUNK_FIRST_ROW`,
-   * `CHUNK_QUERY_COUNT`), so no chunk index reaches the WGSL text. `cursorWord` is the
+   * dispatch's first row and query count are GPU words at `dispatchWord`, so no chunk
+   * index reaches the WGSL text or pipeline constants. `cursorWord` is the
    * `topk` element that holds the cursor.
    */
   scratchChunk?: {cursorWord: number};
@@ -442,21 +446,26 @@ export function getNearestTraversalWGSL(options: NearestTraversalOptions): {
   body: string;
 } {
   const {k, capacity} = options;
+  const storageBacked = capacity > NEAREST_PRIVATE_NEIGHBOR_CAPACITY;
+  const storageList = getStorageTopKAccessors('topk', 'header + 3u');
+  const readRow = (slot: string) =>
+    storageBacked ? storageList.readRow(slot) : `listRow[${slot}]`;
+  const readDistance = (slot: string) =>
+    storageBacked ? storageList.readDistance(slot) : `listDistance[${slot}]`;
+  const writeRow = (slot: string, value: string) =>
+    storageBacked ? storageList.writeRow(slot, value) : `listRow[${slot}] = ${value};`;
+  const writeDistance = (slot: string, value: string) =>
+    storageBacked ? storageList.writeDistance(slot, value) : `listDistance[${slot}] = ${value};`;
   const stride = NEAREST_HEADER_WORDS + 2 * capacity;
   const declarations = `
+const DISPATCH_WORD: u32 = ${options.dispatchWord}u;
 const K: u32 = ${k}u;
 const CAPACITY: u32 = ${capacity}u;
 const STRIDE: u32 = ${stride}u;
 const FEATURE_COUNT: u32 = ${options.featureCount}u;
 const INTERNAL_NODE_COUNT: u32 = ${options.internalNodeCount}u;
 const STACK_SIZE: u32 = ${options.stackSize}u;
-${
-  options.scratchChunk
-    ? `override CHUNK_FIRST_ROW: u32;
-override CHUNK_QUERY_COUNT: u32;
-const CURSOR_WORD: u32 = ${options.scratchChunk.cursorWord}u;`
-    : `const CHUNK_FIRST_ROW: u32 = ${options.chunkFirstRow}u;`
-}
+${options.scratchChunk ? `const CURSOR_WORD: u32 = ${options.scratchChunk.cursorWord}u;` : ''}
 const BOUND_SLACK: f32 = 1.000001;
 ${options.greatCircle ? NEAREST_BOX_LOWER_ANGLE_WGSL : ''}
 // ${options.greatCircle ? 'Central-angle lower bound' : 'Squared distance'} from the query box to a node box, or FLOAT32_MAXIMUM for an empty node.
@@ -474,12 +483,14 @@ fn boxLower(node: u32, queryMinimum: vec2f, queryMaximum: vec2f) -> f32 {
 }`;
   // `localQuery` is the query's index inside this dispatch's query side, `row` its global row, and
   // `header` its slot in the (possibly chunked) `topk` scratch.
-  const body = `${
+  const body = `let CHUNK_FIRST_ROW = topk[topkOffset + DISPATCH_WORD];
+  let CHUNK_QUERY_COUNT = topk[topkOffset + DISPATCH_WORD + 1u];
+  ${
     options.scratchChunk
       ? options.queryOrder
         ? `let position = topk[topkOffset + CURSOR_WORD] + index;
   if (position >= CHUNK_QUERY_COUNT) { return; }
-  let localQuery = queryOrder[queryOrderOffset + position];
+  let localQuery = queryOrder[queryOrderOffset + position] - CHUNK_FIRST_ROW;
   let row = CHUNK_FIRST_ROW + localQuery;
   let header = topkOffset + index * STRIDE;`
         : `let localQuery = topk[topkOffset + CURSOR_WORD] + index;
@@ -487,10 +498,12 @@ fn boxLower(node: u32, queryMinimum: vec2f, queryMaximum: vec2f) -> f32 {
   let row = CHUNK_FIRST_ROW + localQuery;
   let header = topkOffset + index * STRIDE;`
       : options.queryOrder
-        ? `let localQuery = queryOrder[queryOrderOffset + index];
+        ? `if (index >= CHUNK_QUERY_COUNT) { return; }
+  let localQuery = queryOrder[queryOrderOffset + index] - CHUNK_FIRST_ROW;
   let row = CHUNK_FIRST_ROW + localQuery;
   let header = topkOffset + row * STRIDE;`
-        : `let localQuery = index;
+        : `if (index >= CHUNK_QUERY_COUNT) { return; }
+  let localQuery = index;
   let row = CHUNK_FIRST_ROW + index;
   let header = topkOffset + row * STRIDE;`
   }
@@ -514,8 +527,7 @@ fn boxLower(node: u32, queryMinimum: vec2f, queryMaximum: vec2f) -> f32 {
   }
   if (queryMinimum.x > queryMaximum.x) { return; }
 
-  var listDistance: array<f32, ${capacity}>;
-  var listRow: array<u32, ${capacity}>;
+  ${storageBacked ? '' : `var listDistance: array<f32, ${capacity}>;\n  var listRow: array<u32, ${capacity}>;`}
   var count = 0u;
   var droppedMinimum = FLOAT32_MAXIMUM;
   var stackNode: array<u32, ${options.stackSize}>;
@@ -575,8 +587,8 @@ fn boxLower(node: u32, queryMinimum: vec2f, queryMaximum: vec2f) -> f32 {
     var position = count;
     loop {
       if (position == 0u) { break; }
-      let previousDistance = listDistance[position - 1u];
-      if (previousDistance < candidate || (previousDistance == candidate && listRow[position - 1u] < featureRow)) { break; }
+      let previousDistance = ${readDistance('position - 1u')};
+      if (previousDistance < candidate || (previousDistance == candidate && ${readRow('position - 1u')} < featureRow)) { break; }
       position = position - 1u;
     }
     if (position >= CAPACITY) {
@@ -585,30 +597,34 @@ fn boxLower(node: u32, queryMinimum: vec2f, queryMaximum: vec2f) -> f32 {
     }
     var last = count;
     if (count == CAPACITY) {
-      droppedMinimum = min(droppedMinimum, listDistance[CAPACITY - 1u]);
+      droppedMinimum = min(droppedMinimum, ${readDistance('CAPACITY - 1u')});
       last = CAPACITY - 1u;
     }
     var slot = last;
     loop {
       if (slot <= position) { break; }
-      listDistance[slot] = listDistance[slot - 1u];
-      listRow[slot] = listRow[slot - 1u];
+      ${writeDistance('slot', readDistance('slot - 1u'))}
+      ${writeRow('slot', readRow('slot - 1u'))}
       slot = slot - 1u;
     }
-    listDistance[position] = candidate;
-    listRow[position] = featureRow;
+    ${writeDistance('position', 'candidate')}
+    ${writeRow('position', 'featureRow')}
     count = min(count + 1u, CAPACITY);
     // Beyond k, keep only rows tied with the k-th distance.
     loop {
-      if (count > K && listDistance[count - 1u] > listDistance[K - 1u]) { count = count - 1u; } else { break; }
+      if (count > K && ${readDistance('count - 1u')} > ${readDistance('K - 1u')}) { count = count - 1u; } else { break; }
     }
-    if (count >= K) { bound = min(bound, listDistance[K - 1u]); }
+    if (count >= K) { bound = min(bound, ${readDistance('K - 1u')}); }
   }
   var overflowFlag = 0u;
-  if (${options.ties === 'all' ? 'true' : 'CAPACITY > K'} && count >= K && droppedMinimum <= listDistance[K - 1u]) { overflowFlag = 1u; }
-  for (var slot = 0u; slot < count; slot++) {
+  if (${options.ties === 'all' ? 'true' : 'CAPACITY > K'} && count >= K && droppedMinimum <= ${readDistance('K - 1u')}) { overflowFlag = 1u; }
+  ${
+    storageBacked
+      ? ''
+      : `for (var slot = 0u; slot < count; slot++) {
     topk[header + 3u + slot * 2u] = listRow[slot];
     topk[header + 4u + slot * 2u] = bitcast<u32>(listDistance[slot]);
+  }`
   }
   topk[header] = count;
   topk[header + 1u] = overflowFlag;`;

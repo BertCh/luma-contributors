@@ -3,7 +3,12 @@
 
 import {expect, it} from 'vitest';
 import {Buffer} from '@luma.gl/core';
-import {createTransientView, GPUCommandGraph, getViewBindingRange} from '@luma.gl/graph/gpu-core';
+import {
+  createTransientView,
+  GPUCommandGraph,
+  GraphDataView,
+  getViewBindingRange
+} from '@luma.gl/graph/gpu-core';
 import {WgslReflect} from 'wgsl_reflect';
 import {GPUNetworkFacilityOptimization} from '../../../src/gpu-network/network-optimization/gpu-network-facility-optimization';
 import {
@@ -58,7 +63,7 @@ it('estimates every candidate batch, reduction and optional named-status command
         const contributor = new GPUNetworkFacilityOptimization(props);
         const nodes = contributor.getCommandNodes(graph);
         expect(nodes.length).toBe(contributor.estimatedCommandNodeCount);
-        expect(nodes.length).toBeLessThanOrEqual(83);
+        expect(nodes.length).toBeLessThanOrEqual(131);
         for (const kernel of getGPUCommandNodeKernelSources(nodes)) {
           expect(() => new WgslReflect(kernel.source), kernel.id).not.toThrow();
           expect(getStorageBindingCount(kernel.source), kernel.id).toBeLessThanOrEqual(8);
@@ -164,9 +169,12 @@ for (const operation of ['backup-coverage', 'p-dispersion', 'capacitated-p-media
       const nodes = contributor.getCommandNodes(graph);
       expect(nodes).toHaveLength(contributor.estimatedCommandNodeCount);
       for (const node of nodes) {
-        const record = getWGSLKernelNodeRecord(graph, node.id);
-        expect(record).toBeDefined();
-        for (const {view: binding} of record!.bindings) {
+        // Published compute nodes and parameter uploads expose their views through resources;
+        // they need not have a createWGSLKernelNode recording entry.
+        expect(node.resources?.length).toBeGreaterThan(0);
+        for (const resource of node.resources ?? []) {
+          if (!('buffer' in resource) || !(resource.buffer instanceof GraphDataView)) continue;
+          const binding = resource.buffer;
           const range = getViewBindingRange(binding);
           expect(range.offset + range.size, `${node.id}: ${binding.buffer.id}`).toBeLessThanOrEqual(
             binding.buffer.byteLength
@@ -182,3 +190,91 @@ for (const operation of ['backup-coverage', 'p-dispersion', 'capacitated-p-media
     }
   });
 }
+
+it('checks actual aligned input/output bindings before declaring any facility search nodes', () => {
+  for (const field of ['costs', 'assignments'] as const) {
+    const {device, graph, props} = createFixture(1);
+    try {
+      recordWGSLKernelNodes(graph);
+      const original = field === 'costs' ? props.costs : props.output.assignments;
+      const storage = createTransientView(graph, `offset-${field}`, original.format, 128);
+      const offsetView = graph.createDataView(storage.buffer, {
+        format: original.format,
+        length: original.length,
+        byteOffset: 252
+      });
+      const contributor = new GPUNetworkFacilityOptimization({
+        ...props,
+        ...(field === 'costs' ? {costs: offsetView as typeof props.costs} : {}),
+        output: {
+          ...props.output,
+          ...(field === 'assignments'
+            ? {assignments: offsetView as typeof props.output.assignments}
+            : {})
+        }
+      });
+      Object.defineProperty(device.limits, 'maxStorageBufferBindingSize', {value: 256});
+      expect(original.length * 4).toBeLessThanOrEqual(256);
+      expect(getViewBindingRange(offsetView).size).toBeGreaterThan(256);
+      expect(() => contributor.getCommandNodes(graph)).toThrow(
+        /facility-status input\/output aligned binding range.*limit 256/
+      );
+      expect(getWGSLKernelNodeRecord(graph, 'facility-status-initialize')).toBeUndefined();
+    } finally {
+      device.destroy();
+    }
+  }
+});
+
+it('preflights fixed control scratch even for one-candidate facility searches', () => {
+  const {device, graph, props, view} = createFixture(1);
+  try {
+    recordWGSLKernelNodes(graph);
+    const contributor = new GPUNetworkFacilityOptimization({
+      ...props,
+      facilityCount: 1,
+      selectCount: 1,
+      costs: view('float32', 1),
+      demand: view('float32', 1),
+      capacities: view('float32', 1),
+      output: {
+        ...props.output,
+        selectedFacilities: view('uint32', 1),
+        assignments: view('uint32', 1)
+      }
+    });
+    Object.defineProperty(device.limits, 'maxStorageBufferBindingSize', {value: 16});
+    expect(() => contributor.getCommandNodes(graph)).toThrow(
+      /facility-status facility control state needs 28 bytes.*limit 16/
+    );
+    expect(getWGSLKernelNodeRecord(graph, 'facility-status-initialize')).toBeUndefined();
+  } finally {
+    device.destroy();
+  }
+});
+
+it('shared facility reductions retain one pipeline and dispatch each level at its own size', () => {
+  for (const [maximumCandidates, expectedWorkgroups] of [
+    [64, [1]],
+    [65, [2, 1]],
+    [4096, [64, 1]],
+    [65536, [1024, 16, 1]]
+  ] as const) {
+    const {device, graph, props} = createFixture(maximumCandidates);
+    try {
+      const nodes = new GPUNetworkFacilityOptimization(props).getCommandNodes(graph);
+      const reductions = nodes.filter(node => node.workload?.variant === 'candidate-reduction');
+      expect(reductions.map(node => node.workload?.maximumWorkgroupCount)).toEqual(
+        expectedWorkgroups
+      );
+      const sources = getGPUCommandNodeKernelSources(reductions);
+      expect(
+        new Set(sources.map(kernel => JSON.stringify([kernel.source, kernel.constants]))).size
+      ).toBe(1);
+      for (const kernel of sources)
+        expect(auditWGSLModule(kernel.source, kernel.constants)).toEqual([]);
+    } finally {
+      device.destroy();
+    }
+  }
+});

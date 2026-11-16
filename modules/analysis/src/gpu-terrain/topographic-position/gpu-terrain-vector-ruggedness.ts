@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateTerrainBindings} from '../terrain-processing/terrain-binding-preflight';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -19,6 +20,7 @@ import {
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
+import {SCALED_QUOTIENT_WGSL} from '../../analysis-core/kernels/scaled-quotient-wgsl';
 import {
   validateGraphViewsBelongToGraph,
   validateSinglePackedView
@@ -225,6 +227,9 @@ export class GPUTerrainVectorRuggedness implements GPUCommandNodeProducer, GPURa
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateTerrainBindings(graph, this.id, this.props, {
+      'normal and filter scratch': 4 * this.props.grid.width * this.props.grid.height
+    });
     const {id, props} = this;
     const {output} = props;
     const {width, height} = props.grid;
@@ -261,9 +266,11 @@ export class GPUTerrainVectorRuggedness implements GPUCommandNodeProducer, GPURa
 const HEIGHT: u32 = ${height}u;
 ${getRasterRowNorthSignWGSL(this.rowDirection)}
 ${RASTER_WGSL_HELPERS}
+${SCALED_QUOTIENT_WGSL}
 ${getRasterGroundCellSizeWGSL(props.cellSizeMode ?? 'uniform', TERRAIN_GEOMORPHOMETRY_CELL_SLOTS)}`,
       body: `let row = i32(index / WIDTH);
   let column = i32(index % WIDTH);
+  let centreElevation = elevation[elevationOffset + index];
   var isValid = true;
   var windowValues: array<f32, 9>;
   for (var k = 0; k < 9; k++) {
@@ -283,20 +290,32 @@ ${getRasterGroundCellSizeWGSL(props.cellSizeMode ?? 'uniform', TERRAIN_GEOMORPHO
     let sampleValue = elevation[elevationOffset + sampleIndex];
     isValid = isValid && elevationValidity[elevationValidityOffset + sampleIndex] != 0u &&
       isFiniteValue(sampleValue);
-    windowValues[k] = sampleValue;
+    // Difference before the Horn weights are applied: a large common elevation must not
+    // round away a representable local slope when the two weighted sides are subtracted.
+    windowValues[k] = sampleValue - centreElevation;
   }
   let groundCell = getGroundCellSize(u32(row));
   let zFactor = settings[settingsOffset + 2u];
-  // Horn: weights 1-2-1 across three rows or columns, divided by 8 cell sizes.
-  let eastGradient = zFactor *
+  // Keep the cell-size denominator and the vertical factor in exponent form. Metal fast math
+  // must not form 8 * cellSize or its reciprocal at the extremes of the float32 range.
+  let verticalFactor = frexp(zFactor);
+  let eastDifference =
     ((windowValues[2] + 2.0 * windowValues[5] + windowValues[8]) -
-     (windowValues[0] + 2.0 * windowValues[3] + windowValues[6])) / (8.0 * groundCell.x);
-  let northGradient = ROW_NORTH_SIGN * zFactor *
+     (windowValues[0] + 2.0 * windowValues[3] + windowValues[6]));
+  let northDifference =
     ((windowValues[6] + 2.0 * windowValues[7] + windowValues[8]) -
-     (windowValues[0] + 2.0 * windowValues[1] + windowValues[2])) / (8.0 * groundCell.y);
+     (windowValues[0] + 2.0 * windowValues[1] + windowValues[2]));
+  let eastGradient = getScaledQuotient(eastDifference * verticalFactor.fract, groundCell.x, 1.0, verticalFactor.exp - 3);
+  let northGradient = ROW_NORTH_SIGN * getScaledQuotient(northDifference * verticalFactor.fract, groundCell.y, 1.0, verticalFactor.exp - 3);
   isValid = isValid && groundCell.x > 0.0 && groundCell.y > 0.0 &&
     isFiniteValue(eastGradient) && isFiniteValue(northGradient);
-  let normal = normalize(vec3<f32>(-eastGradient, -northGradient, 1.0));
+  // Normalization squares its components. Bound those components first so finite steep
+  // gradients do not overflow that square and collapse the normal to zero.
+  let normalScale = max(1.0, max(abs(eastGradient), abs(northGradient)));
+  let normal = normalize(vec3<f32>(
+    getScaledQuotient(-eastGradient, normalScale, 1.0, 0),
+    getScaledQuotient(-northGradient, normalScale, 1.0, 0),
+    getScaledQuotient(1.0, normalScale, 1.0, 0)));
   let invalidValue = bitcast<f32>(0x7fc00000u | (index & 0u));
   normalX[normalXOffset + index] = select(invalidValue, normal.x, isValid);
   normalY[normalYOffset + index] = select(invalidValue, normal.y, isValid);

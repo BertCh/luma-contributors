@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getGraphOutputViews as getRasterPreflightOutputViews} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateRasterStorageBindings} from '../raster-grid/raster-storage-preflight';
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/graph/gpu-core';
 import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
@@ -23,7 +25,8 @@ import {
   getRasterAlgebraInputNodes,
   getRasterAlgebraInputViews,
   isRasterAlgebraBand,
-  validateRasterAlgebraInput
+  validateRasterAlgebraInput,
+  validateRasterAlgebraInputBindings
 } from './raster-algebra-input';
 
 const OPERATION = 'GPURasterConditional';
@@ -144,6 +147,19 @@ export class GPURasterConditional implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    const storageProps = this.props;
+    validateRasterAlgebraInputBindings(
+      graph,
+      this.id,
+      [storageProps.conditionValues, storageProps.a, storageProps.b],
+      storageProps.grid
+    );
+    validateRasterStorageBindings(graph, this.id, [
+      storageProps.mask,
+      storageProps.parameters,
+      ...getRasterPreflightOutputViews(storageProps.output)
+    ]);
+
     const {id, props} = this;
     const {output} = props;
     validateRasterAlgebraGraph(id, graph, [

@@ -22,7 +22,14 @@ export type GPUIsobandsSettings = {
    * clamp on the GPU). `breakCount + 1` bands exist: band `k` covers `[b[k - 1], b[k])`.
    */
   breakCount: number;
-  /** Raster extent `[minX, minY, maxX, maxY]` in world units. Row 0 is at `minY`. */
+  /**
+   * Outer world extent `[minX, minY, maxX, maxY]`. Sample `(column, row)` is centered at
+   * `(minX + (column + 0.5) * cellWidth, minY + (row + 0.5) * cellHeight)`, with cell sizes
+   * `(maxX - minX) / grid.width` and `(maxY - minY) / grid.height`. Geometry interpolates over
+   * the rectangle between the outermost sample centers, half a cell inside each extent edge.
+   * Row zero is at the minY side and rows advance toward larger y. grid.affine and
+   * pixelInterpretation do not change this placement. Ring output uses the same convention.
+   */
   extent: readonly [number, number, number, number];
   /** First band emitted as geometry. Defaults to 0. Does not affect `bandClasses`. */
   firstBand?: number;

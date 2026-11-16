@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getSpatialAnalysisPackedKernelNodes} from '../geographic-distribution/spatial-analysis-packed-kernel';
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
-import {createRecipeKernelNode, getRecipeView} from '../recipes/expansion-recipe-utils';
+import {getRecipeView} from '../recipes/expansion-recipe-utils';
 import {validateGPUStorageBindingByteLength} from '../../analysis-core/kernels/gpu-contributor-utils';
 
 /** Reconcile globally unique tile-local IDs across class-compatible seams on the complete resident lattice. @internal */
@@ -53,7 +54,7 @@ export function reconcileLandscapePatchLabels<Parameters>(
     props.output?.patches
   );
   graph.add(
-    createRecipeKernelNode(graph, {
+    getSpatialAnalysisPackedKernelNodes(graph, {
       id: `${props.id}-patch-parents-init`,
       operation: props.id,
       invocationCount: patchCount,
@@ -75,7 +76,7 @@ fn getRoot(owner:u32)->u32 {
   }
 }`;
   graph.add(
-    createRecipeKernelNode(graph, {
+    getSpatialAnalysisPackedKernelNodes(graph, {
       id: `${props.id}-reconcile`,
       operation: props.id,
       invocationCount: count,
@@ -107,7 +108,7 @@ for(var direction=0u;direction<${props.connectivity === 8 ? 4 : 2}u;direction++)
     })
   );
   graph.add(
-    createRecipeKernelNode(graph, {
+    getSpatialAnalysisPackedKernelNodes(graph, {
       id: `${props.id}-patch-roots`,
       operation: props.id,
       invocationCount: patchCount,
@@ -117,7 +118,7 @@ for(var direction=0u;direction<${props.connectivity === 8 ? 4 : 2}u;direction++)
     })
   );
   graph.add(
-    createRecipeKernelNode(graph, {
+    getSpatialAnalysisPackedKernelNodes(graph, {
       id: `${props.id}-relabel`,
       operation: props.id,
       invocationCount: count,

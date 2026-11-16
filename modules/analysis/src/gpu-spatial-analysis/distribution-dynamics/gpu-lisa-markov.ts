@@ -4,15 +4,18 @@
 
 import {
   createTransientView,
+  GraphDataView,
   validatePackedUint32View,
   type GPUCommandGraph,
-  type GPUCommandNode,
-  type GraphDataView
+  type GPUCommandNode
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
   validateGraphViewsBelongToGraph,
+  validateGraphOutputsDisjointFromInputs,
+  validateGPUStorageBindingByteLength,
+  getGraphOutputViews,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
@@ -31,6 +34,9 @@ import {
 import {GPU_CLASS_ASSIGNMENT_NO_CLASS} from './gpu-class-assignment';
 import {GPUTransitionMatrix, type GPUTransitionMatrixOutput} from './gpu-transition-matrix';
 import {createPeriodPackNode, getPaddedPeriodStride, getPeriodView} from './period-views';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateSpatialAutocorrelationBindings} from '../spatial-autocorrelation/spatial-autocorrelation-kernels';
+import {validateSpatialOutputViews} from '../spatial-clustering/spatial-output-validation';
 
 const OPERATION = 'GPULISAMarkov';
 
@@ -164,6 +170,23 @@ export class GPULISAMarkov implements GPUCommandNodeProducer {
         throw new Error(`${id} output.quadrants length must equal rowCount * periodCount`);
       }
     }
+    const outputs = getGraphOutputViews({
+      ...props.output,
+      status: {converged: props.output.status?.converged}
+    });
+    validateGraphOutputsDisjointFromInputs(id, outputs, [
+      props.values,
+      props.parameters,
+      props.mask,
+      props.weights.offsets,
+      props.weights.neighbors,
+      props.weights.weights
+    ]);
+    validateSpatialOutputViews(
+      id,
+      Object.fromEntries(outputs.map((view, index) => [`output[${index}]`, view])),
+      [{read: [props.output.quadrants], write: [props.output.counts, props.output.ignored]}]
+    );
   }
 
   /**
@@ -200,7 +223,15 @@ export class GPULISAMarkov implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, rowCount: rows} = this;
-    const {output, weights, periodCount: periods, mask} = props;
+    const {output, periodCount: periods, mask} = props;
+    // Moran reads CSR weights and overflow status; distances are not consumed by this chain.
+    const weights: GPUSpatialWeights = {
+      offsets: props.weights.offsets,
+      neighbors: props.weights.neighbors,
+      weights: props.weights.weights,
+      information: props.weights.information,
+      status: props.weights.status
+    };
     validateGraphViewsBelongToGraph(id, graph, [
       props.values,
       props.parameters,
@@ -219,6 +250,45 @@ export class GPULISAMarkov implements GPUCommandNodeProducer {
       output.status?.converged
     ]);
     const total = rows * periods;
+    validateGraphChunkBindingRanges(graph, id, {
+      values: props.values,
+      parameters: props.parameters,
+      mask,
+      offsets: weights.offsets,
+      neighbors: weights.neighbors,
+      weights: weights.weights,
+      ...Object.fromEntries(
+        getGraphOutputViews({...output, status: {converged: output.status?.converged}}).map(
+          (view, index) => [`output[${index}]`, view]
+        )
+      )
+    });
+    // Metadata-only public view: no graph resource or node is declared by this preflight.
+    validateSpatialAutocorrelationBindings(graph, {
+      id,
+      values: new GraphDataView(props.values.buffer, {
+        format: 'float32',
+        length: rows,
+        byteOffset: props.values.byteOffset,
+        byteStride: props.values.byteStride,
+        rowByteLength: props.values.rowByteLength
+      }),
+      weights,
+      parameters: props.parameters,
+      mask
+    });
+    for (const [name, byteLength] of [
+      ['padded period scratch', getPaddedPeriodStride(rows) * periods * 4],
+      ['quadrant scratch', total * 4],
+      ['diagnostic chainWork', output.steadyStates ? GPU_LISA_MARKOV_STATE_COUNT ** 2 * 4 : 0]
+    ] as const)
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        name,
+        byteLength,
+        'reduce rowCount or periodCount'
+      );
     // Per-period transients use a 64-aligned stride so every period view has the same offset
     // residue and the period loop adds no pipelines (rule 12). `quadrants` stays contiguous for
     // the states kernel, which also unpacks the padded Moran quadrants.

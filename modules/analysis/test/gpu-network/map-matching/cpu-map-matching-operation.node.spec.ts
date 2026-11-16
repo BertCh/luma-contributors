@@ -23,6 +23,31 @@ import {
 
 const NONE = GPU_MAP_MATCHING_NONE;
 
+it('forwards the canonical intermediate-capacity port through both operation forms', () => {
+  const {input, props} = createMatchingFixture();
+  const changed = {
+    ...props,
+    output: {
+      ...props.output,
+      status: {...props.output.status, candidateOverflow: 'candidateOverflow'}
+    }
+  };
+  const operation = new GPUMapMatchingOperation(changed);
+  const shapes = Object.fromEntries(
+    Object.entries(getMatchingGraphInputs(input)).map(([port, value]) => [
+      port,
+      {format: value.format, length: value.values.length / (value.format === 'float32x2' ? 2 : 1)}
+    ])
+  );
+  const contributor = constructNetworkOperationContributor(operation, shapes) as unknown as {
+    props: {output: {status: {candidateOverflow?: unknown}}};
+  };
+  expect(contributor.props.output.status.candidateOverflow).toBeDefined();
+  expect(operation.outputs['candidateOverflow'].value).toBe('candidateOverflow');
+  expect(new CPUMapMatchingOperation(changed).outputs['candidateOverflow']).toBeDefined();
+  expect(Array.from(computeMapMatchingOnCPU(input, props).candidateOverflow)).toEqual([0]);
+});
+
 it('retains the finite score cutoff: far-away candidates remain unmatched with zero likelihood', () => {
   const {input, props} = createCutoffMatchingFixture();
   // Distance 1e9 / sigma 1e-6 gives an emission about -5e29, finite but below -1e29.
@@ -277,6 +302,7 @@ it('agrees with exhaustive sequences across changing noise, transition scales an
 
 it('the CPU graph callback maps every optional port and validates supplied acceleration-table lengths', async () => {
   const {input, props} = createMatchingFixture();
+  props.output.status = {...props.output.status, candidateOverflow: 'candidateOverflow'};
   // An overflowing table is a valid acceleration input; exact CPU matching ignores its contents.
   input.routeTable = {
     offsets: new Uint32Array(9),

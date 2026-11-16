@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+
 import {
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -10,10 +12,12 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {
   createWGSLKernelNode,
+  getWGSLFloatLiteral,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
+  validateFiniteNumber,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView
@@ -27,6 +31,13 @@ import {
 
 const NORM = 'infinityNorm[infinityNormOffset]';
 const OPERATION = 'GPUSpatialLagImpacts';
+
+/** Largest finite WGSL f32, for the compile-time series parameter bound. */
+const IMPACTS_MAXIMUM_SHADER_FLOAT = 3.4028234663852886e38;
+/** Smallest positive WGSL f32, so a positive bound cannot round to zero. */
+const IMPACTS_MINIMUM_POSITIVE_SHADER_FLOAT = 2 ** -149;
+/** Coefficient address arithmetic is uint32 in WGSL. */
+const IMPACTS_MAXIMUM_COEFFICIENT_ELEMENT_COUNT = 0xffffffff;
 
 /** Number of float32 values per predictor in `output.impacts`: direct, indirect, total. */
 export const GPU_SPATIAL_LAG_IMPACTS_STRIDE = 3;
@@ -126,20 +137,33 @@ export class GPUSpatialLagImpacts implements GPUCommandNodeProducer {
     validateCapacity(id, 'rowCount', rowCount);
     validateCapacity(id, 'maximumPower', maximumPower, 1, GPU_SPATIAL_WEIGHTS_TRACES_MAXIMUM_POWER);
     validateCapacity(id, 'coefficientStride', coefficientStride);
-    if (!Number.isInteger(rhoIndex) || rhoIndex < 0) {
-      throw new Error(`${id} rhoIndex must be a non-negative integer`);
-    }
-    if (!Number.isInteger(firstPredictorIndex) || firstPredictorIndex < 0) {
-      throw new Error(`${id} firstPredictorIndex must be a non-negative integer`);
-    }
+    validateCapacity(id, 'rhoIndex', rhoIndex, 0, IMPACTS_MAXIMUM_COEFFICIENT_ELEMENT_COUNT);
+    validateCapacity(
+      id,
+      'firstPredictorIndex',
+      firstPredictorIndex,
+      0,
+      IMPACTS_MAXIMUM_COEFFICIENT_ELEMENT_COUNT
+    );
     if (rhoIndex >= firstPredictorIndex && rhoIndex < firstPredictorIndex + predictorCount) {
       throw new Error(`${id} rhoIndex must not be a predictor row`);
     }
-    if (props.rhoBound !== undefined && !(props.rhoBound > 0)) {
-      throw new Error(`${id} rhoBound must be positive`);
-    }
+    validateFiniteNumber(
+      id,
+      'rhoBound',
+      props.rhoBound ?? 1,
+      IMPACTS_MINIMUM_POSITIVE_SHADER_FLOAT,
+      IMPACTS_MAXIMUM_SHADER_FLOAT
+    );
     validateSinglePackedView(props.coefficients, ['float32'], `${id} coefficients`);
     const lastRow = Math.max(rhoIndex, firstPredictorIndex + predictorCount - 1);
+    validateCapacity(
+      id,
+      'coefficient element count',
+      lastRow * coefficientStride + 1,
+      1,
+      IMPACTS_MAXIMUM_COEFFICIENT_ELEMENT_COUNT
+    );
     if (props.coefficients.length < lastRow * coefficientStride + 1) {
       throw new Error(`${id} coefficients must hold every predictor row and the rho row`);
     }
@@ -183,6 +207,12 @@ export class GPUSpatialLagImpacts implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
+    validateGraphChunkBindingRanges(graph, id, {
+      coefficients: props.coefficients,
+      ...props.traces,
+      status: props.status,
+      impacts: props.output.impacts
+    });
     const {predictorCount, maximumPower, rowCount, coefficientStride, rhoIndex} = props;
     const firstPredictorIndex = props.firstPredictorIndex ?? 1;
     validateGraphViewsBelongToGraph(id, graph, [
@@ -217,7 +247,7 @@ const ROWS: f32 = ${rowCount}.0;
 const STRIDE: u32 = ${coefficientStride}u;
 const RHO_ROW: u32 = ${rhoIndex}u;
 const FIRST_ROW: u32 = ${firstPredictorIndex}u;
-const RHO_BOUND: f32 = ${Number.isInteger(rhoBound) ? `${rhoBound}.0` : rhoBound};
+const RHO_BOUND: f32 = ${getWGSLFloatLiteral(rhoBound)};
 ${getSpatialMultiplierTraceWGSL(maximumPower, 'powerTraces', rowCount, NORM)}
 ${getSpatialMultiplierTotalWGSL(maximumPower, 'powerSums', rowCount, NORM)}`,
         body: `let rho = coefficients[coefficientsOffset + RHO_ROW * STRIDE];

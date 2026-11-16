@@ -25,7 +25,6 @@ import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
   validateMaximumCount,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -43,6 +42,12 @@ import {
   createWalkEmitNode,
   type LineDensityGridConstants
 } from './line-density-kernels';
+
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {
+  getGeometrySortScratchByteLengths,
+  validateGeometryScratchByteLengths
+} from '../geometry-edit/geometry-storage-validation';
 
 const OPERATION = 'GPULineDensity';
 const LINE_DENSITY_SUPPORT: GPUSpatialContextSupport = Object.freeze({
@@ -299,15 +304,26 @@ export class GPULineDensity implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id, cellCount, recordCapacity} = this;
     const {output} = props;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.positions,
-      props.lineOffsets,
-      props.parameters,
-      output.lengths,
-      output.densities,
-      output.status.overflow,
-      output.status.requiredCount
-    ]);
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(
+        [
+          props.positions,
+          props.lineOffsets,
+          props.parameters,
+          output.lengths,
+          output.densities,
+          output.status.overflow,
+          output.status.requiredCount
+        ].map((view, index) => [String(index), view])
+      )
+    );
+    validateGeometryScratchByteLengths(graph, id, {
+      rowCountsAndScan: props.positions.length * 4,
+      ...getGeometrySortScratchByteLengths(recordCapacity),
+      cellOffsets: (cellCount + 1) * 4
+    });
     const rowCount = props.positions.length;
     const constants: LineDensityGridConstants = {
       positions: props.positions,

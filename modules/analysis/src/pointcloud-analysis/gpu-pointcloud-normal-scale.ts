@@ -17,24 +17,38 @@ import {
   validateCapacity,
   validateCommandNodeBudget,
   validateFiniteNumber,
-  validateGraphOutputsDisjointFromInputs,
   validateGPUStorageBindingByteLength,
   validateRequirement,
   validateViewLength
 } from '../analysis-core/kernels/gpu-contributor-utils';
 import {GPUPointCloudFeatures} from './gpu-pointcloud-features';
 import {GPUPointCloudNeighborhoods} from './gpu-pointcloud-neighborhoods';
-import {getPointCloudKernelNodes} from './pointcloud-kernel-nodes';
+import {getPointCloudKernelNodes, validatePointCloudPackedViews} from './pointcloud-kernel-nodes';
 import {
   GPU_POINT_CLOUD_MAXIMUM_NEIGHBOR_CAPACITY,
   GPU_POINT_CLOUD_MAXIMUM_NORMAL_SCALE_COUNT,
   GPU_POINT_CLOUD_NORMAL_SCALE_INDEX_NODE_ALLOWANCE,
   GPU_POINT_CLOUD_MAXIMUM_UNINDEXED_WORK
 } from './pointcloud-limits';
-import {validatePointCloudSearchGrid, type PointCloudGrid} from './pointcloud-grid-index';
+import {
+  validatePointCloudSearchGrid,
+  validatePointCloudGridIndexBindings,
+  type PointCloudGrid
+} from './pointcloud-grid-index';
 
 /** Float32 rows: minimumSupport, viewpoint X/Y/Z, and viewpoint-enabled flag. */
 export const GPU_POINT_CLOUD_NORMAL_SCALE_PARAMETER_LENGTH = 5;
+
+import {
+  getPointCloudRuntimeKernelNodes,
+  validatePointCloudDispatchParameterBindings
+} from './pointcloud-chunk-kernel-nodes';
+import {
+  GRAPH_CHUNK_MAXIMUM_ROW_COUNT,
+  validateGraphChunkBindingRanges
+} from '../analysis-core/kernels/graph-chunk-dispatch';
+
+import {validatePointCloudGridParameters} from './pointcloud-grid-parameters';
 
 export type GPUPointCloudNormalScaleSettings = {
   /** Minimum other points for a candidate plane, 3–64, default 3. Above capacity no scale qualifies. */
@@ -78,6 +92,8 @@ export type GPUPointCloudNormalScaleOutput = {
 };
 
 export type GPUPointCloudNormalScaleProps = GPUPointCloudNormalScaleOutput & {
+  /** Runtime origin/cellSize for the resident search grid; requires grid. */
+  gridParameters?: GraphDataView<'float32'>;
   id?: string;
   positions: GraphDataView<'float32x3'>;
   /** Owned core rows into positions; omitted selects every position. The query itself is excluded. */
@@ -101,8 +117,8 @@ export type GPUPointCloudNormalScaleProps = GPUPointCloudNormalScaleOutput & {
  * nondegenerate, converged supports participate. A truncated largest-radius list can still certify a
  * smaller radius when its boundary precedes the last retained neighbor. There is no host readback.
  *
- * Compile-time: view shapes, radii (search bounds), capacity and grid.
- * Per-frame: positions, queryRows and parameters contents. Coordinates
+ * Compile-time: view shapes, radii (search bounds), capacity and grid dimensions.
+ * Per-frame: positions, queryRows, parameters and gridParameters contents. Coordinates
  * are local Cartesian 3D in a planar/native spatialContext; recenter large absolute coordinates.
  * The grid must contain every intended neighbor; no missing halo can be inferred from absent rows.
  */
@@ -113,6 +129,12 @@ export class GPUPointCloudNormalScale implements GPUCommandNodeProducer {
 
   constructor(readonly props: GPUPointCloudNormalScaleProps) {
     this.id = props.id ?? 'gpu-pointcloud-normal-scale';
+    validatePointCloudGridParameters(this.id, props.gridParameters);
+    validateRequirement(
+      this.id,
+      !props.gridParameters || Boolean(props.grid),
+      'gridParameters requires grid'
+    );
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext, {
       coordinateSpaces: ['planar'],
       metrics: ['native'],
@@ -149,20 +171,51 @@ export class GPUPointCloudNormalScale implements GPUCommandNodeProducer {
       GPU_POINT_CLOUD_NORMAL_SCALE_PARAMETER_LENGTH
     );
     const rows = props.queryRows?.length ?? props.positions.length;
+    if (props.gridParameters)
+      validateCapacity(
+        this.id,
+        'runtime-grid packed neighbor words',
+        rows * (2 * props.capacity + 1),
+        0,
+        GRAPH_CHUNK_MAXIMUM_ROW_COUNT
+      );
     for (const name of ['normals', 'normalScales', 'normalVariances', 'status'] as const) {
       validateViewLength(this.id, name, props[name], rows);
     }
-    const outputs = [props.normals, props.normalScales, props.normalVariances, props.status];
-    validateRequirement(
+    validatePointCloudPackedViews(
       this.id,
-      new Set(outputs.map(view => view.buffer)).size === outputs.length,
-      'outputs must use distinct buffers'
+      {
+        positions: props.positions,
+        queryRows: props.queryRows,
+        parameters: props.parameters,
+        gridParameters: props.gridParameters
+      },
+      {
+        normals: props.normals,
+        normalScales: props.normalScales,
+        normalVariances: props.normalVariances,
+        status: props.status
+      },
+      [
+        {
+          outputs: {
+            normals: props.normals,
+            normalScales: props.normalScales,
+            normalVariances: props.normalVariances,
+            status: props.status
+          }
+        },
+        {
+          inputs: {
+            positions: props.positions,
+            queryRows: props.queryRows,
+            parameters: props.parameters,
+            normalScales: props.normalScales
+          },
+          outputs: {normals: props.normals}
+        }
+      ]
     );
-    validateGraphOutputsDisjointFromInputs(this.id, outputs, [
-      props.positions,
-      props.queryRows,
-      props.parameters
-    ]);
     if (props.grid) {
       validatePointCloudSearchGrid(this.id, 'grid', props.grid);
       validateRequirement(
@@ -179,7 +232,8 @@ export class GPUPointCloudNormalScale implements GPUCommandNodeProducer {
     }
     this.estimatedCommandNodeCount =
       3 +
-      3 * props.radii.length +
+      Number(Boolean(props.gridParameters)) +
+      8 * props.radii.length +
       (props.grid ? GPU_POINT_CLOUD_NORMAL_SCALE_INDEX_NODE_ALLOWANCE : 0);
     validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
   }
@@ -189,6 +243,26 @@ export class GPUPointCloudNormalScale implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {positions, queryRows, capacity, normals, normalScales, normalVariances, status} =
       this.props;
+    if (!normals.length) return [];
+    validateGraphChunkBindingRanges(graph, this.id, {
+      positions,
+      queryRows,
+      normals,
+      normalScales,
+      normalVariances,
+      status,
+      parameters: this.props.parameters,
+      gridParameters: this.props.gridParameters
+    });
+    if (this.props.grid)
+      validatePointCloudGridIndexBindings(
+        graph,
+        this.id,
+        positions,
+        this.props.grid.dimensions,
+        this.props.gridParameters
+      );
+    validatePointCloudDispatchParameterBindings(graph, this.id, 12, 1);
     const rows = normals.length;
     // Check the largest row-proportional scratch before constructing any nodes.
     validateGPUStorageBindingByteLength(
@@ -205,6 +279,14 @@ export class GPUPointCloudNormalScale implements GPUCommandNodeProducer {
       rows * 12,
       'reduce queryRows'
     );
+    if (this.props.gridParameters)
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        this.id,
+        'runtime-grid neighborhood scratch',
+        rows * (2 * capacity + 1) * 4,
+        'reduce queryRows or capacity'
+      );
     const indices = createTransientView(graph, `${this.id}-indices`, 'uint32', rows * capacity);
     const distances = createTransientView(
       graph,
@@ -231,6 +313,7 @@ export class GPUPointCloudNormalScale implements GPUCommandNodeProducer {
         capacity,
         radius: this.props.radii.at(-1)!,
         grid: this.props.grid,
+        gridParameters: this.props.gridParameters,
         indices,
         squaredDistances: distances,
         counts
@@ -247,15 +330,16 @@ export class GPUPointCloudNormalScale implements GPUCommandNodeProducer {
     );
     for (const [scaleIndex, radius] of this.props.radii.entries()) {
       nodes.push(
-        ...getPointCloudKernelNodes(graph, {
+        ...getPointCloudRuntimeKernelNodes(graph, {
           id: `${this.id}-support-${scaleIndex}`,
           length: rows,
           inputs: {distances, counts, parameters: this.props.parameters},
           outputs: {scaleCounts},
+          runtimeWords: [new Uint32Array(new Float32Array([radius ** 2]).buffer)[0]],
           body: `var support = 0u;
 let retained = min(readCounts(index), ${capacity}u);
 for (var slot = 0u; slot < retained; slot++) {
-  if (readDistances(index * ${capacity}u + slot) <= ${Math.fround(radius ** 2)}) { support++; }
+  if (readDistances(index * ${capacity}u + slot) <= bitcast<f32>(readDispatchParameter(0u))) { support++; }
 }
 // If the boundary reaches the last retained point, omitted ties might also belong to this scale.
 if (readCounts(index) > ${capacity}u && support == ${capacity}u) { support = ${capacity + 1}u; }
@@ -277,19 +361,20 @@ writeScaleCounts(index, support);`
         }).getCommandNodes(graph)
       );
       nodes.push(
-        ...getPointCloudKernelNodes(graph, {
+        ...getPointCloudRuntimeKernelNodes(graph, {
           id: `${this.id}-select-${scaleIndex}`,
           length: rows,
-          inputs: {candidateNormals, eigenvalues, featureStatus, scaleCounts},
+          inputs: {candidateNormals, eigenvalues, featureStatus},
           outputs: {normals, normalScales, normalVariances, status},
+          runtimeWords: [new Uint32Array(new Float32Array([radius]).buffer)[0]],
           body: `let flags = readFeatureStatus(index);
 var resultStatus = readStatus(index) | (flags & 6u);
 let variance = readEigenvalues(index).z;
-if (flags == 0u && readScaleCounts(index) >= 3u &&
+if (flags == 0u &&
     variance >= 0.0 && variance <= 3.402823e38 &&
     ((resultStatus & 1u) != 0u || variance < readNormalVariances(index))) {
   writeNormals(index, readCandidateNormals(index));
-  writeNormalScales(index, ${Math.fround(radius)});
+  writeNormalScales(index, bitcast<f32>(readDispatchParameter(0u)));
   writeNormalVariances(index, variance);
   resultStatus &= ~1u;
 }

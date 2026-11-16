@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {expect, it} from 'vitest';
+import {expect, it, vi} from 'vitest';
 import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 import {
   getGPULocalDominanceParameterValues,
@@ -294,7 +294,14 @@ it('GPUSimpleLocalRelief rejects a 6000 x 6000 band at getCommandNodes', () => {
     parameters: createTransientView(graph, 'large-settings', 'float32', 4),
     output: {relief: createTransientView(graph, 'large-relief', 'float32', cellCount)}
   });
+  const allocations = vi.spyOn(graph, 'createTransientBuffer');
+  const declarations = vi.spyOn(graph, 'add');
   expect(() => contributor.getCommandNodes(graph)).toThrow(
-    /large-elevation exceeds the device storage binding limit/
+    'simple-local-relief elevation.storage.values chunk 0 needs 144000000 bytes in one binding (limit 134217728)'
   );
+  expect(allocations).not.toHaveBeenCalled();
+  expect(declarations).not.toHaveBeenCalled();
+  allocations.mockRestore();
+  declarations.mockRestore();
+  graph.device.destroy();
 });

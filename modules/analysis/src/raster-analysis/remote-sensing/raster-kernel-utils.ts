@@ -11,9 +11,13 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {
   validateSinglePackedView,
-  validateGraphViewsBelongToGraph,
-  validateGraphOutputsDisjointFromInputs
+  validateGraphViewsBelongToGraph
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  type RasterWritableDispatch,
+  validateRasterWritableDispatches
+} from '../raster-time-series/raster-time-series-chunks-b';
+import {validateRasterStorageBindings} from './raster-binding-validation';
 import {
   createWGSLKernelNode,
   type WGSLKernelBinding
@@ -35,12 +39,11 @@ export function validateRasterCount(count: number, maximum = 0xffffffff): void {
 export function validateRasterViews(
   id: string,
   inputs: GraphDataView[],
-  outputs: GraphDataView[]
+  outputs: GraphDataView[],
+  dispatches?: readonly RasterWritableDispatch[]
 ): void {
   for (const view of [...inputs, ...outputs]) validateSinglePackedView(view, [view.format], id);
-  validateGraphOutputsDisjointFromInputs(id, outputs, inputs);
-  for (let index = 0; index < outputs.length; index++)
-    validateGraphOutputsDisjointFromInputs(id, [outputs[index]], outputs.slice(index + 1));
+  validateRasterWritableDispatches(id, inputs, outputs, dispatches);
 }
 export function validateRasterGraph<Parameters>(
   id: string,
@@ -49,6 +52,7 @@ export function validateRasterGraph<Parameters>(
   outputs: RasterScalarView[]
 ): void {
   validateGraphViewsBelongToGraph(id, graph, [...inputs, ...outputs]);
+  validateRasterStorageBindings(graph, id, [...inputs, ...outputs]);
 }
 export function rasterBinding(name: string, view: GraphDataView, write = false): WGSLKernelBinding {
   return {
@@ -213,6 +217,12 @@ export function createRasterArgmaxNodes<Parameters>(
   }
 ): GPUCommandNode<Parameters>[] {
   const groupCount = Math.ceil(props.count / RASTER_ARGMAX_WORKGROUP_SIZE);
+  validateRasterStorageBindings(
+    graph,
+    props.id,
+    [...props.bindings.map(binding => binding.view), props.outputValue, props.outputIndex],
+    {'argmax group values and indices': groupCount * 4}
+  );
   const groupValues = createTransientView(graph, `${props.id}-group-values`, 'float32', groupCount);
   const groupIndices = createTransientView(
     graph,

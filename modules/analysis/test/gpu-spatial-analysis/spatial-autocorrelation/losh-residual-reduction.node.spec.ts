@@ -38,7 +38,12 @@ it('LOSH reduces the global residual mean without a serial row loop', () => {
     const kernels = getGPUCommandNodeKernelSources(nodes);
     const mean = kernels.find(kernel => kernel.id === 'losh-mean')!;
     expect(mean).toBeDefined();
-    expect(mean.source).not.toMatch(/\b(for|while|loop)\b/);
+    // The shared exact-count division has a fixed integer loop. The scalar finalizer itself
+    // must never walk rows; row-sized work remains in the parallel reductions.
+    const main = mean.source.slice(mean.source.indexOf('fn main('));
+    expect(main).not.toMatch(/\b(for|while|loop)\b/);
+    expect(main).toContain('divideBySpatialCount(normalizedSum[normalizedSumOffset], count)');
+    expect(mean.source).toContain('var<storage, read> residualCount: array<u32>');
     expect(kernels.some(kernel => kernel.id.startsWith('losh-maximum-residual'))).toBe(true);
     expect(mean.source).toContain('normalizedSum');
     expect(mean.source).toContain('frexp(maximumResidual[maximumResidualOffset])');

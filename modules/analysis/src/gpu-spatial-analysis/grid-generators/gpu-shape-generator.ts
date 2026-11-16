@@ -12,7 +12,6 @@ import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -28,6 +27,9 @@ import {
 } from '../../analysis-core/contracts/spatial-context';
 import {GUARDED_ATAN2_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {GEODESIC_WGSL} from '../geometry-measures/geodesic-wgsl';
+
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateGPUStorageBindingByteLength} from '../../analysis-core/kernels/gpu-contributor-utils';
 
 const OPERATION = 'GPUShapeGenerator';
 
@@ -90,7 +92,7 @@ export function getGPUShapeGeneratorParameterValues(
     );
   }
   const {segmentCount, radiusScale = 1} = settings;
-  if (!Number.isFinite(segmentCount) || !Number.isFinite(radiusScale)) {
+  if (!Number.isFinite(Math.fround(segmentCount)) || !Number.isFinite(Math.fround(radiusScale))) {
     throw new Error('Shape generator settings must be finite');
   }
   if (segmentCount < 1 || radiusScale < 0) {
@@ -304,16 +306,24 @@ export class GPUShapeGenerator implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id, featureCount, maximumSegments} = this;
     const {positions, offsets, vertexCount} = props.output;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.centers,
-      props.radii,
-      props.bearings,
-      props.rotations,
-      props.parameters,
+    validateGraphChunkBindingRanges(graph, id, {
+      centers: props.centers,
+      radii: props.radii,
+      bearings: props.bearings,
+      rotations: props.rotations,
+      parameters: props.parameters,
       positions,
       offsets,
       vertexCount
-    ]);
+    });
+    if (props.ellipseSpacing === 'arc-length')
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        'ellipse arc-length scratch',
+        featureCount * 257 * 4,
+        'reduce centers rows or use parameter spacing'
+      );
     const {shape} = props;
     const geodesic = this.coordinateSystem === 'geodesic';
     const arcLengths =
@@ -378,7 +388,7 @@ const MAXIMUM_VERTICES: u32 = ${maximumVertices}u;
 const IS_SECTOR: bool = ${shape === 'sector'};
 
 fn getSegmentCount(rawSegments: f32) -> u32 {
-  return clamp(u32(max(rawSegments, 0.0)), MINIMUM_SEGMENTS, MAXIMUM_SEGMENTS);
+  return u32(clamp(rawSegments, f32(MINIMUM_SEGMENTS), f32(MAXIMUM_SEGMENTS)));
 }
 
 fn getVertexCount(segments: u32) -> u32 {

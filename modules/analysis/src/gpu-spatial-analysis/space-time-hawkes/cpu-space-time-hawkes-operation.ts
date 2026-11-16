@@ -106,7 +106,9 @@ export function computeSpaceTimeHawkesOnCPU(
       initialBranchingRatio,
       initialDecayRate,
       initialDeviation
-    ].every(value => value > 0 && Number.isFinite(value)) && tolerance > 0;
+    ].every(value => value > 0 && Number.isFinite(value)) &&
+    tolerance > 0 &&
+    Number.isFinite(tolerance);
   const rows = Array.from({length: times.length}, (_, row) => row)
     .filter(
       row =>

@@ -42,7 +42,14 @@ it('rate mapping composes existing kernels within core binding limits', () => {
     output: {excessRisk: createTransientView(separate, 'risk', 'float32', 4)}
   });
   const sources = getGPUCommandNodeKernelSources(result.getCommandNodes(separate));
-  expect(sources.length).toBe(5);
+  expect(sources.length).toBe(7);
+  // Exact uint32 population counting adds a reduction and its scalar publication.
+  const counts = sources.filter(kernel => kernel.id.includes('-exact-count-'));
+  expect(counts).toHaveLength(2);
+  for (const count of counts) {
+    expect(count.source).toContain('array<u32>');
+    expect(count.source).not.toContain('array<f32>');
+  }
   for (const {source} of sources) expect(getStorageBindingCount(source)).toBeLessThanOrEqual(8);
   expect(() =>
     addSpatialRateRecipe(graph, {id: 'bad', events, populations, weights, scale: Infinity})

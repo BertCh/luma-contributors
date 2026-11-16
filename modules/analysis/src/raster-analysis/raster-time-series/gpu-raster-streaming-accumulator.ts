@@ -8,7 +8,16 @@ import type {
   GPUCommandNode,
   GPUCommandNodeProducer
 } from '@luma.gl/graph/gpu-core';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  createRasterTimeSeriesNodes,
+  planRasterTimeSeriesChunks,
+  rasterTimeSeriesBinding as rasterBinding,
+  validateRasterTimeSeriesViews as validateRasterViews,
+  validateRasterTimeSeriesGraph as validateRasterGraph,
+  type RasterTimeSeriesScalarView as RasterScalarView,
+  type RasterTimeSeriesView,
+  type RasterTimeSeriesChunkPlan
+} from './raster-time-series-chunks-b';
 import {
   FIXED_POINT_WGSL,
   getFixedPointHeadroomBits
@@ -19,13 +28,7 @@ import {
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getRasterFixedPointStateWGSL} from './raster-fixed-point-state-wgsl';
-import {
-  RASTER_FINITE_WGSL,
-  rasterBinding,
-  validateRasterGraph,
-  validateRasterViews,
-  type RasterScalarView
-} from '../remote-sensing/raster-kernel-utils';
+import {RASTER_FINITE_WGSL} from '../remote-sensing/raster-kernel-utils';
 
 /** Slices per dispatch: one invocation per cell loops over the chunk, so this is a per-thread bound. */
 export const MAXIMUM_RASTER_STREAM_CHUNK_SLICE_COUNT = 256;
@@ -109,15 +112,15 @@ export function getGPURasterFixedPointValues(
 }
 
 /** Caller-owned running state, indexed `cell * slotCount + slot`. */
-export type GPURasterStreamingState = {
+export type GPURasterStreamingState<View extends RasterScalarView = GraphDataView> = {
   /** Valid observations per slot. */
-  counts: GraphDataView<'uint32'>;
+  counts: RasterTimeSeriesView<'uint32', View>;
   /** 96-bit fixed-point sum of the samples, three `uint32` words per slot; decode with {@link getGPURasterFixedPointValues}. */
-  sums: GraphDataView<'uint32'>;
+  sums: RasterTimeSeriesView<'uint32', View>;
   /** Optional 96-bit fixed-point sum of squared deviations from the running mean (Welford), three words per slot. */
-  moments?: GraphDataView<'uint32'>;
+  moments?: RasterTimeSeriesView<'uint32', View>;
   /** Optional `(minimum, maximum)` per slot. */
-  extrema?: GraphDataView<'float32'>;
+  extrema?: RasterTimeSeriesView<'float32', View>;
 };
 
 /**
@@ -126,7 +129,7 @@ export type GPURasterStreamingState = {
  * Per-frame: the contents of `values`, `mask`, `slotIndices` and `parameters`. Compile-time:
  * `cellCount`, `chunkSliceCount`, `slotCount`, and which optional views and state fields exist.
  */
-export type GPURasterStreamingAccumulatorProps = {
+export type GPURasterStreamingAccumulatorProps<Rows extends RasterScalarView = GraphDataView> = {
   id?: string;
   cellCount: number;
   /** Slices of each chunk, in `[1, 256]`. The stream itself has no slice limit. */
@@ -134,14 +137,14 @@ export type GPURasterStreamingAccumulatorProps = {
   /** Calendar slots per cell, for per-slot climatologies. Defaults to 1. */
   slotCount?: number;
   /** Cell-major chunk `cell * chunkSliceCount + slice`; nonfinite samples are missing. */
-  values: GraphDataView<'float32'>;
+  values: RasterTimeSeriesView<'float32', Rows>;
   /** Per-observation QA, same layout as `values`; zero rejects the sample. */
-  mask?: GraphDataView<'uint32'>;
+  mask?: RasterTimeSeriesView<'uint32', Rows>;
   /** Slot of each chunk slice, shared by all cells; required when `slotCount` exceeds 1. Slots out of range are skipped. */
   slotIndices?: GraphDataView<'uint32'>;
   /** Float32, see {@link getGPURasterStreamingAccumulatorParameterValues}. */
   parameters: GraphDataView<'float32'>;
-  state: GPURasterStreamingState;
+  state: GPURasterStreamingState<Rows>;
 };
 
 /**
@@ -152,11 +155,19 @@ export type GPURasterStreamingAccumulatorProps = {
  * accumulator, because float32 compensated-sum tricks are optimized away by shader compilers), so
  * totals over tens of thousands of slices stay exact to the declared unit. Each cell is one thread with fixed-order loops, so results do not depend on
  * scheduling.
+ *
+ * Cell-major views accept matching chunks of complete cell records; shared tables stay packed.
  */
-export class GPURasterStreamingAccumulator implements GPUCommandNodeProducer {
+export class GPURasterStreamingAccumulator<Rows extends RasterScalarView = GraphDataView>
+  implements GPUCommandNodeProducer
+{
   readonly id: string;
+  readonly props: GPURasterStreamingAccumulatorProps<Rows>;
+  readonly chunkPlan: RasterTimeSeriesChunkPlan;
+  readonly estimatedCommandNodeCount: number;
   readonly slotCount: number;
-  constructor(readonly props: GPURasterStreamingAccumulatorProps) {
+  constructor(props: GPURasterStreamingAccumulatorProps<Rows> & {values: Rows}) {
+    this.props = props;
     const id = props.id ?? 'raster-streaming-accumulator';
     this.id = id;
     const slotCount = props.slotCount ?? 1;
@@ -204,12 +215,26 @@ export class GPURasterStreamingAccumulator implements GPUCommandNodeProducer {
         (!props.state.extrema || props.state.extrema.length >= entryCount * 2),
       'state.moments must hold three entries per slot and state.extrema two'
     );
-    validateRasterViews(id, this.getInputs(), this.getOutputs());
+    this.chunkPlan = planRasterTimeSeriesChunks(this.id, props.cellCount, {
+      values: {view: props.values, entriesPerCell: props.chunkSliceCount},
+      mask: {view: props.mask, entriesPerCell: props.chunkSliceCount},
+      'state.counts': {view: props.state.counts, entriesPerCell: props.slotCount ?? 1},
+      'state.sums': {view: props.state.sums, entriesPerCell: (props.slotCount ?? 1) * 3},
+      'state.moments': {view: props.state.moments, entriesPerCell: (props.slotCount ?? 1) * 3},
+      'state.extrema': {view: props.state.extrema, entriesPerCell: (props.slotCount ?? 1) * 2}
+    });
+    this.estimatedCommandNodeCount = this.chunkPlan.estimatedCommandNodeCount;
+    validateRasterViews(this.id, this.getInputs(), this.getOutputs(), this.chunkPlan);
   }
 
   private getInputs(): RasterScalarView[] {
     const {values, mask, slotIndices, parameters} = this.props;
-    return [values, parameters, ...(mask ? [mask] : []), ...(slotIndices ? [slotIndices] : [])];
+    return [
+      values,
+      parameters,
+      ...(mask ? [mask] : []),
+      ...((this.props.slotCount ?? 1) > 1 && slotIndices ? [slotIndices] : [])
+    ];
   }
 
   private getOutputs(): RasterScalarView[] {
@@ -224,27 +249,26 @@ export class GPURasterStreamingAccumulator implements GPUCommandNodeProducer {
     const {values, mask, slotIndices, parameters, state, cellCount, chunkSliceCount} = props;
     validateRasterGraph(id, graph, this.getInputs(), this.getOutputs());
     const slotExpression = slotCount > 1 ? 'slotIndices[slotIndicesOffset + slice]' : '0u';
-    return [
-      createWGSLKernelNode<Parameters>(graph, {
-        id,
-        operation: 'GPURasterStreamingAccumulator',
-        invocationCount: cellCount,
-        workgroupSize: 64,
-        bindings: [
-          rasterBinding('values', values),
-          rasterBinding('parameters', parameters),
-          ...(mask ? [rasterBinding('mask', mask)] : []),
-          ...(slotCount > 1 && slotIndices ? [rasterBinding('slotIndices', slotIndices)] : []),
-          rasterBinding('counts', state.counts, true),
-          rasterBinding('sums', state.sums, true),
-          ...(state.moments ? [rasterBinding('moments', state.moments, true)] : []),
-          ...(state.extrema ? [rasterBinding('extrema', state.extrema, true)] : [])
-        ],
-        declarations: `${RASTER_FINITE_WGSL}
+    return createRasterTimeSeriesNodes<Parameters>(graph, this.chunkPlan, {
+      id,
+      operation: 'GPURasterStreamingAccumulator',
+      invocationCount: cellCount,
+      workgroupSize: 64,
+      bindings: [
+        rasterBinding('values', values),
+        rasterBinding('parameters', parameters),
+        ...(mask ? [rasterBinding('mask', mask)] : []),
+        ...(slotCount > 1 && slotIndices ? [rasterBinding('slotIndices', slotIndices)] : []),
+        rasterBinding('counts', state.counts, true),
+        rasterBinding('sums', state.sums, true),
+        ...(state.moments ? [rasterBinding('moments', state.moments, true)] : []),
+        ...(state.extrema ? [rasterBinding('extrema', state.extrema, true)] : [])
+      ],
+      declarations: `${RASTER_FINITE_WGSL}
 ${FIXED_POINT_WGSL}
 ${getRasterFixedPointStateWGSL('sums')}
 ${state.moments ? getRasterFixedPointStateWGSL('moments') : ''}`,
-        body: `let unitExponent = i32(parameters[parametersOffset + 2u]);
+      body: `let unitExponent = i32(parameters[parametersOffset + 2u]);
 let momentUnitExponent = i32(parameters[parametersOffset + 3u]);
 if (parameters[parametersOffset] != 0.0) {
   for (var slot = 0u; slot < ${slotCount}u; slot++) {
@@ -283,7 +307,6 @@ for (var slice = 0u; slice < activeSliceCount; slice++) {
       : ''
   }
 }`
-      })
-    ];
+    });
   }
 }

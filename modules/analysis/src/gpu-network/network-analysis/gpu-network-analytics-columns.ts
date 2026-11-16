@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateNetworkViewBindings, getNetworkPhysicalBuffer} from '../network-view-utils';
 import {
   createTransientView,
   GPUReduction,
@@ -14,15 +15,16 @@ import {createMaskedWeakComponentNodes} from '../../analysis-core/kernels/masked
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
-  validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
-  getGPUNetworkTopologyViews,
   validateGPUNetworkTopology,
   type GPUNetworkAdjacency
 } from '../../analysis-core/network-topology';
 import type {GPUIterationStatusPort} from '../../analysis-core/contracts/index';
+
+/** Published GPUReduction emits one extent partial per 256 input rows. */
+const NETWORK_ANALYTICS_REDUCTION_WORKGROUP_SIZE = 256;
 
 /**
  * One node-aligned analytics column and its optional normalized and extent companions.
@@ -219,19 +221,20 @@ export class GPUNetworkAnalyticsColumns implements GPUCommandNodeProducer {
       }
     }
     const inputBuffers = [
-      ...getGPUNetworkTopologyViews(props.topology),
+      props.topology.offsets,
+      props.topology.neighbors,
       props.reverseTopology?.offsets,
       props.reverseTopology?.neighbors
     ]
       .filter(view => view !== undefined)
-      .map(view => view.buffer);
+      .map(getNetworkPhysicalBuffer);
     const outputBuffers = [
       ...nodeColumns.map(([, view]) => view),
       ...scalars.map(([, view]) => view),
       ...companions.map(([, view]) => view)
     ]
       .filter(view => view !== undefined)
-      .map(view => view.buffer);
+      .map(getNetworkPhysicalBuffer);
     if (
       new Set(outputBuffers).size !== outputBuffers.length ||
       outputBuffers.some(buffer => inputBuffers.includes(buffer))
@@ -247,7 +250,14 @@ export class GPUNetworkAnalyticsColumns implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, nodeCount} = this;
-    validateGraphViewsBelongToGraph(id, graph, getViews(props));
+    validateNetworkViewBindings(id, graph, getViews(props), {
+      componentChanged: props.components ? 4 : 0,
+      // Extent reduction has two words per partial row; later levels only shrink.
+      extent: this.metrics.some(metric => metric.normalized) ? 8 : 0,
+      extentPartials: this.metrics.some(metric => metric.normalized)
+        ? Math.ceil(nodeCount / NETWORK_ANALYTICS_REDUCTION_WORKGROUP_SIZE) * 8
+        : 0
+    });
     const nodes: GPUCommandNode<Parameters>[] = [];
     for (const metric of this.metrics) {
       nodes.push(...metric.algorithm.getNodes(graph));
@@ -373,7 +383,8 @@ const SLOT_CAPACITY: u32 = ${adjacency.neighbors.length}u;`,
 /** Returns every graph view referenced by the props. */
 function getViews(props: GPUNetworkAnalyticsColumnsProps): (GraphDataView | undefined)[] {
   return [
-    ...getGPUNetworkTopologyViews(props.topology),
+    props.topology.offsets,
+    props.topology.neighbors,
     props.reverseTopology?.offsets,
     props.reverseTopology?.neighbors,
     ...[props.degree, props.inDegree].flatMap(metric => [

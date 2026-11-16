@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {GPUCommandGraph, createTransientView} from '@luma.gl/graph/gpu-core';
+import {GPUCommandGraph, createTransientView, getViewBindingRange} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
 import {
   recordWGSLKernelNodes,
@@ -188,19 +188,26 @@ it.each([
         }
       })
   ).toThrow(
-    /^cr01-output-alias output\.status\.iterationLimitReached must not overlap output\.status\.converged/
+    /^cr01-output-alias status\.converged chunk 0 and status\.iterationLimitReached chunk 0 aligned binding byte ranges must not overlap$/
   );
 });
 
 it.each([
   {pairCount: 2, limitOffset: 8},
+  {pairCount: 2, limitOffset: 256},
   {pairCount: 0, limitOffset: 0}
 ])('validates shared-buffer outputs while retaining the empty-input limit: %j', ({
   pairCount,
   limitOffset
 }) => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice());
-  const shared = createTransientView(graph, 'shared-status', 'uint32', 6);
+  const shared = createTransientView(graph, 'shared-status', 'uint32', 66);
+  const converged = graph.createDataView(shared.buffer, {format: 'uint32', length: pairCount});
+  const iterationLimitReached = graph.createDataView(shared.buffer, {
+    format: 'uint32',
+    length: pairCount,
+    byteOffset: limitOffset
+  });
   const construct = () =>
     new GPUGeodesicPairs({
       spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'ellipsoidal'},
@@ -208,17 +215,31 @@ it.each([
       targets: createTransientView(graph, 'targets', 'float32x2', pairCount),
       output: {
         status: {
-          converged: graph.createDataView(shared.buffer, {format: 'uint32', length: pairCount}),
-          iterationLimitReached: graph.createDataView(shared.buffer, {
-            format: 'uint32',
-            length: pairCount,
-            byteOffset: limitOffset
-          })
+          converged,
+          iterationLimitReached
         }
       }
     });
-  if (pairCount === 0) expect(construct).toThrow(/origins.length must be an integer in \[1,/);
-  else expect(construct).not.toThrow();
+  if (pairCount === 0) {
+    expect(construct).toThrow(/origins.length must be an integer in \[1,/);
+  } else {
+    const firstRange = getViewBindingRange(converged);
+    const secondRange = getViewBindingRange(iterationLimitReached);
+    // Logical rows are disjoint in both cases, but the two writable bindings share a dispatch.
+    expect(converged.byteOffset + pairCount * 4).toBeLessThanOrEqual(
+      iterationLimitReached.byteOffset
+    );
+    if (limitOffset === 8) {
+      expect(firstRange.offset + firstRange.size).toBeGreaterThan(secondRange.offset);
+      expect(construct).toThrow(
+        /^geodesic-pairs status\.converged chunk 0 and status\.iterationLimitReached chunk 0 aligned binding byte ranges must not overlap$/
+      );
+    } else {
+      expect(firstRange.offset + firstRange.size).toBeLessThanOrEqual(secondRange.offset);
+      const contributor = construct();
+      expect(contributor.getCommandNodes(graph)).toHaveLength(1);
+    }
+  }
 });
 
 it('keeps every optional column within the portable eight-storage-binding budget', () => {

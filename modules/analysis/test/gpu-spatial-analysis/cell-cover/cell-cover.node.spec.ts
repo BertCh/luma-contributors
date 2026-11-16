@@ -10,11 +10,15 @@ import {
   ANTARCTICA_NATURAL_EARTH
 } from '../lon-lat-polygons/fixtures';
 import {getCoverFixtureFeatures, hasCrossingCoverEdge} from './cell-cover-oracle';
-import {expect, it} from 'vitest';
+import {expect, it, vi} from 'vitest';
 import {
   GPUCellCover,
   type GPUCellCoverProps
 } from '../../../src/gpu-spatial-analysis/cell-cover/index';
+import {
+  getGPUCellCoverMaximumCandidateCapacity,
+  getGPUCellCoverMaximumEdgeSlabEntryCount
+} from '../../../src/gpu-spatial-analysis/cell-cover/gpu-cell-cover';
 import {quadbinCellToTile} from '../cell-aggregation/cell-aggregation-oracle';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 import {
@@ -108,6 +112,40 @@ it('GPUCellCover validates its props', () => {
   expect(() => new GPUCellCover(createProps(graph)).getCommandNodes(otherGraph)).toThrow(
     /target graph/
   );
+});
+
+it.each([
+  'candidateCapacity',
+  'edgeSlabEntryCapacity'
+] as const)('GPUCellCover reports the named %s limit before allocating scratch', prop => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const props = createProps(graph);
+    const maximum =
+      prop === 'candidateCapacity'
+        ? getGPUCellCoverMaximumCandidateCapacity(device)
+        : getGPUCellCoverMaximumEdgeSlabEntryCount(device);
+    const contributor = new GPUCellCover({
+      ...props,
+      edgeSlabs: prop === 'edgeSlabEntryCapacity',
+      [prop]: maximum + 1
+    });
+    const createBuffer = vi.spyOn(graph, 'createTransientBuffer');
+    const createView = vi.spyOn(graph, 'createDataView');
+    const addNode = vi.spyOn(graph, 'add');
+    expect(() => contributor.getCommandNodes(graph)).toThrow(
+      prop === 'candidateCapacity'
+        ? `cell-cover candidateCapacity must be an integer in [1, ${maximum}]`
+        : `cell-cover positions rows + edgeSlabEntryCapacity must be at most ${maximum}`
+    );
+    expect(createBuffer).not.toHaveBeenCalled();
+    expect(createView).not.toHaveBeenCalled();
+    expect(addNode).not.toHaveBeenCalled();
+  } finally {
+    vi.restoreAllMocks();
+    device.destroy();
+  }
 });
 
 it('GPUCellCover returns deterministic node ids', () => {

@@ -4,6 +4,7 @@
 
 import {
   createTransientView,
+  getViewBindingRange,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -20,19 +21,47 @@ import {
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs,
   validateCapacity,
+  validateMaximumCount,
+  validateCommandNodeBudget,
+  validateGPUStorageBindingByteLength,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 
-/**
- * Largest vertex count: strongly connected components keep a `nodeCount x nodeCount` reachability
- * matrix and a per-thread queue of `nodeCount` words.
- */
-export const GPU_NETWORK_STRUCTURE_MAXIMUM_NODE_COUNT = 1024;
-/** Largest CSR slot count: the resilience traversal runs in one invocation over every slot. */
-export const GPU_NETWORK_STRUCTURE_MAXIMUM_EDGE_COUNT = 65536;
+import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import type {GPUIterationStatusPort} from '../../analysis-core/contracts/status';
+import {
+  GPUNetworkStronglyConnectedComponents,
+  GPU_NETWORK_STRONGLY_CONNECTED_COMPONENTS_DEFAULT_ITERATIONS,
+  GPU_NETWORK_STRONGLY_CONNECTED_COMPONENTS_MAXIMUM_ITERATIONS
+} from './gpu-network-strongly-connected-components';
+import {
+  createNetworkStructureResilienceNodes,
+  getNetworkStructureResilienceShape,
+  GPU_NETWORK_STRUCTURE_MAXIMUM_AUXILIARY_COUNT
+} from './gpu-network-structure-resilience';
+
+/** Four SCC phase gates are the largest fixed scratch binding (four dispatch triples). */
+const MAXIMUM_SCC_DISPATCH_WORD_COUNT = 12;
+/** Resilience dispatches vertices, edges and segments through three dispatch triples. */
+const MAXIMUM_RESILIENCE_DISPATCH_WORD_COUNT = 9;
+
+/** Reserve NONE and keep doubled Euler-tour scratch offsets within uint32. Device limits also apply. */
+export const GPU_NETWORK_STRUCTURE_MAXIMUM_NODE_COUNT = 0x7ffffffe;
+/** Keep the two-word endpoint and Euler-tour scratch tables addressable with uint32 offsets. */
+export const GPU_NETWORK_STRUCTURE_MAXIMUM_EDGE_COUNT = 0x7ffffffe;
+/** The exact reference SCC uses a quadratic reachability matrix and a private per-vertex queue. */
+export const GPU_NETWORK_STRUCTURE_EXACT_MAXIMUM_NODE_COUNT = 1024;
+/** The exact reference resilience traversal visits every slot in a single invocation. */
+export const GPU_NETWORK_STRUCTURE_EXACT_MAXIMUM_EDGE_COUNT = 65536;
 
 export type GPUNetworkStructureProps = {
   id?: string;
+  /** Default auto preserves bounded exact SCCs and uses parallel resilience. Explicit parallel opts into budgeted SCCs at every size; exact selects both reference kernels. */
+  mode?: 'auto' | 'parallel' | 'exact';
+  /** SCC state-machine budget only; exhaustion publishes 0xffffffff labels. Default 256. */
+  strongComponentsMaximumIterations?: number;
+  /** Optional caller-owned SCC status scalars, published even when the labels are invalidated. */
+  strongComponentsStatus?: Required<GPUIterationStatusPort>;
   topology: GPUNetworkAdjacency;
   /** Exact reverse slot for every CSR edge. Required for undirected resilience outputs.
    * Parallel edges must pair separately. Self-loops pair with themselves and form singleton blocks.
@@ -51,35 +80,63 @@ export type GPUNetworkStructureProps = {
 };
 
 /**
- * Exact bounded graph structure on GPU-resident CSR. Connectivity ignores weights.
+ * Exact graph structure on single packed GPU-resident CSR views. Weights are ignored.
  *
- * Reference tier (contributor contract rule 2): both algorithms are exact references for small
- * subgraphs, not throughput kernels, and the maximum size is enforced at construction.
+ * Default mode: 'auto' preserves the original exact SCC route through 1,024 vertices and
+ * 65,536 slots, so previously supported SCC results never depend on an iteration budget.
+ * Larger graphs, or explicit mode: 'parallel', compose GPUNetworkStronglyConnectedComponents
+ * (O(V) scratch, budgeted trim/colour/backward-mark phases). Auto and parallel use a spanning forest, Euler-tour ranking,
+ * binary tree lifting and fundamental-cycle auxiliary connectivity for resilience (O(E + V log V)
+ * scratch). It has no depth-sized serial traversal. Resilience always completes in the compiled
+ * logarithmic round bound; SCC may exhaust its independently configurable state-machine budget.
+ * Read strongComponentsStatus to distinguish exhaustion from convergence; without that optional
+ * port, an all-0xffffffff label vector still signals exhaustion. Other outputs remain valid.
  *
- * - Strongly connected components use the mutual-reachability path. One invocation per vertex runs
- *   a breadth-first search with a private `array<u32, nodeCount>` queue and writes a row of the
- *   `nodeCount x nodeCount` reachability matrix, so work is O(V(V+E)) and scratch is O(V²) words
- *   (4 MiB at 1,024 vertices). For larger graphs, use GPUNetworkStronglyConnectedComponents
- *   (trim/colour/backward-mark phases with O(V) scratch and a bounded step budget).
- * - Bridges, articulation points and biconnected components run an iterative Tarjan traversal in
- *   one GPU invocation (`invocationCount: 1`), so the whole traversal is sequential, O(V + E) on
- *   one thread. It is correct at every accepted size and becomes a watchdog risk on a loaded GPU
- *   near the limit; a Tarjan-Vishkin parallel formulation would replace it.
+ * mode: 'exact' retains the bounded reference: mutual reachability with O(V²) scratch for SCC,
+ * and single-invocation iterative Tarjan for resilience, limited to 1,024 vertices/65,536 slots.
  *
- * Maximum size: {@link GPU_NETWORK_STRUCTURE_MAXIMUM_NODE_COUNT} (1,024) vertices and
- * {@link GPU_NETWORK_STRUCTURE_MAXIMUM_EDGE_COUNT} (65,536) CSR slots for every output. CSR
- * offsets must be monotonic and within capacity; reverseEdgeSlots must be an involution
- * connecting reversed endpoints.
+ * All props are compile-time. Output layouts, minimum vertex/CSR-slot labels and singleton-loop
+ * blocks are identical in both routes. CSR offsets must be monotonic and within capacity;
+ * reverseEdgeSlots must be an involution connecting reversed endpoints. Parallel edges pair
+ * separately. Unowned CSR tail slots and out-of-range destinations/reverse slots are ignored.
+ * Device storage-binding limits further bound accepted graph and auxiliary scratch sizes.
  */
 export class GPUNetworkStructure implements GPUCommandNodeProducer {
   readonly id: string;
   readonly nodeCount: number;
   readonly edgeCount: number;
+  readonly mode: 'auto' | 'parallel' | 'exact';
+  readonly strongComponentsMode: 'parallel' | 'exact';
+  readonly strongComponentsMaximumIterations: number;
+  readonly estimatedCommandNodeCount: number;
   constructor(readonly props: GPUNetworkStructureProps) {
     this.id = props.id ?? 'network-structure';
+    this.mode = props.mode ?? 'auto';
+    validateRequirement(
+      this.id,
+      this.mode === 'auto' || this.mode === 'parallel' || this.mode === 'exact',
+      "mode must be 'auto', 'parallel' or 'exact'"
+    );
+    this.strongComponentsMaximumIterations =
+      props.strongComponentsMaximumIterations ??
+      GPU_NETWORK_STRONGLY_CONNECTED_COMPONENTS_DEFAULT_ITERATIONS;
+    validateCapacity(
+      this.id,
+      'strongComponentsMaximumIterations',
+      this.strongComponentsMaximumIterations,
+      1,
+      GPU_NETWORK_STRONGLY_CONNECTED_COMPONENTS_MAXIMUM_ITERATIONS
+    );
     const shape = validateGPUNetworkTopology(this.id, props.topology);
     this.nodeCount = shape.nodeCount;
     this.edgeCount = shape.edgeCount;
+    this.strongComponentsMode =
+      this.mode === 'auto'
+        ? this.nodeCount <= GPU_NETWORK_STRUCTURE_EXACT_MAXIMUM_NODE_COUNT &&
+          this.edgeCount <= GPU_NETWORK_STRUCTURE_EXACT_MAXIMUM_EDGE_COUNT
+          ? 'exact'
+          : 'parallel'
+        : this.mode;
     const {output} = props;
     const hasResilienceOutput = Boolean(
       output.bridges || output.articulationPoints || output.biconnectedComponents
@@ -89,14 +146,18 @@ export class GPUNetworkStructure implements GPUCommandNodeProducer {
       'nodeCount',
       this.nodeCount,
       1,
-      GPU_NETWORK_STRUCTURE_MAXIMUM_NODE_COUNT
+      this.mode === 'exact'
+        ? GPU_NETWORK_STRUCTURE_EXACT_MAXIMUM_NODE_COUNT
+        : GPU_NETWORK_STRUCTURE_MAXIMUM_NODE_COUNT
     );
     validateCapacity(
       this.id,
       'edgeCount',
       this.edgeCount,
       0,
-      GPU_NETWORK_STRUCTURE_MAXIMUM_EDGE_COUNT
+      this.mode === 'exact'
+        ? GPU_NETWORK_STRUCTURE_EXACT_MAXIMUM_EDGE_COUNT
+        : GPU_NETWORK_STRUCTURE_MAXIMUM_EDGE_COUNT
     );
     validateRequirement(this.id, Object.values(output).some(Boolean), 'requires an output');
     for (const [name, view] of Object.entries(output)) {
@@ -127,7 +188,50 @@ export class GPUNetworkStructure implements GPUCommandNodeProducer {
         'reverseEdgeSlots must hold one row per CSR slot'
       );
     }
-    const outputBuffers = Object.values(props.output)
+    const statusViews = props.strongComponentsStatus
+      ? Object.values(props.strongComponentsStatus)
+      : [];
+    if (props.strongComponentsStatus) {
+      validateRequirement(
+        this.id,
+        Boolean(output.strongComponents),
+        'strongComponentsStatus requires output.strongComponents'
+      );
+      for (const name of ['converged', 'iterationCount', 'iterationLimitReached'] as const) {
+        const view: GraphDataView<'uint32'> = props.strongComponentsStatus[name];
+        validateSinglePackedView(view, ['uint32'], `${this.id} strongComponentsStatus.${name}`);
+        validateRequirement(
+          this.id,
+          view.length === 1,
+          `strongComponentsStatus.${name} must hold exactly one uint32 row`
+        );
+      }
+    }
+    const resilienceShape = getNetworkStructureResilienceShape(this.nodeCount, this.edgeCount);
+    if (hasResilienceOutput && this.mode !== 'exact') {
+      validateMaximumCount(
+        this.id,
+        'edgeCount + nodeCount * treeLevels (auxiliaryCount)',
+        resilienceShape.auxiliaryCount,
+        GPU_NETWORK_STRUCTURE_MAXIMUM_AUXILIARY_COUNT
+      );
+    }
+    this.estimatedCommandNodeCount =
+      (output.strongComponents
+        ? this.strongComponentsMode === 'exact'
+          ? 2 + (props.strongComponentsStatus ? 1 : 0)
+          : 2 + 6 * this.strongComponentsMaximumIterations
+        : 0) +
+      (hasResilienceOutput
+        ? this.mode === 'exact'
+          ? 1
+          : resilienceShape.estimatedCommandNodeCount
+        : 0);
+    validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
+    // Include physical aliases imported through different handles and the aligned prefixes
+    // of co-bound packed fields. Keep the existing distinct-handle requirement below as well.
+    validateDisjointWritableViews(this.id, {...output, ...props.strongComponentsStatus});
+    const outputBuffers = [...Object.values(props.output), ...statusViews]
       .filter(view => view !== undefined)
       .map(view => view.buffer);
     validateRequirement(
@@ -135,10 +239,11 @@ export class GPUNetworkStructure implements GPUCommandNodeProducer {
       new Set(outputBuffers).size === outputBuffers.length,
       'outputs must use distinct buffers'
     );
-    validateGraphOutputsDisjointFromInputs(this.id, Object.values(output), [
-      ...getGPUNetworkTopologyViews(props.topology),
-      props.reverseEdgeSlots
-    ]);
+    validateGraphOutputsDisjointFromInputs(
+      this.id,
+      [...Object.values(output), ...statusViews],
+      [...getGPUNetworkTopologyViews(props.topology), props.reverseEdgeSlots]
+    );
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
@@ -148,15 +253,116 @@ export class GPUNetworkStructure implements GPUCommandNodeProducer {
     validateGraphViewsBelongToGraph(id, graph, [
       ...getGPUNetworkTopologyViews(topology),
       props.reverseEdgeSlots,
-      ...Object.values(output)
+      ...Object.values(output),
+      ...Object.values(props.strongComponentsStatus ?? {})
     ]);
+    // Validate every row-proportional allocation before creating any command nodes.
+    for (const [name, view] of Object.entries({
+      offsets: topology.offsets,
+      neighbors: topology.neighbors,
+      weights: topology.weights,
+      nodePositions: topology.nodePositions,
+      reverseEdgeSlots: props.reverseEdgeSlots,
+      ...output,
+      ...props.strongComponentsStatus
+    })) {
+      if (view) {
+        validateMaximumCount(
+          id,
+          `${name} buffer byteLength (maxBufferSize)`,
+          view.buffer.byteLength,
+          graph.device.limits.maxBufferSize
+        );
+        validateGPUStorageBindingByteLength(
+          graph.device,
+          id,
+          name,
+          getViewBindingRange(view).size,
+          'reduce nodeCount or edgeCount to fit the device storage binding limit'
+        );
+      }
+    }
+    const hasResilienceOutput = Boolean(
+      output.bridges || output.articulationPoints || output.biconnectedComponents
+    );
+    // Every scratch allocation is a complete packed view at byteOffset 0, so its
+    // aligned binding range is exactly the sizes below (including one word for empty tables).
+    const scratchSizes: Record<string, number> = {
+      controlAndDispatch:
+        (output.strongComponents && this.strongComponentsMode === 'parallel'
+          ? MAXIMUM_SCC_DISPATCH_WORD_COUNT
+          : hasResilienceOutput && this.mode !== 'exact'
+            ? MAXIMUM_RESILIENCE_DISPATCH_WORD_COUNT
+            : 1) * 4,
+      vertices: nodeCount * 4,
+      ...(output.strongComponents && this.strongComponentsMode === 'exact'
+        ? {reachable: nodeCount * nodeCount * 4}
+        : {}),
+      ...(hasResilienceOutput && this.mode === 'exact'
+        ? {traversal: nodeCount * 6 * 4, stack: Math.max(edgeCount, 1) * 4}
+        : {}),
+      ...(hasResilienceOutput && this.mode !== 'exact'
+        ? {
+            endpointsAndTour: Math.max(edgeCount * 2, 1) * 4,
+            auxiliary: getNetworkStructureResilienceShape(nodeCount, edgeCount).auxiliaryCount * 4
+          }
+        : {})
+    };
+    for (const [name, byteLength] of Object.entries(scratchSizes)) {
+      validateMaximumCount(
+        id,
+        `${name} scratch byteLength (maxBufferSize)`,
+        byteLength,
+        graph.device.limits.maxBufferSize
+      );
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        `${name} scratch`,
+        byteLength,
+        'reduce nodeCount or edgeCount to fit the device storage binding limit'
+      );
+    }
     const nodes: GPUCommandNode<Parameters>[] = [];
+    if (this.mode !== 'exact') {
+      if (output.strongComponents && this.strongComponentsMode === 'parallel') {
+        const status = props.strongComponentsStatus ?? {
+          converged: createTransientView(graph, `${id}-strong-converged`, 'uint32', 1),
+          iterationCount: createTransientView(graph, `${id}-strong-iteration-count`, 'uint32', 1),
+          iterationLimitReached: createTransientView(
+            graph,
+            `${id}-strong-iteration-limit`,
+            'uint32',
+            1
+          )
+        };
+        nodes.push(
+          ...new GPUNetworkStronglyConnectedComponents({
+            id: `${id}-strong`,
+            topology,
+            maximumIterations: this.strongComponentsMaximumIterations,
+            output: {strongComponents: output.strongComponents, status}
+          }).getCommandNodes(graph)
+        );
+      }
+      if (hasResilienceOutput) {
+        nodes.push(
+          ...createNetworkStructureResilienceNodes(
+            graph,
+            `${id}-resilience`,
+            props,
+            nodeCount,
+            edgeCount
+          )
+        );
+      }
+    }
     const adjacency = [
       {name: 'offsets', view: topology.offsets, type: 'u32', access: 'read'},
       {name: 'neighbors', view: topology.neighbors, type: 'u32', access: 'read'}
     ] as const;
     const constants = `const NODE_COUNT: u32 = ${nodeCount}u; const EDGE_COUNT: u32 = ${edgeCount}u; const NONE: u32 = 0xffffffffu;`;
-    if (output.strongComponents) {
+    if (output.strongComponents && this.strongComponentsMode === 'exact') {
       const reachable = createTransientView(
         graph,
         `${id}-reachable`,
@@ -210,6 +416,7 @@ export class GPUNetworkStructure implements GPUCommandNodeProducer {
       );
     }
     if (
+      this.mode === 'exact' &&
       props.reverseEdgeSlots &&
       (output.bridges || output.articulationPoints || output.biconnectedComponents)
     ) {
@@ -302,6 +509,23 @@ export class GPUNetworkStructure implements GPUCommandNodeProducer {
       }
     }
   }`
+        })
+      );
+    }
+    if (props.strongComponentsStatus && this.strongComponentsMode === 'exact') {
+      nodes.push(
+        createWGSLKernelNode(graph, {
+          id: `${id}-exact-status`,
+          operation: 'GPUNetworkStructure',
+          variant: 'exact-status',
+          invocationCount: 1,
+          bindings: Object.entries(props.strongComponentsStatus).map(([name, view]) => ({
+            name,
+            view,
+            type: 'u32',
+            access: 'read_write'
+          })),
+          body: 'converged[convergedOffset] = 1u; iterationCount[iterationCountOffset] = 1u; iterationLimitReached[iterationLimitReachedOffset] = 0u;'
         })
       );
     }

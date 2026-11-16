@@ -11,6 +11,11 @@ import type {
   GPUPolygonGeometryPort
 } from '../../analysis-core/contracts/index';
 
+/** Private insertion lists stay small to avoid per-invocation register pressure. @internal */
+export const NEAREST_PRIVATE_NEIGHBOR_CAPACITY = 64;
+/** The packed scratch stride (3 + 2 * capacity) must fit a WGSL uint32 index. @internal */
+export const NEAREST_MAXIMUM_NEIGHBOR_CAPACITY = 0x7ffffffe;
+
 /** Value written to `neighborSegmentIndices` when the distance has no feature edge (a point feature, or containment). */
 export const GPU_NEAREST_NO_SEGMENT = 0xffffffff;
 

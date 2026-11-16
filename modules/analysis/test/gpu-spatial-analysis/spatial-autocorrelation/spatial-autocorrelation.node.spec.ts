@@ -413,8 +413,8 @@ it('spatial-autocorrelation contributors create deterministic node IDs', () => {
     ]) {
       expect(hotSpotIds).toContain(`hot-spot-analysis-${step}`);
     }
-    // Without a correction the classification is fused into the neighbor kernel.
-    expect(hotSpotIds.includes('hot-spot-analysis-classify')).toBe(isCorrected);
+    // Classification follows the neighbor pass to keep exact counts within eight bindings.
+    expect(hotSpotIds.includes('hot-spot-analysis-classify')).toBe(true);
     expect(hotSpotIds.some(id => id.includes('cell-'))).toBe(false);
     expect(hotSpotIds.some(id => id.startsWith('hot-spot-analysis-multiple-testing'))).toBe(
       isCorrected
@@ -425,9 +425,9 @@ it('spatial-autocorrelation contributors create deterministic node IDs', () => {
     const moran = new GPULocalMoran(createLocalMoranProps(moranGraph, {multipleTesting}));
     const moranIds = moran.getCommandNodes(moranGraph).map(node => node.id);
     expect(moranIds).toContain('local-moran-neighbors');
-    // The local-I epilogue is always fused; the classification only without a correction.
+    // Local I is fused; classification follows analytic p-value publication within eight bindings.
     expect(moranIds.includes('local-moran-local-i')).toBe(false);
-    expect(moranIds.includes('local-moran-classify')).toBe(isCorrected);
+    expect(moranIds.includes('local-moran-classify')).toBe(true);
     expect(moranIds.some(id => id.startsWith('local-moran-multiple-testing'))).toBe(isCorrected);
   }
   // Without bins or p-values there is no classify node.
@@ -614,7 +614,7 @@ function getEdgeAssociationSources(
   kind: 'pearson' | 'gamma',
   rows: number,
   withMask: boolean
-): {nodeIds: string[]; sources: {id: string; source: string}[]} {
+): {nodeIds: string[]; sources: {id: string; source: string}[]; workgroups: number[]} {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   const view = <Format extends 'uint32' | 'float32'>(format: Format, length: number) =>
@@ -636,13 +636,17 @@ function getEdgeAssociationSources(
       : new GPUGammaStatistic(props).getCommandNodes(graph);
   const sources = getGPUCommandNodeKernelSources(nodes);
   device.destroy();
-  return {nodeIds: nodes.map(node => node.id), sources};
+  return {
+    nodeIds: nodes.map(node => node.id),
+    sources,
+    workgroups: nodes.map(node => node.workload?.maximumWorkgroupCount ?? 0)
+  };
 }
 
 it('Pearson and Gamma reduce edges in three fixed-order stages without atomics', () => {
   for (const kind of ['pearson', 'gamma'] as const) {
     for (const withMask of [false, true]) {
-      const {nodeIds, sources} = getEdgeAssociationSources(kind, 70000, withMask);
+      const {nodeIds, sources, workgroups} = getEdgeAssociationSources(kind, 70000, withMask);
       const prefix = kind === 'pearson' ? 'spatial-pearson' : 'gamma-statistic';
       expect(nodeIds).toEqual([`${prefix}-moments`, `${prefix}-centered`, `${prefix}-statistic`]);
       expect(sources.map(({id}) => id)).toEqual(nodeIds);
@@ -654,8 +658,9 @@ it('Pearson and Gamma reduce edges in three fixed-order stages without atomics',
           CORE_WORKGROUP_STORAGE_LIMIT_BYTES
         );
         // 70000 rows / 256 lanes = 274 > 256: the workgroup count is capped.
-        expect(source, id).toContain('const GROUPS: u32 = 256u;');
+        expect(source, id).toContain('const TOTAL_GROUPS: u32 = 256u;');
       }
+      expect(workgroups).toEqual([256, 256, 1]);
       // Row filtering stays in both row passes only; the final kernel reads partials.
       expect(sources[0].source).toContain('isFiniteFloat(values[valuesOffset + row])');
       expect(sources[1].source).toContain('isFiniteFloat(values[valuesOffset + row])');
@@ -667,10 +672,11 @@ it('Pearson and Gamma reduce edges in three fixed-order stages without atomics',
 });
 
 it('Pearson and Gamma use one workgroup for small inputs and size groups from the row count', () => {
-  const small = getEdgeAssociationSources('pearson', 100, false).sources;
-  expect(small[0].source).toContain('const GROUPS: u32 = 1u;');
-  const medium = getEdgeAssociationSources('pearson', 1000, false).sources;
-  expect(medium[0].source).toContain('const GROUPS: u32 = 4u;');
+  const small = getEdgeAssociationSources('pearson', 100, false);
+  expect(small.workgroups).toEqual([1, 1, 1]);
+  const medium = getEdgeAssociationSources('pearson', 1000, false);
+  expect(medium.workgroups).toEqual([4, 4, 1]);
+  expect(medium.sources[0].source).toContain('GROUPS = getChunkParameter(38u);');
 });
 
 it('uint32 values add exactly one conversion node, float32 values add none', () => {

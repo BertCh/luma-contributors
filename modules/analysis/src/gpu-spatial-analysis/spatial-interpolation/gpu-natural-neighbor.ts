@@ -6,6 +6,7 @@ import type {
   GPUCommandGraph,
   GPUCommandNode,
   GPUCommandNodeProducer,
+  GraphVectorView,
   GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {
@@ -13,10 +14,7 @@ import {
   resolveGPUSpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
-import {
-  createWGSLKernelNode,
-  type WGSLKernelBinding
-} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import type {WGSLKernelBinding} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   GET_NAN_WGSL,
   GUARDED_ATAN2_WGSL,
@@ -24,12 +22,22 @@ import {
 } from '../../analysis-core/kernels/wgsl-common';
 import {
   validateCapacity,
-  validateGraphViewsBelongToGraph
+  validateSinglePackedView,
+  validateGraphOutputsDisjointFromInputs,
+  validateCommandNodeBudget
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {getPackedPredictionAccessors} from '../../analysis-core/kernels/gpu-prediction-utils';
+
 import {
-  getPackedPredictionAccessors,
-  validatePredictionViews
-} from '../../analysis-core/kernels/gpu-prediction-utils';
+  planGraphChunkGroups,
+  createGraphChunkGroupKernelNode,
+  validateGraphChunkGroupKernelSupport
+} from '../../analysis-core/kernels/graph-chunk-groups';
+import {
+  validateDisjointWritableViews,
+  validateGraphChunkBindingRanges,
+  type GraphChunkDispatchPlan
+} from '../../analysis-core/kernels/graph-chunk-dispatch';
 
 /** Distances are planar Euclidean in the native units of the positions. */
 const PLANAR_DISTANCE_SPATIAL_CONTEXT_SUPPORT = Object.freeze({
@@ -38,7 +46,19 @@ const PLANAR_DISTANCE_SPATIAL_CONTEXT_SUPPORT = Object.freeze({
 });
 
 /** Bounded exact Sibson interpolation in 2D planar coordinates. */
-export type GPUNaturalNeighborProps = {
+export type GPUNaturalNeighborProps<
+  QueryRows extends
+    | GraphDataView<'float32x2'>
+    | GraphVectorView<'float32x2'> = GraphDataView<'float32x2'>,
+  ValueRows extends
+    | GraphDataView<'float32x4'>
+    | GraphVectorView<'float32x4'> = GraphDataView<'float32x4'>,
+  StatusRows extends GraphDataView<'uint32'> | GraphVectorView<'uint32'> = GraphDataView<'uint32'>,
+  WeightRows extends
+    | GraphDataView<'float32' | 'float32x2'>
+    | GraphVectorView<'float32' | 'float32x2'> = GraphDataView<'float32' | 'float32x2'>,
+  SeedRows extends GraphDataView<'uint32'> | GraphVectorView<'uint32'> = GraphDataView<'uint32'>
+> = {
   id?: string;
   /**
    * Coordinate space of the positions. Compile-time. Omitted means native planar coordinates with
@@ -48,24 +68,39 @@ export type GPUNaturalNeighborProps = {
   spatialContext?: GPUSpatialContext;
   positions: GraphDataView<'float32x2'>;
   values: GraphDataView<'float32'>;
-  queries: GraphDataView<'float32x2'>;
+  queries: QueryRows;
   /** Maximum polygon vertices in [3, 64]; a deliberately smaller budget exposes exhaustion. */
   maximumVertexCount?: number;
   /** Optional GPU-resident Delaunay index: six u32 per triangle [a,b,c,neighborAB,neighborBC,neighborCA]; boundary=0xffffffff. */
   triangles?: GraphDataView<'uint32'>;
   /** One containing triangle per query; 0xffffffff explicitly marks outside-hull queries. */
-  queryTriangles?: GraphDataView<'uint32'>;
+  queryTriangles?: SeedRows;
   /** Bounded natural-neighbor cavity vertices, 3..64; default 32. */
   maximumNeighborCount?: number;
   output: {
     /** [prediction, query Voronoi area in position units squared, weight sum, contributing count]. */
-    values: GraphDataView<'float32x4'>;
+    values: ValueRows;
     /** 0 success; 1 outside hull/invalid; 2 duplicate/collinear/numerically degenerate; 3 capacity. */
-    status: GraphDataView<'uint32'>;
+    status: StatusRows;
     /** Without index: scalar weights in sample order. Indexed: float32x2 [sampleIndex,weight] in cavity order, unused [-1,0]. */
+    weights?: WeightRows;
+  };
+};
+
+type PackedNaturalNeighborProps = Omit<
+  GPUNaturalNeighborProps,
+  'queries' | 'queryTriangles' | 'output'
+> & {
+  queries: GraphDataView<'float32x2'>;
+  queryTriangles?: GraphDataView<'uint32'>;
+  output: {
+    values: GraphDataView<'float32x4'>;
+    status: GraphDataView<'uint32'>;
     weights?: GraphDataView<'float32' | 'float32x2'>;
   };
 };
+/** Bounded Voronoi clipping retains the existing two-thread workgroup size. */
+const NATURAL_NEIGHBOR_QUERY_WORKGROUP_SIZE = 2;
 
 /**
  * Computes true stolen-Voronoi-area coordinates, independently of triangulation implementation.
@@ -79,15 +114,35 @@ export type GPUNaturalNeighborProps = {
  * weights of adjacent collinear edge samples. Sample hits reproduce samples (duplicate hits
  * average); duplicates away from the hit and collinear sets report degeneracy. Nonfinite input
  * rows make a query invalid. Coordinates are query-centered and scaled before geometry.
+ * Query positions, triangle seeds and outputs may be chunked. Each chunk keeps complete
+ * query-major weight groups; sample positions, values and the triangulation stay packed and
+ * resident. Query counts and binding prefixes are uniforms, with exact per-node dispatch sizes.
  */
-export class GPUNaturalNeighbor implements GPUCommandNodeProducer {
+export class GPUNaturalNeighbor<
+  QueryRows extends
+    | GraphDataView<'float32x2'>
+    | GraphVectorView<'float32x2'> = GraphDataView<'float32x2'>,
+  ValueRows extends
+    | GraphDataView<'float32x4'>
+    | GraphVectorView<'float32x4'> = GraphDataView<'float32x4'>,
+  StatusRows extends GraphDataView<'uint32'> | GraphVectorView<'uint32'> = GraphDataView<'uint32'>,
+  WeightRows extends
+    | GraphDataView<'float32' | 'float32x2'>
+    | GraphVectorView<'float32' | 'float32x2'> = GraphDataView<'float32' | 'float32x2'>,
+  SeedRows extends GraphDataView<'uint32'> | GraphVectorView<'uint32'> = GraphDataView<'uint32'>
+> implements GPUCommandNodeProducer
+{
   readonly id: string;
+  readonly estimatedCommandNodeCount: number;
+  private readonly chunkPlan: GraphChunkDispatchPlan;
   /** Resolved coordinate space (native planar when `spatialContext` was omitted). */
   readonly spatialContext: GPUSpatialContext;
-  readonly props: GPUNaturalNeighborProps;
+  readonly props: GPUNaturalNeighborProps<QueryRows, ValueRows, StatusRows, WeightRows, SeedRows>;
   readonly maximumVertexCount: number;
   readonly maximumNeighborCount: number;
-  constructor(props: GPUNaturalNeighborProps) {
+  constructor(
+    props: GPUNaturalNeighborProps<QueryRows, ValueRows, StatusRows, WeightRows, SeedRows>
+  ) {
     this.props = props;
     this.id = props.id ?? 'natural-neighbor';
     this.spatialContext = resolveGPUSpatialContext(
@@ -120,25 +175,85 @@ export class GPUNaturalNeighbor implements GPUCommandNodeProducer {
     ) {
       throw new Error(`${this.id} invalid capacities`);
     }
-    validatePredictionViews(
+    this.chunkPlan = planGraphChunkGroups(
       this.id,
-      [
-        props.positions,
-        props.values,
-        props.queries,
-        ...(props.triangles ? [props.triangles, props.queryTriangles!] : [])
-      ],
-      [
-        props.output.values,
-        props.output.status,
-        ...(props.output.weights ? [props.output.weights] : [])
-      ]
+      {view: props.queries},
+      {
+        queries: {view: props.queries},
+        queryTriangles: props.queryTriangles ? {view: props.queryTriangles} : undefined,
+        results: {view: props.output.values, allowPackedCapacity: true},
+        statuses: {view: props.output.status, allowPackedCapacity: true},
+        weights: props.output.weights
+          ? {
+              view: props.output.weights,
+              rowsPerQuery: props.triangles ? this.maximumNeighborCount : props.positions.length,
+              allowPackedCapacity: true
+            }
+          : undefined
+      }
     );
+    for (const [name, view] of Object.entries({
+      positions: props.positions,
+      sampleValues: props.values,
+      triangles: props.triangles
+    }))
+      if (view) validateSinglePackedView(view, [view.format], `${this.id} ${name}`);
+    validateDisjointWritableViews(this.id, props.output);
+    validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
+      props.positions,
+      props.values,
+      props.triangles,
+      props.queries,
+      props.queryTriangles
+    ]);
+    this.estimatedCommandNodeCount = this.chunkPlan.nonemptyChunkCount;
+    validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {id, props, maximumVertexCount} = this;
+    const {props, id} = this;
+    validateGraphChunkBindingRanges(graph, id, {
+      positions: props.positions,
+      sampleValues: props.values,
+      triangles: props.triangles,
+      queries: props.queries,
+      queryTriangles: props.queryTriangles,
+      ...props.output
+    });
+    validateGraphChunkGroupKernelSupport(
+      graph,
+      id,
+      5 + Number(Boolean(props.triangles)) * 2 + Number(Boolean(props.output.weights)),
+      NATURAL_NEIGHBOR_QUERY_WORKGROUP_SIZE
+    );
+    return this.chunkPlan.chunks
+      .filter(chunk => chunk.length > 0)
+      .map(chunk =>
+        this.getQueryNode(
+          graph,
+          {
+            ...props,
+            queries: chunk.views['queries'] as GraphDataView<'float32x2'>,
+            queryTriangles: chunk.views['queryTriangles'] as GraphDataView<'uint32'> | undefined,
+            output: {
+              values: chunk.views['results'] as GraphDataView<'float32x4'>,
+              status: chunk.views['statuses'] as GraphDataView<'uint32'>,
+              weights: chunk.views['weights'] as PackedNaturalNeighborProps['output']['weights']
+            }
+          },
+          this.chunkPlan.chunks.length === 1 ? id : `${id}-chunk-${chunk.chunkIndex}`
+        )
+      );
+  }
+
+  private getQueryNode<Parameters>(
+    graph: GPUCommandGraph<Parameters>,
+    props: PackedNaturalNeighborProps,
+    nodeId: string
+  ): GPUCommandNode<Parameters> {
+    const {id, maximumVertexCount} = this;
+
     const sampleCapacity = props.triangles ? this.maximumNeighborCount : props.positions.length;
     const sampleCount = sampleCapacity;
     const bindings: WGSLKernelBinding[] = [
@@ -162,11 +277,6 @@ export class GPUNaturalNeighbor implements GPUCommandNodeProducer {
         access: 'read_write'
       });
     }
-    validateGraphViewsBelongToGraph(
-      id,
-      graph,
-      bindings.map(binding => binding.view)
-    );
     // Sample row of neighbour slot `slot`. The triangulation path collects real sample rows into
     // the `sampleIndices` table. The direct path uses every sample in row order, so the slot IS
     // the row: no table is declared there. (A local integer table whose only stores are those of
@@ -174,15 +284,15 @@ export class GPUNaturalNeighbor implements GPUCommandNodeProducer {
     // test GPU; contributor contract section 11.)
     const getSampleRowWGSL = (slot: string): string =>
       props.triangles ? `sampleIndices[${slot}]` : slot;
-    return [
-      createWGSLKernelNode(graph, {
-        id,
-        operation: 'GPUNaturalNeighbor',
-        variant: 'sibson-area',
-        bindings,
-        invocationCount: props.queries.length,
-        workgroupSize: 2,
-        declarations: `${getPackedPredictionAccessors({positions: 2, queries: 2}, ['results'])}\n${GET_NAN_WGSL}\n${IS_FINITE_VALUE_WGSL}\n${GUARDED_ATAN2_WGSL}
+    return createGraphChunkGroupKernelNode(graph, {
+      id: nodeId,
+      pipelineId: id,
+      operation: 'GPUNaturalNeighbor',
+      variant: 'sibson-area',
+      bindings,
+      invocationCount: props.queries.length,
+      workgroupSize: NATURAL_NEIGHBOR_QUERY_WORKGROUP_SIZE,
+      declarations: `${getPackedPredictionAccessors({positions: 2, queries: 2}, ['results'])}\n${GET_NAN_WGSL}\n${IS_FINITE_VALUE_WGSL}\n${GUARDED_ATAN2_WGSL}
 const SAMPLE_CAPACITY: u32 = ${sampleCount}u;
 const VERTEX_CAPACITY: u32 = ${maximumVertexCount}u;
 ${props.output.weights ? `fn writeWeight(queryIndex: u32, slot: u32, sampleIndex: u32, weight: f32) { ${props.triangles ? 'weights[weightsOffset + queryIndex * SAMPLE_CAPACITY * 2u + slot * 2u] = f32(sampleIndex); weights[weightsOffset + queryIndex * SAMPLE_CAPACITY * 2u + slot * 2u + 1u] = weight;' : 'weights[weightsOffset + queryIndex * SAMPLE_CAPACITY + slot] = weight;'} }` : ''}
@@ -208,9 +318,9 @@ fn polygonArea() -> f32 {
   var area = 0.0; for (var vertex = 0u; vertex < polygonCount; vertex++) { area += crossProduct(polygon[vertex], polygon[(vertex + 1u) % polygonCount]); }
   return abs(area) * 0.5;
 }`,
-        body: `
+      body: `
 write_results(index, vec4<f32>(getNaN(), 0.0, 0.0, 0.0)); statuses[statusesOffset + index] = 1u;
-${props.output.weights ? `for (var sample = 0u; sample < SAMPLE_CAPACITY; sample++) { weights[weightsOffset + index * SAMPLE_CAPACITY * ${props.triangles ? 2 : 1}u + sample * ${props.triangles ? 2 : 1}u] = ${props.triangles ? '-1.0' : '0.0'}; ${props.triangles ? 'weights[weightsOffset + index * SAMPLE_CAPACITY * 2u + sample * 2u + 1u] = 0.0;' : ''} }` : ''}
+${props.output.weights ? `for (var sampleIndex = 0u; sampleIndex < SAMPLE_CAPACITY; sampleIndex++) { weights[weightsOffset + index * SAMPLE_CAPACITY * ${props.triangles ? 2 : 1}u + sampleIndex * ${props.triangles ? 2 : 1}u] = ${props.triangles ? '-1.0' : '0.0'}; ${props.triangles ? 'weights[weightsOffset + index * SAMPLE_CAPACITY * 2u + sampleIndex * 2u + 1u] = 0.0;' : ''} }` : ''}
 let query = read_queries(index); if (!isFiniteValue(query.x) || !isFiniteValue(query.y)) { return; }
 ${props.triangles ? `var sampleIndices: array<u32, ${Math.max(sampleCapacity, 1)}>;` : ''}
 var sampleCount = ${props.triangles ? 0 : sampleCount}u;
@@ -263,21 +373,21 @@ loop {
 }
 var points: array<vec2<f32>, ${Math.max(sampleCount, 1)}>;
 var scale = 0.0; var hitCount = 0u; var hitValue = 0.0;
-for (var sample = 0u; sample < sampleCount; sample++) {
-  let point = read_positions(${getSampleRowWGSL('sample')}); let value = values[valuesOffset + ${getSampleRowWGSL('sample')}];
+for (var sampleIndex = 0u; sampleIndex < sampleCount; sampleIndex++) {
+  let point = read_positions(${getSampleRowWGSL('sampleIndex')}); let value = values[valuesOffset + ${getSampleRowWGSL('sampleIndex')}];
   if (!isFiniteValue(point.x) || !isFiniteValue(point.y) || !isFiniteValue(value)) { return; }
-  points[sample] = point - query; scale = max(scale, length(points[sample]));
+  points[sampleIndex] = point - query; scale = max(scale, length(points[sampleIndex]));
   if (all(point == query)) { hitCount++; }
 }
 if (hitCount > 0u) {
-  for (var sample = 0u; sample < sampleCount; sample++) { if (all(points[sample] == vec2<f32>(0.0))) { hitValue += values[valuesOffset + ${getSampleRowWGSL('sample')}] / f32(hitCount); } }
+  for (var sampleIndex = 0u; sampleIndex < sampleCount; sampleIndex++) { if (all(points[sampleIndex] == vec2<f32>(0.0))) { hitValue += values[valuesOffset + ${getSampleRowWGSL('sampleIndex')}] / f32(hitCount); } }
   if (!isFiniteValue(hitValue)) { statuses[statusesOffset + index] = 2u; return; }
   write_results(index, vec4<f32>(hitValue, 0.0, 1.0, f32(hitCount))); statuses[statusesOffset + index] = 0u;
-  ${props.output.weights ? `for (var sample = 0u; sample < sampleCount; sample++) { if (all(points[sample] == vec2<f32>(0.0))) { writeWeight(index, sample, ${getSampleRowWGSL('sample')}, 1.0 / f32(hitCount)); } }` : ''}
+  ${props.output.weights ? `for (var sampleIndex = 0u; sampleIndex < sampleCount; sampleIndex++) { if (all(points[sampleIndex] == vec2<f32>(0.0))) { writeWeight(index, sampleIndex, ${getSampleRowWGSL('sampleIndex')}, 1.0 / f32(hitCount)); } }` : ''}
   return;
 }
 if (sampleCount < 3u || !(scale > 0.0)) { statuses[statusesOffset + index] = 2u; return; }
-for (var sample = 0u; sample < sampleCount; sample++) { points[sample] /= scale; }
+for (var sampleIndex = 0u; sampleIndex < sampleCount; sampleIndex++) { points[sampleIndex] /= scale; }
 var noncollinear = false; var edgeFirst = 0u; var edgeSecond = 0u; var edgeLength = 3.402823e38;
 for (var first = 0u; first < sampleCount; first++) {
   for (var second = first + 1u; second < sampleCount; second++) {
@@ -326,19 +436,18 @@ for (var vertex = 1u; vertex < vertexCount; vertex++) {
 polygonCount = vertexCount; for (var vertex = 0u; vertex < vertexCount; vertex++) { polygon[vertex] = queryPolygon[vertex]; }
 let queryArea = polygonArea(); if (!(queryArea > 1e-12) || !isFiniteValue(queryArea)) { statuses[statusesOffset + index] = 2u; return; }
 var areas: array<f32, ${Math.max(sampleCount, 1)}>; var areaSum = 0.0; var prediction = 0.0; var contributing = 0u;
-for (var sample = 0u; sample < sampleCount; sample++) {
+for (var sampleIndex = 0u; sampleIndex < sampleCount; sampleIndex++) {
   polygonCount = vertexCount; for (var vertex = 0u; vertex < vertexCount; vertex++) { polygon[vertex] = queryPolygon[vertex]; }
   for (var other = 0u; other < sampleCount; other++) {
-    if (other == sample) { continue; }
-    if (!clipPolygon(points[other] - points[sample], (dot(points[other], points[other]) - dot(points[sample], points[sample])) * 0.5)) { statuses[statusesOffset + index] = 3u; return; }
+    if (other == sampleIndex) { continue; }
+    if (!clipPolygon(points[other] - points[sampleIndex], (dot(points[other], points[other]) - dot(points[sampleIndex], points[sampleIndex])) * 0.5)) { statuses[statusesOffset + index] = 3u; return; }
     if (polygonCount < 3u) { break; }
   }
-  let area = polygonArea(); areas[sample] = area; areaSum += area; prediction += area * values[valuesOffset + ${getSampleRowWGSL('sample')}]; if (area > 0.0) { contributing++; }
+  let area = polygonArea(); areas[sampleIndex] = area; areaSum += area; prediction += area * values[valuesOffset + ${getSampleRowWGSL('sampleIndex')}]; if (area > 0.0) { contributing++; }
 }
 if (!(areaSum > 0.0) || abs(areaSum - queryArea) > queryArea * 1e-3 || !isFiniteValue(prediction)) { statuses[statusesOffset + index] = 2u; return; }
 write_results(index, vec4<f32>(prediction / areaSum, queryArea * scale * scale, 1.0, f32(contributing))); statuses[statusesOffset + index] = 0u;
-${props.output.weights ? `for (var sample = 0u; sample < sampleCount; sample++) { writeWeight(index, sample, ${getSampleRowWGSL('sample')}, areas[sample] / areaSum); }` : ''}`
-      })
-    ];
+${props.output.weights ? `for (var sampleIndex = 0u; sampleIndex < sampleCount; sampleIndex++) { writeWeight(index, sampleIndex, ${getSampleRowWGSL('sampleIndex')}, areas[sampleIndex] / areaSum); }` : ''}`
+    });
   }
 }

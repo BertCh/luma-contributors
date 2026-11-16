@@ -8,15 +8,21 @@ import {
   type GPUSpatialEllipsoid
 } from '../../analysis-core/contracts/spatial-context';
 import {
-  doGraphDataViewsOverlap,
+  createGPUComputeCommandNode,
+  getBoundedDispatchLayout,
+  getViewBinding,
+  validatePackedView,
+  type GraphVectorView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import {Kernel} from '@luma.gl/graph';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   createWGSLKernelNode,
   getWGSLFloatLiteral,
+  type WGSLKernelProps,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
@@ -25,8 +31,8 @@ import {
   validateRequirement,
   validateViewLength,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
-  validateSinglePackedView
+  getGraphViewChunks,
+  validateCommandNodeBudget
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   resolveGPUSpatialContext,
@@ -44,36 +50,60 @@ import {
   type GPUGeodesicModel
 } from './geodesic-kernels';
 
+import {
+  createGraphChunkDispatchParameters,
+  planGraphChunkDispatch,
+  validateDisjointWritableViews,
+  validateGraphChunkDispatchBindings,
+  type GraphChunkDispatchPlan
+} from '../../analysis-core/kernels/graph-chunk-dispatch';
+
 const OPERATION = 'GPUGeodesicPairs';
+// Chunk parameters consume one of WebGPU's eight guaranteed storage bindings.
+const MAXIMUM_CHUNK_OUTPUT_BINDINGS = 5;
+// Fixed workgroups and the pre-multiplication guard preserve uint32 indices at large dispatches.
+const GEODESIC_CHUNK_WORKGROUP_SIZE = 256;
+// A 256-thread workgroup must be guarded before its index multiplication can wrap uint32.
+const GEODESIC_MAXIMUM_LINEAR_WORKGROUP_COUNT = 0x1000000;
 // WebGPU guarantees eight storage bindings per stage; reserve two for the input columns.
 const MAXIMUM_OUTPUT_BINDINGS = 6;
 
+/** Preserves the source view kind for each row-aligned output format. */
+type GPUGeodesicPairsRowView<
+  Format extends 'float32' | 'float32x2' | 'float32x3' | 'uint32',
+  Rows extends GraphDataView | GraphVectorView
+> = Rows extends GraphDataView ? GraphDataView<Format> : GraphVectorView<Format>;
+
 /** Per-pair outputs of {@link GPUGeodesicPairs}; each optional, one row per pair. */
-export type GPUGeodesicPairsOutput = {
+export type GPUGeodesicPairsOutput<
+  Rows extends
+    | GraphDataView<'float32x2'>
+    | GraphVectorView<'float32x2'> = GraphDataView<'float32x2'>
+> = {
   /** Geodesic distance in the context's length unit. */
-  distances?: GraphDataView<'float32'>;
+  distances?: GPUGeodesicPairsRowView<'float32', Rows>;
   /** Initial bearing at the origin, degrees clockwise from north in `(-180, 180]` (turf `bearing`). */
-  initialBearings?: GraphDataView<'float32'>;
+  initialBearings?: GPUGeodesicPairsRowView<'float32', Rows>;
   /** Bearing on arrival at the target, degrees clockwise from north in `(-180, 180]`. */
-  finalBearings?: GraphDataView<'float32'>;
+  finalBearings?: GPUGeodesicPairsRowView<'float32', Rows>;
   /**
    * Great-circle midpoint (turf `midpoint`), longitude continuous with the origin. Spherical in
    * every model. For `'rhumb'` it is the midpoint of the rhumb line by distance: the mean
    * latitude, and the longitude the loxodrome has at that latitude, which is linear in the
    * Mercator latitude and so is not the mean longitude unless the line runs east-west.
    */
-  midpoints?: GraphDataView<'float32x2'>;
+  midpoints?: Rows;
   /** Per-pair status scalars. */
   status?: {
     /** `'wgs84'` only: `1` when Vincenty resolved outside the antipodal exclusion;
      * `0` for a sphere fallback, including a numerically stopped but uncertifiable inverse. */
-    converged?: GraphDataView<'uint32'>;
+    converged?: GPUGeodesicPairsRowView<'uint32', Rows>;
     /** One for an ellipsoidal sphere fallback or a spherical bearing/midpoint within
      * 0.02 radians of an antipode. Zero does not certify arbitrary custom ellipsoids. */
-    approximation?: GraphDataView<'uint32'>;
+    approximation?: GPUGeodesicPairsRowView<'uint32', Rows>;
     /** One if Vincenty used its entire iteration budget without stopping.
      * A singular inverse rejected before iteration reports zero. */
-    iterationLimitReached?: GraphDataView<'uint32'>;
+    iterationLimitReached?: GPUGeodesicPairsRowView<'uint32', Rows>;
   };
 };
 
@@ -83,19 +113,23 @@ export type GPUGeodesicPairsOutput = {
  * Per-frame (no recompile): the contents of `origins` and `targets`. Compile-time: the pair count,
  * `spatialContext`, `maximumIterations`, and which outputs are present.
  */
-export type GPUGeodesicPairsProps = {
+export type GPUGeodesicPairsProps<
+  Rows extends
+    | GraphDataView<'float32x2'>
+    | GraphVectorView<'float32x2'> = GraphDataView<'float32x2'>
+> = {
   /** Prefix for generated node IDs. Defaults to `'geodesic-pairs'`. */
   id?: string;
   /** Longitude/latitude metric and output-unit contract. */
   spatialContext: GPUSpatialContext;
   /** Origins, longitude/latitude degrees. */
-  origins: GraphDataView<'float32x2'>;
+  origins: Rows;
   /** Targets aligned with `origins`. */
-  targets: GraphDataView<'float32x2'>;
+  targets: Rows;
   /** Compile-time Vincenty iteration cap for `'wgs84'`. Default 16. */
   maximumIterations?: number;
   /** Per-pair outputs; at least one. */
-  output: GPUGeodesicPairsOutput;
+  output: GPUGeodesicPairsOutput<Rows>;
 };
 
 /**
@@ -107,7 +141,9 @@ export type GPUGeodesicPairsProps = {
  * with the short-line rewrites described on `getVincentyWGSL` and a compile-time iteration cap;
  * pairs that do not converge, or lie within 0.02 radians of an antipode, fall back to the sphere
  * result with `converged = 0` and `approximation = 1`. `'rhumb'` evaluates the Mercator-stretched closed form in `rhumb-wgsl.ts`
- * (east-west limit, antimeridian short way, latitudes clamped at 89.9999 degrees). One invocation per pair; no reductions, so results are deterministic.
+ * (east-west limit, antimeridian short way, latitudes clamped at 89.9999 degrees).
+ * One invocation per pair; no reductions, so results are deterministic. Packed and chunked inputs
+ * are supported; every input and output column must have identical ordered chunk lengths.
  *
  * Every model takes longitude differences with `geodesicLongitudeDelta`, so a pair a few
  * kilometers apart across the antimeridian keeps its f32 precision.
@@ -119,11 +155,16 @@ export type GPUGeodesicPairsProps = {
  * official f32 kernel subtracts raw longitudes (1.7 m lost on a 6 km pair across the
  * antimeridian) and has no bearing or midpoint output.
  */
-export class GPUGeodesicPairs implements GPUCommandNodeProducer {
+export class GPUGeodesicPairs<
+  Rows extends
+    | GraphDataView<'float32x2'>
+    | GraphVectorView<'float32x2'> = GraphDataView<'float32x2'>
+> implements GPUCommandNodeProducer
+{
   /** Prefix for every node ID. */
   readonly id: string;
   /** Validated properties. */
-  readonly props: GPUGeodesicPairsProps;
+  readonly props: GPUGeodesicPairsProps<Rows>;
   /** Canonical coordinate and metric contract. */
   readonly spatialContext: GPUSpatialContext;
   /** Resolved model. */
@@ -134,8 +175,11 @@ export class GPUGeodesicPairs implements GPUCommandNodeProducer {
   readonly ellipsoid: GPUSpatialEllipsoid;
   /** Resolved Vincenty iteration cap. */
   readonly maximumIterations: number;
+  /** Upper bound including upload and output groups for all nonempty chunks. */
+  readonly estimatedCommandNodeCount: number;
+  private readonly chunkPlan: GraphChunkDispatchPlan;
 
-  constructor(props: GPUGeodesicPairsProps) {
+  constructor(props: GPUGeodesicPairsProps<Rows>) {
     this.id = props.id ?? 'geodesic-pairs';
     this.props = props;
     this.spatialContext = props.spatialContext;
@@ -144,14 +188,21 @@ export class GPUGeodesicPairs implements GPUCommandNodeProducer {
     this.radius = metric.radius;
     this.ellipsoid = metric.ellipsoid;
     this.maximumIterations = props.maximumIterations ?? GPU_GEODESIC_DEFAULT_ITERATIONS;
-    validateGeodesicOptions(this.id, this.model, this.radius, this.maximumIterations);
+    validateGeodesicOptions(
+      this.id,
+      this.model,
+      this.radius,
+      this.maximumIterations,
+      this.ellipsoid
+    );
     const {id} = this;
     const {output} = props;
     for (const [name, view] of [
       ['origins', props.origins],
       ['targets', props.targets]
     ] as const) {
-      validateSinglePackedView(view, ['float32x2'], `${id} ${name}`);
+      for (const chunk of getGraphViewChunks(view))
+        validatePackedView(chunk, ['float32x2'], `${id} ${name}`);
     }
     const pairCount = props.origins.length;
     validateCapacity(id, 'origins.length', pairCount);
@@ -171,24 +222,24 @@ export class GPUGeodesicPairs implements GPUCommandNodeProducer {
       !output.status?.converged || this.model === 'wgs84',
       "output.status.converged requires model 'wgs84'"
     );
-    const outputEntries = Object.entries(flattenGeodesicOutput(output)).filter(
-      (entry): entry is [string, GraphDataView] => entry[1] !== undefined
-    );
-    // Validate the entire output contract before splitting it across dispatches.
-    for (const [index, [name, view]] of outputEntries.entries()) {
-      for (const [previousName, previousView] of outputEntries.slice(0, index)) {
-        validateRequirement(
-          id,
-          !doGraphDataViewsOverlap(previousView, view),
-          `output.${name} must not overlap output.${previousName}`
+    const outputFields = flattenGeodesicOutput(output);
+    this.chunkPlan = planGraphChunkDispatch(id, {
+      origins: props.origins,
+      targets: props.targets,
+      ...outputFields
+    });
+    validateDisjointWritableViews(id, outputFields);
+    this.estimatedCommandNodeCount =
+      1 +
+      this.chunkPlan.nonemptyChunkCount *
+        Math.ceil(
+          Object.values(outputFields).filter(Boolean).length / MAXIMUM_CHUNK_OUTPUT_BINDINGS
         );
-      }
-    }
-    validateGraphOutputsDisjointFromInputs(
-      id,
-      outputEntries.map(([, view]) => view),
-      [props.origins, props.targets]
-    );
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
+    validateGraphOutputsDisjointFromInputs(id, Object.values(outputFields), [
+      props.origins,
+      props.targets
+    ]);
   }
 
   /** Returns bounded per-pair nodes, split when optional outputs exceed eight bindings. */
@@ -197,14 +248,14 @@ export class GPUGeodesicPairs implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
     const {output} = props;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.origins,
-      props.targets,
-      ...Object.values(flattenGeodesicOutput(output))
-    ]);
+    validateGraphChunkDispatchBindings(graph, id, this.chunkPlan);
+    const chunked =
+      !('buffer' in props.origins) ||
+      !('buffer' in props.targets) ||
+      Object.values(flattenGeodesicOutput(output)).some(view => view && !('buffer' in view));
     const bindings: WGSLKernelBinding[] = [
-      {name: 'origins', view: props.origins, type: 'f32', access: 'read'},
-      {name: 'targets', view: props.targets, type: 'f32', access: 'read'}
+      {name: 'origins', view: getGraphViewChunks(props.origins)[0], type: 'f32', access: 'read'},
+      {name: 'targets', view: getGraphViewChunks(props.targets)[0], type: 'f32', access: 'read'}
     ];
     const statements: string[] = [];
     const rhumb = this.model === 'rhumb';
@@ -222,7 +273,7 @@ export class GPUGeodesicPairs implements GPUCommandNodeProducer {
           ? output.status?.[name]
           : output[name];
       if (view) {
-        bindings.push({name, view, type, access: 'read_write'});
+        bindings.push({name, view: getGraphViewChunks(view)[0], type, access: 'read_write'});
         statements.push(statement);
       }
     };
@@ -257,16 +308,30 @@ export class GPUGeodesicPairs implements GPUCommandNodeProducer {
     );
     const wgs84 = this.model === 'wgs84';
     const outputBindings = bindings.slice(2);
-    const outputGroups = Math.ceil(outputBindings.length / MAXIMUM_OUTPUT_BINDINGS);
-    return Array.from({length: outputGroups}, (_, groupIndex) => {
-      const firstOutput = groupIndex * MAXIMUM_OUTPUT_BINDINGS;
-      return createWGSLKernelNode<Parameters>(graph, {
+    const maximumOutputs = chunked ? MAXIMUM_CHUNK_OUTPUT_BINDINGS : MAXIMUM_OUTPUT_BINDINGS;
+    const outputGroups = Math.ceil(outputBindings.length / maximumOutputs);
+    // Resolve every bounded layout before the parameter upload allocates scratch.
+    const layouts = this.chunkPlan.chunks.map(chunk =>
+      getBoundedDispatchLayout(
+        id,
+        chunk.length,
+        GEODESIC_CHUNK_WORKGROUP_SIZE,
+        graph.device.limits.maxComputeWorkgroupsPerDimension
+      )
+    );
+    const dispatchParameters = chunked
+      ? createGraphChunkDispatchParameters(graph, {id: `${id}-chunks`, plan: this.chunkPlan})
+      : undefined;
+    const nodes: GPUCommandNode<Parameters>[] = [...(dispatchParameters?.nodes ?? [])];
+    for (let groupIndex = 0; groupIndex < outputGroups; groupIndex++) {
+      const firstOutput = groupIndex * maximumOutputs;
+      const kernelProps: WGSLKernelProps<Parameters> = {
         id: `${id}-pairs${groupIndex === 0 ? '' : `-${groupIndex}`}`,
         operation: OPERATION,
         variant: this.model,
         bindings: [
           ...bindings.slice(0, 2),
-          ...outputBindings.slice(firstOutput, firstOutput + MAXIMUM_OUTPUT_BINDINGS)
+          ...outputBindings.slice(firstOutput, firstOutput + maximumOutputs)
         ],
         invocationCount: props.origins.length,
         declarations: `${GEODESIC_WGSL}
@@ -304,9 +369,106 @@ const RADIUS: f32 = ${getWGSLFloatLiteral(this.radius)};`,
   }`
       : ''
   }
-  ${statements.slice(firstOutput, firstOutput + MAXIMUM_OUTPUT_BINDINGS).join('\n  ')}`
-      });
-    });
+  ${statements.slice(firstOutput, firstOutput + maximumOutputs).join('\n  ')}`
+      };
+      if (!dispatchParameters) {
+        nodes.push(createWGSLKernelNode(graph, kernelProps));
+        continue;
+      }
+      const source = `
+@group(0) @binding(0) var<storage, read> chunkParameters: array<u32>;
+${kernelProps.bindings.map((binding, bindingIndex) => `@group(0) @binding(${bindingIndex + 1}) var<storage, ${binding.access}> ${binding.name}: array<${binding.type}>;`).join('\n')}
+${kernelProps.declarations}
+@compute @workgroup_size(${GEODESIC_CHUNK_WORKGROUP_SIZE})
+fn main(@builtin(workgroup_id) workgroupId: vec3u,
+        @builtin(num_workgroups) workgroupCount: vec3u,
+        @builtin(local_invocation_index) localInvocationIndex: u32) {
+  ${kernelProps.bindings.map(binding => `_ = &${binding.name};`).join('\n  ')}
+  let workgroupIndex = (workgroupId.z * workgroupCount.y + workgroupId.y) * workgroupCount.x + workgroupId.x;
+  if (workgroupIndex >= ${GEODESIC_MAXIMUM_LINEAR_WORKGROUP_COUNT}u) { return; }
+  let index = workgroupIndex * ${GEODESIC_CHUNK_WORKGROUP_SIZE}u + localInvocationIndex;
+  let rowCount = chunkParameters[1];
+  if (index >= rowCount) { return; }
+  ${kernelProps.bindings.map(binding => `let ${binding.name}Offset = arrayLength(&${binding.name}) - ${binding.view.rowByteLength / 4}u * rowCount;`).join('\n  ')}
+  ${kernelProps.body}
+}`;
+      for (const chunk of this.chunkPlan.chunks) {
+        if (chunk.length === 0) continue;
+        const parameters = dispatchParameters.slots[chunk.chunkIndex];
+        const chunkBindings = kernelProps.bindings.map(binding => ({
+          ...binding,
+          view: chunk.views[
+            binding.name === 'converged' ||
+            binding.name === 'approximation' ||
+            binding.name === 'iterationLimitReached'
+              ? `status.${binding.name}`
+              : binding.name
+          ]
+        }));
+        nodes.push(
+          createGPUComputeCommandNode<Parameters>({
+            id: `${id}-pairs-${groupIndex}-chunk-${chunk.chunkIndex}`,
+            workload: {
+              operation: OPERATION,
+              variant: this.model,
+              commandCount: 1,
+              maximumInvocationCount: chunk.length,
+              maximumWorkgroupCount:
+                layouts[chunk.chunkIndex].x *
+                layouts[chunk.chunkIndex].y *
+                layouts[chunk.chunkIndex].z
+            },
+            resources: [
+              {buffer: parameters, usage: 'storage-read'},
+              ...chunkBindings.map(binding => ({
+                buffer: binding.view,
+                usage:
+                  binding.access === 'read'
+                    ? ('storage-read' as const)
+                    : ('storage-read-write' as const)
+              }))
+            ],
+            compile: ({device}) => {
+              const kernel = new Kernel(device, {
+                id: `geodesic-pairs-chunk-${this.model}-${groupIndex}`,
+                source,
+                shaderLayout: {
+                  bindings: [
+                    {name: 'chunkParameters', group: 0, location: 0, type: 'read-only-storage'},
+                    ...chunkBindings.map((binding, bindingIndex) => ({
+                      name: binding.name,
+                      group: 0,
+                      location: bindingIndex + 1,
+                      type:
+                        binding.access === 'read'
+                          ? ('read-only-storage' as const)
+                          : ('storage' as const)
+                    }))
+                  ]
+                }
+              });
+              return {
+                encode: ({computePass, getBuffer}) =>
+                  kernel.dispatch(computePass, {
+                    bindings: {
+                      chunkParameters: getViewBinding(parameters, getBuffer),
+                      ...Object.fromEntries(
+                        chunkBindings.map(binding => [
+                          binding.name,
+                          getViewBinding(binding.view, getBuffer)
+                        ])
+                      )
+                    },
+                    ...layouts[chunk.chunkIndex]
+                  }),
+                destroy: () => kernel.destroy()
+              };
+            }
+          })
+        );
+      }
+    }
+    return nodes;
   }
 }
 
@@ -352,7 +514,8 @@ export function validateGeodesicOptions(
   id: string,
   model: GPUGeodesicModel,
   radius: number,
-  maximumIterations: number
+  maximumIterations: number,
+  ellipsoid?: GPUSpatialEllipsoid
 ): void {
   validateRequirement(
     id,
@@ -360,7 +523,33 @@ export function validateGeodesicOptions(
     "model must be 'sphere', 'wgs84' or 'rhumb'"
   );
   validateFiniteNumber(id, 'radius', radius);
-  validateRequirement(id, radius > 0, 'radius must be positive');
+  validateRequirement(id, Math.fround(radius) > 0, 'radius must be positive in float32');
+  if (model === 'wgs84' && ellipsoid) {
+    const {semiMajorAxis, flattening} = ellipsoid;
+    const semiMinorAxis = semiMajorAxis * (1 - flattening);
+    // Match the derived constants emitted by getVincentyWGSL, including JS underflow/overflow.
+    const secondEccentricitySquared =
+      (semiMajorAxis * semiMajorAxis - semiMinorAxis * semiMinorAxis) /
+      (semiMinorAxis * semiMinorAxis);
+    for (const [name, value] of Object.entries({
+      semiMajorAxis,
+      semiMinorAxis,
+      flattening,
+      secondEccentricitySquared
+    })) {
+      validateFiniteNumber(id, `spatialContext.ellipsoid.${name}`, value);
+    }
+    validateRequirement(
+      id,
+      Math.fround(semiMajorAxis) > 0 && Math.fround(semiMinorAxis) > 0,
+      'spatialContext.ellipsoid axes must be positive in float32'
+    );
+    validateRequirement(
+      id,
+      Math.fround(flattening) < 1,
+      'spatialContext.ellipsoid.flattening must be less than 1 in float32'
+    );
+  }
   validateCapacity(id, 'maximumIterations', maximumIterations, 1, GPU_GEODESIC_MAXIMUM_ITERATIONS);
 }
 
@@ -370,15 +559,15 @@ export function validateGeodesicOptions(
  */
 export function flattenGeodesicOutput(output: {
   status?: {
-    converged?: GraphDataView;
-    approximation?: GraphDataView;
-    iterationLimitReached?: GraphDataView;
+    converged?: GraphDataView | GraphVectorView;
+    approximation?: GraphDataView | GraphVectorView;
+    iterationLimitReached?: GraphDataView | GraphVectorView;
   };
   [name: string]: unknown;
-}): Record<string, GraphDataView | undefined> {
+}): Record<string, GraphDataView | GraphVectorView | undefined> {
   const {status, ...columns} = output;
   return {
-    ...(columns as Record<string, GraphDataView | undefined>),
+    ...(columns as Record<string, GraphDataView | GraphVectorView | undefined>),
     'status.converged': status?.converged,
     ...(status?.approximation ? {'status.approximation': status.approximation} : {}),
     ...(status?.iterationLimitReached
@@ -392,9 +581,9 @@ export function validateGeodesicColumns(
   id: string,
   output: {
     status?: {
-      converged?: GraphDataView;
-      approximation?: GraphDataView;
-      iterationLimitReached?: GraphDataView;
+      converged?: GraphDataView | GraphVectorView;
+      approximation?: GraphDataView | GraphVectorView;
+      iterationLimitReached?: GraphDataView | GraphVectorView;
     };
   } & Record<string, unknown>,
   formats: Record<string, 'float32' | 'float32x2' | 'uint32'>,
@@ -407,7 +596,8 @@ export function validateGeodesicColumns(
     }
     const format = formats[name];
     validateRequirement(id, Boolean(format), `output.${name} is not a known column`);
-    validateSinglePackedView(view, [format], `${id} output.${name}`);
+    for (const chunk of getGraphViewChunks(view))
+      validatePackedView(chunk, [format], `${id} output.${name}`);
     validateViewLength(id, `output.${name}`, view, rowCount);
     columnCount++;
   }

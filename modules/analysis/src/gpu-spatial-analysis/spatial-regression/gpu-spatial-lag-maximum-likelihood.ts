@@ -2,6 +2,21 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRegressionOutputDispatches} from './regression-output-dispatches';
+
+import {
+  validateRegressionAllocations,
+  getSpatialProbeAllocationLengths
+} from './spatial-likelihood-allocations';
+import {getOrdinaryLeastSquaresAllocationLengths} from './gpu-ordinary-least-squares';
+import {
+  getRegressionWeightBindings,
+  getRegressionMaximumEdgeCount,
+  getRegressionTraceAllocationLengths
+} from './regression-binding-plans';
+
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -26,7 +41,6 @@ import {
 } from '../../analysis-core/kernels/wgsl-common';
 import {ADDITION_ROUNDING_ERROR_WGSL} from '../../analysis-core/kernels/addition-rounding-error-wgsl';
 import {
-  getGPUSpatialWeightsOrChunksViews,
   validateGPUSpatialWeightsOrChunks,
   type GPUChunkedSpatialWeights,
   type GPUSpatialWeights
@@ -517,6 +531,18 @@ export class GPUSpatialLagMaximumLikelihood implements GPUCommandNodeProducer {
       props.tileRowCount ??
       Math.max(MINIMUM_DEFAULT_TILE_ROWS, Math.ceil(rows / MAXIMUM_DEFAULT_TILE_COUNT));
     this.tileCount = Math.ceil(rows / this.tileRowCount);
+    validateRegressionOutputDispatches(
+      this.id,
+      {...output, status: undefined, code: output.status.code, converged: output.status.converged},
+      [
+        ['table', 'summary', 'code', 'converged'],
+        {read: ['infinityNorm'], write: ['powerTraces', 'powerTraceStandardErrors']},
+        {
+          read: [...(this.exactLogDeterminant ? [] : ['powerTraces']), 'infinityNorm'],
+          write: ['table', 'summary', 'code', 'converged']
+        }
+      ]
+    );
     validateGraphOutputsDisjointFromInputs(
       id,
       [
@@ -530,7 +556,11 @@ export class GPUSpatialLagMaximumLikelihood implements GPUCommandNodeProducer {
         output.infinityNorm,
         output.powerTraceStandardErrors
       ],
-      [props.predictors, props.response, ...getGPUSpatialWeightsOrChunksViews(props.weights)]
+      [
+        props.predictors,
+        props.response,
+        ...Object.values(getRegressionWeightBindings(props.weights))
+      ]
     );
   }
 
@@ -570,7 +600,7 @@ export class GPUSpatialLagMaximumLikelihood implements GPUCommandNodeProducer {
       props.predictors,
       props.response,
       props.eigenvalues,
-      ...getGPUSpatialWeightsOrChunksViews(weights),
+      ...Object.values(getRegressionWeightBindings(weights)),
       output.table,
       output.summary,
       output.status.code,
@@ -581,6 +611,17 @@ export class GPUSpatialLagMaximumLikelihood implements GPUCommandNodeProducer {
       output.infinityNorm,
       output.powerTraceStandardErrors
     ]);
+    validateGraphChunkBindingRanges(graph, id, {
+      predictors: props.predictors,
+      response: props.response,
+      eigenvalues: props.eigenvalues,
+      traceParameters: props.traceParameters,
+      ...getRegressionWeightBindings(weights),
+      ...output,
+      status: undefined,
+      code: output.status.code,
+      converged: output.status.converged
+    });
     const p = k + 1;
     const informationSize = p + 1;
     const stochastic = this.traceMode === 'stochastic';
@@ -634,6 +675,37 @@ export class GPUSpatialLagMaximumLikelihood implements GPUCommandNodeProducer {
     const slotConstants = Object.entries(slots)
       .map(([name, value]) => `const W_${name}: u32 = ${value}u;`)
       .join('\n');
+
+    const traceTileCount = getGPUSpatialWeightsTilePlan(
+      weights,
+      Math.max(32, Math.ceil(rowCount / 1024))
+    ).tileCount;
+    const probeTotal = this.traceMode === 'exact' ? rowCount : (props.traceProbeCount ?? 64);
+    validateRegressionAllocations(graph.device, id, {
+      ...getOrdinaryLeastSquaresAllocationLengths(rowCount, k, tileRowCount),
+      ...getRegressionTraceAllocationLengths({
+        rowCount,
+        edgeCount: getRegressionMaximumEdgeCount(weights),
+        maximumPower,
+        tileCount: traceTileCount,
+        mode: this.traceMode,
+        probeCount: props.traceProbeCount
+      }),
+      ...Object.fromEntries(
+        Object.entries(getSpatialProbeAllocationLengths(rowCount, tileCount, probeTotal, 1)).map(
+          ([name, length]) => [`information ${name}`, length]
+        )
+      ),
+      'lag workspace': slotCount,
+      'lag row sums': 2 * rowCount,
+      'lag norm partials': 2 * getGPUSpatialWeightsTilePlan(weights, tileRowCount).tileCount,
+      'lag row scratch': rowCount,
+      'lag OLS outputs': Math.max(p, GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH),
+      'lag mean partials': tileCount * (k + 1),
+      'lag moment partials': tileCount * 3,
+      'lag final partials': tileCount * finalSumCount,
+      'lag final sums': finalSumCount
+    });
 
     const transient = (name: string, length: number) =>
       createTransientView(graph, `${id}-${name}`, 'float32', length);

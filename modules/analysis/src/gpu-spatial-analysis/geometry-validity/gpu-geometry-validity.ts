@@ -15,7 +15,6 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
-  validateGraphViewsBelongToGraph,
   validateMaximumCount,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -40,6 +39,11 @@ import type {
   GPUPolygonGeometryPort
 } from '../../analysis-core/contracts/index';
 import {getReadPointWGSL} from '../shared/spatial-wgsl-point-helpers';
+
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateGeometryScratchByteLengths} from '../geometry-edit/geometry-storage-validation';
+
+import {validateSegmentIntersectionScratch} from '../segment-intersection/segment-storage-validation';
 
 const OPERATION = 'GPUGeometryValidity';
 
@@ -243,7 +247,11 @@ export class GPUGeometryValidity implements GPUCommandNodeProducer {
         ? [props.lines.positions, props.lines.lineOffsets]
         : [(props.points as GPUPackedGeometryPort<GPUPointGeometryPort>).positions];
     const {mask, status} = props.output;
-    return [...geometryViews, mask, status?.overflow, status?.intersectionCount];
+    return [
+      ...geometryViews,
+      mask,
+      ...(polygons ? [status?.overflow, status?.intersectionCount] : [])
+    ];
   }
 
   /** One thread per line or point feature: finite coordinates and, for lines, two distinct vertices. */
@@ -298,7 +306,11 @@ ${getReadPointWGSL('vertexAt', 'positions')}`,
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, polygons, featureCount, ringCount} = this;
-    validateGraphViewsBelongToGraph(id, graph, this.getViews());
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(this.getViews().map((view, index) => [String(index), view]))
+    );
     if (props.polygons) {
       // The ring test builds a segment table over every vertex.
       validateMaximumCount(
@@ -307,6 +319,17 @@ ${getReadPointWGSL('vertexAt', 'positions')}`,
         props.polygons.positions.length,
         getGPUSegmentIntersectionMaximumVertexCount(graph.device)
       );
+    }
+    if (polygons) {
+      validateSegmentIntersectionScratch(
+        graph,
+        id,
+        polygons.positions.length,
+        polygons.positions.length,
+        props.intersectionCapacity as number,
+        props.leafCapacity
+      );
+      validateGeometryScratchByteLengths(graph, id, {ringBounds: ringCount * 16});
     }
     if (!polygons) {
       return [this.getLineOrPointNode(graph)];

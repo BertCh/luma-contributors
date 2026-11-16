@@ -237,7 +237,7 @@ it('GPULineSmooth and GPULineChunk validate their layouts', () => {
         parameters,
         output: createOutput(graph, 2)
       })
-  ).toThrow(/not supported/);
+  ).not.toThrow();
   expect(
     () =>
       new GPULineSmooth({

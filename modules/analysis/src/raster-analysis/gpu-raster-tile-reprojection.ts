@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRasterStorageBindings} from './raster-grid/raster-storage-preflight';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -21,7 +22,10 @@ import {
   validateRasterGrid,
   validateRasterParameters
 } from './raster-band-utils';
-import {validateRequirement} from '../analysis-core/kernels/gpu-contributor-utils';
+import {
+  validateRequirement,
+  getGraphOutputViews as getRasterPreflightOutputViews
+} from '../analysis-core/kernels/gpu-contributor-utils';
 import {validateRasterExpansionViews, validateRasterExpansionGraph} from './raster-expansion-utils';
 import {createWGSLKernelNode} from '../analysis-core/kernels/wgsl-kernel-nodes';
 
@@ -100,6 +104,25 @@ export class GPURasterTileReprojection implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    const storageProps = this.props;
+    const storageCellCount = storageProps.sourceGrid.width * storageProps.sourceGrid.height;
+    validateRasterStorageBindings(
+      graph,
+      this.id,
+      [
+        ...storageProps.sources.flatMap(source => getRasterBandViews(source.input)),
+        storageProps.parameters,
+        ...getRasterPreflightOutputViews(storageProps.output)
+      ],
+      {
+        'mosaic and canonical band planes': storageCellCount * 4,
+        'affine parameters': GPU_RASTER_REPROJECTION_PARAMETER_LENGTH * 4,
+        'projection parameters': storageProps.inverseProjection
+          ? storageProps.inverseProjection.packParameters().byteLength
+          : 0
+      }
+    );
+
     validateRequirement(
       this.id,
       !this.reprojection,

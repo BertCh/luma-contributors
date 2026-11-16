@@ -15,6 +15,8 @@ export type ConstrainedDelaunayTriangulationOperationProps = Omit<
   'output'
 > & {
   maximumFlips?: number;
+  flipMethod?: 'auto' | 'serial' | 'parallel';
+  maximumVerticesPerPolygon?: number;
   output: PolygonTriangulationOperationProps['output'] & {status: {converged: string}};
 };
 
@@ -48,6 +50,8 @@ export class GPUConstrainedDelaunayTriangulationOperation extends GPUContributor
           monotoneMinimumVertices: props.monotoneMinimumVertices,
           monotoneMaximumVertices: props.monotoneMaximumVertices,
           maximumFlips: props.maximumFlips,
+          flipMethod: props.flipMethod,
+          maximumVerticesPerPolygon: props.maximumVerticesPerPolygon,
           positions: getView<'float32x2'>('positions'),
           featureOffsets: getView<'uint32'>('featureOffsets'),
           polygonOffsets: getView<'uint32'>('polygonOffsets'),

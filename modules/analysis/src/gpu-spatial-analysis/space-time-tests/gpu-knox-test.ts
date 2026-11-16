@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  validateTrajectoryBindings,
+  validateTrajectoryWritableDispatches,
+  validateTrajectoryScratch,
+  validateTrajectoryOutputRanges
+} from '../trajectory-analysis/trajectory-binding-validation';
 import {PHILOX_PURPOSES} from '../../analysis-core/kernels/philox-random';
 import {
   createTransientView,
@@ -43,6 +49,7 @@ import {
 } from './space-time-parameters';
 import {
   createSpaceTimeStateView,
+  SPACE_TIME_STATE_LENGTH,
   createSpaceTimeStoppingNodes,
   getSpaceTimeStoppingBatchSize,
   type SpaceTimeBatchNodeProps,
@@ -214,6 +221,10 @@ export class GPUKnoxTest implements GPUCommandNodeProducer {
     if (props.output.summary.length < GPU_SPACE_TIME_SUMMARY_LENGTH) {
       throw new Error(`${id} output.summary needs ${GPU_SPACE_TIME_SUMMARY_LENGTH} rows`);
     }
+    validateTrajectoryOutputRanges(this.id, this.props.output);
+    validateTrajectoryWritableDispatches(this.id, [
+      {summary: props.output.summary, permutationCount: props.output.permutationCount}
+    ]);
     validateGraphOutputsDisjointFromInputs(
       id,
       [props.output.statistics, props.output.summary, props.output.permutationCount],
@@ -253,6 +264,7 @@ export class GPUKnoxTest implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateTrajectoryBindings(graph, this.id, this.props);
     const {id, props, rows} = this;
     const {pairs, times, parameters, maximumPermutations} = props;
     const {statistics, summary} = props.output;
@@ -277,6 +289,12 @@ export class GPUKnoxTest implements GPUCommandNodeProducer {
     // Stopping evaluates the slots in batches, so the (slot, block) table holds one batch.
     const batchSize = getSpaceTimeStoppingBatchSize(slotCount);
     const tableSlots = stopping ? batchSize : slotCount;
+    validateTrajectoryScratch(graph, id, {
+      'permutation partials': tableSlots * blocks * 4,
+      'row scratch': rows * 4,
+      'pair mask': pairs.neighbors.length * 4,
+      ...(stopping ? {'stopping state': SPACE_TIME_STATE_LENGTH * 4, 'stopping dispatch': 24} : {})
+    });
     const state = stopping ? createSpaceTimeStateView(graph, id) : undefined;
     const stateBindings = state
       ? [{name: 'state', view: state, type: 'u32' as const, access: 'read' as const}]

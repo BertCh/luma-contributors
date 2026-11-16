@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {SCALED_QUOTIENT_WGSL} from '../analysis-core/kernels/scaled-quotient-wgsl';
+
+import {validateNetworkViewBindings, validateNetworkWritableViews} from './network-view-utils';
+
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -13,7 +17,6 @@ import {createWGSLKernelNode} from '../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
   validateMaximumCount,
   validateSinglePackedView,
   validateRequirement
@@ -116,6 +119,16 @@ export class GPUNetworkInhomogeneousK implements GPUCommandNodeProducer {
   constructor(props: GPUNetworkInhomogeneousKProps) {
     this.id = props.id ?? 'network-inhomogeneous-k';
     this.props = props;
+    validateNetworkWritableViews(this.id, props.output, [
+      {
+        outputs: {
+          k: props.output.k,
+          numerator: props.output.numerator,
+          status: props.output.status
+        },
+        inputs: {normalization: props.output.normalization}
+      }
+    ]);
     const eventCount = props.eventNodeIds.length;
     const pairCount = eventCount * eventCount;
     const budget = props.maximumPairCount ?? 1048576;
@@ -169,14 +182,13 @@ export class GPUNetworkInhomogeneousK implements GPUCommandNodeProducer {
     const pairCount = eventCount * eventCount;
     const correction = props.correction ?? 'ang';
     const normalization = props.normalization ?? 'network-length';
-    validateGraphViewsBelongToGraph(id, graph, [
-      ...getInputs(props),
-      ...Object.values(props.output)
-    ]);
+    validateNetworkViewBindings(id, graph, [...getInputs(props), ...Object.values(props.output)]);
+    validateNetworkViewBindings(id, graph, [], {pairs: pairCount * 8, pairStatus: pairCount * 4});
     const pairs = createTransientView(graph, `${id}-pairs`, 'float32x2', pairCount);
     const pairStatus = createTransientView(graph, `${id}-pair-status`, 'uint32', pairCount);
     const inputStatus = createTransientView(graph, `${id}-input-status`, 'uint32', 1);
     const distanceDeclaration = `${IS_FINITE_FLOAT_WGSL}
+${SCALED_QUOTIENT_WGSL}
 fn validDistance(value: f32) -> bool {
   return value >= 0.0 && (isFiniteFloat(value) || bitcast<u32>(value) == 0x7f800000u);
 }
@@ -223,7 +235,8 @@ fn getShellMergedNode(event: u32, edge: u32, pairDistance: f32, shellTolerance: 
           },
           {name: 'status', view: inputStatus, type: 'u32', access: 'read_write'}
         ],
-        declarations: IS_FINITE_FLOAT_WGSL,
+        declarations: `${IS_FINITE_FLOAT_WGSL}
+${SCALED_QUOTIENT_WGSL}`,
         body: `var flags = 0u;
   var length = 0.0;
   var inverseSum = 0.0;
@@ -237,9 +250,12 @@ fn getShellMergedNode(event: u32, edge: u32, pairDistance: f32, shellTolerance: 
   for (var event = 0u; event < ${eventCount}u; event++) {
     let value = intensity[intensityOffset + event];
     if (!isFiniteFloat(value) || value <= 0.0 || eventNodes[eventNodesOffset + event] >= ${props.nodeCount}u) { flags |= 1u; }
-    inverseSum += 1.0 / value;
+    if (isFiniteFloat(value) && value > 0.0) { inverseSum += getScaledQuotient(1.0, value, 1.0, 0); }
   }
-  var denominator = ${normalization === 'network-length' ? 'length' : normalization === 'inverse-intensity' ? 'inverseSum' : 'inverseSum * (inverseSum / length)'};
+  var denominator = 0.0;
+  if (isFiniteFloat(length) && length > 0.0 && isFiniteFloat(inverseSum)) {
+    denominator = ${normalization === 'network-length' ? 'length' : normalization === 'inverse-intensity' ? 'inverseSum' : 'inverseSum * getScaledQuotient(inverseSum, length, 1.0, 0)'};
+  }
   if (!isFiniteFloat(length) || !isFiniteFloat(inverseSum) || !isFiniteFloat(denominator) || denominator <= 0.0) { flags |= 32u; }
   normalization[normalizationOffset] = length;
   normalization[normalizationOffset + 1u] = inverseSum;
@@ -334,7 +350,12 @@ fn getShellMergedNode(event: u32, edge: u32, pairDistance: f32, shellTolerance: 
       if (shellCount == 0u) { flags |= 8u; }`
           : ''
       }
-      weight = (1.0 / intensity[intensityOffset + source]) / intensity[intensityOffset + destination] / f32(shellCount);
+      let sourceIntensity = intensity[intensityOffset + source];
+      let destinationIntensity = intensity[intensityOffset + destination];
+      if (isFiniteFloat(sourceIntensity) && sourceIntensity > 0.0 &&
+          isFiniteFloat(destinationIntensity) && destinationIntensity > 0.0 && shellCount > 0u) {
+        weight = getScaledQuotient(1.0, sourceIntensity, destinationIntensity, 0) / f32(shellCount);
+      } else { flags |= 32u; }
       if (!isFiniteFloat(weight)) { flags |= 32u; }
     }
   }
@@ -362,6 +383,7 @@ fn getShellMergedNode(event: u32, edge: u32, pairDistance: f32, shellTolerance: 
           {name: 'status', view: props.output.status, type: 'u32', access: 'read_write'}
         ],
         declarations: `${IS_FINITE_FLOAT_WGSL}
+${SCALED_QUOTIENT_WGSL}
 var<workgroup> partialSums: array<f32, ${FINISH_WORKGROUP_SIZE}>;
 var<workgroup> partialFlags: array<u32, ${FINISH_WORKGROUP_SIZE}>;`,
         // No early return: every invocation of a workgroup must reach the barriers.
@@ -388,7 +410,11 @@ var<workgroup> partialFlags: array<u32, ${FINISH_WORKGROUP_SIZE}>;`,
     let sum = partialSums[0];
     if (!isFiniteFloat(radius) || radius < 0.0) { flags |= 16u; }
     if (radiusIndex > 0u && radius <= radii[radiiOffset + radiusIndex - 1u]) { flags |= 16u; }
-    let value = sum / normalization[normalizationOffset + 2u];
+    let denominator = normalization[normalizationOffset + 2u];
+    var value = 0.0;
+    if (isFiniteFloat(sum) && isFiniteFloat(denominator) && denominator > 0.0) {
+      value = getScaledQuotient(sum, denominator, 1.0, 0);
+    }
     if (!isFiniteFloat(value) || !isFiniteFloat(sum)) { flags |= 32u; }
     let invalid = bitcast<f32>(0x7fc00000u | (radiusIndex & 0u));
     result[resultOffset + radiusIndex] = select(invalid, value, flags == 0u);

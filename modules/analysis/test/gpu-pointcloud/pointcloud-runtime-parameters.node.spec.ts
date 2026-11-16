@@ -323,26 +323,31 @@ it('reads resident parameters and audits the feature and ICP shared eigensolvers
         })
     )
   ];
-  const sources = getParsedKernelSources(
-    contributors.flatMap(contributor => contributor.getCommandNodes(graph))
-  );
+  // Chunk kernels intentionally share a pipeline ID. Retain every node's source so a later
+  // dispatch cannot hide the feature eigensolver or an earlier parameter reader in this audit.
+  const sources = new Map<string, string>();
+  for (const contributor of contributors) {
+    for (const node of contributor.getCommandNodes(graph)) {
+      for (const source of getParsedKernelSources([node]).values()) sources.set(node.id, source);
+    }
+  }
   for (const [identifier, source] of sources) {
     expect(auditWGSLModule(source), identifier).toEqual([]);
   }
   expect(sources.get('gpu-pointcloud-change')).toContain('readParameters(0u)');
   expect(sources.get('indexed-change-reference')).toContain('bitcast<f32>(readParameters(11u))');
-  const featureSource = sources.get('gpu-pointcloud-features')!;
+  const featureSource = sources.get('gpu-pointcloud-features-chunk-0')!;
   expect(featureSource).toContain('getSymmetricEigen_3(&matrix, &vectors, 3u, 8u, 1e-6)');
-  const icpSource = sources.get('icp-point-to-point-solve-0')!;
+  const icpSource = sources.get('icp-point-to-point-solve-0-chunk-0')!;
   expect(icpSource).toContain('getSymmetricEigen_4(&matrix, &vectors, 4u, 8u, 1e-6)');
   expect(featureSource + icpSource).not.toContain('atan2(');
-  expect(sources.get('icp-point-to-plane-solve-0')).toContain('readParameters(4u)');
+  expect(sources.get('icp-point-to-plane-solve-0-chunk-0')).toContain('readParameters(4u)');
   expect(sources.get('icp-point-to-point-match-0')).toContain('readParameters(1u)');
   expect(sources.get('icp-point-to-point-initialize')).toContain('readParameters(entry + 6u)');
   for (const identifier of [
-    'gpu-pointcloud-features-orient',
-    'gpu-pointcloud-ground-classify-0',
-    'gpu-pointcloud-smrf-object-mask-1',
+    'gpu-pointcloud-features-orient-chunk-0',
+    'gpu-pointcloud-ground-classify-0-chunk-0',
+    'gpu-pointcloud-smrf-object-mask-1-chunk-0',
     'gpu-pointcloud-smrf-classify',
     'gpu-pointcloud-statistical-filter-threshold'
   ]) {

@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {expect, it} from 'vitest';
+import {expect, it, vi} from 'vitest';
 import {GPUTerrainRGBDecode} from '../../../src/gpu-terrain/terrain-decode/gpu-terrain-rgb-decode';
 import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 import {
@@ -185,19 +185,44 @@ it('GPUTerrainRGBDecode texture input is a linear WGSL kernel node with a sample
 });
 
 it('GPUTerrainRGBDecode rejects outputs above the device storage binding limit', () => {
-  const device = createNullWebGPUDevice();
-  const graph = new GPUCommandGraph(device);
-  const limit = device.limits.maxStorageBufferBindingSize;
-  const pixelCount = Math.floor(limit / 4) + 1;
-  const decode = new GPUTerrainRGBDecode({
-    grid: makeGPURasterMetadata({width: pixelCount, height: 1}),
-    encoding: 'terrarium',
-    input: {buffer: createTransientView(graph, 'big-words', 'uint32', pixelCount)},
-    output: {
-      values: createTransientView(graph, 'big-values', 'float32', pixelCount),
-      outputValidity: createTransientView(graph, 'big-validity', 'uint32', pixelCount)
+  for (const field of ['values', 'outputValidity'] as const) {
+    const device = createNullWebGPUDevice();
+    const graph = new GPUCommandGraph(device);
+    const limit = device.limits.maxStorageBufferBindingSize;
+    // All logical views fit exactly. The selected output's four-byte prefix makes its aligned
+    // binding exceed the limit; the input cannot mask the output check by failing first.
+    const pixelCount = Math.floor(limit / 4);
+    const values = createTransientView(graph, 'big-values', 'float32', pixelCount + 1);
+    const validity = createTransientView(graph, 'big-validity', 'uint32', pixelCount + 1);
+    const decode = new GPUTerrainRGBDecode({
+      grid: makeGPURasterMetadata({width: pixelCount, height: 1}),
+      encoding: 'terrarium',
+      input: {buffer: createTransientView(graph, 'big-words', 'uint32', pixelCount)},
+      output: {
+        values: graph.createDataView(values.buffer, {
+          format: 'float32',
+          length: pixelCount,
+          byteOffset: field === 'values' ? 4 : 0
+        }),
+        outputValidity: graph.createDataView(validity.buffer, {
+          format: 'uint32',
+          length: pixelCount,
+          byteOffset: field === 'outputValidity' ? 4 : 0
+        })
+      }
+    });
+    const allocations = vi.spyOn(graph, 'createTransientBuffer');
+    const declarations = vi.spyOn(graph, 'add');
+    try {
+      expect(() => decode.getCommandNodes(graph)).toThrow(
+        `terrain-rgb-decode output.${field} chunk 0 needs ${pixelCount * 4 + 4} bytes in one binding (limit ${limit})`
+      );
+      expect(allocations).not.toHaveBeenCalled();
+      expect(declarations).not.toHaveBeenCalled();
+    } finally {
+      allocations.mockRestore();
+      declarations.mockRestore();
+      device.destroy();
     }
-  });
-  expect(() => decode.getCommandNodes(graph)).toThrow(/storage binding limit/);
-  device.destroy();
+  }
 });

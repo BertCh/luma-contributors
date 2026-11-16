@@ -2,15 +2,16 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateNetworkViewBindings, validateNetworkWritableViews} from '../network-view-utils';
+
 import type {Device} from '@luma.gl/core';
 import {
   resolveGPUSpatialContext,
   GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT
 } from '../../analysis-core/contracts/spatial-context';
-import {createSaturatedScanTotalNodes} from '../../analysis-core/kernels/scan-total';
+import {createSaturatedCountScanNodes} from '../../analysis-core/kernels/scan-total';
 import {
   createTransientView,
-  GPUScan,
   GPUSort,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -26,8 +27,7 @@ import {
   getStorageBindingElementLimit,
   validateMaximumCount,
   validateSinglePackedView,
-  validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPUNetworkTopology} from '../../analysis-core/network-topology';
 import {
@@ -185,6 +185,7 @@ export class GPUNetworkLineGraph implements GPUCommandNodeProducer {
   constructor(props: GPUNetworkLineGraphProps) {
     this.id = props.id ?? 'network-line-graph';
     this.props = props;
+    validateNetworkWritableViews(this.id, props.output);
     const {id} = this;
     this.spatialContext = resolveGPUSpatialContext(
       id,
@@ -261,7 +262,7 @@ export class GPUNetworkLineGraph implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, nodeCount, edgeCount, arcCapacity} = this;
-    validateGraphViewsBelongToGraph(id, graph, [...getInputs(props), ...getOutputs(props)]);
+    validateNetworkViewBindings(id, graph, [...getInputs(props), ...getOutputs(props)]);
     if (this.spatialContext.coordinateSpace === 'longitude-latitude') {
       validateMaximumCount(
         id,
@@ -277,6 +278,11 @@ export class GPUNetworkLineGraph implements GPUCommandNodeProducer {
         getGPUNetworkLineGraphMaximumEdgeCount(graph.device)
       );
     }
+    validateNetworkViewBindings(id, graph, [], {
+      vectors: edgeCount * (this.spatialContext.coordinateSpace === 'longitude-latitude' ? 16 : 8),
+      counts: (edgeCount + 1) * 4,
+      bannedTurns: (props.bannedTurns?.length ?? 0) * 4
+    });
     const nodes: GPUCommandNode<Parameters>[] = [];
     const bannedTurns = props.bannedTurns?.length ? props.bannedTurns : undefined;
     const hasBans = Boolean(bannedTurns);
@@ -437,23 +443,16 @@ ${liveEdgeSource}`,
       })
     );
 
-    nodes.push(
-      ...new GPUScan({
-        id: `${id}-scan`,
-        input: counts,
-        output: props.output.topology.offsets,
-        mode: 'exclusive'
-      }).getCommandNodes(graph)
-    );
-
     const scanTotal = createTransientView(graph, `${id}-scan-total`, 'uint32', 1);
     nodes.push(
-      ...createSaturatedScanTotalNodes<Parameters>(graph, {
-        id: id,
+      // Saturating only the final total leaves wrapped row prefixes and lets later rows
+      // overwrite an earlier output prefix. Include the terminal zero count in the wide scan.
+      ...createSaturatedCountScanNodes<Parameters>(graph, {
+        id: `${id}-scan`,
         operation: OPERATION,
         counts: counts,
         offsets: props.output.topology.offsets,
-        rowCount: edgeCount,
+        rowCount: edgeCount + 1,
         total: scanTotal
       })
     );
@@ -565,7 +564,7 @@ ${liveEdgeSource}`,
   }
   var slot = lineOffsets[lineOffsetsOffset + index];
   let end = min(offsets[offsetsOffset + head + 1u], EDGE_COUNT);
-  for (var next = offsets[offsetsOffset + head]; next < end; next++) {
+  for (var next = offsets[offsetsOffset + head]; next < end && slot < ARC_CAPACITY; next++) {
     ${
       fuseWeights
         ? `if (isBannedTurn(index, next)) {

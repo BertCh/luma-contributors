@@ -8,11 +8,11 @@ import {
   type GPUCommandGraphNodeCondition,
   type GPUCommandNode,
   type GraphBufferUse,
-  type GraphDataView
+  type GraphDataView,
+  type GraphVectorView
 } from '@luma.gl/graph/gpu-core';
 import {
   createFixedPointClearNode,
-  createFixedPointScaleNodes,
   FIXED_POINT_WGSL,
   FIXED_POINT_WORD_COUNT,
   getFixedPointAtomicAddWGSL,
@@ -44,6 +44,11 @@ import {
   getWindowMassWGSL
 } from './kernel-density-wgsl';
 
+import {getGraphViewChunks} from '../../analysis-core/kernels/gpu-contributor-utils';
+
+import {createDensityPointPass} from './density-point-passes';
+import {createPointDensityScaleNodes} from './point-density-kernels';
+
 const OPERATION = 'GPUKernelDensity';
 
 /** Smallest refresh interval, in cells, of the running box sums. */
@@ -57,6 +62,8 @@ const AXIS_PLAN_LENGTH = 5;
 
 /** `[valid, 1 / cellArea, x block, y block]`. */
 const PLAN_LENGTH = 2 + 2 * AXIS_PLAN_LENGTH;
+/** Runtime blur planning binds two header words and five words per axis. @internal */
+export const GPU_KERNEL_DENSITY_BINNED_PLAN_BYTE_LENGTH = PLAN_LENGTH * 4;
 const PLAN_X_BASE = 2;
 const PLAN_Y_BASE = 2 + AXIS_PLAN_LENGTH;
 
@@ -81,10 +88,10 @@ export type GPUKernelDensityBinnedProps = {
   id: string;
   /** Prepared polygon window, sharing the point-weight inclusion rule. */
   studyWindow?: GPUPolygonStudyWindowViews;
-  positions: GraphDataView<'float32x2'>;
+  positions: GraphDataView<'float32x2'> | GraphVectorView<'float32x2'>;
   parameters: GraphDataView<'float32'>;
   /** Included point weights (exclusion and `'diggle'` reweighting applied; 0 for excluded rows). */
-  pointWeights: GraphDataView<'float32'>;
+  pointWeights: GraphDataView<'float32'> | GraphVectorView<'float32'>;
   /** `bandwidthState` binding when the GPU computes the bandwidth, else empty. */
   bandwidthBindings: readonly WGSLKernelBinding[];
   /** WGSL expression of the bandwidth. */
@@ -159,7 +166,8 @@ export function getGPUKernelDensityBinnedSize(
  *    GPU word (library rule 12), so one set of pipelines serves every bandwidth.
  * 2. Fixed-point scale and clear, then `bin`: linear (cloud-in-cell) binning of each included
  *    weight onto the 4 nearest cell centers of the padded grid with the shared fixed-point
- *    accumulator (deterministic, no float CAS), and `decode` to f32.
+ *    accumulator (deterministic, no float CAS), and `decode` to f32. Position chunks dispatch
+ *    separately with a global row offset into pointWeights; scale and headroom use every row.
  * 3. Per axis, three running-sum box blurs and one two-sided exponential (forward and backward
  *    first-order recursion) pass; x then y, ping-ponging between two buffers.
  * 4. `finish`: scale by 1 / cell area, then the shared edge-correction and normalization tail.
@@ -310,38 +318,54 @@ fn writeAxisPlan(base: u32, sigma: f32, lineLength: f32) {
     })
   ];
 
+  const positionChunks = getGraphViewChunks(props.positions);
+  const pointWeightChunks = getGraphViewChunks(props.pointWeights);
+  const splitPointWeights = pointWeightChunks.length === positionChunks.length;
+  let rowStart = 0;
   const bodyNodes: GPUCommandNode<Parameters>[] = [
-    ...createFixedPointScaleNodes(graph, {
+    ...createPointDensityScaleNodes(graph, {
       id: `${id}-bin-scale`,
       operation: OPERATION,
       values: props.pointWeights,
       scale
     }),
     createFixedPointClearNode(graph, {id: `${id}-bin-clear`, operation: OPERATION, words}),
-    createWGSLKernelNode<Parameters>(graph, {
-      id: `${id}-bin`,
-      operation: OPERATION,
-      variant: 'bin',
-      bindings: [
-        ...(studyWindow ? [getStudyWindowBinding(studyWindow)] : []),
-        {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
-        {name: 'pointWeights', view: props.pointWeights, type: 'f32', access: 'read'},
-        gridBindings('params'),
-        {name: 'binScale', view: scale, type: 'u32', access: 'read'},
-        {name: 'words', view: words, type: 'atomic<u32>', access: 'read_write'}
-      ],
-      invocationCount: pointCount,
-      workgroupSize: POINT_WORKGROUP_SIZE,
-      ...getGate(GATE_SLOT.bin),
-      declarations: `override FIXED_POINT_HEADROOM_BITS: u32;
+    ...positionChunks.flatMap((positions, chunkIndex) => {
+      const start = rowStart;
+      rowStart += positions.length;
+      return positions.length === 0
+        ? []
+        : [
+            createDensityPointPass<Parameters>(graph, {
+              id: `${id}-bin${positionChunks.length === 1 ? '' : `-${chunkIndex}`}`,
+              operation: OPERATION,
+              variant: 'bin',
+              bindings: [
+                ...(studyWindow ? [getStudyWindowBinding(studyWindow)] : []),
+                {name: 'positions', view: positions, type: 'f32', access: 'read'},
+                {
+                  name: 'pointWeights',
+                  view: pointWeightChunks[splitPointWeights ? chunkIndex : 0],
+                  type: 'f32',
+                  access: 'read'
+                },
+                gridBindings('params'),
+                {name: 'binScale', view: scale, type: 'u32', access: 'read'},
+                {name: 'words', view: words, type: 'atomic<u32>', access: 'read_write'}
+              ],
+              invocationCount: positions.length,
+              workgroupSize: POINT_WORKGROUP_SIZE,
+              ...getGate(GATE_SLOT.bin),
+              runtimeConstants: {ROW_START: splitPointWeights ? 0 : start},
+              declarations: `override FIXED_POINT_HEADROOM_BITS: u32;
 ${gridConstants}
 ${FIXED_POINT_WGSL}
 ${getFixedPointAtomicAddWGSL('words')}${studyWindow ? getKernelDensityStudyWindowWGSL(studyWindow) : ''}`,
-      constants: {FIXED_POINT_HEADROOM_BITS: getFixedPointHeadroomBits(pointCount)},
-      // Linear binning splits the weight over the four cell centers around the point:
-      // (1 - fx)(1 - fy), fx (1 - fy), (1 - fx) fy, fx fy. A point within half a cell of the padded
-      // array's outer edge lacks a neighbor and is not counted (comparisons are false for NaN).
-      body: `let weight = pointWeights[pointWeightsOffset + index];
+              constants: {FIXED_POINT_HEADROOM_BITS: getFixedPointHeadroomBits(pointCount)},
+              // Linear binning splits the weight over the four cell centers around the point:
+              // (1 - fx)(1 - fy), fx (1 - fy), (1 - fx) fy, fx fy. A point within half a cell of the padded
+              // array's outer edge lacks a neighbor and is not counted (comparisons are false for NaN).
+              body: `let weight = pointWeights[pointWeightsOffset + ROW_START + index];
   if (!(weight > 0.0)) {
     return;
   }
@@ -362,6 +386,8 @@ ${getFixedPointAtomicAddWGSL('words')}${studyWindow ? getKernelDensityStudyWindo
   addFixedPointToWords(cell + 1u, quantizeFixedPoint(weight * fraction.x * (1.0 - fraction.y), unitExponent));
   addFixedPointToWords(cell + PADDED_WIDTH, quantizeFixedPoint(weight * (1.0 - fraction.x) * fraction.y, unitExponent));
   addFixedPointToWords(cell + PADDED_WIDTH + 1u, quantizeFixedPoint(weight * fraction.x * fraction.y, unitExponent));`
+            })
+          ];
     }),
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-bin-decode`,

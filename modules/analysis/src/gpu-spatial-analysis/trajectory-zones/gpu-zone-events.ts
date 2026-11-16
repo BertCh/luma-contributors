@@ -2,6 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {TRAJECTORY_MAXIMUM_CANDIDATE_CAPACITY} from '../trajectory-analysis/trajectory-counts-wgsl';
+import {
+  validateTrajectoryBindings,
+  validateTrajectoryScratch,
+  validateTrajectoryOutputRanges,
+  validateTrajectoryWritableDispatches
+} from '../trajectory-analysis/trajectory-binding-validation';
 import {
   createTransientView,
   GPUCompaction,
@@ -77,6 +84,12 @@ import {
 } from '../trajectory-analysis/trajectory-common';
 
 const OPERATION = 'GPUZoneEvents';
+// Baseline WebGPU permits eight storage bindings per pass.
+const ZONE_TABLE_MAXIMUM_STORAGE_BINDING_COUNT = 8;
+// Every table pass reads keptTotal and keptCells before its column bindings.
+const ZONE_TABLE_INDEX_BINDING_COUNT = 2;
+// Two private indices plus three read/write column pairs fit eight storage bindings.
+const ZONE_EVENT_GATHER_COLUMN_COUNT = 3;
 
 /** Values of the `eventTypes` column of {@link GPUZoneEvents}. */
 export const GPU_ZONE_EVENT_TYPE = {
@@ -159,7 +172,7 @@ export type GPUZoneVisitTableOutput = GPUCompactOutput & {
  */
 export type GPUZoneEventsStatus = GPUCandidateStatusPort & {
   /**
-   * Unclamped number of `(row, edge)` bounding-box candidates found (including one ray query per
+   * Unclamped number of `(row, edge)` bounding-box candidates found (saturated at uint32 maximum) (including one ray query per
    * track). `candidateCapacity` must be at least this for exact results, so callers can size it.
    */
   candidateCount?: GPUStatusScalar;
@@ -378,7 +391,13 @@ export class GPUZoneEvents implements GPUCommandNodeProducer {
     if (this.edgeCount < 1) {
       throw new Error(`${id} zones need at least one vertex`);
     }
-    validateCapacity(id, 'candidateCapacity', props.candidateCapacity);
+    validateCapacity(
+      id,
+      'candidateCapacity',
+      props.candidateCapacity,
+      1,
+      TRAJECTORY_MAXIMUM_CANDIDATE_CAPACITY
+    );
     validateCapacity(id, 'trackEventCapacity', props.trackEventCapacity);
     if (tracks.positions.length >= 0x80000000) {
       throw new Error(`${id} supports fewer than 2^31 rows`);
@@ -455,6 +474,44 @@ export class GPUZoneEvents implements GPUCommandNodeProducer {
     }
     this.leafCapacity = props.leafCapacity ?? getNextPowerOfTwo(this.edgeCount);
     validatePowerOfTwo(id, 'leafCapacity', this.leafCapacity);
+    validateTrajectoryOutputRanges(this.id, this.props.output);
+    validateTrajectoryWritableDispatches(id, [
+      {dwellTimes: output.dwellTimes, visitCounts: output.visitCounts},
+      {...output.status},
+      {...events.status},
+      {...visitTable?.status}
+    ]);
+    const eventColumns = [
+      events.ids,
+      events.eventZones,
+      events.eventRows,
+      events.eventTypes,
+      events.eventTimes,
+      events.eventPositions
+    ].filter(view => view !== undefined);
+    for (let first = 0; first < eventColumns.length; first += ZONE_EVENT_GATHER_COLUMN_COUNT) {
+      validateTrajectoryWritableDispatches(id, [
+        Object.fromEntries(
+          eventColumns
+            .slice(first, first + ZONE_EVENT_GATHER_COLUMN_COUNT)
+            .map((view, index) => [`eventColumn${index}`, view])
+        )
+      ]);
+    }
+    if (visitTable) {
+      for (const columns of partitionZoneTableColumns(getZoneTableColumns(visitTable, output))) {
+        validateGraphOutputsDisjointFromInputs(
+          id,
+          columns.map(column => column.destination),
+          columns.map(column => column.source)
+        );
+        validateTrajectoryWritableDispatches(id, [
+          Object.fromEntries(
+            columns.map((column, index) => [`tableColumn${index}`, column.destination])
+          )
+        ]);
+      }
+    }
     validateGraphOutputsDisjointFromInputs(
       id,
       [
@@ -490,6 +547,7 @@ export class GPUZoneEvents implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateTrajectoryBindings(graph, this.id, this.props);
     const {id, props, trackCount, edgeCount, leafCapacity} = this;
     const {tracks, zones, output} = props;
     const {events} = output;
@@ -529,6 +587,13 @@ export class GPUZoneEvents implements GPUCommandNodeProducer {
       candidateCapacity: capacity,
       maximumEventsPerTrack: props.trackEventCapacity
     };
+    validateTrajectoryScratch(graph, id, {
+      'edge bounds': edgeCount * 8,
+      'BVH nodes': (2 * leafCapacity - 1) * 8,
+      'candidate pairs': capacity * 8,
+      'track-zone cells': cellCount * 4,
+      'row scratch': rowCount * 4
+    });
     const u32 = (name: string, length: number) =>
       createTransientView(graph, `${id}-${name}`, 'uint32', Math.max(length, 1));
     const f32 = (name: string, length: number) =>
@@ -957,14 +1022,18 @@ export class GPUZoneEvents implements GPUCommandNodeProducer {
         stride: 2
       });
     }
-    for (let first = 0, part = 0; first < columns.length; first += 3, part++) {
+    for (
+      let first = 0, part = 0;
+      first < columns.length;
+      first += ZONE_EVENT_GATHER_COLUMN_COUNT, part++
+    ) {
       nodes.push(
         createZoneGatherNode<Parameters>(graph, {
           id: `${id}-gather-${part}`,
           capacity: events.ids.length,
           keptTotal,
           keptRows,
-          columns: columns.slice(first, first + 3)
+          columns: columns.slice(first, first + ZONE_EVENT_GATHER_COLUMN_COUNT)
         })
       );
     }
@@ -1046,55 +1115,19 @@ export class GPUZoneEvents implements GPUCommandNodeProducer {
         count: keptTotal
       }).getCommandNodes(graph)
     ];
-    const columns: ZoneTableColumn[] = [{kind: 'track', destination: table.ids}];
-    if (table.zones) {
-      columns.push({kind: 'zone', destination: table.zones});
+    const groups = partitionZoneTableColumns(getZoneTableColumns(table, cells));
+    for (const [part, columns] of groups.entries()) {
+      nodes.push(
+        createZoneTableGatherNode<Parameters>(graph, {
+          id: `${id}-table-gather-${part}`,
+          capacity,
+          zoneCount: this.zoneCount,
+          keptTotal,
+          keptCells,
+          columns
+        })
+      );
     }
-    if (table.visits) {
-      columns.push({kind: 'value', source: cells.visitCounts, destination: table.visits});
-    }
-    if (table.dwellTimes) {
-      columns.push({kind: 'value', source: cells.dwellTimes, destination: table.dwellTimes});
-    }
-    if (table.firstEnterTimes && cells.firstEnterTimes) {
-      columns.push({
-        kind: 'value',
-        source: cells.firstEnterTimes,
-        destination: table.firstEnterTimes
-      });
-    }
-    if (table.lastExitTimes && cells.lastExitTimes) {
-      columns.push({kind: 'value', source: cells.lastExitTimes, destination: table.lastExitTimes});
-    }
-    // Pack columns into kernels of at most 8 storage bindings (keptTotal and keptCells use 2).
-    let chunk: ZoneTableColumn[] = [];
-    let bindingCount = 2;
-    let part = 0;
-    const flush = () => {
-      if (chunk.length > 0) {
-        nodes.push(
-          createZoneTableGatherNode<Parameters>(graph, {
-            id: `${id}-table-gather-${part++}`,
-            capacity,
-            zoneCount: this.zoneCount,
-            keptTotal,
-            keptCells,
-            columns: chunk
-          })
-        );
-        chunk = [];
-        bindingCount = 2;
-      }
-    };
-    for (const column of columns) {
-      const columnBindings = getZoneTableColumnBindingCount(column);
-      if (bindingCount + columnBindings > 8) {
-        flush();
-      }
-      chunk.push(column);
-      bindingCount += columnBindings;
-    }
-    flush();
     nodes.push(
       createPublishNode<Parameters>(graph, {
         id: `${id}-table-publish`,
@@ -1108,3 +1141,48 @@ export class GPUZoneEvents implements GPUCommandNodeProducer {
 }
 
 /** Bits needed to sort keys in `[0, maximumKey]`. */
+
+/** Uses the same columns and binding groups for construction validation and dispatch. */
+function getZoneTableColumns(
+  table: GPUZoneVisitTableOutput,
+  cells: {
+    visitCounts?: GraphDataView<'uint32'>;
+    dwellTimes?: GraphDataView<'float32'>;
+    firstEnterTimes?: GraphDataView<'float32'>;
+    lastExitTimes?: GraphDataView<'float32'>;
+  }
+): ZoneTableColumn[] {
+  const columns: ZoneTableColumn[] = [{kind: 'track', destination: table.ids}];
+  if (table.zones) columns.push({kind: 'zone', destination: table.zones});
+  if (table.visits)
+    columns.push({kind: 'value', source: cells.visitCounts, destination: table.visits});
+  if (table.dwellTimes)
+    columns.push({kind: 'value', source: cells.dwellTimes, destination: table.dwellTimes});
+  if (table.firstEnterTimes)
+    columns.push({
+      kind: 'value',
+      source: cells.firstEnterTimes,
+      destination: table.firstEnterTimes
+    });
+  if (table.lastExitTimes)
+    columns.push({kind: 'value', source: cells.lastExitTimes, destination: table.lastExitTimes});
+  return columns;
+}
+
+function partitionZoneTableColumns(columns: readonly ZoneTableColumn[]): ZoneTableColumn[][] {
+  const groups: ZoneTableColumn[][] = [];
+  let group: ZoneTableColumn[] = [];
+  let bindingCount = ZONE_TABLE_INDEX_BINDING_COUNT;
+  for (const column of columns) {
+    const columnBindings = getZoneTableColumnBindingCount(column);
+    if (bindingCount + columnBindings > ZONE_TABLE_MAXIMUM_STORAGE_BINDING_COUNT) {
+      groups.push(group);
+      group = [];
+      bindingCount = ZONE_TABLE_INDEX_BINDING_COUNT;
+    }
+    group.push(column);
+    bindingCount += columnBindings;
+  }
+  if (group.length) groups.push(group);
+  return groups;
+}

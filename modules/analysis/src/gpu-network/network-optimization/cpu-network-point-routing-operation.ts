@@ -29,15 +29,20 @@ export type CPUNetworkPointRoutingResult = {
 
 /**
  * Routes between positions on directed edges. Turn order resolves equal-cost discoveries, with
- * strict improvements only, exactly as in the contributor. Same-edge forward travel competes
+ * strict improvements only, as in the contributor's explicit `mode: 'reference'` route. Same-edge forward travel competes
  * with legal returns, including when the target fraction precedes the source fraction.
  *
  * What differs from the GPU contributor:
+ * - The default GPU mode is scalable CSR: full-edge predecessors use reachability's smallest-parent,
+ *   acyclic plateau rule and terminal partial-edge ties use the smallest cycle-safe parent.
+ *   The CPU retains turn-order ties for either mode; pass `mode: 'reference'` to the GPU operation
+ *   when comparing those ties. The CPU accepts mode for interchangeability without changing its route.
  * - Float64 turn relaxation and partial-edge arithmetic precede one float32 output rounding;
  *   near ties, subnormals and paths overflowing float32 may produce different costs or parents.
  * - A full-edge sum overflowing float32 does not trigger the GPU's status-1 early return. The
  *   CPU continues in float64 and can publish a finite partial-target cost with status 0 and
- *   predecessors where the GPU leaves Infinity, status 1 and its partially written predecessors.
+ *   predecessors where the GPU leaves Infinity and status 1. Scalable mode clears invalid-query
+ *   predecessors; reference mode can retain partially written predecessors.
  * - Relaxation continues to a fixpoint. GPU edge/turn/private-array and maximumRelaxations caps
  *   are dropped; status 2 (iteration exhaustion) is never set. Invalid data still sets status 1.
  * - Invalid edge IDs, fractions, costs and turn endpoints retain the GPU's per-query status result;
@@ -114,7 +119,7 @@ export function computeNetworkPointRoutingOnCPU(
   return {costs, status, predecessorEdges};
 }
 
-/** CPU twin; turn order is retained while GPU private-array and relaxation budgets are dropped. */
+/** CPU twin; both modes retain turn-order ties and ignore GPU storage/iteration budgets. */
 export class CPUNetworkPointRoutingOperation extends GPUCPUOperation {
   constructor(props: NetworkPointRoutingOperationProps) {
     const id = props.id ?? 'network-point-routing';

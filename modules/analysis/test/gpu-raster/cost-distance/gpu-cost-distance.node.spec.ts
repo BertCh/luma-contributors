@@ -239,7 +239,7 @@ it('GPUCostDistance validates props', () => {
       sources: graph.createDataView(shared, {format: 'uint32', length: 3}),
       output: {costs: graph.createDataView(shared, {format: 'float32', length: CELLS})}
     })
-  ).toThrow(/must not share buffers/);
+  ).toThrow(/logical byte ranges must not overlap/);
   // Latitude-dependent cell sizes need an axis-aligned grid.
   expect(() =>
     create({cellSizeMode: 'geographic', grid: {...GRID, affine: [1, 0.5, 0, 0, -1, 0]}})

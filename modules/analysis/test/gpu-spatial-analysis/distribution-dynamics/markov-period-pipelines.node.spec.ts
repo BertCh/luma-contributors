@@ -11,8 +11,10 @@ import {
 import {GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH} from '../../../src/gpu-spatial-analysis/spatial-autocorrelation/spatial-autocorrelation-parameters';
 import {
   createNullWebGPUDevice,
+  getGPUCommandNodeKernelSources,
   getGPUCommandNodePipelineKeys
 } from '../../utils/gpu-contributor-test-utils';
+import {expectValidShaderIdentifiers} from '../../gpu-dataframe/calendar-buckets/chunk-shader-validation.test-utils';
 
 // Rule 12: the period loop must not reach the shader text, overrides or binding offsets. Period
 // transients use a 64-element-aligned stride, so every period view has the same offset residue
@@ -20,8 +22,10 @@ import {
 // before the fix (period sub-views at `period * rows`):
 //   GPULISAMarkov    rows 37 and 100: 22 / 27 / 37; rows 64 (already aligned): 12 / 12 / 12
 //   GPUSpatialMarkov rows 37 and 100: 20 / 21 / 23; rows 64 (already aligned): 18 / 18 / 18
-// With load-balanced lag and a separate weight reduction: LISA 13 and spatial 23 pipelines
-// at every period count and row count. Splitting weight sums avoids doubling the binding size.
+// The current shared kernels use LISA 14 and spatial 18 pipelines at every tested period and row
+// count. Local Moran now separates classification from its neighbor pass to fit eight storage
+// bindings (row-state and integer-count buffers are included). Chunked classification uses runtime
+// view offsets instead of pipeline specializations.
 
 const ROW_COUNTS = [37, 64, 100] as const;
 
@@ -49,6 +53,29 @@ function countLisaPipelines(rows: number, periods: number): number {
       rowTotals: view('uint32', 5)
     }
   }).getCommandNodes(graph);
+  const periodNodes = nodes.filter(node => /-moran-\d+-/.test(node.id));
+  const variants = [...new Set(periodNodes.map(node => node.workload?.variant))];
+  expect(variants.sort()).toEqual([
+    'center',
+    // Ungated quadrant classification fuses into the local-Moran pass when its bindings fit.
+    'local-moran-classify',
+    'moments-blocks',
+    'moments-correct',
+    'moments-deviations',
+    'moments-mean',
+    'moments-variance',
+    'row-states'
+  ]);
+  for (const variant of variants) {
+    const dispatches = periodNodes.filter(node => node.workload?.variant === variant);
+    expect(dispatches).toHaveLength(periods);
+    expect(getGPUCommandNodePipelineKeys(dispatches).size, variant).toBe(1);
+    expect(
+      new Set(getGPUCommandNodeKernelSources(dispatches).map(kernel => kernel.source)).size,
+      variant
+    ).toBe(1);
+  }
+  expectValidShaderIdentifiers(getGPUCommandNodeKernelSources(nodes).map(kernel => kernel.source));
   const count = getGPUCommandNodePipelineKeys(nodes).size;
   device.destroy();
   return count;
@@ -75,6 +102,12 @@ function countSpatialPipelines(rows: number, periods: number): number {
       lagClassCount: view('uint32', 1)
     }
   }).getCommandNodes(graph);
+  const assignment = nodes.filter(node => node.workload?.operation === 'GPUClassAssignment');
+  expect(assignment).toHaveLength(1);
+  expect(getGPUCommandNodePipelineKeys(assignment).size).toBe(1);
+  expectValidShaderIdentifiers(
+    getGPUCommandNodeKernelSources(assignment).map(kernel => kernel.source)
+  );
   const count = getGPUCommandNodePipelineKeys(nodes).size;
   device.destroy();
   return count;
@@ -90,8 +123,7 @@ for (const rows of ROW_COUNTS) {
 
   it(`GPUSpatialMarkov pipeline count is independent of the period count (rows ${rows})`, () => {
     const base = countSpatialPipelines(rows, 3);
-    // Separate lag and weight reductions share the scalar fixup and add one normalize kernel.
-    expect(base).toBe(23);
+    expect(base).toBe(18);
     expect(countSpatialPipelines(rows, 4)).toBe(base);
     expect(countSpatialPipelines(rows, 6)).toBe(base);
   });

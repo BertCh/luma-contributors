@@ -775,8 +775,13 @@ export function createRasterTiledRelaxationNodes<Parameters>(
     relaxation: RasterTiledRelaxation<Parameters>;
     /** Working values, bound as `atomic<u32>` float bits and updated in place. */
     values: GraphDataView<'float32'>;
-    /** Per-cell 1-based round of the last decrease, or 0; unsupported with continuation. */
+    /** Per-cell 1-based cumulative round of the last decrease, or 0; retained on resume. */
     settledAt?: GraphDataView<'uint32'>;
+    /** Optional per-cell restart dispatch, shared with the consumer's initialization gate. */
+    settledAtResetGate?: {
+      condition: GPUCommandGraphNodeCondition<Parameters>;
+      extraResources: GraphBufferUse[];
+    };
     /** Per-cell auxiliary input such as friction or elevation; NaN excludes a cell. */
     auxiliary: GraphDataView<'float32'>;
     /** Settings starting with the shared grid prefix. */
@@ -812,9 +817,6 @@ export function createRasterTiledRelaxationNodes<Parameters>(
   const {relaxation} = props;
   const {state} = relaxation;
   if (props.settledAt) {
-    if (props.continuation || relaxation.continuation) {
-      throw new Error(`${props.id} settledAt is not supported with continuation`);
-    }
     validateSinglePackedView(props.settledAt, ['uint32'], `${props.id} settledAt`);
     if (props.settledAt.length !== props.width * props.height) {
       throw new Error(`${props.id} settledAt must contain one value per cell`);
@@ -1009,9 +1011,19 @@ fn relaxTile(tileIndex: u32, localInvocationIndex: u32) {
         id: `${props.id}-settled-at-reset`,
         operation: props.operation,
         variant: 'settled-at-reset',
-        bindings: settledAtBindings,
+        bindings: [
+          ...settledAtBindings,
+          ...(continued && !props.settledAtResetGate
+            ? [{name: 'status', view: state.status, type: 'u32' as const, access: 'read' as const}]
+            : [])
+        ],
         invocationCount: props.width * props.height,
-        body: 'settledAt[settledAtOffset + index] = 0u;'
+        // The reset/arm node has already reset the cumulative count on a new run. Resumed
+        // runs retain it, including when a prerequisite or retainConverged skips this stage.
+        body: `${continued && !props.settledAtResetGate ? 'if (status[statusOffset + 2u] != 0u) { return; }' : ''}
+settledAt[settledAtOffset + index] = 0u;`,
+        condition: props.settledAtResetGate?.condition,
+        extraResources: props.settledAtResetGate?.extraResources
       })
     );
   }

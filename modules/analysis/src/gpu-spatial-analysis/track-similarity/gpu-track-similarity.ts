@@ -3,6 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  validateTrajectoryBindings,
+  validateTrajectoryScratch,
+  validateTrajectoryOutputRanges
+} from '../trajectory-analysis/trajectory-binding-validation';
+import {
   resolveGPUSpatialContext,
   GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
   getGPUGreatCircleRadius
@@ -61,6 +66,8 @@ export const GPU_TRACK_SIMILARITY_MAXIMUM_PAIR_COUNT = Math.floor(0xffffffff / F
 /** Workgroup memory holds one f32 per vertex of the shorter Frechet track (8 KiB at the maximum). */
 const MAXIMUM_FRECHET_VERTEX_COUNT = 2048;
 const MAXIMUM_DENSIFY_SUBDIVISIONS = 4096;
+// A densified vertex count is addressed by uint32 in every metric kernel.
+const MAXIMUM_DENSIFIED_VERTEX_COUNT = 0xffffffff;
 /** Largest `dynamicTimeWarpingBandRadius`, so band sums of densified indices stay in 32 bits. */
 const MAXIMUM_BAND_RADIUS = 2 ** 30;
 
@@ -144,7 +151,7 @@ export const GPU_TRACK_SIMILARITY_STATUS = {
    * track is not limited.
    */
   frechetCapExceeded: 2,
-  /** The pair index is out of range or at or beyond `activePairCount`. All distances are NaN. */
+  /** The pair index or track range is invalid, at or beyond `activePairCount`, or its densified vertex count exceeds uint32. All distances are NaN. */
   invalidPair: 4
 } as const;
 
@@ -472,6 +479,22 @@ export class GPUTrackSimilarity implements GPUCommandNodeProducer {
       1,
       MAXIMUM_FRECHET_VERTEX_COUNT
     );
+    validateTrajectoryOutputRanges(this.id, this.props.output);
+    validateGraphOutputsDisjointFromInputs(
+      id,
+      [
+        output.hausdorff,
+        output.frechet,
+        output.frechetWithin,
+        output.dynamicTimeWarping,
+        output.editDistanceOnRealSequence,
+        output.editDistanceWithRealPenalty,
+        output.symmetricSegmentPathDistance,
+        output.longestCommonSubsequence,
+        output.maximumDistance
+      ],
+      [output.pairStatus]
+    );
     validateGraphOutputsDisjointFromInputs(
       id,
       [
@@ -503,6 +526,7 @@ export class GPUTrackSimilarity implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateTrajectoryBindings(graph, this.id, this.props);
     const {id, props} = this;
     const {linesA, linesB, output} = props;
     validateGraphViewsBelongToGraph(id, graph, [
@@ -528,12 +552,17 @@ export class GPUTrackSimilarity implements GPUCommandNodeProducer {
     const positionsB = linesB?.positions ?? linesA.positions;
     const offsetsB = linesB?.lineOffsets ?? linesA.lineOffsets;
     const pairCount = props.pairA.length;
+    validateTrajectoryScratch(graph, id, {
+      'pair status': pairCount * 4,
+      ...(output.frechetWithin ? {'decision pair ranges': pairCount * 16} : {})
+    });
     const nodes: GPUCommandNode<Parameters>[] = [];
     const constants = `const PAIR_COUNT: u32 = ${pairCount}u;
 const TRACK_COUNT_A: u32 = ${linesA.lineOffsets.length - 1}u;
 const TRACK_COUNT_B: u32 = ${offsetsB.length - 1}u;
 const FRECHET_CAP: u32 = ${this.maximumFrechetVertexCount}u;
 const DENSIFY: u32 = ${this.densifySubdivisions}u;
+const MAXIMUM_DENSIFIED_VERTICES: u32 = ${MAXIMUM_DENSIFIED_VERTEX_COUNT}u;
 const STATUS_EMPTY: u32 = ${GPU_TRACK_SIMILARITY_STATUS.emptyTrack}u;
 const STATUS_TOO_LONG: u32 = ${GPU_TRACK_SIMILARITY_STATUS.frechetCapExceeded}u;
 const STATUS_INVALID: u32 = ${GPU_TRACK_SIMILARITY_STATUS.invalidPair}u;`;
@@ -571,10 +600,22 @@ const STATUS_INVALID: u32 = ${GPU_TRACK_SIMILARITY_STATUS.invalidPair}u;`;
   if (a >= TRACK_COUNT_A || b >= TRACK_COUNT_B) {
     flags = STATUS_INVALID;
   } else if (flags == 0u) {
-    let countA = offsetsA[offsetsAOffset + a + 1u] - offsetsA[offsetsAOffset + a];
-    let countB = offsetsB[offsetsBOffset + b + 1u] - offsetsB[offsetsBOffset + b];
-    if (countA == 0u || countB == 0u) { flags = STATUS_EMPTY; }
-    else if (min((countA - 1u) * DENSIFY, (countB - 1u) * DENSIFY) + 1u > FRECHET_CAP) { flags = STATUS_TOO_LONG; }
+    let startA = offsetsA[offsetsAOffset + a];
+    let endA = offsetsA[offsetsAOffset + a + 1u];
+    let startB = offsetsB[offsetsBOffset + b];
+    let endB = offsetsB[offsetsBOffset + b + 1u];
+    let countA = endA - min(startA, endA);
+    let countB = endB - min(startB, endB);
+    if (startA > endA || startB > endB || endA > ${linesA.positions.length}u || endB > ${positionsB.length}u) {
+      flags = STATUS_INVALID;
+    } else if (countA == 0u || countB == 0u) {
+      flags = STATUS_EMPTY;
+    } else if (max(countA - 1u, countB - 1u) > (MAXIMUM_DENSIFIED_VERTICES - 1u) / DENSIFY) {
+      // A densified vertex count must fit uint32 before any distance kernel uses it.
+      flags = STATUS_INVALID;
+    } else if (min(countA - 1u, countB - 1u) > (FRECHET_CAP - 1u) / DENSIFY) {
+      flags = STATUS_TOO_LONG;
+    }
   }
   status[statusOffset + index] = flags;`
       })

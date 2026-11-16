@@ -2,11 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRasterStorageBindings} from './raster-grid/raster-storage-preflight';
 import {
   getGraphOutputViews,
   validateCapacity,
   validateMaximumCount,
-  validateRequirement
+  validateRequirement,
+  getGraphOutputViews as getRasterPreflightOutputViews
 } from '../analysis-core/kernels/gpu-contributor-utils';
 import {validateGPUStatusPort} from '../analysis-core/contracts/status';
 import {
@@ -153,6 +155,28 @@ export class GPURasterWatershedSegmentation implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    const storageProps = this.props;
+    const storageCellCount = storageProps.grid.width * storageProps.grid.height;
+    validateRasterStorageBindings(
+      graph,
+      this.id,
+      [
+        ...getRasterBandViews(storageProps.input),
+        storageProps.markers,
+        ...getRasterPreflightOutputViews(storageProps.output)
+      ],
+      {
+        'canonical band and forest planes': storageCellCount * 4,
+        'forest gate': storageProps.method === 'minimum-spanning-forest' ? 12 : 0,
+        'fifo queue':
+          storageProps.method !== 'minimum-spanning-forest' &&
+          Math.ceil(storageCellCount / 4) * 16 + Math.ceil((storageCellCount * 3) / 4) * 16 >
+            graph.device.limits.maxComputeWorkgroupStorageSize
+            ? storageCellCount * 12
+            : 0
+      }
+    );
+
     const {id, props} = this;
     const {grid, output} = props;
     const count = grid.width * grid.height;

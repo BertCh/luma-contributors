@@ -292,7 +292,13 @@ it('statistics coverage kernels parse and preserve default storage binding limit
     }).getCommandNodes(graph)
   );
   for (const source of getGPUCommandNodeKernelSources(nodes)) {
-    expect(new WgslReflect(source.source).storage.length).toBeLessThanOrEqual(8);
+    let reflection: WgslReflect;
+    try {
+      reflection = new WgslReflect(source.source);
+    } catch (error) {
+      throw new Error(`${source.id}: ${String(error)}`);
+    }
+    expect(reflection.storage.length, source.id).toBeLessThanOrEqual(8);
     expect(auditWGSLModule(source.source, source.constants)).toEqual([]);
   }
   device.destroy();

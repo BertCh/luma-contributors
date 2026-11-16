@@ -9,10 +9,8 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
-import {
-  createWGSLKernelNode,
-  getWGSLFloatLiteral
-} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {type WGSLKernelBinding} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {createStatisticsKernelNode as createWGSLKernelNode} from '../spatial-weights/statistics-kernel-node';
 import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
@@ -40,6 +38,20 @@ fn getEnvironmentTotal(unit: u32) -> f32 {
 fn getScaleIndex() -> u32 {
   return u32(environment[environmentOffset + ENVIRONMENT_SCALE]);
 }`;
+
+import {validateSpatialStatisticsBindings} from '../spatial-weights/spatial-statistics-bindings';
+import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {createSpatialStatisticsParameterNodes} from '../../analysis-core/kernels/spatial-statistics-parameter-nodes';
+import {validateCommandNodeBudget} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  getGPUSegregationParameterValues,
+  GPU_SEGREGATION_PARAMETER_LENGTH
+} from './segregation-parameters';
+
+/** Fixed totals/cursor/finalize nodes plus conservative per-scale reductions and optional local outputs. */
+const SEGREGATION_FIXED_NODE_ALLOWANCE = 16;
+/** Each scale emits at most twelve environment, reduction and local-output kernels. */
+const SEGREGATION_NODES_PER_SCALE = 12;
 
 const OPERATION = 'GPUSegregation';
 /** Lanes of the reduction workgroups (one workgroup per block of units, or per output column). */
@@ -84,10 +96,13 @@ export type GPUSegregationOutput = {
  *
  * Compile-time: the unit count (`groupCounts.length / groupCount`), `groupCount`, the scales
  * (their number and weights structure), `selfWeight`, `atkinsonInequalityAversion` and which
- * optional outputs exist. Per-frame: the contents of
+ * optional outputs exist. Numeric selfWeight and Atkinson settings are uploaded defaults; a parameters
+ * view changes them per-frame. Per-frame: the contents of
  * `groupCounts` and of every weights view.
  */
 export type GPUSegregationProps = {
+  /** Per-frame [selfWeight, atkinsonInequalityAversion]; numeric props supply uploaded defaults. */
+  parameters?: GraphDataView<'float32'>;
   /** Prefix for generated node and transient IDs. Defaults to `'segregation'`. */
   id?: string;
   /** Number of population groups `K`, in `[2, GPU_SEGREGATION_MAXIMUM_GROUPS]`. */
@@ -196,11 +211,25 @@ export class GPUSegregation implements GPUCommandNodeProducer {
   readonly scaleCount: number;
   /** Number of units, `groupCounts.length / groupCount`. */
   readonly unitCount: number;
+  readonly parameterValues: Float32Array;
+  readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPUSegregationProps) {
     const id = props.id ?? 'segregation';
     this.id = id;
     this.props = props;
+    this.parameterValues = getGPUSegregationParameterValues(props, id);
+    if (props.parameters) {
+      validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
+      validateCapacity(
+        id,
+        'parameters length',
+        props.parameters.length,
+        GPU_SEGREGATION_PARAMETER_LENGTH,
+        GPU_SEGREGATION_PARAMETER_LENGTH
+      );
+    }
+
     const {groupCount} = props;
     validateCapacity(id, 'groupCount', groupCount, 2, GPU_SEGREGATION_MAXIMUM_GROUPS);
     const scales = props.scales ?? [null];
@@ -208,6 +237,9 @@ export class GPUSegregation implements GPUCommandNodeProducer {
       throw new Error(`${id} scales must not be empty`);
     }
     this.scaleCount = scales.length;
+    this.estimatedCommandNodeCount =
+      SEGREGATION_FIXED_NODE_ALLOWANCE + SEGREGATION_NODES_PER_SCALE * scales.length;
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     validateSinglePackedView(props.groupCounts, ['float32'], `${id} groupCounts`);
     const unitCount = props.groupCounts.length / groupCount;
     if (!Number.isInteger(unitCount) || unitCount < 1) {
@@ -256,10 +288,11 @@ export class GPUSegregation implements GPUCommandNodeProducer {
       }
     }
     validateGraphOutputsDisjointFromInputs(id, this.getOutputViews(), this.getInputViews());
+    validateDisjointWritableViews(id, props.output);
   }
 
   private getInputViews(): (GraphDataView | undefined)[] {
-    const views: (GraphDataView | undefined)[] = [this.props.groupCounts];
+    const views: (GraphDataView | undefined)[] = [this.props.groupCounts, this.props.parameters];
     for (const weights of this.props.scales ?? []) {
       if (weights) {
         views.push(weights.offsets, weights.neighbors, weights.weights);
@@ -284,6 +317,14 @@ export class GPUSegregation implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, unitCount} = this;
+    const terms = 2 + 2 * props.groupCount + props.groupCount * props.groupCount;
+    validateSpatialStatisticsBindings(graph, id, props, {
+      'environment table': (unitCount * (props.groupCount + 1) + 1) * 4,
+      'term partials': terms * Math.ceil(unitCount / LANES) * 4,
+      'scale sums': this.scaleCount * terms * 4,
+      'scale totals': this.scaleCount * (props.groupCount + 1) * 4
+    });
+
     validateGraphViewsBelongToGraph(id, graph, [...this.getInputViews(), ...this.getOutputViews()]);
     const {groupCount: K, groupCounts, output} = props;
     const {indices} = output;
@@ -294,18 +335,29 @@ export class GPUSegregation implements GPUCommandNodeProducer {
       theil: output.localTheil
     };
     const scales = props.scales ?? [null];
-    const selfWeight = props.selfWeight ?? 1;
-    const b = props.atkinsonInequalityAversion ?? 0.5;
     const layout = getGPUSegregationLayout(K);
     const termCount = 2 + 2 * K + K * K;
-    const nodes: GPUCommandNode<Parameters>[] = [];
+    const runtime = createSpatialStatisticsParameterNodes(
+      graph,
+      `${id}-parameters`,
+      props.parameters ?? this.parameterValues
+    );
+    const parameterBinding: WGSLKernelBinding = {
+      name: 'parameters',
+      view: runtime.parameters,
+      type: 'f32',
+      access: 'read'
+    };
+    const parameterBody =
+      'SELF_WEIGHT = parameters[parametersOffset]; ATKINSON_B = parameters[parametersOffset + 1u];';
+    const nodes: GPUCommandNode<Parameters>[] = [...runtime.nodes];
 
     const declarations = `${GET_NAN_WGSL}
 const UNITS: u32 = ${unitCount}u;
 const K: u32 = ${K}u;
 const TERM_COUNT: u32 = ${termCount}u;
-const ATKINSON_B: f32 = ${getWGSLFloatLiteral(b)};
-const SELF_WEIGHT: f32 = ${getWGSLFloatLiteral(selfWeight)};
+var<private> ATKINSON_B: f32;
+var<private> SELF_WEIGHT: f32;
 fn countAt(unit: u32, group: u32) -> f32 {
   let value = groupCounts[groupCountsOffset + unit * K + group];
   // Negative, NaN and infinite counts are 0.
@@ -564,6 +616,7 @@ fn getDiversity() -> f32 {
           operation: OPERATION,
           variant: weights ? 'environment' : 'environment-aspatial',
           bindings: [
+            parameterBinding,
             {name: 'groupCounts', view: groupCounts, type: 'f32', access: 'read'},
             ...(weights
               ? [
@@ -600,7 +653,8 @@ const ROWS: u32 = ${unitCount}u;
 const CAPACITY: u32 = 0xffffffffu;`
             : declarations,
           // Only invocation 0 touches the cursor. The scale index is small, so f32 holds it exactly.
-          body: `if (index == 0u) {
+          body: `${parameterBody}
+  if (index == 0u) {
     let scale = scaleCursor[scaleCursorOffset] + 1u;
     scaleCursor[scaleCursorOffset] = scale;
     environment[environmentOffset + UNITS * K + UNITS] = f32(scale);
@@ -631,6 +685,7 @@ const CAPACITY: u32 = 0xffffffffu;`
           operation: OPERATION,
           variant: 'terms',
           bindings: [
+            parameterBinding,
             {name: 'groupCounts', view: counts, type: 'f32', access: 'read'},
             {name: 'environment', view: environment, type: 'f32', access: 'read'},
             {name: 'totals', view: scaleTotals, type: 'f32', access: 'read'},
@@ -640,7 +695,8 @@ const CAPACITY: u32 = 0xffffffffu;`
           workgroupSize: LANES,
           guardIndex: false,
           declarations: reductionDeclarations(termCount, environmentDeclarations),
-          body: `let lane = localInvocationIndex;
+          body: `${parameterBody}
+  let lane = localInvocationIndex;
   let group = (index - lane) / LANES;
   // A unit whose environment is empty has no composition: it contributes nothing to any sum.
   if (index < UNITS && getEnvironmentTotal(index) > 0.0) {
@@ -741,6 +797,7 @@ const CAPACITY: u32 = 0xffffffffu;`
         operation: OPERATION,
         variant: 'finalize',
         bindings: [
+          parameterBinding,
           {name: 'allTotals', view: allTotals, type: 'f32', access: 'read'},
           {name: 'allSums', view: allSums, type: 'f32', access: 'read'},
           {name: 'indices', view: indices, type: 'f32', access: 'read_write'}
@@ -750,11 +807,12 @@ const CAPACITY: u32 = 0xffffffffu;`
 const K: u32 = ${K}u;
 const TERM_COUNT: u32 = ${termCount}u;
 const STRIDE: u32 = ${layout.stride}u;
-const ATKINSON_B: f32 = ${getWGSLFloatLiteral(b)};
+var<private> ATKINSON_B: f32;
 fn entropyTerm(share: f32) -> f32 {
   return select(0.0, -share * log(share), share > 0.0);
 }`,
-        body: `let populationTotal = allTotals[allTotalsOffset + index * (K + 1u) + K];
+        body: `ATKINSON_B = parameters[parametersOffset + 1u];
+  let populationTotal = allTotals[allTotalsOffset + index * (K + 1u) + K];
   let sums = index * TERM_COUNT;
   let base = index * STRIDE;
   var diversity = 0.0;

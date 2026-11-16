@@ -146,12 +146,12 @@ it('validates all named construction limits and the method/reference relationshi
                 : props.output.values
           }
         })
-    ).toThrow(/share buffers/);
+    ).toThrow(/logical byte ranges must not overlap/);
   });
 });
 
-it('rejects oversized images, virtual reflection padding and histogram tables at construction', () => {
-  withProps((props, {view}) => {
+it('accepts integer-count images beyond 2^24 and defers actual binding limits to preflight', () => {
+  withProps((props, {view, graph}) => {
     const makeProps = (width: number, height: number): GPURasterContrastEqualizationProps => {
       const grid = makeGPURasterMetadata({width, height});
       return {
@@ -165,16 +165,19 @@ it('rejects oversized images, virtual reflection padding and histogram tables at
         }
       };
     };
-    expect(() => new GPURasterContrastEqualization(makeProps(4097, 4096))).toThrow(
-      /grid cell count.*16777216/
-    );
+    const large = new GPURasterContrastEqualization(makeProps(4097, 4096));
+    expect(() => large.getCommandNodes(graph)).not.toThrow();
     expect(
       () => new GPURasterContrastEqualization({...makeProps(4095, 4096), tileWidth: 255})
-    ).toThrow(/reflected tile cell count.*16777216/);
-    expect(
-      () =>
-        new GPURasterContrastEqualization({...makeProps(4096, 4096), tileWidth: 8, tileHeight: 8})
-    ).toThrow(/histogramLength.*16777216/);
+    ).not.toThrow();
+    const largeHistogram = new GPURasterContrastEqualization({
+      ...makeProps(4096, 4096),
+      tileWidth: 8,
+      tileHeight: 8
+    });
+    expect(() => largeHistogram.getCommandNodes(graph)).toThrow(
+      /histogramLength scratch.*268435456/
+    );
   });
 });
 

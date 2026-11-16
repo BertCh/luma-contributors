@@ -14,15 +14,23 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validateSinglePackedView
+  validateSinglePackedView,
+  validateMaximumCount,
+  getGraphOutputViews,
+  validateGPUStorageBindingByteLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   GPUTransitionDiagnostics,
   type GPUTransitionDiagnosticsOutput
 } from './gpu-transition-diagnostics';
 
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+
 const OPERATION = 'GPUTransitionMatrix';
-const MAXIMUM_CLASS_COUNT = 64;
+/** The dense K-by-K cell index must fit uint32; actual bindings are checked on the device. */
+export const GPU_TRANSITION_MATRIX_MAXIMUM_CLASS_COUNT = 65535;
+/** Atomic cell counts, ignored totals and normalized row totals cannot exceed uint32. */
+const TRANSITION_MATRIX_MAXIMUM_COUNT = 0xffffffff;
 /** Largest cell count (plus one ignored slot) kept in a workgroup-private histogram, in words (8 KiB). */
 const MAXIMUM_PRIVATE_CELLS = 2048;
 /** Transitions counted per invocation of the privatised kernel, to amortise the tile flush. */
@@ -69,7 +77,7 @@ export type GPUTransitionMatrixProps = {
   classes: GraphDataView<'uint32'>;
   /** Number of periods, at least `periodLag + 1`. */
   periodCount: number;
-  /** Number of classes `K`, 1 to 64. */
+  /** Number of classes `K`, 1 to 65,535 (dense count bindings must fit the device; diagnostics retain 64). */
   classCount: number;
   /** Periods between the two ends of a transition. Defaults to 1. */
   periodLag?: number;
@@ -134,7 +142,7 @@ export class GPUTransitionMatrix implements GPUCommandNodeProducer {
     const {periodCount, classCount, output} = props;
     validateCapacity(id, 'periodLag', this.periodLag);
     validateCapacity(id, 'periodCount', periodCount, this.periodLag + 1);
-    validateCapacity(id, 'classCount', classCount, 1, MAXIMUM_CLASS_COUNT);
+    validateCapacity(id, 'classCount', classCount, 1, GPU_TRANSITION_MATRIX_MAXIMUM_CLASS_COUNT);
     validateCapacity(id, 'conditionCount', this.conditionCount);
     if (!props.conditionClasses && this.conditionCount !== 1) {
       throw new Error(`${id} conditionCount needs conditionClasses`);
@@ -158,6 +166,25 @@ export class GPUTransitionMatrix implements GPUCommandNodeProducer {
       }
     }
     const cellCount = this.conditionCount * classCount * classCount;
+    validateMaximumCount(
+      id,
+      'conditionCount * classCount * classCount',
+      cellCount,
+      TRANSITION_MATRIX_MAXIMUM_COUNT
+    );
+    // Any count, ignored count or normalized row total is bounded by the total transitions.
+    validateMaximumCount(
+      id,
+      'rowCount * (periodCount - periodLag)',
+      rows * (periodCount - this.periodLag),
+      TRANSITION_MATRIX_MAXIMUM_COUNT
+    );
+    validateMaximumCount(
+      id,
+      'classes.length',
+      props.classes.length,
+      TRANSITION_MATRIX_MAXIMUM_COUNT
+    );
     validatePackedUint32View(output.counts, `${id} output.counts`);
     if (output.counts.length < cellCount) {
       throw new Error(`${id} output.counts is too short`);
@@ -252,6 +279,24 @@ export class GPUTransitionMatrix implements GPUCommandNodeProducer {
       output.stateSparsity,
       output.status?.converged
     ]);
+    validateGraphChunkBindingRanges(graph, id, {
+      classes,
+      conditionClasses,
+      mask,
+      ...Object.fromEntries(
+        getGraphOutputViews({...output, status: {converged: output.status?.converged}}).map(
+          (view, index) => [`output[${index}]`, view]
+        )
+      )
+    });
+    if (output.steadyStates)
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        'diagnostic chainWork',
+        (conditionCount > 1 ? conditionCount + 1 : 1) * classCount * classCount * 4,
+        'reduce conditionCount or classCount'
+      );
     const cellCount = conditionCount * classCount * classCount;
     const stateCount = conditionCount * classCount;
     const constants = `const ROWS: u32 = ${rows}u;

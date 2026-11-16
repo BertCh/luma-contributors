@@ -19,8 +19,9 @@ import {
 } from '../kernels/wgsl-kernel-nodes';
 import {
   validateGPUStorageBindingByteLength,
+  validateCapacity,
+  validateFiniteNumber,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../kernels/gpu-contributor-utils';
 import type {
@@ -34,11 +35,18 @@ import {
   type GPUSpatialContext,
   type GPUSpatialContextSupport
 } from '../contracts/spatial-context';
+import {
+  validateDisjointWritableViews,
+  validateGraphChunkBindingRanges
+} from '../kernels/graph-chunk-dispatch';
 import {IS_FINITE_VALUE_WGSL} from '../kernels/wgsl-common';
 import {getRingQuantizerWGSL} from './ring-vertex-quantizer';
 import {getRingShellIndexNodes, RING_SHELL_RECORD_WORDS} from './ring-shell-index';
 import {EXACT_ORIENTATION_WGSL} from '../kernels/exact-orientation-wgsl';
 import {EXACT_GEOMETRY_WGSL, getExactRingWindingWGSL} from '../kernels/exact-geometry-wgsl';
+
+/** A positive float32 tolerance must survive rounding before division in the vertex quantizer. */
+const GPU_SEGMENT_RING_ASSEMBLY_MINIMUM_VERTEX_TOLERANCE = 2 ** -149;
 
 /** Planar coordinates, or longitude-latitude positions that only need a cos(latitude) turn scale. */
 const GPU_RING_ASSEMBLY_SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = {
@@ -508,8 +516,13 @@ export class GPUSegmentRingAssembly implements GPUCommandNodeProducer {
     if (segments < 1) {
       throw new Error(`${id} needs at least one segment row`);
     }
-    if (props.vertexTolerance !== undefined && !(props.vertexTolerance > 0)) {
-      throw new Error(`${id} vertexTolerance must be positive`);
+    if (props.vertexTolerance !== undefined) {
+      validateFiniteNumber(
+        id,
+        'vertexTolerance',
+        props.vertexTolerance,
+        GPU_SEGMENT_RING_ASSEMBLY_MINIMUM_VERTEX_TOLERANCE
+      );
     }
     if (props.interiorSide !== undefined && !['left', 'right'].includes(props.interiorSide)) {
       throw new Error(`${id} interiorSide must be 'left' or 'right'`);
@@ -609,6 +622,7 @@ export class GPUSegmentRingAssembly implements GPUCommandNodeProducer {
         }
       }
     }
+    validateRingOutputDispatches(id, output, Boolean(props.pairedOpposites));
     validateGraphOutputsDisjointFromInputs(id, getOutputViews(output), [
       props.endpoints,
       props.count,
@@ -622,37 +636,40 @@ export class GPUSegmentRingAssembly implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
     const {output} = props;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.endpoints,
-      props.count,
-      props.groups,
-      ...getOutputViews(output)
-    ]);
+    validateGraphChunkBindingRanges(graph, id, {
+      endpoints: props.endpoints,
+      count: props.count,
+      groups: props.groups,
+      ...Object.fromEntries(getOutputViews(output).map((view, index) => [`output ${index}`, view]))
+    });
     const segments = props.endpoints.length;
     const ringCapacity = output.ringOffsets.length - 1;
     const vertexCapacity = output.positions.length;
+    const validateScratch = (name: string, byteLength: number) => {
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        name,
+        byteLength,
+        'reduce the segment or ring capacity'
+      );
+      validateCapacity(id, `${name} byteLength`, byteLength, 0, graph.device.limits.maxBufferSize);
+    };
+    // Endpoint storage bounds per-segment sort/scan words. Ring words can be wider when callers
+    // reserve more output rings than input segments; include every fixed/derived allocation.
+    validateScratch('ring counters scratch', 6 * Uint32Array.BYTES_PER_ELEMENT);
+    validateScratch('segment word scratch', segments * Uint32Array.BYTES_PER_ELEMENT);
+    validateScratch('ring word scratch', ringCapacity * Uint32Array.BYTES_PER_ELEMENT);
     if (output.ringShells || output.polygons) {
       const leafCapacity = 2 ** Math.ceil(Math.log2(ringCapacity));
-      validateGPUStorageBindingByteLength(
-        graph.device,
-        id,
+      validateScratch(
         'shell records',
-        ringCapacity * RING_SHELL_RECORD_WORDS * Uint32Array.BYTES_PER_ELEMENT,
-        'reduce output.ringOffsets.length'
+        ringCapacity * RING_SHELL_RECORD_WORDS * Uint32Array.BYTES_PER_ELEMENT
       );
-      validateGPUStorageBindingByteLength(
-        graph.device,
-        id,
-        'shell bounds',
-        ringCapacity * 4 * Float32Array.BYTES_PER_ELEMENT,
-        'reduce output.ringOffsets.length'
-      );
-      validateGPUStorageBindingByteLength(
-        graph.device,
-        id,
+      validateScratch('shell bounds', ringCapacity * 4 * Float32Array.BYTES_PER_ELEMENT);
+      validateScratch(
         'shell BVH nodes',
-        (2 * leafCapacity - 1) * 2 * Float32Array.BYTES_PER_ELEMENT,
-        'reduce output.ringOffsets.length'
+        (2 * leafCapacity - 1) * 2 * Float32Array.BYTES_PER_ELEMENT
       );
     }
     // Without an explicit tolerance, vertices match within 4 ulps of the frame extent (derived on
@@ -2095,23 +2112,68 @@ ${getExactRingWindingWGSL('getShellWinding', 'getRingVertex')}`
   }
 }
 
-function getOutputViews(output: GPUSegmentRingAssemblyOutput) {
+/** Construction-time caller-output access plan; private scratch never aliases these views. */
+function validateRingOutputDispatches(
+  id: string,
+  output: GPUSegmentRingAssemblyOutput,
+  pairedOpposites: boolean
+): void {
+  validateDisjointWritableViews(id, Object.fromEntries(getOutputViewEntries(output)), {
+    separateDispatches: true
+  });
+  const validateDispatch = (
+    inputs: readonly (GraphDataView | undefined)[],
+    writable: Readonly<Record<string, GraphDataView | undefined>>
+  ) => {
+    validateDisjointWritableViews(id, writable);
+    // A disjoint byte range is still a conflicting read-only/write usage of one buffer.
+    validateGraphOutputsDisjointFromInputs(id, Object.values(writable), inputs);
+  };
+  validateDispatch([], {
+    segmentRings: output.segmentRings,
+    segmentVertices: output.segmentVertices,
+    segmentFlags: pairedOpposites ? output.segmentFlags : undefined
+  });
+  validateDispatch([output.segmentVertices], {positions: output.positions});
+  validateDispatch([output.positions, output.ringOffsets], {
+    ringAreas: output.ringAreas,
+    ringIsHole: output.ringIsHole
+  });
+  validateDispatch([output.positions, output.ringOffsets], {ringShells: output.ringShells});
+  if (output.polygons) {
+    validateDispatch([output.ringGroups], {sourceIds: output.polygons.sourceIds});
+    validateDispatch([], {
+      'polygons.ringOffsets': output.polygons.ringOffsets,
+      'polygons.polygonOffsets': output.polygons.polygonOffsets,
+      'polygons.featureOffsets': output.polygons.featureOffsets
+    });
+    validateDispatch([output.positions, output.ringOffsets, output.polygons.ringOffsets], {
+      'polygons.positions': output.polygons.positions
+    });
+  }
+  validateDispatch([], {
+    'status.count': output.status.count,
+    'status.overflow': output.status.overflow,
+    'status.requiredCount': output.status.requiredCount
+  });
+  validateDispatch([], {
+    'status.openSegmentCount': output.status.openSegmentCount,
+    'status.touchingSegmentCount': output.status.touchingSegmentCount
+  });
+}
+
+function getOutputViewEntries(output: GPUSegmentRingAssemblyOutput) {
   const {kind: _kind, ...polygonViews} = output.polygons ?? {};
+  const {status, polygons: _polygons, ...views} = output;
   return [
-    output.ringOffsets,
-    output.positions,
-    output.ringAreas,
-    output.ringIsHole,
-    output.ringShells,
-    output.ringGroups,
-    ...Object.values(polygonViews),
-    output.segmentRings,
-    output.segmentVertices,
-    output.segmentFlags,
-    output.status.count,
-    output.status.overflow,
-    output.status.requiredCount,
-    output.status.openSegmentCount,
-    output.status.touchingSegmentCount
+    ...Object.entries(views).map(([name, view]) => [`output.${name}`, view] as const),
+    ...Object.entries(polygonViews).map(
+      ([name, view]) => [`output.polygons.${name}`, view] as const
+    ),
+    ...Object.entries(status).map(([name, view]) => [`output.status.${name}`, view] as const)
   ];
+}
+
+function getOutputViews(output: GPUSegmentRingAssemblyOutput) {
+  return getOutputViewEntries(output).map(([, view]) => view);
 }

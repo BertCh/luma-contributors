@@ -3,6 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  validateInterpolationOutputsDisjointFromInputs,
+  validateInterpolationOutputPasses
+} from './interpolation-view-validation';
+
+import {
   createTransientView,
   GPUGridIndex,
   type GPUCommandGraph,
@@ -18,14 +23,16 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {GET_NAN_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {getDenseLUWGSL} from '../../analysis-core/kernels/dense-solve-wgsl';
-import {createTiledWGSLKernelNodes} from '../../analysis-core/kernels/wgsl-kernel-tiles';
+import {createInterpolationTiledNodes} from './interpolation-tiled-nodes';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {validateGPUStatusPort, type GPUSpatialContext} from '../../analysis-core/contracts/index';
 import {
   getGPUGridIndexMaximumCellCount,
   validateCapacity,
   validateMaximumCount,
-  validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
+  validateGPUStorageBindingByteLength,
+  validateFiniteNumber,
+  validateCommandNodeBudget,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {validateRasterGrid} from '../../raster-analysis/raster-band-utils';
@@ -45,6 +52,8 @@ const OPERATION = 'GPUKriging';
 const MAXIMUM_NEIGHBOR_CAPACITY = 16;
 /** Size of the shared LU: the neighbors and the unbiasedness row. */
 const SYSTEM_CAPACITY = MAXIMUM_NEIGHBOR_CAPACITY + 1;
+/** Covers the public grid build, mask preparation and status collection outside solve tiles. */
+const KRIGING_SHARED_COMMAND_NODE_ALLOWANCE = 2048;
 
 /**
  * A pivot at or below this fraction of the largest entry of the original system is treated as
@@ -225,6 +234,7 @@ export class GPUKriging implements GPUCommandNodeProducer {
   readonly cellCount: number;
   /** Compile-time neighborhood capacity. */
   readonly maximumNeighborCount: number;
+  readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPUKrigingProps) {
     this.id = props.id ?? 'kriging';
@@ -251,6 +261,35 @@ export class GPUKriging implements GPUCommandNodeProducer {
     ) {
       throw new Error(`${id} indexBounds must be finite and ordered`);
     }
+    for (const [index, value] of props.indexBounds.entries())
+      validateFiniteNumber(id, `indexBounds[${index}]`, value);
+    if (props.invocationTileSize !== undefined)
+      validateCapacity(id, 'invocationTileSize', props.invocationTileSize);
+    validateInterpolationOutputPasses(
+      id,
+      {
+        values: props.output.values,
+        variance: props.output.variance,
+        crossValidationPrediction: props.output.crossValidationPrediction,
+        crossValidationVariance: props.output.crossValidationVariance,
+        ...props.output.status
+      },
+      [
+        {write: {values: props.output.values, variance: props.output.variance}},
+        {
+          write: {
+            prediction: props.output.crossValidationPrediction,
+            variance: props.output.crossValidationVariance
+          }
+        },
+        {
+          write: {
+            invalidCount: props.output.status?.invalidCount,
+            uncertainCount: props.output.status?.uncertainCount
+          }
+        }
+      ]
+    );
     this.maximumNeighborCount = props.maximumNeighborCount ?? MAXIMUM_NEIGHBOR_CAPACITY;
     validateCapacity(
       id,
@@ -288,9 +327,6 @@ export class GPUKriging implements GPUCommandNodeProducer {
       if (output.variance.length < this.cellCount) {
         throw new Error(`${id} output.variance must hold grid.width * grid.height rows`);
       }
-      if (output.variance.buffer === output.values.buffer) {
-        throw new Error(`${id} outputs must not share buffers`);
-      }
     }
     if (output.crossValidationVariance && !output.crossValidationPrediction) {
       throw new Error(
@@ -310,18 +346,12 @@ export class GPUKriging implements GPUCommandNodeProducer {
           throw new Error(`${id} output.${name} must hold one row per sample`);
         }
       }
-      if (
-        output.crossValidationVariance &&
-        output.crossValidationVariance.buffer === output.crossValidationPrediction.buffer
-      ) {
-        throw new Error(`${id} outputs must not share buffers`);
-      }
     }
     validateGPUStatusPort(id, {
       invalidCount: output.status?.invalidCount,
       uncertainCount: output.status?.uncertainCount
     });
-    validateGraphOutputsDisjointFromInputs(
+    validateInterpolationOutputsDisjointFromInputs(
       id,
       [
         output.values,
@@ -333,6 +363,13 @@ export class GPUKriging implements GPUCommandNodeProducer {
       ],
       [props.positions, props.values, props.mask, props.parameters]
     );
+    this.estimatedCommandNodeCount =
+      KRIGING_SHARED_COMMAND_NODE_ALLOWANCE +
+      Math.ceil(this.cellCount / (props.invocationTileSize ?? this.cellCount)) +
+      (output.crossValidationPrediction
+        ? Math.ceil(sampleCount / (props.invocationTileSize ?? sampleCount))
+        : 0);
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
   }
 
   /**
@@ -345,18 +382,17 @@ export class GPUKriging implements GPUCommandNodeProducer {
     const {id, props, cellCount, maximumNeighborCount} = this;
     const {output, grid, indexGridSize, indexBounds} = props;
     const {width, height} = grid;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.positions,
-      props.values,
-      props.mask,
-      props.parameters,
-      output.values,
-      output.variance,
-      output.crossValidationPrediction,
-      output.crossValidationVariance,
-      output.status?.invalidCount,
-      output.status?.uncertainCount
-    ]);
+    validateGraphChunkBindingRanges(graph, id, {
+      positions: props.positions,
+      values: props.values,
+      mask: props.mask,
+      parameters: props.parameters,
+      outputValues: output.values,
+      variance: output.variance,
+      crossValidationPrediction: output.crossValidationPrediction,
+      crossValidationVariance: output.crossValidationVariance,
+      ...output.status
+    });
     validateMaximumCount(
       id,
       'indexGridSize cells',
@@ -365,6 +401,20 @@ export class GPUKriging implements GPUCommandNodeProducer {
     );
     const sampleCount = props.values.length;
     const indexCellCount = indexGridSize[0] * indexGridSize[1];
+    for (const [name, length] of Object.entries({
+      cellOffsets: indexCellCount + 1,
+      objectIds: sampleCount,
+      indexStatus: 1,
+      maskedValues: props.mask ? sampleCount : 0,
+      cellStatus: output.status?.invalidCount || output.status?.uncertainCount ? cellCount : 0
+    }))
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        name,
+        length * 4,
+        'reduce indexGridSize, sample count or grid size'
+      );
     const cellOffsets = createTransientView(
       graph,
       `${id}-cell-offsets`,
@@ -440,7 +490,7 @@ ${getKrigingWGSL(this.separation)}`;
       ? createTransientView(graph, `${id}-cell-status`, 'uint32', cellCount)
       : undefined;
     nodes.push(
-      ...createTiledWGSLKernelNodes<Parameters>(
+      ...createInterpolationTiledNodes<Parameters>(
         graph,
         {
           id: `${id}-solve`,
@@ -490,7 +540,7 @@ ${sharedDeclarations}`,
     if (output.crossValidationPrediction) {
       const {crossValidationPrediction, crossValidationVariance} = output;
       nodes.push(
-        ...createTiledWGSLKernelNodes<Parameters>(
+        ...createInterpolationTiledNodes<Parameters>(
           graph,
           {
             id: `${id}-cross-validation`,

@@ -17,7 +17,10 @@ import {
   validateCapacity,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView,
-  validateRequirement
+  validateRequirement,
+  validateGraphOutputsDisjointFromInputs,
+  validateGPUStorageBindingByteLength,
+  getGraphOutputViews
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GPUSpatialLag} from '../spatial-weights/gpu-spatial-lag';
 import {
@@ -33,6 +36,10 @@ import {
   getPaddedPeriodStride,
   getPeriodView
 } from './period-views';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {getLoadBalancedTileCount} from '../../analysis-core/kernels/load-balanced-for-each';
+import {validateMarkovClassBreakScratch} from './markov-binding-preflight';
+import {validateSpatialOutputViews} from '../spatial-clustering/spatial-output-validation';
 
 /** Caller-owned outputs of {@link GPUSpatialMarkov}. */
 export type GPUSpatialMarkovOutput = GPUTransitionMatrixOutput & {
@@ -133,6 +140,7 @@ export type GPUSpatialMarkovProps = {
  * before classification), mean first passage times and the permutation test `x2_rpvalue`.
  */
 export class GPUSpatialMarkov implements GPUCommandNodeProducer {
+  private readonly lagClassifier: GPUClassBreaks;
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
@@ -170,6 +178,43 @@ export class GPUSpatialMarkov implements GPUCommandNodeProducer {
     if (props.output.lagClasses && props.output.lagClasses.length !== total) {
       throw new Error(`${id} output.lagClasses length must equal rowCount * periodCount`);
     }
+    const outputs = getGraphOutputViews({
+      ...props.output,
+      status: {converged: props.output.status?.converged}
+    });
+    validateGraphOutputsDisjointFromInputs(id, outputs, [
+      props.values,
+      props.classes,
+      props.lagParameters,
+      props.mask,
+      props.weights.offsets,
+      props.weights.neighbors,
+      props.weights.weights
+    ]);
+    validateSpatialOutputViews(
+      id,
+      Object.fromEntries(outputs.map((view, index) => [`output[${index}]`, view])),
+      [
+        {
+          read: [props.output.lagValues],
+          write: [props.output.lagBreaks, props.output.lagClassCount]
+        },
+        {
+          read: [props.output.lagValues, props.output.lagBreaks, props.output.lagClassCount],
+          write: [props.output.lagClasses]
+        },
+        {read: [props.output.lagClasses], write: [props.output.counts, props.output.ignored]}
+      ]
+    );
+    // Only topology is consumed here; the real classifier later reads the computed lag column.
+    this.lagClassifier = new GPUClassBreaks({
+      id: `${id}-lag-breaks`,
+      values: props.values,
+      parameters: props.lagParameters,
+      maximumClassCount: props.maximumLagClassCount,
+      methods: props.lagMethods ?? ['quantile'],
+      output: {breaks: props.output.lagBreaks, classCount: props.output.lagClassCount}
+    });
   }
 
   /**
@@ -192,7 +237,14 @@ export class GPUSpatialMarkov implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, rowCount: rows} = this;
-    const {output, weights, periodCount: periods, mask} = props;
+    const {output, periodCount: periods, mask} = props;
+    // The lag consumes the CSR and transform metadata, not distances or optional status views.
+    const weights: GPUSpatialWeights = {
+      offsets: props.weights.offsets,
+      neighbors: props.weights.neighbors,
+      weights: props.weights.weights,
+      information: props.weights.information
+    };
     validateGraphViewsBelongToGraph(id, graph, [
       props.values,
       props.classes,
@@ -215,6 +267,41 @@ export class GPUSpatialMarkov implements GPUCommandNodeProducer {
       output.status?.converged
     ]);
     const total = rows * periods;
+    validateGraphChunkBindingRanges(graph, id, {
+      values: props.values,
+      classes: props.classes,
+      lagParameters: props.lagParameters,
+      mask,
+      offsets: weights.offsets,
+      neighbors: weights.neighbors,
+      weights: weights.weights,
+      ...Object.fromEntries(
+        getGraphOutputViews({...output, status: {converged: output.status?.converged}}).map(
+          (view, index) => [`output[${index}]`, view]
+        )
+      )
+    });
+    for (const [name, byteLength] of [
+      ['panel scratch', total * 4],
+      ['padded period scratch', getPaddedPeriodStride(rows) * periods * 4],
+      ['lag reduction carries', getLoadBalancedTileCount(rows, weights.neighbors.length) * 8],
+      [
+        'diagnostic chainWork',
+        output.steadyStates
+          ? (props.maximumLagClassCount > 1 ? props.maximumLagClassCount + 1 : 1) *
+            props.classCount ** 2 *
+            4
+          : 0
+      ]
+    ] as const)
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        name,
+        byteLength,
+        'reduce rows, periods or class counts'
+      );
+    validateMarkovClassBreakScratch(graph, id, this.lagClassifier);
     const lagValues =
       output.lagValues ?? createTransientView(graph, `${id}-lag-values`, 'float32', total);
     const lagClasses =

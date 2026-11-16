@@ -104,7 +104,87 @@ it('rejects malformed arrays and checks both operation contracts at construction
   expect(() => new CPUSegmentSnapOperation({...props, tolerance: -1})).toThrow(
     /^snap-check.*tolerance/
   );
-  expect(() => new CPUSegmentSnapOperation({...props, rowCount: 0xffffffff})).toThrow(
-    /^snap-check.*referenceCount/
-  );
+  expect(
+    () =>
+      new CPUSegmentSnapOperation({...props, searchStructure: 'brute-force', rowCount: 0xffffffff})
+  ).toThrow(/^snap-check.*referenceCount/);
+});
+
+it.each([
+  'canonical',
+  'legacy',
+  'both'
+] as const)('forwards the %s diagnostic through both operation contracts', async spelling => {
+  const props: SegmentSnapOperationProps = {
+    id: 'status-operation',
+    positions: 'positions',
+    lineOffsets: 'offsets',
+    referencePositions: 'references',
+    rowCount: 2,
+    referenceCount: 3,
+    lineCount: 1,
+    tolerance: 0,
+    maximumVerticesPerLine: 3,
+    candidateCapacity: 1,
+    output: {
+      positions: 'snapped',
+      sourceEdges: 'edges',
+      counts: 'counts',
+      ...(spelling === 'legacy' ? {} : {status: {candidateOverflow: 'diagnostic'}}),
+      ...(spelling === 'canonical' ? {} : {candidateOverflow: 'diagnostic'})
+    }
+  };
+  const gpu = new GPUSegmentSnapOperation(props);
+  expect(gpu.outputs['candidateOverflow']).toEqual({
+    value: 'diagnostic',
+    format: 'uint32',
+    length: 1
+  });
+  expect(gpu.contract.outputs).toHaveProperty('diagnostic');
+  expect(gpu.contract.values?.filter(value => value.value === 'diagnostic')).toHaveLength(1);
+  const cpu = new CPUSegmentSnapOperation(props);
+  expect(cpu.outputs['diagnostic']).toMatchObject({format: 'uint32', length: 1});
+  const positions = new Float32Array([-100, 0, -94, 0]);
+  const offsets = new Uint32Array([0, 2]);
+  const references = new Float32Array([-99, 0, -99, 0, -99, 0]);
+  const result = await cpu.execute({
+    inputs: {
+      positions: {
+        format: 'float32x2',
+        length: 2,
+        chunks: [{values: positions, length: 2}],
+        pack: () => positions
+      },
+      lineOffsets: {
+        format: 'uint32',
+        length: 2,
+        chunks: [{values: offsets, length: 2}],
+        pack: () => offsets
+      },
+      referencePositions: {
+        format: 'float32x2',
+        length: 3,
+        chunks: [{values: references, length: 3}],
+        pack: () => references
+      }
+    }
+  });
+  expect(result).toEqual({
+    snapped: new Float32Array([-100, 0, -99, 0, -94, 0]),
+    edges: new Uint32Array(3),
+    counts: new Uint32Array([3, 3, 0, 0]),
+    diagnostic: new Uint32Array([1])
+  });
+  for (const Operation of [CPUSegmentSnapOperation, GPUSegmentSnapOperation])
+    expect(
+      () =>
+        new Operation({
+          ...props,
+          output: {
+            ...props.output,
+            status: {candidateOverflow: 'diagnostic'},
+            candidateOverflow: 'different'
+          }
+        })
+    ).toThrow(/^status-operation output.status.candidateOverflow.*deprecated alias/);
 });

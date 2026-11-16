@@ -12,7 +12,6 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {
@@ -37,6 +36,9 @@ import {
   resolveGPUSpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
+
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateGeometryScratchByteLengths} from '../geometry-edit/geometry-storage-validation';
 
 const OPERATION = 'GPUGeometryCleanup';
 
@@ -341,14 +343,20 @@ export class GPUGeometryCleanup implements GPUCommandNodeProducer {
     const layout = getCleanupLayout(props);
     if (props.geometryType === 'points') {
       const {output} = props;
-      validateGraphViewsBelongToGraph(id, graph, [
-        props.positions,
-        props.parameters,
-        output.positions,
-        output.status.count,
-        output.status.overflow,
-        output.status.requiredCount
-      ]);
+      validateGraphChunkBindingRanges(
+        graph,
+        id,
+        Object.fromEntries(
+          [
+            props.positions,
+            props.parameters,
+            output.positions,
+            output.status.count,
+            output.status.overflow,
+            output.status.requiredCount
+          ].map((view, index) => [String(index), view])
+        )
+      );
       return [
         createCleanupPointsNode<Parameters>(graph, {
           id: `${id}-points`,
@@ -370,19 +378,30 @@ export class GPUGeometryCleanup implements GPUCommandNodeProducer {
     }
     const collapsedRings =
       'collapsedCount' in output.status ? output.status.collapsedCount : undefined;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.positions,
-      ringOffsets,
-      layout.polygonOffsets,
-      layout.featureOffsets,
-      props.parameters,
-      output.positions,
-      outputRingOffsets,
-      output.status.count,
-      output.status.overflow,
-      output.status.requiredCount,
-      collapsedRings
-    ]);
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(
+        [
+          props.positions,
+          ringOffsets,
+          props.parameters,
+          output.positions,
+          outputRingOffsets,
+          output.status.count,
+          output.status.overflow,
+          output.status.requiredCount,
+          collapsedRings
+        ].map((view, index) => [String(index), view])
+      )
+    );
+    validateGeometryScratchByteLengths(graph, id, {
+      vertexFlagsAndScan: props.positions.length * 4,
+      ringState: props.forceSequentialRepeatRemoval
+        ? 4
+        : CLEANUP_RING_STATE_WORDS * (ringOffsets.length - 1) * 4,
+      repeatDispatch: 24
+    });
     const vertexCount = props.positions.length;
     const keepFlags = createTransientView(graph, `${id}-keep-flags`, 'uint32', vertexCount);
     const ranks = createTransientView(graph, `${id}-ranks`, 'uint32', vertexCount);

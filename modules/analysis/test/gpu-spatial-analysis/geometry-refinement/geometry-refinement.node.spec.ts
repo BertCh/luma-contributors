@@ -72,6 +72,8 @@ it('geometry refinement kernels parse and respect the baseline storage binding l
       }
     }),
     new GPUSegmentSnap({
+      // Exercise the explicit reference route in the serial WGSL interpreter.
+      searchStructure: 'brute-force',
       positions: geometry.positions,
       lineOffsets: geometry.ringOffsets,
       referencePositions: geometry.positions,
@@ -155,6 +157,8 @@ it('segment snap inserts ordered, unique references and reports exact capacity d
   };
   executeCommandNodesOnCPU(
     new GPUSegmentSnap({
+      // Exercise the explicit reference route in the serial WGSL interpreter.
+      searchStructure: 'brute-force',
       positions: geometry.positions,
       lineOffsets: geometry.ringOffsets,
       referencePositions: references,
@@ -378,6 +382,8 @@ it('segment snap removes duplicate references separated by projection-tied refer
   };
   executeCommandNodesOnCPU(
     new GPUSegmentSnap({
+      // Exercise the explicit reference route in the serial WGSL interpreter.
+      searchStructure: 'brute-force',
       positions: geometry.positions,
       lineOffsets: geometry.ringOffsets,
       referencePositions: references,

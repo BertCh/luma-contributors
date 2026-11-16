@@ -4,29 +4,34 @@
 
 import type {
   GraphDataView,
+  GraphVectorView,
   GPUCommandGraph,
   GPUCommandNode,
   GPUCommandNodeProducer
 } from '@luma.gl/graph/gpu-core';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  createRasterTimeSeriesKernelNode,
+  planRasterTimeSeriesChunks,
+  validateRasterTimeSeriesBindings,
+  validateRasterTimeSeriesViews,
+  type RasterTimeSeriesField,
+  type RasterTimeSeriesScalarView
+} from './raster-time-series-chunks';
 import {
   validateCapacity,
+  validateCommandNodeBudget,
   validateFiniteNumber,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   RASTER_FINITE_WGSL,
   getRasterLeastSquaresWGSL,
-  rasterBinding,
-  validateRasterGraph,
-  validateRasterViews,
-  type RasterScalarView
+  rasterBinding
 } from '../remote-sensing/raster-kernel-utils';
 import {
   getGPURasterDateAxisBinding,
   getGPURasterDateAxisDeclarations,
   resolveGPURasterIrregularDateAxis,
-  validateGPURasterDateAxisGraph,
   type GPURasterIrregularDateAxis
 } from './raster-irregular-date-axis';
 import {getRasterHarmonicTrendDesignWGSL} from './raster-harmonic-trend-design-wgsl';
@@ -94,15 +99,17 @@ export function getGPURasterCOLDMonitorParameterValues(
 }
 
 /** Properties of {@link GPURasterCOLDMonitor}. */
-export type GPURasterCOLDMonitorProps = {
+export type GPURasterCOLDMonitorProps<
+  Rows extends GraphDataView<'float32'> | GraphVectorView<'float32'> = GraphDataView<'float32'>
+> = {
   id?: string;
   cellCount: number;
   sliceCount: number;
   bandCount: number;
   /** Band-interleaved `(cell * sliceCount + slice) * bandCount + band`; nonfinite samples are missing. */
-  values: GraphDataView<'float32'>;
+  values: Rows;
   /** Per-observation QA, `cell * sliceCount + slice`; zero rejects the whole observation. */
-  mask?: GraphDataView<'uint32'>;
+  mask?: RasterTimeSeriesField<'uint32', Rows>;
   /** Float32, see {@link getGPURasterCOLDMonitorParameterValues}. */
   parameters: GraphDataView<'float32'>;
   /** Acquisition dates; the model is defined on real elapsed years. */
@@ -119,11 +126,11 @@ export type GPURasterCOLDMonitorProps = {
   maximumFitCount?: number;
   output: {
     /** `(cell * maximumSegmentCount + segment) * 4 + word`: start, end, break slice ({@link GPU_RASTER_COLD_MONITOR_NO_BREAK} if none), coefficient count. Unused segments hold `0xffffffff`. */
-    segments: GraphDataView<'uint32'>;
+    segments: RasterTimeSeriesField<'uint32', Rows>;
     /** `((cell * maximumSegmentCount + segment) * bandCount + band) * 8 + column`: intercept at the axis midpoint, slope per year, then cosine and sine per harmonic. Unused columns are zero, unused segments NaN. */
-    coefficients: GraphDataView<'float32'>;
+    coefficients: RasterTimeSeriesField<'float32', Rows>;
     /** `((cell * maximumSegmentCount + segment) * bandCount + band) * 2 + field`: field 0 the RMSE of the last fit, field 1 the median residual over the confirming observations (NaN when no break). NaN for unused segments. */
-    segmentStatistics: GraphDataView<'float32'>;
+    segmentStatistics: RasterTimeSeriesField<'float32', Rows>;
     /**
      * Three words per cell: `[segmentCount, status, fitCount]`. `segmentCount` is the published
      * segments, `fitCount` the all-bands fits used. `status` is a bit field. 1: no segment could
@@ -132,7 +139,7 @@ export type GPURasterCOLDMonitorProps = {
      * segments were needed than `maximumSegmentCount` (`overflow`). Zero means the series was
      * fully processed.
      */
-    cellSummary: GraphDataView<'uint32'>;
+    cellSummary: RasterTimeSeriesField<'uint32', Rows>;
   };
 };
 
@@ -183,12 +190,20 @@ export type GPURasterCOLDMonitorProps = {
  * One band's fit reuses the shared QR of `getRasterLeastSquaresWGSL`, refactored per band. Fits
  * per cell are bounded by `maximumFitCount`.
  *
+ * Cell-major fields accept packed views or matching vector chunks of complete cell records.
+ * Shared date, model and parameter tables remain packed.
+ *
  * Per-frame: `parameters`. Compile-time: `cellCount`, `sliceCount`, `bandCount`,
  * `minimumObservations`, `consecutiveCount`, `maximumCoefficientCount`, `maximumSegmentCount`,
  * `maximumFitCount`, and which optional views exist.
  */
-export class GPURasterCOLDMonitor implements GPUCommandNodeProducer {
+export class GPURasterCOLDMonitor<
+  Rows extends GraphDataView<'float32'> | GraphVectorView<'float32'> = GraphDataView<'float32'>
+> implements GPUCommandNodeProducer
+{
   readonly id: string;
+  readonly estimatedCommandNodeCount: number;
+  private readonly chunkProps: readonly GPURasterCOLDMonitorProps<Rows>[];
   readonly minimumObservations: number;
   readonly consecutiveCount: number;
   readonly maximumCoefficientCount: number;
@@ -196,7 +211,7 @@ export class GPURasterCOLDMonitor implements GPUCommandNodeProducer {
   readonly maximumFitCount: number;
   private readonly ticksPerYear: number;
 
-  constructor(readonly props: GPURasterCOLDMonitorProps) {
+  constructor(readonly props: GPURasterCOLDMonitorProps<Rows>) {
     const id = props.id ?? 'raster-cold-monitor';
     this.id = id;
     this.minimumObservations = props.minimumObservations ?? 12;
@@ -290,15 +305,33 @@ export class GPURasterCOLDMonitor implements GPUCommandNodeProducer {
       'output.cellSummary must hold three entries per cell'
     );
     this.ticksPerYear = resolveGPURasterIrregularDateAxis(id, props.dateAxis, slices);
-    validateRasterViews(id, this.getInputs(), this.getOutputs());
+    this.chunkProps = planRasterTimeSeriesChunks(id, props, {
+      values: props.sliceCount * props.bandCount,
+      mask: props.sliceCount,
+      'output.segments': this.maximumSegmentCount * GPU_RASTER_COLD_MONITOR_SEGMENT_WORD_COUNT,
+      'output.coefficients':
+        this.maximumSegmentCount *
+        props.bandCount *
+        GPU_RASTER_COLD_MONITOR_COEFFICIENT_COLUMN_COUNT,
+      'output.segmentStatistics': this.maximumSegmentCount * props.bandCount * 2,
+      'output.cellSummary': 3
+    });
+    this.estimatedCommandNodeCount = this.chunkProps.length * 1;
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
+    validateRasterTimeSeriesViews(id, this.getInputs(), this.getOutputs());
   }
 
-  private getInputs(): RasterScalarView[] {
+  private getInputs(): RasterTimeSeriesScalarView[] {
     const {values, mask, parameters} = this.props;
-    return [values, parameters, ...(mask ? [mask] : [])];
+    return [
+      values,
+      parameters,
+      ...(mask ? [mask] : []),
+      ...(this.props.dateAxis ? [this.props.dateAxis.acquisitionTimes] : [])
+    ];
   }
 
-  private getOutputs(): RasterScalarView[] {
+  private getOutputs(): RasterTimeSeriesScalarView[] {
     const {segments, coefficients, segmentStatistics, cellSummary} = this.props.output;
     return [segments, coefficients, segmentStatistics, cellSummary];
   }
@@ -306,9 +339,21 @@ export class GPURasterCOLDMonitor implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateRasterTimeSeriesBindings(graph, this.id, [...this.getInputs(), ...this.getOutputs()]);
+    return this.chunkProps.flatMap((props, chunkIndex) =>
+      this.getChunkCommandNodes(graph, {
+        ...props,
+        id: `${this.id}-chunk-${chunkIndex}`
+      } as unknown as GPURasterCOLDMonitorProps)
+    );
+  }
+
+  private getChunkCommandNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>,
+    props: GPURasterCOLDMonitorProps
+  ): readonly GPUCommandNode<Parameters>[] {
+    const id = props.id!;
     const {
-      props,
-      id,
       minimumObservations,
       consecutiveCount,
       maximumCoefficientCount,
@@ -324,8 +369,6 @@ export class GPURasterCOLDMonitor implements GPUCommandNodeProducer {
       dateAxis,
       output
     } = props;
-    validateRasterGraph(id, graph, this.getInputs(), this.getOutputs());
-    validateGPURasterDateAxisGraph(id, graph, dateAxis);
     const columns = GPU_RASTER_COLD_MONITOR_COEFFICIENT_COLUMN_COUNT;
     const maskWords = Math.ceil(slices / 32);
     const firstRMSE = GPU_RASTER_COLD_MONITOR_BASE_PARAMETER_LENGTH;
@@ -561,7 +604,7 @@ cellSummary[cellSummaryOffset + index * 3u] = segment;
 cellSummary[cellSummaryOffset + index * 3u + 1u] = statusBits;
 cellSummary[cellSummaryOffset + index * 3u + 2u] = fitsUsed;`;
     return [
-      createWGSLKernelNode<Parameters>(graph, {
+      createRasterTimeSeriesKernelNode<Parameters>(graph, {
         id,
         operation: 'GPURasterCOLDMonitor',
         invocationCount: props.cellCount,

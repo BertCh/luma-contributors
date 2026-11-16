@@ -15,6 +15,13 @@ export const RTS04_RTS07_MONITORING_EOF_REJECTIONS: readonly KernelAuditRejectio
       /^Error: raster-harmonic-regression per-thread QR working memory .*must fit 2048 floats$/
   },
   {
+    exportName: 'GPURasterHarmonicRegression',
+    name: 'rts04-storage-slices-above-maximum',
+    kind: 'binding',
+    limit: 4096,
+    rejects: /^Error: raster-harmonic-regression sliceCount must be an integer in \[1, 4096\]$/
+  },
+  {
     exportName: 'GPURasterCOLDMonitor',
     name: 'rts04-cold-memory-above-maximum',
     kind: 'binding',

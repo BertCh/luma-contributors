@@ -11,10 +11,8 @@ import {
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {
-  createWGSLKernelNode,
-  type WGSLKernelBinding
-} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {type WGSLKernelBinding} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {createStatisticsKernelNode as createWGSLKernelNode} from '../spatial-weights/statistics-kernel-node';
 import {
   getStorageBindingElementLimit,
   validateCapacity,
@@ -29,6 +27,9 @@ import {
 } from './similar-locations-parameters';
 import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import type {GPUCardinalityPort} from '../../analysis-core/contracts/status';
+
+import {validateSpatialStatisticsBindings} from '../spatial-weights/spatial-statistics-bindings';
+import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
 
 const OPERATION = 'GPUSimilarLocations';
 /** Lanes of the column-reduction workgroups (one workgroup per attribute). */
@@ -243,6 +244,7 @@ export class GPUSimilarLocations implements GPUCommandNodeProducer {
     if (props.output.status.count.length < 1) {
       throw new Error(`${id} output.status.count must hold one row`);
     }
+    validateDisjointWritableViews(id, {...props.output, status: undefined, ...props.output.status});
     validateGraphOutputsDisjointFromInputs(
       id,
       [props.output.ranks, props.output.distances, props.output.topIds, props.output.status.count],
@@ -255,6 +257,11 @@ export class GPUSimilarLocations implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, rowCount, resultCapacity} = this;
+    validateSpatialStatisticsBindings(graph, id, props, {
+      'standardized matrix': props.values.length * 4,
+      'column moments': props.columnCount * 8,
+      'sort keys and IDs': rowCount * 4
+    });
     const {output, columnCount: attributeCount} = props;
     validateGraphViewsBelongToGraph(id, graph, [
       props.values,

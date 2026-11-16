@@ -3,6 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  validateCellDispatchBindings,
+  validateCellDispatchOutputs
+} from '../cell-indexing/cell-dispatch-validation';
+import {
   resolveGPUSpatialContext,
   type GPUSpatialContext,
   type GPUSpatialContextSupport
@@ -27,6 +31,7 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {getBoundsReductionNodes} from './bounds-reduction';
 import {IS_FINITE_VALUE_WGSL, SPREAD_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {SCALED_QUOTIENT_WGSL} from '../../analysis-core/kernels/scaled-quotient-wgsl';
 
 /** Planar coordinates, or longitude/latitude used as plain coordinates (no metric). */
 const SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = Object.freeze({
@@ -36,6 +41,8 @@ const SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = Object.freeze({
 
 // Upstream has no Hilbert curve index (the radix sort of the keys is already `GPUSort`).
 const OPERATION = 'GPUHilbertKeys';
+/** Packed x/y scalar indices and row IDs must remain representable as uint32. */
+const MAXIMUM_HILBERT_ITEM_COUNT = 0x7fffffff;
 
 /** Largest Hilbert curve order (bits per axis): the key is a `uint32` of `2 * order` bits. */
 export const GPU_HILBERT_MAXIMUM_ORDER = 16;
@@ -171,9 +178,7 @@ export class GPUHilbertKeys implements GPUCommandNodeProducer {
       }
       this.itemCount = minima.length;
     }
-    if (this.itemCount < 1) {
-      throw new Error(`${id} needs at least one item`);
-    }
+    validateCapacity(id, 'itemCount', this.itemCount, 1, MAXIMUM_HILBERT_ITEM_COUNT);
     if (bounds) {
       validateSinglePackedView(bounds, ['float32'], `${id} bounds`);
       if (bounds.length < GPU_HILBERT_BOUNDS_LENGTH) {
@@ -196,6 +201,7 @@ export class GPUHilbertKeys implements GPUCommandNodeProducer {
     if (sortedKeys && !sortedRows) {
       throw new Error(`${id} output.sortedKeys needs output.sortedRows`);
     }
+    validateCellDispatchOutputs(id, {keys, sortedRows, sortedKeys}, []);
     validateGraphOutputsDisjointFromInputs(
       id,
       [keys, sortedRows, sortedKeys],
@@ -210,6 +216,34 @@ export class GPUHilbertKeys implements GPUCommandNodeProducer {
     const {props, id, order, itemCount} = this;
     const {positions, minima, maxima} = props;
     const {keys, sortedRows, sortedKeys} = props.output;
+    const partialCount = Math.min(256, Math.max(1, Math.ceil(itemCount / 4096)));
+    validateCellDispatchBindings(
+      graph,
+      id,
+      {
+        positions,
+        minima: positions ? undefined : minima,
+        maxima: positions ? undefined : maxima,
+        bounds: props.bounds,
+        keys,
+        sortedRows,
+        sortedKeys
+      },
+      [
+        ...(!props.bounds
+          ? ([
+              ['bounds scratch', 16],
+              ['bounds partial scratch', partialCount > 1 ? partialCount * 16 : 0]
+            ] as const)
+          : []),
+        ...(sortedRows
+          ? ([
+              ['sort scratch', Math.max(itemCount, 1) * 4],
+              ['radix histogram scratch', itemCount > 1 ? 16 * Math.ceil(itemCount / 256) * 4 : 0]
+            ] as const)
+          : [])
+      ]
+    );
     validateGraphViewsBelongToGraph(id, graph, [
       positions,
       minima,
@@ -278,13 +312,20 @@ ${
         ],
         invocationCount: itemCount,
         declarations: `${declarations}
+${SCALED_QUOTIENT_WGSL}
 const ORDER: u32 = ${order}u;
 const CELLS: u32 = ${2 ** order}u;
 
 fn quantizeAxis(value: f32, minimum: f32, maximum: f32) -> u32 {
-  let extent = maximum - minimum;
-  if (!(extent > 0.0) || !isFiniteValue(extent)) { return 0u; }
-  let normalized = clamp((value - minimum) / extent, 0.0, 1.0);
+  let scale = max(abs(minimum), abs(maximum));
+  if (!(maximum > minimum) || !isFiniteValue(scale)) { return 0u; }
+  // Power-of-two normalization prevents both overflowing differences and reciprocal flushing
+  // under Metal fast math. The shared quotient divides only bounded significands.
+  let exponent = frexp(scale).exp;
+  let lower = ldexp(minimum, -exponent);
+  let upper = ldexp(maximum, -exponent);
+  let position = ldexp(clamp(value, minimum, maximum), -exponent);
+  let normalized = clamp(getScaledQuotient(position - lower, upper - lower, 1.0, 0), 0.0, 1.0);
   return min(u32(floor(normalized * f32(CELLS))), CELLS - 1u);
 }
 
@@ -343,18 +384,39 @@ fn getHilbertIndex(cellX: u32, cellY: u32) -> u32 {
     );
 
     if (sortedRows && rows) {
+      const orderedKeys = createTransientView(graph, `${id}-sorted-keys`, 'uint32', itemCount);
+      const orderedRows = createTransientView(graph, `${id}-sorted-rows`, 'uint32', itemCount);
       nodes.push(
         ...new GPUSort({
           id: `${id}-sort`,
           keys,
           values: rows,
-          outputKeys:
-            sortedKeys ?? createTransientView(graph, `${id}-sorted-keys`, 'uint32', itemCount),
-          outputValues: sortedRows,
+          outputKeys: orderedKeys,
+          outputValues: orderedRows,
           algorithm: 'radix',
           keyBits: Math.min(32, 2 * order + 1)
         }).getCommandNodes(graph)
       );
+      // Published sort destinations must use separate buffers. Publish each caller column in
+      // its own dispatch so disjoint packed regions of one caller buffer remain valid.
+      for (const [name, input, output] of [
+        ['rows', orderedRows, sortedRows],
+        ['keys', orderedKeys, sortedKeys]
+      ] as const) {
+        if (output)
+          nodes.push(
+            createWGSLKernelNode(graph, {
+              id: `${id}-publish-${name}`,
+              operation: OPERATION,
+              invocationCount: itemCount,
+              bindings: [
+                {name: 'input', view: input, type: 'u32', access: 'read'},
+                {name: 'output', view: output, type: 'u32', access: 'read_write'}
+              ],
+              body: 'output[outputOffset + index] = input[inputOffset + index];'
+            })
+          );
+      }
     }
     return nodes;
   }

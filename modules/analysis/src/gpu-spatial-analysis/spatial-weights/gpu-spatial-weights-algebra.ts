@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateSpatialStatisticsBindings} from './spatial-statistics-bindings';
 import {
   assertCompatibleGPUSpatialContexts,
   type GPUSpatialContext
@@ -538,6 +539,13 @@ export class GPUSpatialWeightsAlgebra implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateSpatialStatisticsBindings(graph, this.id, this.props, {
+      'row scratch': this.props.output.offsets.length * 4,
+      'work scratch':
+        (this.props.operation === 'higherOrder'
+          ? (this.props.workCapacity ?? this.props.output.neighbors.length)
+          : this.props.output.neighbors.length) * 4
+    });
     const {props, id} = this;
     validateGraphViewsBelongToGraph(id, graph, [
       ...this.getInputWeights().flatMap(getGPUSpatialWeightsViews),

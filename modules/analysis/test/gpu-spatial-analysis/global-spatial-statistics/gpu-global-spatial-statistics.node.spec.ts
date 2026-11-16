@@ -42,6 +42,7 @@ function createProps(
   const view = <Format extends 'uint32' | 'float32'>(format: Format, length: number) =>
     createTransientView(graph, `view-${serial++}`, format, length);
   return {
+    mode: 'reference',
     weights: {
       offsets: view('uint32', 11),
       neighbors: view('uint32', 40),
@@ -342,7 +343,7 @@ it('GPUGlobalSpatialStatistics resolves islands and alternative and rejects perm
           values: view('float32', 2 ** 24)
         })
       )
-  ).toThrow(/2\^24 rows/);
+  ).toThrow(/REFERENCE_MAXIMUM_ROWS/);
 });
 
 it('the oracle reproduces esda on the island, subset and re-standardized fixtures', () => {

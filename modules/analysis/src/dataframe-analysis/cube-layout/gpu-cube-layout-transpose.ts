@@ -12,13 +12,14 @@ import {
   validateCapacity,
   validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
   validateMaximumCount,
   validateSinglePackedView,
   validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 
 const OPERATION = 'GPUCubeLayoutTranspose';
 /** Element indices are `uint32`. */
@@ -100,7 +101,7 @@ export class GPUCubeLayoutTranspose implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id, elementCount} = this;
     const {values, output, cellCount, periodCount, from} = props;
-    validateGraphViewsBelongToGraph(id, graph, [values, output]);
+    validateGraphChunkBindingRanges(graph, id, {values, output});
     validateGPUStorageBindingByteLength(
       graph.device,
       id,

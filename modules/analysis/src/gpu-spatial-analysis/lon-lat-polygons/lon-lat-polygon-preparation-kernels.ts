@@ -16,6 +16,8 @@ type Words = GraphDataView<'uint32'>;
 type Positions = GraphDataView<'float32x2'>;
 type Turns = GraphDataView<'sint32'>;
 const OPERATION = 'GPULonLatPolygonPreparation';
+/** Dense and cap totals plus two clipping boundaries for each of two longitude copies. */
+const PREPARATION_STAGE_TOTAL_COUNT = 6;
 function read(
   name: string,
   view: GraphDataView,
@@ -51,7 +53,7 @@ export function createPreparationInitializeNode<Parameters>(
       write('stageFlags', props.stageFlags)
     ],
     invocationCount: 1,
-    body: `for (var stage = 0u; stage < 6u; stage++) { stageFlags[stageFlagsOffset + stage] = 0u; }
+    body: `${Array.from({length: PREPARATION_STAGE_TOTAL_COUNT}, (_, stage) => `stageFlags[stageFlagsOffset + ${stage}u] = 0u;`).join('\n')}
   diagnostics[diagnosticsOffset] = 0u;
   diagnostics[diagnosticsOffset + 1u] = 0u;
   rectangle[rectangleOffset] = -180.0;

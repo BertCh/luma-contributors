@@ -222,8 +222,9 @@ function getSecondFieldSamplingWGSL(bindingName: string, width: number, height: 
  * Reference: the definitions of Lagrangian diagnostics in lcs-parcels (MIT) and the OceanParcels
  * Lagrangian_diags tutorial; tests use a binary64 CPU reference and linear flows with a closed form.
  *
- * Row direction: every field raster places row 0 at the smallest y (`originY` of its extent) and
- * rows advance toward larger y; `v` is the velocity toward larger y. No grid affine is read and
+ * Row direction: with positive cellHeight, row zero is on the smallest-y side of the field extent and
+ * rows advance toward larger y; `v` is the velocity toward larger y. Signed cell sizes explicitly
+ * reverse the corresponding index direction; sample centers are origin + (index + 0.5) * cell size. No grid affine is read and
  * nothing is checked at construction. A north-up field (row 0 at the top, the usual raster order)
  * must have its row order reversed by the caller before upload, or the flow is mirrored north to
  * south. Following a grid affine is deferred (roadmap 12.4).

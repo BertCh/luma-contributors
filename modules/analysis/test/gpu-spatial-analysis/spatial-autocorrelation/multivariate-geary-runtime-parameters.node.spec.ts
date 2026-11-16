@@ -160,7 +160,7 @@ for (const strategy of ['exact', 'tiled'] as const) {
         Object.assign(context.device.limits, {maxStorageBufferBindingSize: 64});
         const preflight = vi.spyOn(context.graph, 'createTransientBuffer');
         expect(() => construct(oversized).getCommandNodes(context.graph)).toThrow(
-          /parameters binding.*limit 64/
+          /parameters chunk 0 needs 68 bytes in one binding \(limit 64\)/
         );
         expect(preflight).not.toHaveBeenCalled();
       } finally {

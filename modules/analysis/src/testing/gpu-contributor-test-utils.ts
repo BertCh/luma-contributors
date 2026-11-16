@@ -55,6 +55,7 @@ export type RecordedGPUKernelSource = {
  * Compiles command nodes on a CPU-only WebGPU device that records the WGSL of every compute
  * pipeline instead of creating it, for `.node.spec.ts` checks of generated kernels (WGSL parsing,
  * binding counts, private and workgroup memory) at the core limits of {@link createNullWebGPUDevice}.
+ * Each compiled node is destroyed after recording, including any node-owned parameter buffers.
  *
  * Use it instead of `vi.mock`: the node project runs with `isolate: false`, so a module mock of
  * `@luma.gl/engine` is not applied reliably when another spec file loaded the module first.
@@ -85,14 +86,18 @@ export function getGPUCommandNodeKernelSources(
       return {id: props.id ?? '', hash: '', destroy: () => {}};
     }
   });
-  for (const node of nodes as {
-    workload?: {operation?: string};
-    compile?: (context: {device: Device}) => unknown;
-  }[]) {
-    operation = node.workload?.operation ?? '';
-    node.compile?.({device});
+  try {
+    for (const node of nodes as {
+      workload?: {operation?: string};
+      compile?: (context: {device: Device}) => {destroy?: () => void} | undefined;
+    }[]) {
+      operation = node.workload?.operation ?? '';
+      const compiled = node.compile?.({device});
+      compiled?.destroy?.();
+    }
+  } finally {
+    device.destroy();
   }
-  device.destroy();
   return sources;
 }
 
@@ -311,10 +316,16 @@ export function recordComputePipelines(nodes: readonly unknown[]): RecordedPipel
       return {id: props.id ?? '', hash: '', destroy: () => {}};
     }
   });
-  for (const node of nodes as {compile?: (context: {device: Device}) => unknown}[]) {
-    node.compile?.({device});
+  try {
+    for (const node of nodes as {
+      compile?: (context: {device: Device}) => {destroy?: () => void} | undefined;
+    }[]) {
+      const compiled = node.compile?.({device});
+      compiled?.destroy?.();
+    }
+  } finally {
+    device.destroy();
   }
-  device.destroy();
   return pipelines;
 }
 

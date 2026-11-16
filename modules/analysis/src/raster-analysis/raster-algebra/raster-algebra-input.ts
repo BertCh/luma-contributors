@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GraphDataView, type GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
   validateCapacity,
@@ -19,6 +19,7 @@ import {
   validateRasterGrid
 } from '../raster-band-utils';
 import {validateRasterAlgebraView} from './raster-algebra-utils';
+import {validateRasterStorageBindings} from '../raster-grid/raster-storage-preflight';
 
 /** Calibration and float no-data are emitted as finite float32 shader literals. */
 const MAXIMUM_RASTER_ALGEBRA_FLOAT32_VALUE = 3.4028234663852886e38;
@@ -42,6 +43,46 @@ export function isRasterAlgebraBand(input: RasterAlgebraInput): input is GPURast
 /** Returns the original input views for aliasing and graph-ownership checks. @internal */
 export function getRasterAlgebraInputViews(input: RasterAlgebraInput | undefined): GraphDataView[] {
   return input ? (isRasterAlgebraBand(input) ? getRasterBandViews(input) : [input]) : [];
+}
+
+/** Borrowed metadata for the exact native-band prefixes conversion binds; no graph declaration. @internal */
+export function getRasterAlgebraInputBindingViews(
+  input: RasterAlgebraInput | undefined,
+  cellCount: number
+): GraphDataView[] {
+  if (!input) return [];
+  if (!isRasterAlgebraBand(input)) return [input];
+  return getRasterBandViews(input).map(
+    view =>
+      new GraphDataView(view.buffer, {
+        format: view.format,
+        byteOffset: view.byteOffset,
+        byteStride: view.byteStride,
+        rowByteLength: view.rowByteLength,
+        length: cellCount
+      })
+  );
+}
+
+/** Preflights every operand before the first conversion, including bounded padded bands. @internal */
+export function validateRasterAlgebraInputBindings<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  id: string,
+  inputs: readonly (RasterAlgebraInput | undefined)[],
+  grid: GPURasterMetadata | undefined
+): void {
+  const cellCount = grid ? grid.width * grid.height : 0;
+  for (const input of inputs) {
+    if (input && isRasterAlgebraBand(input)) validateRasterBandBelongsToGraph(id, graph, input, []);
+  }
+  // These are borrowed metadata descriptors, not graph declarations. They mirror the prefixes
+  // the conversion binds; surplus native-band rows are not part of those storage bindings.
+  const views = inputs.flatMap(input => getRasterAlgebraInputBindingViews(input, cellCount));
+  validateRasterStorageBindings(graph, id, views, {
+    'canonical band planes': inputs.some(input => input && isRasterAlgebraBand(input))
+      ? cellCount * Float32Array.BYTES_PER_ELEMENT
+      : 0
+  });
 }
 
 /** Validates a column or band at construction and returns its logical row count. @internal */

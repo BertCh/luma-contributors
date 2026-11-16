@@ -6,6 +6,7 @@
 // name exported by two subdirectories is a compile error.
 
 export * from '../analysis-core/ring-assembly/index';
+export * from './analysis-spacing/index';
 export * from './areal-interpolation/index';
 export * from './bounds-filter/index';
 export * from './categorical-association/index';

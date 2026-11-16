@@ -7,7 +7,7 @@ import {
   validateFiniteNumber,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {MAXIMUM_RASTER_EMBEDDING_DIMENSIONS} from './raster-embedding-common';
+import {MAXIMUM_REFERENCE_RASTER_EMBEDDING_DIMENSIONS} from './raster-embedding-common';
 
 /** Jacobi sweeps; the cyclic method converges quadratically and a 128 x 128 matrix needs under 15. */
 const MAXIMUM_JACOBI_SWEEPS = 60;
@@ -39,7 +39,7 @@ export function getRasterEmbeddingPrincipalComponents(
   componentCount: number
 ): RasterEmbeddingPrincipalComponents {
   const id = 'getRasterEmbeddingPrincipalComponents';
-  validateCapacity(id, 'dimensions', dimensions, 1, MAXIMUM_RASTER_EMBEDDING_DIMENSIONS);
+  validateCapacity(id, 'dimensions', dimensions, 1, MAXIMUM_REFERENCE_RASTER_EMBEDDING_DIMENSIONS);
   validateCapacity(id, 'componentCount', componentCount, 1, dimensions);
   validateRequirement(
     id,

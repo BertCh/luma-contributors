@@ -12,8 +12,13 @@ import type {
 } from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
+  validateGraphChunkBindingRanges,
+  validateDisjointWritableViews
+} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {
   validateSinglePackedView,
   validateMaximumCount,
+  validateGPUStorageBindingByteLength,
   validateRequirement,
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs
@@ -77,7 +82,11 @@ export type GPUSphericalArcOverlayProps = {
   };
 };
 
-/** Intrinsic spherical arc arrangement and ring assembly, including non-hemisphere regions. */
+/**
+ * Bounded reference spherical arc arrangement and ring assembly, including non-hemisphere regions.
+ * The serial arrangement accepts at most GPU_SPHERICAL_ARC_OVERLAY_MAXIMUM_INPUT_VERTICES
+ * input vertices and GPU_SPHERICAL_ARC_OVERLAY_MAXIMUM_OUTPUT_VERTICES output vertices.
+ */
 export class GPUSphericalArcOverlay implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated coordinate space of the unit vectors. */
@@ -138,6 +147,7 @@ export class GPUSphericalArcOverlay implements GPUCommandNodeProducer {
       props.right.ringOffsets
     ]);
     const left = props.left.referenceInside;
+    validateDisjointWritableViews(this.id, props.output);
     const right = props.right.referenceInside;
     this.referenceInside =
       props.operation === 'intersection'
@@ -152,6 +162,28 @@ export class GPUSphericalArcOverlay implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
+    validateGraphChunkBindingRanges(graph, id, {
+      leftPositions: props.left.positions,
+      rightPositions: props.right.positions,
+      leftOffsets: props.left.ringOffsets,
+      rightOffsets: props.right.ringOffsets,
+      ...props.output
+    });
+    // Every other arrangement record is private WGSL storage. These are the two GPU bindings.
+    for (const [name, bytes] of [
+      [
+        'packed ring offsets scratch',
+        4 * (props.left.ringOffsets.length + props.right.ringOffsets.length)
+      ],
+      ['arc segment scratch', 28 * props.output.positions.length]
+    ] as const)
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        name,
+        bytes,
+        'reduce output capacity or ring count'
+      );
     validateGraphViewsBelongToGraph(id, graph, [
       props.left.positions,
       props.right.positions,

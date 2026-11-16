@@ -3,6 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  validateTerrainBindings,
+  getTerrainPyramidParameterScratch
+} from '../terrain-processing/terrain-binding-preflight';
+import {
   createTransientView,
   GPUCompaction,
   type GPUCommandGraph,
@@ -306,6 +310,13 @@ export class GPUTerrainSummits implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateTerrainBindings(graph, this.id, this.props, {
+      'canonical elevation': 4 * this.props.grid.width * this.props.grid.height,
+      'pyramid fused parameters': getTerrainPyramidParameterScratch(
+        this.props.pyramid ? undefined : this.pyramidLayout
+      ),
+      'maximum pyramid': this.props.pyramid ? 0 : 4 * this.pyramidLayout.length
+    });
     const {id, props} = this;
     const {width, height} = props.grid;
     const summits = props.output.summits;

@@ -8,3 +8,9 @@ export {
   GPURectangleClip
 } from './gpu-rectangle-clip';
 export type {GPURectangleClipSettings, GPURectangleClipProps} from './gpu-rectangle-clip';
+export type {GPURectangleClipOutput} from './gpu-rectangle-clip';
+
+export type {
+  GPURectangleClipPolygonFeatureStatus,
+  GPURectangleClipPolygonFeatures
+} from './gpu-rectangle-clip';

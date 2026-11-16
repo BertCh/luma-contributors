@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateNetworkViewBindings, validateNetworkWritableViews} from '../network-view-utils';
+
 import type {Device} from '@luma.gl/core';
 import {
   createTransientView,
@@ -20,8 +22,7 @@ import {
 import {createSortedSegmentOffsetsNode} from '../../analysis-core/kernels/sorted-segment-offsets';
 import {
   validateCapacity,
-  validateSinglePackedView,
-  validateGraphViewsBelongToGraph
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getGPULineSplitMaximumPieceBound,
@@ -213,6 +214,7 @@ export class GPUNetworkNoding implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUNetworkNodingProps;
+  private readonly lineSplit: GPULineSplit;
   /** Node capacity. */
   readonly nodeCapacity: number;
   /** Edge capacity. */
@@ -229,6 +231,33 @@ export class GPUNetworkNoding implements GPUCommandNodeProducer {
       props.spatialContext,
       NODING_SPATIAL_CONTEXT_SUPPORT
     );
+    const writable = props.output;
+    validateNetworkWritableViews(this.id, writable, [
+      {
+        outputs: {edges: writable.edges},
+        inputs: {
+          count: writable.pieces.status.count,
+          offsets: writable.pieces.geometry.lineOffsets,
+          positions: writable.pieces.geometry.positions
+        }
+      },
+      {
+        outputs: {
+          neighbors: writable.topology.neighbors,
+          weights: writable.topology.weights,
+          edgeIds: writable.topology.edgeIds
+        },
+        inputs: {edges: writable.edges}
+      },
+      {
+        outputs: {
+          count: writable.nodes.status.count,
+          requiredCount: writable.nodes.status.requiredCount,
+          overflow: writable.status?.overflow
+        },
+        inputs: {splitOverflow: writable.pieces.status.overflow}
+      }
+    ]);
     const {nodes, edges, topology: csr, pieces} = props.output;
     validateCapacity(id, 'intersectionCapacity', props.intersectionCapacity);
     validateSinglePackedView(props.tolerance, ['float32'], `${id} tolerance`);
@@ -288,6 +317,19 @@ export class GPUNetworkNoding implements GPUCommandNodeProducer {
         throw new Error(`${id} ${name} length must equal output.pieces.sourceIds.length`);
       }
     }
+    this.lineSplit = new GPULineSplit({
+      id: `${id}-split`,
+      lines: props.lines,
+      intersectionCapacity: props.intersectionCapacity,
+      spatialSort: props.spatialSort,
+      leafCapacity: props.leafCapacity,
+      output: {
+        pieces,
+        status: props.output.status?.uncertainCount
+          ? {uncertainCount: props.output.status.uncertainCount}
+          : undefined
+      }
+    });
   }
 
   /** Returns line split, endpoint snapping, edge and CSR nodes in order. */
@@ -311,7 +353,19 @@ export class GPUNetworkNoding implements GPUCommandNodeProducer {
       Math.max(props.lines.lineOffsets.length - 1, 0),
       props.intersectionCapacity
     );
-    validateGraphViewsBelongToGraph(id, graph, [
+    validateNetworkViewBindings(id, graph, [
+      props.lines.positions,
+      props.lines.lineOffsets,
+      pieces.geometry.positions,
+      pieces.geometry.lineOffsets,
+      pieces.sourceIds,
+      pieces.status.count,
+      pieces.status.requiredCount,
+      pieces.status.overflow,
+      pieces.status.vertexCount,
+      pieces.status.requiredVertexCount,
+      pieces.vertexSourceEdges,
+      output.status?.uncertainCount,
       tolerance,
       nodeOutputs.positions,
       nodeOutputs.status.count,
@@ -325,6 +379,11 @@ export class GPUNetworkNoding implements GPUCommandNodeProducer {
       csr.edgeIds,
       props.output.status?.overflow
     ]);
+    validateNetworkViewBindings(id, graph, [], {
+      endpointPoints: edgeCapacity * 2 * 8,
+      nodeScratch: nodeCapacity * 4,
+      csrCounts: (nodeCapacity + 1) * 4
+    });
     const nodes: GPUCommandNode<Parameters>[] = [];
     const endpointCount = edgeCapacity * 2;
     const T = <Format extends 'uint32' | 'float32x2'>(
@@ -334,21 +393,7 @@ export class GPUNetworkNoding implements GPUCommandNodeProducer {
     ) => createTransientView(graph, `${id}-${name}`, format, length);
 
     const splitOverflow = pieces.status.overflow;
-    nodes.push(
-      ...new GPULineSplit({
-        id: `${id}-split`,
-        lines: props.lines,
-        intersectionCapacity: props.intersectionCapacity,
-        spatialSort: props.spatialSort,
-        leafCapacity: props.leafCapacity,
-        output: {
-          pieces,
-          status: output.status?.uncertainCount
-            ? {uncertainCount: output.status.uncertainCount}
-            : undefined
-        }
-      }).getCommandNodes(graph)
-    );
+    nodes.push(...this.lineSplit.getCommandNodes(graph));
 
     // Snap keys per piece end point (index = 2 * edge + side). Cells are counted from a per-frame
     // origin, the minimum corner of the live end points, so projected coordinates (UTM northings
@@ -428,7 +473,7 @@ ${endpointOrigin.declarations}`,
           {name: 'endpointPoints', view: endpointPoints, type: 'f32', access: 'read'},
           {name: 'tolerance', view: tolerance, type: 'f32', access: 'read'},
           {name: 'snapOrigin', view: snapOrigin, type: 'u32', access: 'read'},
-          {name: 'snapOverflow', view: snapOverflow, type: 'u32', access: 'read_write'},
+          {name: 'snapOverflow', view: snapOverflow, type: 'atomic<u32>', access: 'read_write'},
           {name: 'keysX', view: keysX, type: 'u32', access: 'read_write'},
           {name: 'keysY', view: keysY, type: 'u32', access: 'read_write'}
         ],
@@ -464,7 +509,7 @@ fn snapKey(value: f32, origin: f32, size: f32, isOverflow: ptr<function, bool>) 
     keyX = snapKey(point.x, origin.x, size, &isOverflow);
     keyY = snapKey(point.y, origin.y, size, &isOverflow);
     if (isOverflow) {
-      snapOverflow[snapOverflowOffset] = 1u;
+      atomicStore(&snapOverflow[snapOverflowOffset], 1u);
     }
   }
   keysX[keysXOffset + index] = keyX;

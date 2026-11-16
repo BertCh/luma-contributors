@@ -4,13 +4,14 @@
 
 import {
   GPUHistogram,
+  getViewBindingRange,
   type GPUCommandGraph,
   type GPUCommandGraphNodeCondition,
   type GPUCommandNode,
   type GraphBufferUse,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
+import {GPURaster, type GPURasterBand, type GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
   createWGSLKernelNode,
   type WGSLKernelBinding
@@ -18,6 +19,9 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateGraphViewsBelongToGraph,
+  validateFiniteNumber,
+  validateCapacity,
+  validateCommandNodeBudget,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -29,7 +33,6 @@ import {
   getRasterBufferBandNodes,
   validateParameterTarget,
   validateRasterBandBelongsToGraph,
-  validateRasterBuffersDistinct,
   validateRasterGrid,
   validateRasterGridAxisAligned,
   validateRasterGridOrthogonal,
@@ -49,9 +52,16 @@ import {
   createRasterTiledRelaxationNodes,
   getGPURasterRelaxationContinuationStateLength,
   getRasterRelaxationTileWGSL,
+  RASTER_RELAXATION_TILE_SIZE,
+  RASTER_GATE_INTERVAL,
   validateRasterIterations
 } from './raster-relaxation';
 import {GET_QUIET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {
+  validateRasterFractionalBindingByteLength,
+  validateRasterFractionalWritableViews
+} from '../fractional-coverage/raster-fractional-tile-kernel';
 
 const OPERATION = 'GPUCostDistance';
 const DEFAULT_MAXIMUM_ITERATIONS = 512;
@@ -62,6 +72,12 @@ const DEFAULT_MAXIMUM_ITERATIONS = 512;
  */
 const DEFAULT_CONTINUATION_MAXIMUM_ITERATIONS = 64;
 const DEFAULT_SWEEP_AFTER_ITERATION = 96;
+/** Each gate slot begins at the WebGPU storage binding alignment, matching the shared slot table. */
+const GATE_SLOT_BYTE_STRIDE = 256;
+/** The sweep switch is an unsigned round index interpolated into WGSL. */
+const MAXIMUM_SWEEP_AFTER_ITERATION = 0xffffffff;
+/** Covers band canonicalization, reset/publication, seed, optional bands/histogram and tie setup. */
+const FIXED_COMMAND_NODE_ALLOWANCE = 64;
 
 /** Number of float32 values read from {@link GPUCostDistanceProps.parameters}. */
 export const GPU_COST_DISTANCE_PARAMETER_LENGTH = 8;
@@ -166,7 +182,8 @@ export type GPUCostDistanceOutput = {
    * Optional diagnostic stamps: per cell, the 1-based gated relaxation round in which its cost last decreased
    * (0 for source cells and cells whose cost never decreased). For a converged run this is the round in which the
    * cell settled, so it draws the propagation wavefront. Adds one store per improved cell; omit it in production.
-   * Not supported together with a continuation.
+   * With continuation, stamps use cumulative rounds and persist until a restart. Import this
+   * output from a caller-owned buffer, like the other continuation state, so it survives submissions.
    */
   settledAt?: GraphDataView<'uint32'>;
   /**
@@ -257,7 +274,7 @@ export type GPUCostDistanceProps = {
    * caller that changes any input (friction, parameters, sources) must set the restart word;
    * between restarts, inputs must stay unchanged. The caller polls `converged` (a readback of its
    * choosing) and submits again until it is 1 or its own budget ends. Not supported with
-   * `output.backLinks` or `output.settledAt`. Absent, behavior is unchanged and every encoding
+   * `output.backLinks`. Absent, behavior is unchanged and every encoding
    * starts from scratch.
    */
   continuation?: GPUCostDistanceContinuation;
@@ -313,6 +330,7 @@ export class GPUCostDistance implements GPUCommandNodeProducer {
   readonly maximumIterations: number;
   /** Resolved compile-time tie-phase iteration count. */
   readonly maximumTieIterations: number;
+  readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPUCostDistanceProps) {
     this.id = props.id ?? 'cost-distance';
@@ -323,6 +341,9 @@ export class GPUCostDistance implements GPUCommandNodeProducer {
     const {id} = this;
     const {output} = props;
     const cellCount = validateRasterGrid(id, props.grid);
+    validateFiniteNumber(id, 'friction.scale', props.friction.scale ?? 1);
+    validateFiniteNumber(id, 'friction.offset', props.friction.offset ?? 0);
+    new GPURaster({id: `${id} friction`, metadata: props.grid, bands: [props.friction]});
     validateRasterCellSizeMode(id, props.cellSizeMode);
     validateRasterGridAxisAligned(id, props.grid, props.cellSizeMode);
     // The diagonal D8 length is sqrt(cellSizeX^2 + cellSizeY^2), which needs perpendicular axes.
@@ -330,6 +351,21 @@ export class GPUCostDistance implements GPUCommandNodeProducer {
     validateRasterIterations(id, 'maximumIterations', this.maximumIterations);
     this.maximumTieIterations = props.maximumTieIterations ?? this.maximumIterations;
     validateRasterIterations(id, 'maximumTieIterations', this.maximumTieIterations);
+    validateCapacity(
+      id,
+      'sweepAfterIteration',
+      props.sweepAfterIteration ?? DEFAULT_SWEEP_AFTER_ITERATION,
+      0,
+      MAXIMUM_SWEEP_AFTER_ITERATION
+    );
+    this.estimatedCommandNodeCount =
+      FIXED_COMMAND_NODE_ALLOWANCE +
+      this.maximumIterations +
+      Math.ceil(this.maximumIterations / RASTER_GATE_INTERVAL) +
+      (output.backLinks
+        ? this.maximumTieIterations + Math.ceil(this.maximumTieIterations / RASTER_GATE_INTERVAL)
+        : 0);
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     validateRasterParameters(id, props.parameters, GPU_COST_DISTANCE_PARAMETER_LENGTH);
     for (const [name, view] of [
       ['sources', props.sources],
@@ -360,9 +396,6 @@ export class GPUCostDistance implements GPUCommandNodeProducer {
     }
     if (props.continuation) {
       validateSinglePackedView(props.continuation.state, ['uint32'], `${id} continuation.state`);
-      if (output.settledAt) {
-        throw new Error(`${id} continuation does not support output.settledAt`);
-      }
       if (output.backLinks) {
         throw new Error(`${id} continuation does not support output.backLinks`);
       }
@@ -430,20 +463,13 @@ export class GPUCostDistance implements GPUCommandNodeProducer {
     if (output.bandCounts && output.bandCounts.length !== props.costBreaks?.length) {
       throw new Error(`${id} output.bandCounts length must equal costBreaks length`);
     }
-    validateRasterBuffersDistinct(
+    validateRasterFractionalWritableViews(
       id,
-      [
-        output.costs,
-        output.backLinks,
-        output.settledAt,
-        output.bands,
-        output.bandCounts,
-        output.status?.converged,
-        output.status?.iterationCount,
-        output.status?.iterationLimitReached,
-        props.continuation?.state,
-        props.continuation?.values
-      ],
+      {
+        ...output,
+        continuationState: props.continuation?.state,
+        continuationValues: props.continuation?.values
+      },
       [
         ...getRasterBandViews(props.friction),
         props.parameters,
@@ -453,6 +479,39 @@ export class GPUCostDistance implements GPUCommandNodeProducer {
         props.sourceMask,
         props.costBreaks,
         props.frictionParameters
+      ],
+      [
+        {
+          writes: [
+            props.continuation?.values ?? output.costs,
+            props.continuation?.state,
+            output.settledAt
+          ],
+          reads: [props.parameters]
+        },
+        {
+          writes: [props.continuation?.values ?? output.costs, props.continuation?.state],
+          reads: [
+            props.sources,
+            props.sourceCosts,
+            props.sourceCount,
+            props.sourceMask,
+            props.parameters
+          ]
+        },
+        {writes: [output.costs], reads: [props.continuation?.values]},
+        {writes: [output.backLinks], reads: [output.costs, props.parameters]},
+        {writes: [output.bands], reads: [output.costs, props.costBreaks]},
+        {writes: [output.bandCounts], reads: [output.bands]},
+        {writes: [output.bandCounts], reads: [props.continuation?.state]},
+        {
+          writes: [
+            output.status?.converged,
+            output.status?.iterationCount,
+            output.status?.iterationLimitReached
+          ],
+          reads: [props.continuation?.state]
+        }
       ]
     );
   }
@@ -486,6 +545,72 @@ export class GPUCostDistance implements GPUCommandNodeProducer {
       props.continuation?.values
     ]);
     const cellCount = width * height;
+    const callerViews = [
+      ...getRasterBandViews(props.friction),
+      props.parameters,
+      props.frictionParameters,
+      props.sources,
+      props.sourceCosts,
+      props.sourceCount,
+      props.sourceMask,
+      props.costBreaks,
+      output.costs,
+      output.backLinks,
+      output.settledAt,
+      output.bands,
+      output.bandCounts,
+      output.status?.converged,
+      output.status?.iterationCount,
+      output.status?.iterationLimitReached,
+      props.continuation?.state,
+      props.continuation?.values
+    ];
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(callerViews.map((view, index) => [`view.${index}`, view]))
+    );
+    for (const view of callerViews) {
+      if (view) {
+        validateRasterFractionalBindingByteLength(
+          graph.device,
+          id,
+          view.buffer.id,
+          getViewBindingRange(view).size,
+          'reduce the packed raster or source capacity',
+          view.buffer.byteLength
+        );
+      }
+    }
+    // Every row-proportional transient (canonical friction/validity, auxiliary, optional tie
+    // levels/masks and bands) is a scalar word per cell. The remaining planes are tile stamps
+    // and the fixed gate-slot table, checked before band canonicalization declares resources.
+    for (const [name, bytes] of [
+      ['per-cell scratch', cellCount * 4],
+      [
+        'tile stamps',
+        Math.ceil(width / RASTER_RELAXATION_TILE_SIZE) *
+          Math.ceil(height / RASTER_RELAXATION_TILE_SIZE) *
+          4
+      ],
+      [
+        'gate slots',
+        (Math.min(
+          RASTER_GATE_INTERVAL,
+          Math.max(maximumIterations, output.backLinks ? this.maximumTieIterations : 0)
+        ) +
+          1) *
+          GATE_SLOT_BYTE_STRIDE
+      ]
+    ] as const) {
+      validateRasterFractionalBindingByteLength(
+        graph.device,
+        id,
+        name,
+        bytes,
+        'reduce grid dimensions'
+      );
+    }
     const friction = getRasterBufferBandNodes(
       graph,
       `${id}-friction`,
@@ -612,6 +737,7 @@ ${GET_QUIET_NAN_WGSL}`,
         sweepAfterIteration,
         values: working,
         settledAt: output.settledAt,
+        settledAtResetGate: initializeGate,
         auxiliary,
         settings: props.parameters,
         additiveEdgeCosts: true,

@@ -8,18 +8,21 @@ import type {
   GPUCommandNode,
   GPUCommandNodeProducer
 } from '@luma.gl/graph/gpu-core';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  createRasterTimeSeriesNodes,
+  planRasterTimeSeriesChunks,
+  rasterTimeSeriesBinding as rasterBinding,
+  validateRasterTimeSeriesViews as validateRasterViews,
+  validateRasterTimeSeriesGraph as validateRasterGraph,
+  type RasterTimeSeriesScalarView as RasterScalarView,
+  type RasterTimeSeriesView,
+  type RasterTimeSeriesChunkPlan
+} from './raster-time-series-chunks-b';
 import {
   validateCapacity,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {
-  RASTER_FINITE_WGSL,
-  rasterBinding,
-  validateRasterGraph,
-  validateRasterViews,
-  type RasterScalarView
-} from '../remote-sensing/raster-kernel-utils';
+import {RASTER_FINITE_WGSL} from '../remote-sensing/raster-kernel-utils';
 import {
   MAXIMUM_RASTER_STREAM_CHUNK_SLICE_COUNT,
   MAXIMUM_RASTER_STREAM_SLOT_COUNT,
@@ -64,7 +67,9 @@ export function getGPURasterStandardizedIndexCalibrationParameterValues(
 }
 
 /** Properties of {@link GPURasterStandardizedIndexCalibration}. */
-export type GPURasterStandardizedIndexCalibrationProps = {
+export type GPURasterStandardizedIndexCalibrationProps<
+  Rows extends RasterScalarView = GraphDataView
+> = {
   id?: string;
   cellCount: number;
   chunkSliceCount: number;
@@ -75,21 +80,21 @@ export type GPURasterStandardizedIndexCalibrationProps = {
   /** Treat exact zeros separately, as xclim does for precipitation (true for SPI). Defaults to false. */
   zeroInflated?: boolean;
   /** Cell-major chunk; nonfinite samples are missing. */
-  values: GraphDataView<'float32'>;
+  values: RasterTimeSeriesView<'float32', Rows>;
   /** Per-observation QA; zero rejects the sample. */
-  mask?: GraphDataView<'uint32'>;
+  mask?: RasterTimeSeriesView<'uint32', Rows>;
   /** Slot of each chunk slice, required when `slotCount` exceeds 1. */
   slotIndices?: GraphDataView<'uint32'>;
   /** Float32, see {@link getGPURasterStandardizedIndexCalibrationParameterValues}. */
   parameters: GraphDataView<'float32'>;
   state: {
     /** Per slot `[nonMissing, zeroCount, positiveCount]`, uint32; `positiveCount` holds the samples above the location entering the fit. */
-    counts: GraphDataView<'uint32'>;
+    counts: RasterTimeSeriesView<'uint32', Rows>;
     /** Per slot 96-bit fixed-point sums of `x`, `ln x` and the squared deviations (nine `uint32` words per slot). */
-    moments: GraphDataView<'uint32'>;
+    moments: RasterTimeSeriesView<'uint32', Rows>;
   };
   /** Per slot `[shape, scale, zeroProbability]`, float32; NaN shape marks an unusable slot. */
-  fit: GraphDataView<'float32'>;
+  fit: RasterTimeSeriesView<'float32', Rows>;
 };
 
 /**
@@ -103,11 +108,19 @@ export type GPURasterStandardizedIndexCalibrationProps = {
  * Per-frame: `parameters`. Compile-time: `cellCount`, `chunkSliceCount`, `slotCount`,
  * `distribution`, `zeroInflated`, and which optional views exist. Run it once per calibration
  * chunk, with `reset` on the first; the fit is rewritten after every chunk.
+ *
+ * Cell-major views accept matching chunks of complete cell records; shared tables stay packed.
  */
-export class GPURasterStandardizedIndexCalibration implements GPUCommandNodeProducer {
+export class GPURasterStandardizedIndexCalibration<Rows extends RasterScalarView = GraphDataView>
+  implements GPUCommandNodeProducer
+{
   readonly id: string;
+  readonly props: GPURasterStandardizedIndexCalibrationProps<Rows>;
+  readonly chunkPlan: RasterTimeSeriesChunkPlan;
+  readonly estimatedCommandNodeCount: number;
   readonly slotCount: number;
-  constructor(readonly props: GPURasterStandardizedIndexCalibrationProps) {
+  constructor(props: GPURasterStandardizedIndexCalibrationProps<Rows> & {values: Rows}) {
+    this.props = props;
     const id = props.id ?? 'raster-standardized-index-calibration';
     this.id = id;
     const slotCount = props.slotCount ?? 1;
@@ -153,12 +166,25 @@ export class GPURasterStandardizedIndexCalibration implements GPUCommandNodeProd
         props.fit.length >= slotEntries * 3,
       'state.counts needs three, state.moments nine and fit three entries per slot'
     );
-    validateRasterViews(id, this.getInputs(), this.getOutputs());
+    this.chunkPlan = planRasterTimeSeriesChunks(this.id, props.cellCount, {
+      values: {view: props.values, entriesPerCell: props.chunkSliceCount},
+      mask: {view: props.mask, entriesPerCell: props.chunkSliceCount},
+      'state.counts': {view: props.state.counts, entriesPerCell: (props.slotCount ?? 1) * 3},
+      'state.moments': {view: props.state.moments, entriesPerCell: (props.slotCount ?? 1) * 9},
+      fit: {view: props.fit, entriesPerCell: (props.slotCount ?? 1) * 3}
+    });
+    this.estimatedCommandNodeCount = this.chunkPlan.estimatedCommandNodeCount;
+    validateRasterViews(this.id, this.getInputs(), this.getOutputs(), this.chunkPlan);
   }
 
   private getInputs(): RasterScalarView[] {
     const {values, mask, slotIndices, parameters} = this.props;
-    return [values, parameters, ...(mask ? [mask] : []), ...(slotIndices ? [slotIndices] : [])];
+    return [
+      values,
+      parameters,
+      ...(mask ? [mask] : []),
+      ...((this.props.slotCount ?? 1) > 1 && slotIndices ? [slotIndices] : [])
+    ];
   }
 
   private getOutputs(): RasterScalarView[] {
@@ -181,23 +207,22 @@ export class GPURasterStandardizedIndexCalibration implements GPUCommandNodeProd
         : `let variance = max(moment, 0.0) / f32(positiveCount);
     let scale = 2.0 * mean * mean * mean / (variance + 2.0 * mean * mean);
     let shape = 3.141592653589793 * mean / (1.7320508075688772 * sqrt(variance));`;
-    return [
-      createWGSLKernelNode<Parameters>(graph, {
-        id,
-        operation: 'GPURasterStandardizedIndexCalibration',
-        invocationCount: props.cellCount,
-        workgroupSize: 64,
-        bindings: [
-          rasterBinding('values', values),
-          rasterBinding('parameters', parameters),
-          ...(mask ? [rasterBinding('mask', mask)] : []),
-          ...(slotCount > 1 && slotIndices ? [rasterBinding('slotIndices', slotIndices)] : []),
-          rasterBinding('counts', state.counts, true),
-          rasterBinding('moments', state.moments, true),
-          rasterBinding('fit', fit, true)
-        ],
-        declarations: `${RASTER_FINITE_WGSL}\n${FIXED_POINT_WGSL}\n${getRasterFixedPointStateWGSL('moments')}`,
-        body: `if (parameters[parametersOffset] != 0.0) {
+    return createRasterTimeSeriesNodes<Parameters>(graph, this.chunkPlan, {
+      id,
+      operation: 'GPURasterStandardizedIndexCalibration',
+      invocationCount: props.cellCount,
+      workgroupSize: 64,
+      bindings: [
+        rasterBinding('values', values),
+        rasterBinding('parameters', parameters),
+        ...(mask ? [rasterBinding('mask', mask)] : []),
+        ...(slotCount > 1 && slotIndices ? [rasterBinding('slotIndices', slotIndices)] : []),
+        rasterBinding('counts', state.counts, true),
+        rasterBinding('moments', state.moments, true),
+        rasterBinding('fit', fit, true)
+      ],
+      declarations: `${RASTER_FINITE_WGSL}\n${FIXED_POINT_WGSL}\n${getRasterFixedPointStateWGSL('moments')}`,
+      body: `if (parameters[parametersOffset] != 0.0) {
   for (var slot = 0u; slot < ${slotCount}u; slot++) {
     let entry = index * ${slotCount}u + slot;
     counts[countsOffset + 3u * entry] = 0u; counts[countsOffset + 3u * entry + 1u] = 0u; counts[countsOffset + 3u * entry + 2u] = 0u;
@@ -251,7 +276,6 @@ for (var slot = 0u; slot < ${slotCount}u; slot++) {
   fit[fitOffset + 3u * entry + 1u] = fittedScale;
   fit[fitOffset + 3u * entry + 2u] = select(0.0, f32(zeroCount) / f32(nonMissing), nonMissing > 0u);
 }`
-      })
-    ];
+    });
   }
 }

@@ -1,0 +1,77 @@
+// luma.gl
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {expect, it} from 'vitest';
+import {
+  GPUTrackSimilarity,
+  GPU_TRACK_SIMILARITY_STATUS
+} from '../../../src/gpu-spatial-analysis/track-similarity/gpu-track-similarity';
+import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {
+  createCPUGraphMemory,
+  executeCommandNodesOnCPU
+} from '../segment-intersection/wgsl-graph-executor';
+
+it('reports invalid pair status before a densified count can wrap to one vertex', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  try {
+    const positions = createTransientView(graph, 'positions', 'float32x2', 1048577);
+    const lineOffsets = createTransientView(graph, 'offsets', 'uint32', 2);
+    const pairA = createTransientView(graph, 'pair-a', 'uint32', 1);
+    const pairB = createTransientView(graph, 'pair-b', 'uint32', 1);
+    const pairStatus = createTransientView(graph, 'status', 'uint32', 1);
+    const nodes = new GPUTrackSimilarity({
+      id: 'overflow',
+      densify: 1 / 4096,
+      linesA: {kind: 'lines', positions, lineOffsets},
+      pairA,
+      pairB,
+      output: {hausdorff: createTransientView(graph, 'distance', 'float32', 1), pairStatus}
+    }).getCommandNodes(graph);
+    const memory = createCPUGraphMemory();
+    memory.write(lineOffsets, new Uint32Array([0, positions.length]));
+    memory.write(pairA, new Uint32Array([0]));
+    memory.write(pairB, new Uint32Array([0]));
+    executeCommandNodesOnCPU([nodes.find(node => node.id === 'overflow-status')!], memory);
+    expect(memory.readUint32(pairStatus)[0]).toBe(GPU_TRACK_SIMILARITY_STATUS.invalidPair);
+    // Invalid ranges must also be rejected before any position access.
+    memory.write(lineOffsets, new Uint32Array([9, 3]));
+    executeCommandNodesOnCPU([nodes.find(node => node.id === 'overflow-status')!], memory);
+    expect(memory.readUint32(pairStatus)[0]).toBe(GPU_TRACK_SIMILARITY_STATUS.invalidPair);
+  } finally {
+    device.destroy();
+  }
+});
+
+it('preflights the sixteen-byte decision record before declaring any pair scratch', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  try {
+    const contributor = new GPUTrackSimilarity({
+      id: 'decision',
+      linesA: {
+        kind: 'lines',
+        positions: createTransientView(graph, 'positions', 'float32x2', 2),
+        lineOffsets: createTransientView(graph, 'offsets', 'uint32', 2)
+      },
+      pairA: createTransientView(graph, 'a', 'uint32', 17),
+      pairB: createTransientView(graph, 'b', 'uint32', 17),
+      frechetEpsilon: createTransientView(graph, 'epsilon', 'float32', 1),
+      output: {frechetWithin: createTransientView(graph, 'within', 'uint32', 17)}
+    });
+    Object.defineProperty(device, 'limits', {
+      value: {...device.limits, maxStorageBufferBindingSize: 256}
+    });
+    const declarations = graph as unknown as {buffers: Map<string, unknown>; nodes: unknown[]};
+    const before = [declarations.buffers.size, declarations.nodes.length];
+    expect(() => contributor.getCommandNodes(graph)).toThrow(
+      /decision pair ranges needs 272 bytes/
+    );
+    expect([declarations.buffers.size, declarations.nodes.length]).toEqual(before);
+  } finally {
+    device.destroy();
+  }
+});

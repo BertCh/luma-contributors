@@ -13,6 +13,11 @@ import type {
   GPUIterationStatusPort
 } from '../../analysis-core/contracts/status';
 import {
+  validateNetworkOptimizationBindings,
+  validateNetworkOptimizationInputOutputBuffers
+} from './network-optimization-bindings';
+
+import {
   createNetworkOptimizationStatusNodes,
   getNetworkOptimizationStatusViews,
   validateNetworkOptimizationStatus
@@ -25,9 +30,7 @@ import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-node
 import {
   validateCapacity,
   validateSinglePackedView,
-  validateRequirement,
-  validateGraphViewsBelongToGraph,
-  validateGraphOutputsDisjointFromInputs
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 
@@ -168,24 +171,30 @@ export class GPUNetworkRationalAccess implements GPUCommandNodeProducer {
       ],
       props.output.status
     );
-    validateGraphOutputsDisjointFromInputs(this.id, getRationalAccessOutputViews(props.output), [
-      props.costs,
-      props.demand,
-      props.supply,
-      props.parameters
-    ]);
+    validateNetworkOptimizationInputOutputBuffers(
+      this.id,
+      getRationalAccessOutputViews(props.output),
+      [props.costs, props.demand, props.supply, props.parameters]
+    );
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.costs,
-      props.demand,
-      props.supply,
-      props.parameters,
-      ...getRationalAccessOutputViews(props.output)
-    ]);
+    validateNetworkOptimizationBindings(
+      graph,
+      id,
+      Object.fromEntries(
+        [
+          props.costs,
+          props.demand,
+          props.supply,
+          props.parameters,
+          ...getRationalAccessOutputViews(props.output)
+        ].map((view, index) => [`view ${index}`, view])
+      )
+    );
+
     const nodes = [
       createWGSLKernelNode<Parameters>(graph, {
         id,

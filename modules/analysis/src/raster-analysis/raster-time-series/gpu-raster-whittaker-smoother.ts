@@ -8,19 +8,22 @@ import type {
   GPUCommandNode,
   GPUCommandNodeProducer
 } from '@luma.gl/graph/gpu-core';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  createRasterTimeSeriesNodes,
+  planRasterTimeSeriesChunks,
+  rasterTimeSeriesBinding as rasterBinding,
+  validateRasterTimeSeriesViews as validateRasterViews,
+  validateRasterTimeSeriesGraph as validateRasterGraph,
+  type RasterTimeSeriesScalarView as RasterScalarView,
+  type RasterTimeSeriesView,
+  type RasterTimeSeriesChunkPlan
+} from './raster-time-series-chunks-b';
 import {
   validateCapacity,
   validateFiniteNumber,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {
-  RASTER_FINITE_WGSL,
-  rasterBinding,
-  validateRasterGraph,
-  validateRasterViews,
-  type RasterScalarView
-} from '../remote-sensing/raster-kernel-utils';
+import {RASTER_FINITE_WGSL} from '../remote-sensing/raster-kernel-utils';
 import {
   getGPURasterDateAxisBinding,
   getGPURasterDateAxisDeclarations,
@@ -71,16 +74,16 @@ export function getGPURasterWhittakerSmootherParameterValues(
 export type GPURasterWhittakerReweightFunction = 'bisquare' | 'upper-envelope';
 
 /** Properties of {@link GPURasterWhittakerSmoother}. */
-export type GPURasterWhittakerSmootherProps = {
+export type GPURasterWhittakerSmootherProps<Rows extends RasterScalarView = GraphDataView> = {
   id?: string;
   cellCount: number;
   sliceCount: number;
   /** Cell-major `cell * sliceCount + slice`; nonfinite samples have zero weight. */
-  values: GraphDataView<'float32'>;
+  values: RasterTimeSeriesView<'float32', Rows>;
   /** Per-observation QA; zero gives a sample zero weight. */
-  mask?: GraphDataView<'uint32'>;
+  mask?: RasterTimeSeriesView<'uint32', Rows>;
   /** Per-observation quality weights in `[0, 1]`, for example from a QA band. */
-  qualityWeights?: GraphDataView<'float32'>;
+  qualityWeights?: RasterTimeSeriesView<'float32', Rows>;
   /** Float32, see {@link getGPURasterWhittakerSmootherParameterValues}. */
   parameters: GraphDataView<'float32'>;
   /** Difference order `d` in `[1, 3]`; defaults to 2. */
@@ -93,9 +96,9 @@ export type GPURasterWhittakerSmootherProps = {
   dateAxis?: GPURasterIrregularDateAxis;
   output: {
     /** Smoothed curve at every slice, gaps included; NaN when status is nonzero. */
-    smoothed: GraphDataView<'float32'>;
+    smoothed: RasterTimeSeriesView<'float32', Rows>;
     /** Per cell: 0 fit, 1 insufficient support, 2 numerical failure. */
-    status: GraphDataView<'uint32'>;
+    status: RasterTimeSeriesView<'uint32', Rows>;
   };
 };
 
@@ -119,15 +122,23 @@ export type GPURasterWhittakerSmootherProps = {
  *
  * Per-frame: `parameters`. Compile-time: `cellCount`, `sliceCount`, `differenceOrder`,
  * `reweightPassCount`, `reweightFunction`, and which optional views exist.
+ *
+ * Cell-major views accept matching chunks of complete cell records; shared tables stay packed.
  */
-export class GPURasterWhittakerSmoother implements GPUCommandNodeProducer {
+export class GPURasterWhittakerSmoother<Rows extends RasterScalarView = GraphDataView>
+  implements GPUCommandNodeProducer
+{
   readonly id: string;
+  readonly props: GPURasterWhittakerSmootherProps<Rows>;
+  readonly chunkPlan: RasterTimeSeriesChunkPlan;
+  readonly estimatedCommandNodeCount: number;
   readonly differenceOrder: number;
   readonly reweightPassCount: number;
   readonly reweightFunction: GPURasterWhittakerReweightFunction;
   private readonly ticksPerYear: number;
 
-  constructor(readonly props: GPURasterWhittakerSmootherProps) {
+  constructor(props: GPURasterWhittakerSmootherProps<Rows> & {values: Rows}) {
+    this.props = props;
     const id = props.id ?? 'raster-whittaker-smoother';
     this.id = id;
     const differenceOrder = props.differenceOrder ?? 2;
@@ -177,12 +188,21 @@ export class GPURasterWhittakerSmoother implements GPUCommandNodeProducer {
     this.ticksPerYear = props.dateAxis
       ? resolveGPURasterIrregularDateAxis(id, props.dateAxis, props.sliceCount)
       : 0;
-    validateRasterViews(id, this.getInputs(), this.getOutputs());
+    this.chunkPlan = planRasterTimeSeriesChunks(this.id, props.cellCount, {
+      values: {view: props.values, entriesPerCell: props.sliceCount},
+      mask: {view: props.mask, entriesPerCell: props.sliceCount},
+      qualityWeights: {view: props.qualityWeights, entriesPerCell: props.sliceCount},
+      'output.smoothed': {view: props.output.smoothed, entriesPerCell: props.sliceCount},
+      'output.status': {view: props.output.status, entriesPerCell: 1}
+    });
+    this.estimatedCommandNodeCount = this.chunkPlan.estimatedCommandNodeCount;
+    validateRasterViews(this.id, this.getInputs(), this.getOutputs(), this.chunkPlan);
   }
 
   private getInputs(): RasterScalarView[] {
     const {values, mask, qualityWeights, parameters} = this.props;
     return [
+      ...(this.props.dateAxis ? [this.props.dateAxis.acquisitionTimes] : []),
       values,
       parameters,
       ...(mask ? [mask] : []),
@@ -211,19 +231,18 @@ export class GPURasterWhittakerSmoother implements GPUCommandNodeProducer {
     const spanExpression = dateAxis
       ? '(rasterYearsBetween(row + offset + level, row + offset) / axisMeanSpacing)'
       : 'f32(level)';
-    return [
-      createWGSLKernelNode<Parameters>(graph, {
-        id,
-        operation: 'GPURasterWhittakerSmoother',
-        invocationCount: props.cellCount,
-        workgroupSize: 8,
-        bindings: [
-          ...inputBindings,
-          ...(dateAxis ? [getGPURasterDateAxisBinding(dateAxis)] : []),
-          rasterBinding('smoothed', output.smoothed, true),
-          rasterBinding('status', output.status, true)
-        ],
-        declarations: `${RASTER_FINITE_WGSL}
+    return createRasterTimeSeriesNodes<Parameters>(graph, this.chunkPlan, {
+      id,
+      operation: 'GPURasterWhittakerSmoother',
+      invocationCount: props.cellCount,
+      workgroupSize: 8,
+      bindings: [
+        ...inputBindings,
+        ...(dateAxis ? [getGPURasterDateAxisBinding(dateAxis)] : []),
+        rasterBinding('smoothed', output.smoothed, true),
+        rasterBinding('status', output.status, true)
+      ],
+      declarations: `${RASTER_FINITE_WGSL}
 ${dateAxis ? getGPURasterDateAxisDeclarations(this.ticksPerYear, slices) : ''}
 fn baseWeight(cell: u32, slice: u32) -> f32 {
   let source = cell * ${slices}u + slice;
@@ -294,7 +313,7 @@ fn insertRow(
     workRightSide = cosine * workRightSide - sine * upperRightSide;
   }
 }`,
-        body: `let smoothing = parameters[parametersOffset];
+      body: `let smoothing = parameters[parametersOffset];
 let minimumWeight = parameters[parametersOffset + 1u];
 var band: array<f32, ${slices * bandStride}>;
 var solution: array<f32, ${slices}>;
@@ -405,7 +424,6 @@ status[statusOffset + index] = code;
 for (var slice = 0u; slice < ${slices}u; slice++) {
   smoothed[smoothedOffset + index * ${slices}u + slice] = select(missing(), solution[slice] + reference, code == 0u);
 }`
-      })
-    ];
+    });
   }
 }

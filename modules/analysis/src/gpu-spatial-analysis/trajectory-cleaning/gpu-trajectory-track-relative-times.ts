@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  validateTrajectoryBindings,
+  validateTrajectoryOutputRanges
+} from '../trajectory-analysis/trajectory-binding-validation';
 import type {
   GPUCommandGraph,
   GPUCommandNode,
@@ -61,6 +65,7 @@ export class GPUTrajectoryTrackRelativeTimes implements GPUCommandNodeProducer {
       'trackOffsets must contain at least two rows'
     );
     resolveGPUTrajectoryTemporalContext(id, props.timestamps, props.temporalContext);
+    validateTrajectoryOutputRanges(this.id, this.props.output);
     validateGraphOutputsDisjointFromInputs(
       id,
       [props.output],
@@ -82,6 +87,7 @@ export class GPUTrajectoryTrackRelativeTimes implements GPUCommandNodeProducer {
       rowCount * 8,
       'split the tracks over several graphs'
     );
+    validateTrajectoryBindings(graph, this.id, this.props);
     return [
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-convert`,

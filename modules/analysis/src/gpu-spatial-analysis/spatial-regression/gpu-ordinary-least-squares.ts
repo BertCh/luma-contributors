@@ -17,7 +17,6 @@ import {
 import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -48,6 +47,10 @@ import {GPU_REGRESSION_PRECISION_CONDITION_LIMIT} from '../../analysis-core/cont
 import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {getPairwiseSumWGSL} from './pairwise-sum-wgsl';
 import {ROUNDED_DIFFERENCE_WGSL} from './rounded-difference-wgsl';
+
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateRegressionAllocations} from './spatial-likelihood-allocations';
+import {validateRegressionOutputDispatches} from './regression-output-dispatches';
 
 const OPERATION = 'GPUOrdinaryLeastSquares';
 const TILE_WORKGROUP_SIZE = 64;
@@ -271,6 +274,22 @@ export class GPUOrdinaryLeastSquares implements GPUCommandNodeProducer {
       props.tileRowCount ??
       Math.max(MINIMUM_DEFAULT_TILE_ROWS, Math.ceil(rows / MAXIMUM_DEFAULT_TILE_COUNT));
     this.tileCount = Math.ceil(rows / this.tileRowCount);
+    validateRegressionOutputDispatches(
+      id,
+      {
+        coefficients: output.coefficients,
+        standardErrors: output.standardErrors,
+        tStatistics: output.tStatistics,
+        summary: output.summary,
+        code: output.status.code,
+        residuals: output.residuals,
+        fitted: output.fitted
+      },
+      [
+        ['coefficients', 'standardErrors', 'tStatistics', 'summary', 'code'],
+        ['residuals', 'fitted']
+      ]
+    );
     validateGraphOutputsDisjointFromInputs(
       id,
       [
@@ -297,19 +316,24 @@ export class GPUOrdinaryLeastSquares implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id, rowCount, tileRowCount, tileCount} = this;
     const {output, predictorCount} = props;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.predictors,
-      props.response,
-      props.mask,
-      props.parameters,
-      output.coefficients,
-      output.standardErrors,
-      output.tStatistics,
-      output.summary,
-      output.status.code,
-      output.residuals,
-      output.fitted
-    ]);
+    validateGraphChunkBindingRanges(graph, id, {
+      predictors: props.predictors,
+      response: props.response,
+      mask: props.mask,
+      parameters: props.parameters,
+      coefficients: output.coefficients,
+      standardErrors: output.standardErrors,
+      tStatistics: output.tStatistics,
+      summary: output.summary,
+      code: output.status.code,
+      residuals: output.residuals,
+      fitted: output.fitted
+    });
+    validateRegressionAllocations(
+      graph.device,
+      id,
+      getOrdinaryLeastSquaresAllocationLengths(rowCount, predictorCount, tileRowCount)
+    );
     const k = predictorCount;
     const layout = getWorkspaceLayout(k);
     const u32 = (name: string, length: number) =>
@@ -541,6 +565,23 @@ type WorkspaceLayout = {
  * packed upper-triangular moments about the stored means (d (d + 1) / 2 with d = k + 1), the sums
  * of the deviations from the stored means (d), the residual offset, and the runtime zero.
  */
+/** Allocation-free scratch plan for OLS and composite panel/SUR callers. @internal */
+export function getOrdinaryLeastSquaresAllocationLengths(
+  rowCount: number,
+  predictorCount: number,
+  tileRowCount = Math.max(64, Math.ceil(rowCount / 4096))
+): Readonly<Record<string, number>> {
+  const layout = getWorkspaceLayout(predictorCount);
+  const tileCount = Math.ceil(rowCount / tileRowCount);
+  return {
+    'OLS residuals/squared residuals': rowCount,
+    'OLS workspace': layout.length,
+    'OLS mean partials': tileCount * (predictorCount + 2),
+    'OLS moment partials': tileCount * (layout.momentCount + predictorCount + 1),
+    'OLS residual partials': tileCount * RESIDUAL_SUM_COUNT
+  };
+}
+
 function getWorkspaceLayout(k: number): WorkspaceLayout {
   const d = k + 1;
   const momentCount = (d * (d + 1)) / 2;

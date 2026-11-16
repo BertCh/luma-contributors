@@ -5,6 +5,14 @@
 import type {GraphDataView} from '@luma.gl/graph/gpu-core';
 import type {WGSLKernelBinding} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 
+/** One source chunk of raw float32 words, with its logical row offset. @internal */
+export type GroupValueChunk = {
+  valueBits: GraphDataView<'uint32'>;
+  rowOffset: number;
+  /** Tile-local source rows mapped to global output groups. */
+  rowGroups?: GraphDataView<'uint32'>;
+};
+
 /** Marker for "no group" in per-row and per-position group indices. @internal */
 export const GROUP_NONE = 0xffffffff;
 

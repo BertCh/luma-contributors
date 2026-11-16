@@ -26,6 +26,12 @@ import {
 } from './gpu-space-time-kernel-density';
 import type {GPUSpaceTimeTemporalKernel} from './space-time-kernel-density-math';
 
+import {
+  stageDensityOutputViews,
+  validateDensityViewBindings,
+  validateDensityWritableViews
+} from './density-point-passes';
+
 const OPERATION = 'GPUSpaceTimeRelativeRisk';
 
 /** Caller-owned outputs of {@link GPUSpaceTimeRelativeRisk}. */
@@ -134,28 +140,18 @@ export class GPUSpaceTimeRelativeRisk implements GPUCommandNodeProducer {
         props.controlTimes.length === props.controlPositions.length,
       'times lengths must equal positions lengths'
     );
-    // Everything else is validated by the two densities, whose output views exist only once the
-    // graph does; build them once now with the caller's own views to fail at construction.
-    const probe = (positions: typeof props.casePositions, times: typeof props.caseTimes) =>
-      new GPUSpaceTimeKernelDensity({
-        id,
-        spatialContext: props.spatialContext,
-        temporalContext: props.temporalContext,
-        positions,
-        times,
-        parameters: props.parameters,
-        grid: props.grid,
-        sliceCount: props.sliceCount,
-        indexGridSize: props.indexGridSize,
-        indexBounds: props.indexBounds,
-        spatialKernel: props.spatialKernel,
-        temporalKernel: props.temporalKernel,
-        spatialEdgeCorrection: props.spatialEdgeCorrection,
-        temporalEdgeCorrection: props.temporalEdgeCorrection,
-        normalization: 'probability',
-        output: {values: props.output.values}
-      });
-    probe(props.casePositions, props.caseTimes);
+    // Validate both datasets (including optional weights and status) at construction. The caller's
+    // risk view is only a metadata stand-in for an omitted intermediate density output.
+    this.createDensity(
+      'case',
+      props.output.caseDensity ?? props.output.values,
+      props.output.status?.caseInvalidCount
+    );
+    this.createDensity(
+      'control',
+      props.output.controlDensity ?? props.output.values,
+      props.output.status?.controlInvalidCount
+    );
     validateSinglePackedView(props.output.values, ['float32'], `${id} output.values`);
     for (const [name, view] of [
       ['output.caseDensity', props.output.caseDensity],
@@ -177,11 +173,13 @@ export class GPUSpaceTimeRelativeRisk implements GPUCommandNodeProducer {
       props.output.status?.caseInvalidCount,
       props.output.status?.controlInvalidCount
     ].filter(view => view !== undefined);
-    validateRequirement(
-      id,
-      new Set(outputViews.map(view => view.buffer)).size === outputViews.length,
-      'outputs must use separate buffers'
-    );
+    validateDensityWritableViews(id, {
+      values: props.output.values,
+      caseDensity: props.output.caseDensity,
+      controlDensity: props.output.controlDensity,
+      caseInvalidCount: props.output.status?.caseInvalidCount,
+      controlInvalidCount: props.output.status?.controlInvalidCount
+    });
     validateGraphOutputsDisjointFromInputs(id, outputViews, [
       props.casePositions,
       props.caseTimes,
@@ -198,7 +196,8 @@ export class GPUSpaceTimeRelativeRisk implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, scale} = this;
-    const {output} = props;
+    const {output: callerOutput} = props;
+    let output = callerOutput;
     validateGraphViewsBelongToGraph(id, graph, [
       props.casePositions,
       props.caseTimes,
@@ -213,56 +212,75 @@ export class GPUSpaceTimeRelativeRisk implements GPUCommandNodeProducer {
       output.status?.caseInvalidCount,
       output.status?.controlInvalidCount
     ]);
+    validateDensityViewBindings(
+      graph,
+      id,
+      [
+        ['casePositions', props.casePositions],
+        ['caseTimes', props.caseTimes],
+        ['caseWeights', props.caseWeights],
+        ['controlPositions', props.controlPositions],
+        ['controlTimes', props.controlTimes],
+        ['controlWeights', props.controlWeights],
+        ['parameters', props.parameters],
+        ['output.values', output.values],
+        ['output.caseDensity', output.caseDensity],
+        ['output.controlDensity', output.controlDensity],
+        ['output.status.caseInvalidCount', output.status?.caseInvalidCount],
+        ['output.status.controlInvalidCount', output.status?.controlInvalidCount]
+      ],
+      {dispatchMetadata: false}
+    );
+    // Both nested index/sort/reduction/table layouts must fit before either pass allocates.
+    this.createDensity(
+      'case',
+      output.caseDensity ?? output.values,
+      output.status?.caseInvalidCount
+    ).validateBindings(graph);
+    this.createDensity(
+      'control',
+      output.controlDensity ?? output.values,
+      output.status?.controlInvalidCount
+    ).validateBindings(graph);
+    const staged = stageDensityOutputViews(
+      graph,
+      id,
+      OPERATION,
+      {
+        values: output.values,
+        caseDensity: output.caseDensity,
+        controlDensity: output.controlDensity,
+        caseInvalidCount: output.status?.caseInvalidCount,
+        controlInvalidCount: output.status?.controlInvalidCount
+      },
+      {
+        values: props.grid.width * props.grid.height * props.sliceCount,
+        caseDensity: props.grid.width * props.grid.height * props.sliceCount,
+        controlDensity: props.grid.width * props.grid.height * props.sliceCount
+      }
+    );
+    output = {
+      ...staged.views,
+      status: {
+        caseInvalidCount: staged.views.caseInvalidCount,
+        controlInvalidCount: staged.views.controlInvalidCount
+      }
+    };
     const voxelCount = props.grid.width * props.grid.height * props.sliceCount;
     const caseDensity =
       output.caseDensity ?? createTransientView(graph, `${id}-case-density`, 'float32', voxelCount);
     const controlDensity =
       output.controlDensity ??
       createTransientView(graph, `${id}-control-density`, 'float32', voxelCount);
-    const build = (
-      name: 'case' | 'control',
-      positions: GraphDataView<'float32x2'>,
-      times: GraphDataView<'float32'>,
-      weights: GraphDataView<'float32'> | undefined,
-      values: GraphDataView<'float32'>,
-      invalidCount: GraphDataView<'uint32'> | undefined
-    ) =>
-      new GPUSpaceTimeKernelDensity({
-        id: `${id}-${name}`,
-        spatialContext: props.spatialContext,
-        temporalContext: props.temporalContext,
-        positions,
-        times,
-        weights,
-        parameters: props.parameters,
-        grid: props.grid,
-        sliceCount: props.sliceCount,
-        indexGridSize: props.indexGridSize,
-        indexBounds: props.indexBounds,
-        spatialKernel: props.spatialKernel,
-        temporalKernel: props.temporalKernel,
-        spatialEdgeCorrection: props.spatialEdgeCorrection,
-        temporalEdgeCorrection: props.temporalEdgeCorrection,
-        normalization: 'probability',
-        output: {values, status: invalidCount ? {invalidCount} : undefined}
-      }).getCommandNodes(graph);
     return [
-      ...build(
-        'case',
-        props.casePositions,
-        props.caseTimes,
-        props.caseWeights,
-        caseDensity,
-        output.status?.caseInvalidCount
+      ...this.createDensity('case', caseDensity, output.status?.caseInvalidCount).getCommandNodes(
+        graph
       ),
-      ...build(
+      ...this.createDensity(
         'control',
-        props.controlPositions,
-        props.controlTimes,
-        props.controlWeights,
         controlDensity,
         output.status?.controlInvalidCount
-      ),
+      ).getCommandNodes(graph),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-ratio`,
         operation: OPERATION,
@@ -286,7 +304,35 @@ fn getNegativeInfinity() -> f32 { var bits = 0xff800000u; return bitcast<f32>(bi
       : 'let ratio = numerator / max(denominator, 1e-38);'
   }
   risk[riskOffset + index] = select(getNaNValue(), ratio, defined);`
-      })
+      }),
+      ...staged.publishNodes
     ];
+  }
+
+  private createDensity(
+    name: 'case' | 'control',
+    values: GraphDataView<'float32'>,
+    invalidCount: GraphDataView<'uint32'> | undefined
+  ): GPUSpaceTimeKernelDensity {
+    const {id, props} = this;
+    return new GPUSpaceTimeKernelDensity({
+      id: `${id}-${name}`,
+      spatialContext: props.spatialContext,
+      temporalContext: props.temporalContext,
+      positions: name === 'case' ? props.casePositions : props.controlPositions,
+      times: name === 'case' ? props.caseTimes : props.controlTimes,
+      weights: name === 'case' ? props.caseWeights : props.controlWeights,
+      parameters: props.parameters,
+      grid: props.grid,
+      sliceCount: props.sliceCount,
+      indexGridSize: props.indexGridSize,
+      indexBounds: props.indexBounds,
+      spatialKernel: props.spatialKernel,
+      temporalKernel: props.temporalKernel,
+      spatialEdgeCorrection: props.spatialEdgeCorrection,
+      temporalEdgeCorrection: props.temporalEdgeCorrection,
+      normalization: 'probability',
+      output: {values, status: invalidCount ? {invalidCount} : undefined}
+    });
   }
 }

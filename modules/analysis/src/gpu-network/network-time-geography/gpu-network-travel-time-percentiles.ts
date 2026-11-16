@@ -3,6 +3,13 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  validateNetworkViewBindings,
+  validateNetworkWritableViews,
+  alignElementCount,
+  NETWORK_ALIGNMENT_ELEMENTS
+} from '../network-view-utils';
+
+import {
   createTransientView,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -12,8 +19,8 @@ import {
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
+  validateCommandNodeBudget,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
   validateSinglePackedView,
   validateRequirement,
   validateViewLength
@@ -98,11 +105,16 @@ export type GPUNetworkTravelTimePercentilesProps = Pick<
 export class GPUNetworkTravelTimePercentiles implements GPUCommandNodeProducer {
   readonly id: string;
   readonly props: GPUNetworkTravelTimePercentilesProps;
+  /** One departure-window node, one solve per departure and one percentile publication. */
+  readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPUNetworkTravelTimePercentilesProps) {
     this.id = props.id ?? 'network-travel-time-percentiles';
     this.props = props;
+    validateNetworkWritableViews(this.id, props.output);
     const {id} = this;
+    this.estimatedCommandNodeCount = 2 + props.departureCount;
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     validateCapacity(
       id,
       'departureCount',
@@ -166,7 +178,7 @@ export class GPUNetworkTravelTimePercentiles implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
     const {output} = props;
-    validateGraphViewsBelongToGraph(id, graph, [
+    validateNetworkViewBindings(id, graph, [
       props.stateVertices,
       props.transitions,
       props.costs,
@@ -176,24 +188,39 @@ export class GPUNetworkTravelTimePercentiles implements GPUCommandNodeProducer {
     ]);
     const stateCount = props.stateVertices.length;
     const departureCount = props.departureCount;
-    const departures = createTransientView(graph, `${id}-departures`, 'float32', departureCount);
+    // Each solve binds the same view lengths and alignment residue. Padding is scratch only;
+    // departure indices never reach WGSL text or pipeline constants.
+    const stateStride = alignElementCount(stateCount);
+    const parameterStride = NETWORK_ALIGNMENT_ELEMENTS;
+    validateNetworkViewBindings(id, graph, [], {
+      departures: departureCount * parameterStride * 4,
+      arrivals: departureCount * stateStride * 4,
+      summaries: departureCount * parameterStride * 4,
+      endpoints: 8
+    });
+    const departures = createTransientView(
+      graph,
+      `${id}-departures`,
+      'float32',
+      departureCount * parameterStride
+    );
     const arrivals = createTransientView(
       graph,
       `${id}-arrivals`,
       'float32',
-      departureCount * stateCount
+      departureCount * stateStride
     );
     const predecessors = createTransientView(
       graph,
       `${id}-predecessors`,
       'uint32',
-      departureCount * stateCount
+      departureCount * stateStride
     );
     const summaries = createTransientView(
       graph,
       `${id}-summaries`,
       'uint32',
-      departureCount * ROUTING_SUMMARY_LENGTH
+      departureCount * parameterStride
     );
     const endpoints = createTransientView(graph, `${id}-endpoints`, 'uint32', 2);
     const slice = <Format extends 'float32' | 'uint32'>(
@@ -221,7 +248,7 @@ export class GPUNetworkTravelTimePercentiles implements GPUCommandNodeProducer {
           {name: 'endpoints', view: endpoints, type: 'u32', access: 'read_write'}
         ],
         // The routing's destination is unused here: every state's arrival is read afterwards.
-        body: `if (index < ${departureCount}u) { departures[departuresOffset + index] = window[windowOffset] + f32(index) * window[windowOffset + 1u]; }
+        body: `if (index < ${departureCount}u) { departures[departuresOffset + index * ${parameterStride}u] = window[windowOffset] + f32(index) * window[windowOffset + 1u]; }
 if (index == 0u) { endpoints[endpointsOffset] = initialState[initialStateOffset]; endpoints[endpointsOffset + 1u] = 0u; }`
       })
     ];
@@ -236,12 +263,12 @@ if (index == 0u) { endpoints[endpointsOffset] = initialState[initialStateOffset]
           waitingPolicy: props.waitingPolicy,
           costs: props.costs,
           endpoints,
-          departure: slice(departures, departure, 1),
+          departure: slice(departures, departure * parameterStride, 1),
           maximumRelaxations: props.maximumRelaxations,
           output: {
-            arrivals: slice(arrivals, departure * stateCount, stateCount),
-            predecessorTransitions: slice(predecessors, departure * stateCount, stateCount),
-            summary: slice(summaries, departure * ROUTING_SUMMARY_LENGTH, ROUTING_SUMMARY_LENGTH)
+            arrivals: slice(arrivals, departure * stateStride, stateCount),
+            predecessorTransitions: slice(predecessors, departure * stateStride, stateCount),
+            summary: slice(summaries, departure * parameterStride, ROUTING_SUMMARY_LENGTH)
           }
         }).getCommandNodes(graph)
       );
@@ -290,11 +317,11 @@ var values: array<f32, ${departureCount}>;
 var reached = 0u;
 for (var departure = 0u; departure < ${departureCount}u; departure++) {
   var best = infinity;
-  if ((summaries[summariesOffset + departure * ${ROUTING_SUMMARY_LENGTH}u] & 1u) != 0u) {
+  if ((summaries[summariesOffset + departure * ${parameterStride}u] & 1u) != 0u) {
     for (var state = 0u; state < ${stateCount}u; state++) {
       if (stateVertices[stateVerticesOffset + state] == index) {
-        let arrival = arrivals[arrivalsOffset + departure * ${stateCount}u + state];
-        best = min(best, arrival - departures[departuresOffset + departure]);
+        let arrival = arrivals[arrivalsOffset + departure * ${stateStride}u + state];
+        best = min(best, arrival - departures[departuresOffset + departure * ${parameterStride}u]);
       }
     }
   }
@@ -307,7 +334,7 @@ for (var column = 0u; column < ${percentileCount}u; column++) { travelTimes[trav
 ${output.reachedCounts ? 'reachedCounts[reachedCountsOffset + index] = reached;' : ''}
 ${
   output.status
-    ? `if (index == 0u) { for (var departure = 0u; departure < ${departureCount}u; departure++) { status[statusOffset + 2u * departure] = summaries[summariesOffset + departure * ${ROUTING_SUMMARY_LENGTH}u]; status[statusOffset + 2u * departure + 1u] = summaries[summariesOffset + departure * ${ROUTING_SUMMARY_LENGTH}u + 1u]; } }`
+    ? `if (index == 0u) { for (var departure = 0u; departure < ${departureCount}u; departure++) { status[statusOffset + 2u * departure] = summaries[summariesOffset + departure * ${parameterStride}u]; status[statusOffset + 2u * departure + 1u] = summaries[summariesOffset + departure * ${parameterStride}u + 1u]; } }`
     : ''
 }`
       })

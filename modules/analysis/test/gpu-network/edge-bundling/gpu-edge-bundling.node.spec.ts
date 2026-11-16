@@ -151,7 +151,7 @@ it('GPUEdgeBundling validates props', () => {
     new GPUEdgeBundling(createProps(largeGraph, {densityResolution: 8192})).getCommandNodes(
       largeGraph
     )
-  ).toThrow(/maxStorageBufferBindingSize/);
+  ).toThrow(/edge-bundling density.*limit/);
   device.destroy();
 });
 

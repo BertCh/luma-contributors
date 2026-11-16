@@ -2,29 +2,50 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {
-  GPUCommandGraph,
-  GPUCommandNode,
-  GPUCommandNodeProducer,
-  GraphDataView
+import {
+  createGraphChunkGroupKernelNode,
+  validateGraphChunkGroupKernelSupport
+} from './graph-chunk-groups';
+
+import {
+  getBoundedDispatchLayout,
+  GraphDataView,
+  GraphVectorView,
+  type GPUCommandGraph,
+  type GPUCommandNode,
+  type GPUCommandNodeProducer
 } from '@luma.gl/graph/gpu-core';
 import {resolveGPUSpatialContext, type GPUSpatialContext} from '../contracts/spatial-context';
 import {
   validateCapacity,
   validateCommandNodeBudget,
   validateMaximumCount,
-  validateRequirement
+  validateRequirement,
+  validateViewLength,
+  validateSinglePackedView,
+  getGraphViewChunks,
+  validateGraphOutputsDisjointFromInputs
 } from './gpu-contributor-utils';
 import {
   GPU_FITTING_MAXIMUM_ROW_COUNT,
   GPU_FITTING_MAXIMUM_WORK,
-  validateFittingGraph,
-  validateFittingView,
-  validateFittingWritableViews
+  validateFittingView
 } from './fitting-utils';
-import {createWGSLKernelNode} from './wgsl-kernel-nodes';
+import {
+  planGraphChunkDispatch,
+  validateDisjointWritableViews,
+  validateGraphChunkBindingRanges,
+  validateGraphChunkDispatchBindings,
+  type GraphChunkDispatchPlan
+} from './graph-chunk-dispatch';
+import {type WGSLKernelBinding} from './wgsl-kernel-nodes';
 import {IS_FINITE_VALUE_WGSL} from './wgsl-common';
 import {FITTING_SPHERICAL_HARMONIC_WGSL} from './fitting-coordinate-encoding-wgsl';
+
+/** Flat scalar indexing within each chunk uses uint32, even on larger-binding devices. */
+const MAXIMUM_ELEMENT_COUNT = 0xffffffff;
+/** Fixed workgroup size keeps all row chunks on the same pipeline specialization. */
+const WORKGROUP_SIZE = 256;
 
 /** SatCLIP's L=40 has degrees 0 through 39 (1600 real basis values). */
 export const GPU_FITTING_MAXIMUM_HARMONIC_DEGREE = 39;
@@ -35,22 +56,34 @@ export const GPU_FITTING_MAXIMUM_FOURIER_PHASE = 8192;
 /** Two spatial coordinates, with an optional normalized time/height coordinate. */
 export const GPU_FITTING_MAXIMUM_COORDINATE_DIMENSIONS = 3;
 
-export type GPUFittingCoordinateEncoderOutput = {
+/** Preserves packed row types by default and the caller's chunked view kind when requested. */
+type GPUFittingCoordinateEncoderRowView<
+  Format extends GraphDataView['format'],
+  Rows extends GraphDataView | GraphVectorView
+> = Rows extends GraphVectorView ? GraphVectorView<Format> : GraphDataView<Format>;
+
+export type GPUFittingCoordinateEncoderOutput<
+  Rows extends GraphDataView | GraphVectorView = GraphDataView
+> = {
   /** Row-major real features; invalid rows are zero-filled. */
-  features: GraphDataView<'float32'>;
+  features: GPUFittingCoordinateEncoderRowView<'float32', Rows>;
   /** One per source row, nonzero when retained and finite. */
-  validity: GraphDataView<'uint32'>;
+  validity: GPUFittingCoordinateEncoderRowView<'uint32', Rows>;
 };
-type GPUFittingCoordinateEncoderCommonProps = {
+type GPUFittingCoordinateEncoderCommonProps<
+  Rows extends GraphDataView | GraphVectorView = GraphDataView
+> = {
   id?: string;
   rowCount: number;
   /** Scalar-packed row-major normalized coordinates (Fourier), or lon/lat degrees (harmonics). */
-  coordinates: GraphDataView<'float32'>;
+  coordinates: GPUFittingCoordinateEncoderRowView<'float32', Rows>;
   spatialContext?: GPUSpatialContext;
-  mask?: GraphDataView<'uint32'>;
-  output: GPUFittingCoordinateEncoderOutput;
+  mask?: GPUFittingCoordinateEncoderRowView<'uint32', Rows>;
+  output: GPUFittingCoordinateEncoderOutput<Rows>;
 };
-export type GPUFittingCoordinateEncoderProps = GPUFittingCoordinateEncoderCommonProps &
+export type GPUFittingCoordinateEncoderProps<
+  Rows extends GraphDataView | GraphVectorView = GraphDataView
+> = GPUFittingCoordinateEncoderCommonProps<Rows> &
   (
     | {
         encoding: 'fourier';
@@ -71,17 +104,27 @@ export type GPUFittingCoordinateEncoderProps = GPUFittingCoordinateEncoderCommon
  * Compile-time: shapes, encoding, maximumDegree, mask presence and spatialContext. Per-frame:
  * coordinates, frequencies and mask. Normalize/project Fourier coordinates before uploading;
  * phase magnitudes beyond 8192 radians are invalid, protecting float32 trig argument reduction.
+ * Coordinates, mask and outputs may be chunked at identical source-row boundaries. Coordinate
+ * chunks hold rows * dimensions scalars; feature chunks hold rows * featureCount scalars.
+ * Every chunk must fit one device binding. Frequencies stay packed. The fitting row/work budgets
+ * are unchanged; they apply to the total source rows.
  */
-export class GPUFittingCoordinateEncoder implements GPUCommandNodeProducer {
+export class GPUFittingCoordinateEncoder<
+  Props extends GPUFittingCoordinateEncoderProps<
+    GraphDataView | GraphVectorView
+  > = GPUFittingCoordinateEncoderProps
+> implements GPUCommandNodeProducer
+{
   readonly id: string;
-  readonly props: GPUFittingCoordinateEncoderProps;
+  readonly props: Props & GPUFittingCoordinateEncoderProps<Props['coordinates']>;
   readonly spatialContext: GPUSpatialContext;
   readonly featureCount: number;
-  readonly estimatedCommandNodeCount = 1;
+  readonly estimatedCommandNodeCount: number;
+  private readonly chunkPlan: GraphChunkDispatchPlan;
 
-  constructor(props: GPUFittingCoordinateEncoderProps) {
+  constructor(props: Props) {
     this.id = props.id ?? 'fitting-coordinate-encoder';
-    this.props = props;
+    this.props = props as Props & GPUFittingCoordinateEncoderProps<Props['coordinates']>;
     const {id} = this;
     validateCapacity(id, 'rowCount', props.rowCount, 0, GPU_FITTING_MAXIMUM_ROW_COUNT);
     validateRequirement(
@@ -131,31 +174,56 @@ export class GPUFittingCoordinateEncoder implements GPUCommandNodeProducer {
         (props.encoding === 'fourier' ? dimensions : props.maximumDegree + 1),
       GPU_FITTING_MAXIMUM_WORK
     );
-    validateFittingView(
-      id,
-      'coordinates',
-      props.coordinates,
-      'float32',
-      props.rowCount * dimensions
+    const rowFields = [
+      ['coordinates', props.coordinates, dimensions, 'float32'],
+      ['mask', props.mask, 1, 'uint32'],
+      ['features', props.output.features, this.featureCount, 'float32'],
+      ['validity', props.output.validity, 1, 'uint32']
+    ] as const;
+    const rowViews = Object.fromEntries(
+      rowFields.map(([name, view, elementsPerRow, format]) => {
+        if (!view) return [name, undefined];
+        validateViewLength(id, name, view, props.rowCount * elementsPerRow);
+        // Metadata-only row prefixes let the shared planner compare row topology while the actual
+        // scalar-packed views keep their public layout and full binding ranges.
+        const data = getGraphViewChunks(view).map(chunk => {
+          validateSinglePackedView(chunk, [format], `${id} ${name}`);
+          validateCapacity(id, `${name} chunk elements`, chunk.length, 0, MAXIMUM_ELEMENT_COUNT);
+          validateRequirement(
+            id,
+            chunk.length % elementsPerRow === 0,
+            `${name} chunks must contain whole rows of ${elementsPerRow} elements`
+          );
+          return new GraphDataView(chunk.buffer, {...chunk, length: chunk.length / elementsPerRow});
+        });
+        return [
+          name,
+          new GraphVectorView({
+            id: `${id}-${name}-rows`,
+            name,
+            format: view.format,
+            length: props.rowCount,
+            valueLength: props.rowCount,
+            stride: 1,
+            byteStride: 4,
+            rowByteLength: 4,
+            data
+          })
+        ];
+      })
     );
-    if (props.mask) validateFittingView(id, 'mask', props.mask, 'uint32', props.rowCount);
-    validateFittingView(
-      id,
-      'output.features',
-      props.output.features,
-      'float32',
-      props.rowCount * this.featureCount
-    );
-    validateFittingView(id, 'output.validity', props.output.validity, 'uint32', props.rowCount);
-    validateFittingWritableViews(
+    this.chunkPlan = planGraphChunkDispatch(id, rowViews);
+    validateDisjointWritableViews(id, props.output);
+    validateGraphOutputsDisjointFromInputs(
       id,
       [props.output.features, props.output.validity],
       this.getInputViews()
     );
+    this.estimatedCommandNodeCount = this.chunkPlan.nonemptyChunkCount;
     validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
   }
 
-  private getInputViews(): GraphDataView[] {
+  private getInputViews(): (GraphDataView | GraphVectorView)[] {
     const {props} = this;
     return [
       props.coordinates,
@@ -167,60 +235,114 @@ export class GPUFittingCoordinateEncoder implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {id, props, featureCount} = this;
-    validateFittingGraph(id, graph, [
-      ...this.getInputViews(),
-      props.output.features,
-      props.output.validity
-    ]);
+    const {id, props, featureCount, chunkPlan} = this;
+    validateGraphChunkBindingRanges(graph, id, {
+      coordinates: props.coordinates,
+      mask: props.mask,
+      features: props.output.features,
+      validity: props.output.validity,
+      frequencies: props.encoding === 'fourier' ? props.frequencies : undefined
+    });
+    validateGraphChunkDispatchBindings(graph, id, chunkPlan);
+    validateGraphChunkGroupKernelSupport(
+      graph,
+      id,
+      3 + Number(Boolean(props.mask)) + Number(props.encoding === 'fourier'),
+      WORKGROUP_SIZE
+    );
+    for (const chunk of chunkPlan.chunks) {
+      if (chunk.length > 0)
+        getBoundedDispatchLayout(
+          id,
+          chunk.length,
+          WORKGROUP_SIZE,
+          graph.device.limits.maxComputeWorkgroupsPerDimension
+        );
+    }
+
+    const coordinates = getGraphViewChunks(props.coordinates);
+    const mask = props.mask ? getGraphViewChunks(props.mask) : undefined;
+    const features = getGraphViewChunks(props.output.features);
+    const validity = getGraphViewChunks(props.output.validity);
     return [
-      createWGSLKernelNode(graph, {
-        id,
-        operation: 'GPUFittingCoordinateEncoder',
-        variant: props.encoding,
-        invocationCount: props.rowCount,
-        bindings: [
-          {name: 'coordinates', view: props.coordinates, type: 'f32', access: 'read'},
-          ...(props.mask
-            ? [{name: 'mask', view: props.mask, type: 'u32' as const, access: 'read' as const}]
-            : []),
-          ...(props.encoding === 'fourier'
-            ? [
-                {
-                  name: 'frequencies',
-                  view: props.frequencies,
-                  type: 'f32' as const,
-                  access: 'read' as const
-                }
-              ]
-            : []),
-          {name: 'features', view: props.output.features, type: 'f32', access: 'read_write'},
-          {name: 'validity', view: props.output.validity, type: 'u32', access: 'read_write'}
-        ],
-        declarations:
-          IS_FINITE_VALUE_WGSL +
-          (props.encoding === 'spherical-harmonics' ? FITTING_SPHERICAL_HARMONIC_WGSL : ''),
-        body: `var valid = ${props.mask ? 'mask[maskOffset + index] != 0u' : 'true'};
+      ...chunkPlan.chunks
+        .filter(chunk => chunk.length > 0)
+        .map(chunk =>
+          createGraphChunkGroupKernelNode(graph, {
+            id: `${id}-chunk-${chunk.chunkIndex}`,
+            operation: 'GPUFittingCoordinateEncoder',
+            variant: props.encoding,
+            invocationCount: chunk.length,
+            workgroupSize: WORKGROUP_SIZE,
+            bindings: [
+              {
+                name: 'coordinates',
+                view: coordinates[chunk.chunkIndex],
+                type: 'f32',
+                access: 'read'
+              },
+              ...(props.mask
+                ? [
+                    {
+                      name: 'mask',
+                      view: mask![chunk.chunkIndex],
+                      type: 'u32' as const,
+                      access: 'read' as const
+                    }
+                  ]
+                : []),
+              ...(props.encoding === 'fourier'
+                ? [
+                    {
+                      name: 'frequencies',
+                      view: props.frequencies,
+                      type: 'f32' as const,
+                      access: 'read' as const
+                    }
+                  ]
+                : []),
+              {
+                name: 'features',
+                view: features[chunk.chunkIndex],
+                type: 'f32',
+                access: 'read_write'
+              },
+              {
+                name: 'validity',
+                view: validity[chunk.chunkIndex],
+                type: 'u32',
+                access: 'read_write'
+              }
+            ] as WGSLKernelBinding[],
+            declarations:
+              IS_FINITE_VALUE_WGSL +
+              (props.encoding === 'spherical-harmonics' ? FITTING_SPHERICAL_HARMONIC_WGSL : ''),
+            body: `if (index >= getChunkParameter(1u)) { return; }
+  let coordinatesBase = arrayLength(&coordinates) - getChunkParameter(1u) * ${props.encoding === 'fourier' ? props.dimensions : 2}u;
+  let featuresBase = arrayLength(&features) - getChunkParameter(1u) * ${featureCount}u;
+  let validityBase = arrayLength(&validity) - getChunkParameter(1u);
+  ${props.mask ? 'let maskBase = arrayLength(&mask) - getChunkParameter(1u);' : ''}
+  var valid = ${props.mask ? 'mask[maskBase + index] != 0u' : 'true'};
   ${
     props.encoding === 'fourier'
       ? `
   for (var coordinate = 0u; coordinate < ${props.dimensions}u; coordinate++) {
-    valid = valid && isFiniteValue(coordinates[coordinatesOffset + index * ${props.dimensions}u + coordinate]);
+    valid = valid && isFiniteValue(coordinates[coordinatesBase + index * ${props.dimensions}u + coordinate]);
   }
   for (var frequency = 0u; frequency < ${props.frequencyCount}u; frequency++) {
     var phase = 0.0;
     for (var coordinate = 0u; coordinate < ${props.dimensions}u; coordinate++) {
-      phase += coordinates[coordinatesOffset + index * ${props.dimensions}u + coordinate]
+      phase += coordinates[coordinatesBase + index * ${props.dimensions}u + coordinate]
         * frequencies[frequenciesOffset + frequency * ${props.dimensions}u + coordinate];
     }
     phase *= 6.283185307179586;
     valid = valid && isFiniteValue(phase) && abs(phase) <= ${GPU_FITTING_MAXIMUM_FOURIER_PHASE}.0;
-    features[featuresOffset + index * ${featureCount}u + 2u * frequency] = cos(phase);
-    features[featuresOffset + index * ${featureCount}u + 2u * frequency + 1u] = sin(phase);
+    features[featuresBase + index * ${featureCount}u + 2u * frequency] = cos(phase);
+    features[featuresBase + index * ${featureCount}u + 2u * frequency + 1u] = sin(phase);
   }`
       : `
-  let longitude = coordinates[coordinatesOffset + 2u * index];
-  let latitude = coordinates[coordinatesOffset + 2u * index + 1u];
+  let longitude = coordinates[coordinatesBase + 2u * index];
+  let latitude = coordinates[coordinatesBase + 2u * index + 1u];
   valid = valid && isFiniteValue(longitude) && isFiniteValue(latitude)
     && abs(longitude) <= 180.0 && abs(latitude) <= 90.0;
   let latitudeRadians = latitude * 0.017453292519943295;
@@ -230,22 +352,23 @@ export class GPUFittingCoordinateEncoder implements GPUCommandNodeProducer {
       let legendre = normalizedLegendre(degree, order, latitudeRadians);
       let center = degree * degree + degree;
       if (order == 0u) {
-        features[featuresOffset + index * ${featureCount}u + center] = legendre;
+        features[featuresBase + index * ${featureCount}u + center] = legendre;
       } else {
         let angle = f32(order) * longitudeRadians;
-        features[featuresOffset + index * ${featureCount}u + center + order] = 1.4142135623730951 * legendre * cos(angle);
-        features[featuresOffset + index * ${featureCount}u + center - order] = 1.4142135623730951 * legendre * sin(angle);
+        features[featuresBase + index * ${featureCount}u + center + order] = 1.4142135623730951 * legendre * cos(angle);
+        features[featuresBase + index * ${featureCount}u + center - order] = 1.4142135623730951 * legendre * sin(angle);
       }
     }
   }`
   }
   if (!valid) {
     for (var feature = 0u; feature < ${featureCount}u; feature++) {
-      features[featuresOffset + index * ${featureCount}u + feature] = 0.0;
+      features[featuresBase + index * ${featureCount}u + feature] = 0.0;
     }
   }
-  validity[validityOffset + index] = select(0u, 1u, valid);`
-      })
+  validity[validityBase + index] = select(0u, 1u, valid);`
+          })
+        )
     ];
   }
 }

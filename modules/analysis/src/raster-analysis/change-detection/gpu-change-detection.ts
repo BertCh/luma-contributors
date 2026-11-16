@@ -9,14 +9,21 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
-  createWGSLKernelNode,
-  type WGSLKernelBinding
-} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+  createRasterTimeSeriesNodes,
+  planRasterTimeSeriesChunks,
+  validateRasterTimeSeriesViews,
+  validateRasterTimeSeriesGraph,
+  type RasterWritableDispatch,
+  type RasterTimeSeriesBinding as WGSLKernelBinding,
+  type RasterTimeSeriesScalarView,
+  type RasterTimeSeriesView,
+  type RasterTimeSeriesChunkPlan
+} from '../raster-time-series/raster-time-series-chunks-b';
 import {
   validateCapacity,
-  validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
-  validateSinglePackedView
+  validateSinglePackedView,
+  validateCommandNodeBudget,
+  getGraphViewChunks
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {validateRasterParameters} from '../raster-band-utils';
 import {GPU_CHANGE_DETECTION_PARAMETER_LENGTH} from './change-detection-parameters';
@@ -31,8 +38,11 @@ import {
 } from '../raster-time-series/raster-irregular-date-axis';
 
 const OPERATION = 'GPUChangeDetection';
+/** Private temporal arrays and bounded per-cell statistics keep the resident series at 256 slices. */
 const MAXIMUM_SLICE_COUNT = 256;
+/** Exact pairwise Sen selection is quadratic and keeps a private heap per cell. */
 const MAXIMUM_SEN_SLICE_COUNT = 64;
+/** The direction code stores two 16-bit sign masks in one uint32. */
 const MAXIMUM_DIRECTION_BAND_COUNT = 16;
 
 /** Which statistic decides the `significance` class. */
@@ -47,41 +57,41 @@ export type GPUChangeDetectionSignificanceSource = 't-test' | 'mann-kendall';
  * enough valid slices write NaN (float outputs), 0 (`mannKendallS`, `significance`) or
  * `0xffffffff` (the multiband direction code).
  */
-export type GPUChangeDetectionOutput = {
+export type GPUChangeDetectionOutput<Rows extends RasterTimeSeriesScalarView = GraphDataView> = {
   /** `after - before`; NaN when either slice is NaN. */
-  difference?: GraphDataView<'float32'>;
+  difference?: RasterTimeSeriesView<'float32', Rows>;
   /** `ln((after + epsilon) / (before + epsilon))`; NaN when either side is `<= -epsilon`. */
-  logRatio?: GraphDataView<'float32'>;
+  logRatio?: RasterTimeSeriesView<'float32', Rows>;
   /** `100 * (after - before) / |before|`; NaN when `before` is 0. */
-  percentChange?: GraphDataView<'float32'>;
+  percentChange?: RasterTimeSeriesView<'float32', Rows>;
   /** Welch t statistic `(mean(after group) - mean(before group)) / se`. Single band only. */
-  tStatistic?: GraphDataView<'float32'>;
+  tStatistic?: RasterTimeSeriesView<'float32', Rows>;
   /** Welch-Satterthwaite degrees of freedom. Single band only. */
-  tDegreesOfFreedom?: GraphDataView<'float32'>;
+  tDegreesOfFreedom?: RasterTimeSeriesView<'float32', Rows>;
   /** Two-sided Student-t p-value of the Welch statistic. Single band only. */
-  tPValue?: GraphDataView<'float32'>;
+  tPValue?: RasterTimeSeriesView<'float32', Rows>;
   /** Theil-Sen slope: median of `(x_j - x_i) / (j - i)` over valid slice pairs. Single band only. */
-  senSlope?: GraphDataView<'float32'>;
+  senSlope?: RasterTimeSeriesView<'float32', Rows>;
   /** Mann-Kendall S statistic, integer exact. Single band only. */
-  mannKendallS?: GraphDataView<'sint32'>;
+  mannKendallS?: RasterTimeSeriesView<'sint32', Rows>;
   /** Tie-corrected Mann-Kendall Z with continuity correction. Single band only. */
-  mannKendallZ?: GraphDataView<'float32'>;
+  mannKendallZ?: RasterTimeSeriesView<'float32', Rows>;
   /** Two-sided normal p-value of the Mann-Kendall Z. Single band only. */
-  mannKendallP?: GraphDataView<'float32'>;
+  mannKendallP?: RasterTimeSeriesView<'float32', Rows>;
   /** Euclidean norm of the band difference vector. Requires `bandCount >= 2`. */
-  changeMagnitude?: GraphDataView<'float32'>;
+  changeMagnitude?: RasterTimeSeriesView<'float32', Rows>;
   /**
    * Change direction. Float32 `atan2(d1, d0)` in radians (0 for a zero vector) when `bandCount`
    * is 2; uint32 sign-pattern code when `bandCount` is 3 to 16: bit `b` is set when band `b`
    * increased and bit `16 + b` when it decreased.
    */
-  changeDirection?: GraphDataView<'float32'> | GraphDataView<'uint32'>;
+  changeDirection?: RasterTimeSeriesView<'float32', Rows> | RasterTimeSeriesView<'uint32', Rows>;
   /**
    * Class per cell: 0 no significant change (or not computable), 1 significant increase, 2
    * significant decrease. Increase and decrease follow the sign of the t statistic or of
    * Mann-Kendall S. Single band only; see `significanceSource`.
    */
-  significance?: GraphDataView<'uint32'>;
+  significance?: RasterTimeSeriesView<'uint32', Rows>;
 };
 
 /**
@@ -91,7 +101,7 @@ export type GPUChangeDetectionOutput = {
  * Topology (needs a new graph): `cellCount`, `sliceCount`, `bandCount`, view lengths, which
  * outputs, the mask and the observation mask are present, and `significanceSource`.
  */
-export type GPUChangeDetectionProps = {
+export type GPUChangeDetectionProps<Rows extends RasterTimeSeriesScalarView = GraphDataView> = {
   /** Prefix for generated node IDs. Defaults to `'change-detection'`. */
   id?: string;
   /**
@@ -99,14 +109,14 @@ export type GPUChangeDetectionProps = {
    * `GPUTemporalReduction`'s `cell * bucketCount + bucket`). A sample that is not finite (NaN or
    * an infinity) is missing.
    */
-  slices: GraphDataView<'float32'>;
+  slices: RasterTimeSeriesView<'float32', Rows>;
   /**
    * Optional per-observation mask, `cell * sliceCount + slice` (for example a per-date cloud
    * mask): zero makes that observation missing in every band, exactly as a NaN sample.
    */
-  observationMask?: GraphDataView<'uint32'>;
+  observationMask?: RasterTimeSeriesView<'uint32', Rows>;
   /** Optional packed `uint32` cell mask with one row per cell; zero skips the cell. */
-  mask?: GraphDataView<'uint32'>;
+  mask?: RasterTimeSeriesView<'uint32', Rows>;
   /** Per-frame parameters, float32 of at least 5 elements; see `getGPUChangeDetectionParameterValues`. */
   parameters: GraphDataView<'float32'>;
   /** Number of cells, compile-time. */
@@ -123,7 +133,7 @@ export type GPUChangeDetectionProps = {
    */
   dateAxis?: GPURasterIrregularDateAxis;
   /** Caller-owned outputs; at least one. */
-  output: GPUChangeDetectionOutput;
+  output: GPUChangeDetectionOutput<Rows>;
 };
 
 const SINGLE_BAND_OUTPUTS = [
@@ -176,20 +186,25 @@ const FLOAT_OUTPUTS = [
  *   Mann-Kendall (`significanceSource`) is below `alpha`; the sign comes from the statistic.
  *
  * Determinism: each cell is computed by one thread with fixed-order loops, so results do not
- * depend on GPU scheduling. Inputs must be single packed views.
+ * depend on GPU scheduling. Cell-major views accept matching chunks of complete cell records;
+ * shared tables stay packed.
  */
-export class GPUChangeDetection implements GPUCommandNodeProducer {
+export class GPUChangeDetection<Rows extends RasterTimeSeriesScalarView = GraphDataView>
+  implements GPUCommandNodeProducer
+{
   /** Prefix for every node ID. */
   readonly id: string;
   /** Validated properties. */
-  readonly props: GPUChangeDetectionProps;
+  readonly props: GPUChangeDetectionProps<Rows>;
+  readonly chunkPlan: RasterTimeSeriesChunkPlan;
+  readonly estimatedCommandNodeCount: number;
   /** Resolved band count. */
   readonly bandCount: number;
   /** Resolved significance source. */
   readonly significanceSource: GPUChangeDetectionSignificanceSource;
   private readonly ticksPerYear: number;
 
-  constructor(props: GPUChangeDetectionProps) {
+  constructor(props: GPUChangeDetectionProps<Rows> & {slices: Rows}) {
     this.id = props.id ?? 'change-detection';
     this.props = props;
     const id = this.id;
@@ -209,18 +224,25 @@ export class GPUChangeDetection implements GPUCommandNodeProducer {
     if (this.significanceSource !== 't-test' && this.significanceSource !== 'mann-kendall') {
       throw new Error(`${id} significanceSource must be 't-test' or 'mann-kendall'`);
     }
-    validateSinglePackedView(props.slices, ['float32'], `${id} slices`);
+    const validateCellViews = (
+      view: RasterTimeSeriesScalarView,
+      formats: readonly ('float32' | 'uint32' | 'sint32')[],
+      name: string
+    ) => {
+      for (const chunk of getGraphViewChunks(view)) validateSinglePackedView(chunk, formats, name);
+    };
+    validateCellViews(props.slices, ['float32'], `${id} slices`);
     if (props.slices.length < cellCount * sliceCount * bandCount) {
       throw new Error(`${id} slices must hold cellCount * sliceCount * bandCount rows`);
     }
     if (props.mask) {
-      validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
+      validateCellViews(props.mask, ['uint32'], `${id} mask`);
       if (props.mask.length < cellCount) {
         throw new Error(`${id} mask must hold cellCount rows`);
       }
     }
     if (props.observationMask) {
-      validateSinglePackedView(props.observationMask, ['uint32'], `${id} observationMask`);
+      validateCellViews(props.observationMask, ['uint32'], `${id} observationMask`);
       if (props.observationMask.length < cellCount * sliceCount) {
         throw new Error(`${id} observationMask must hold cellCount * sliceCount rows`);
       }
@@ -232,14 +254,14 @@ export class GPUChangeDetection implements GPUCommandNodeProducer {
     }
     for (const name of FLOAT_OUTPUTS) {
       if (output[name]) {
-        validateSinglePackedView(output[name], ['float32'], `${id} output.${name}`);
+        validateCellViews(output[name], ['float32'], `${id} output.${name}`);
       }
     }
     if (output.mannKendallS) {
-      validateSinglePackedView(output.mannKendallS, ['sint32'], `${id} output.mannKendallS`);
+      validateCellViews(output.mannKendallS, ['sint32'], `${id} output.mannKendallS`);
     }
     if (output.significance) {
-      validateSinglePackedView(output.significance, ['uint32'], `${id} output.significance`);
+      validateCellViews(output.significance, ['uint32'], `${id} output.significance`);
     }
     for (const name of SINGLE_BAND_OUTPUTS) {
       if (output[name] && bandCount !== 1) {
@@ -257,7 +279,7 @@ export class GPUChangeDetection implements GPUCommandNodeProducer {
       }
     }
     if (output.changeDirection) {
-      validateSinglePackedView(
+      validateCellViews(
         output.changeDirection,
         [bandCount === 2 ? 'float32' : 'uint32'],
         `${id} output.changeDirection`
@@ -272,11 +294,75 @@ export class GPUChangeDetection implements GPUCommandNodeProducer {
         throw new Error(`${id} output.${name} must hold ${required} rows`);
       }
     }
-    validateGraphOutputsDisjointFromInputs(
+    this.chunkPlan = planRasterTimeSeriesChunks(id, cellCount, {
+      slices: {view: props.slices, entriesPerCell: sliceCount * bandCount},
+      mask: {view: props.mask, entriesPerCell: 1},
+      observationMask: {view: props.observationMask, entriesPerCell: sliceCount},
+      ...Object.fromEntries(
+        present.map(([name, view]) => [
+          name,
+          {
+            view,
+            entriesPerCell: ['difference', 'logRatio', 'percentChange'].includes(name)
+              ? bandCount
+              : 1
+          }
+        ])
+      )
+    });
+    const dispatches = this.getDispatches();
+    const statisticCount = dispatches.length;
+    this.estimatedCommandNodeCount = statisticCount * this.chunkPlan.estimatedCommandNodeCount;
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
+    validateRasterTimeSeriesViews(
       id,
-      present.map(([, view]) => view as GraphDataView),
-      [props.slices, props.mask, props.observationMask, props.parameters]
+      this.getInputs(),
+      Object.values(output).filter(view => view !== undefined),
+      this.chunkPlan,
+      dispatches
     );
+  }
+
+  private getDispatches(): RasterWritableDispatch[] {
+    const {props} = this;
+    const {output} = props;
+    const present = (views: readonly (RasterTimeSeriesScalarView | undefined)[]) =>
+      views.filter((view): view is RasterTimeSeriesScalarView => view !== undefined);
+    const common = present([props.slices, props.mask, props.observationMask]);
+    const parameterInputs = [...common, props.parameters];
+    return [
+      {
+        inputs: parameterInputs,
+        outputs: present([output.difference, output.logRatio, output.percentChange])
+      },
+      {inputs: parameterInputs, outputs: present([output.changeMagnitude, output.changeDirection])},
+      {
+        inputs: parameterInputs,
+        outputs: present([
+          output.tStatistic,
+          output.tDegreesOfFreedom,
+          output.tPValue,
+          this.significanceSource === 't-test' ? output.significance : undefined
+        ])
+      },
+      {
+        inputs: present([...common, props.dateAxis?.acquisitionTimes]),
+        outputs: present([output.senSlope])
+      },
+      {
+        inputs: parameterInputs,
+        outputs: present([
+          output.mannKendallS,
+          output.mannKendallZ,
+          output.mannKendallP,
+          this.significanceSource === 'mann-kendall' ? output.significance : undefined
+        ])
+      }
+    ].filter(dispatch => dispatch.outputs.length > 0);
+  }
+
+  private getInputs(): RasterTimeSeriesScalarView[] {
+    return [...new Set(this.getDispatches().flatMap(dispatch => dispatch.inputs))];
   }
 
   /** Returns the two-slice, multiband, t-test, Sen slope and Mann-Kendall nodes that are needed. */
@@ -285,15 +371,15 @@ export class GPUChangeDetection implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id, bandCount} = this;
     const {output, cellCount, sliceCount} = props;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.slices,
-      props.mask,
-      props.observationMask,
-      props.parameters,
-      ...(Object.values(output) as GraphDataView[])
-    ]);
-    if (props.dateAxis) validateGPURasterDateAxisGraph(id, graph, props.dateAxis);
-    const read = (name: string, view: GraphDataView): WGSLKernelBinding => ({
+    validateRasterTimeSeriesGraph(
+      id,
+      graph,
+      this.getInputs(),
+      Object.values(output).filter(view => view !== undefined)
+    );
+    if (props.dateAxis && output.senSlope)
+      validateGPURasterDateAxisGraph(id, graph, props.dateAxis);
+    const read = (name: string, view: RasterTimeSeriesScalarView): WGSLKernelBinding => ({
       name,
       view,
       type: 'f32',
@@ -324,7 +410,7 @@ export class GPUChangeDetection implements GPUCommandNodeProducer {
     ];
     const write = (
       name: string,
-      view: GraphDataView,
+      view: RasterTimeSeriesScalarView,
       type: 'f32' | 'u32' | 'i32'
     ): WGSLKernelBinding => ({name, view, type, access: 'read_write'});
     const declarations = `const SLICE_COUNT: u32 = ${sliceCount}u;
@@ -370,7 +456,7 @@ fn isMissingAt(cell: u32, slice: u32, value: f32) -> bool {
   }`);
       }
       nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
+        ...createRasterTimeSeriesNodes<Parameters>(graph, this.chunkPlan, {
           id: `${id}-two-slice`,
           operation: OPERATION,
           variant: 'two-slice',
@@ -424,7 +510,7 @@ fn isMissingAt(cell: u32, slice: u32, value: f32) -> bool {
         );
       }
       nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
+        ...createRasterTimeSeriesNodes<Parameters>(graph, this.chunkPlan, {
           id: `${id}-multiband`,
           operation: OPERATION,
           variant: 'multiband',
@@ -488,7 +574,7 @@ fn isMissingAt(cell: u32, slice: u32, value: f32) -> bool {
   }`);
       }
       nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
+        ...createRasterTimeSeriesNodes<Parameters>(graph, this.chunkPlan, {
           id: `${id}-t-test`,
           operation: OPERATION,
           variant: 't-test',
@@ -572,7 +658,7 @@ fn isMissingAt(cell: u32, slice: u32, value: f32) -> bool {
       const maximumPairs = (sliceCount * (sliceCount - 1)) / 2;
       const heapCapacity = Math.floor(maximumPairs / 2) + 1;
       nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
+        ...createRasterTimeSeriesNodes<Parameters>(graph, this.chunkPlan, {
           id: `${id}-sen-slope`,
           operation: OPERATION,
           variant: 'sen-slope',
@@ -688,7 +774,7 @@ fn isMissingAt(cell: u32, slice: u32, value: f32) -> bool {
   }`);
       }
       nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
+        ...createRasterTimeSeriesNodes<Parameters>(graph, this.chunkPlan, {
           id: `${id}-mann-kendall`,
           operation: OPERATION,
           variant: 'mann-kendall',

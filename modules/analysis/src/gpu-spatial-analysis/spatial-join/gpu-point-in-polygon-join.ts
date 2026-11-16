@@ -14,11 +14,12 @@ import {createFillNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 
 import {
   createTransientView,
+  getViewBindingRange,
   type GPUBVH,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView,
-  type GraphVectorView
+  GraphVectorView
 } from '@luma.gl/graph/gpu-core';
 import {GPU_POINT_IN_POLYGON_CLASSIFICATION} from '@luma.gl/graph/geospatial';
 import {EXACT_ORIENTATION_WGSL} from '../../analysis-core/kernels/exact-orientation-wgsl';
@@ -34,6 +35,7 @@ import {
   getPolygonEdgeSlabLoopWGSL,
   getPolygonEdgeSlabNodes,
   getPolygonEdgeSlabQueryWGSL,
+  POLYGON_EDGE_SLAB_PARAMS_STRIDE,
   type PolygonEdgeSlabs
 } from './polygon-edge-slabs';
 import {
@@ -52,7 +54,9 @@ import type {
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   getGraphViewChunks,
-  validateGraphViewsBelongToGraph,
+  getStorageBindingElementLimit,
+  validateCommandNodeBudget,
+  validateGPUStorageBindingByteLength,
   validateCapacity,
   validateCompactOutput,
   validateSinglePackedView,
@@ -60,6 +64,8 @@ import {
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createSpatialJoinBoundsNode,
+  createSpatialJoinChunkNode,
+  getPolygonEdgeLayoutLength,
   createSpatialJoinClearNode,
   createSpatialJoinFinalizeNode,
   getSortedFeatureBVHNodes,
@@ -76,14 +82,45 @@ import {
   validateMatchingChunks
 } from './spatial-join-passes';
 import {
-  getSpatialJoinGeometryViews,
   isSameSpatialJoinGeometry,
   validateSpatialJoinGeometry,
   validateStatusScalars
 } from './spatial-join-geometry';
 import type {GPUSpatialJoinPrepared} from './gpu-spatial-join-prepared';
 
+import {
+  validateSpatialJoinBindings,
+  validateSpatialJoinReadWriteBindings
+} from './spatial-join-binding-preflight';
+
+import {Buffer} from '@luma.gl/core';
+import {
+  SPATIAL_JOIN_PAGE_QUERY_WORD_COUNT,
+  planSpatialJoinCandidatePages
+} from './spatial-join-candidate-pages';
+import {validateGraphChunkGroupKernelSupport} from '../../analysis-core/kernels/graph-chunk-groups';
+
 const OPERATION = 'GPUPointInPolygonJoin';
+
+/** Row bases, row counts and generated WGSL u32 count literals must remain representable. */
+const GPU_POINT_IN_POLYGON_JOIN_MAXIMUM_ROWS = 0xffffffff;
+/** Preserve the signed-compatible global cutoff below the saturated uint32 requirement sentinel. */
+const GPU_POINT_IN_POLYGON_JOIN_MAXIMUM_CANDIDATES = 0x7ffffffe;
+/** Preserve the shared slab builder's four indexed edge copies per vertex default budget. */
+const GPU_POINT_IN_POLYGON_JOIN_SLAB_ENTRIES_PER_VERTEX = 4;
+/** Preserve a 1024-entry index budget for small polygons; account for it before allocation. */
+const GPU_POINT_IN_POLYGON_JOIN_MINIMUM_SLAB_ENTRIES = 1024;
+
+/** Allowance for the BVH build, feature and global query radix sorts, edge layout and candidates. */
+const GPU_POINT_IN_POLYGON_JOIN_FIXED_NODE_ALLOWANCE = 1024;
+/**
+ * Conservative bound for ordered point-chunk passes, retaining the former radix-sort headroom.
+ * Chunks now emit only runtime key generation, probes, assignment, flag copy and collect passes;
+ * the two global query sorts are covered by the fixed allowance.
+ */
+const GPU_POINT_IN_POLYGON_JOIN_CHUNK_NODE_ALLOWANCE = 80;
+/** Unsorted chunks only emit two probes, assignments, collect passes and an optional flag copy. */
+const GPU_POINT_IN_POLYGON_JOIN_UNSORTED_CHUNK_NODE_ALLOWANCE = 8;
 
 /**
  * The spatial context to give a `GPUPointInPolygonJoin` for an operation resolved with `context`:
@@ -120,7 +157,9 @@ export type GPUPointInPolygonBoundaryRule = 'half-open' | 'closed' | 'open';
 const HALF_OPEN_OWNER_BIT = 0x100;
 
 /** Caller-owned outputs of {@link GPUPointInPolygonJoin}. */
-export type GPUPointInPolygonJoinOutput = {
+export type GPUPointInPolygonJoinOutput<
+  TruncationRows extends GPUUint32Rows = GraphDataView<'uint32'>
+> = {
   /**
    * Per-point containing feature ID (`polygons.sourceIds`) or row, or `GPU_SPATIAL_JOIN_NO_FEATURE`.
    * Chunked like `points.positions`.
@@ -128,7 +167,12 @@ export type GPUPointInPolygonJoinOutput = {
   pointFeatureIds: GPUUint32Rows;
   /** Optional per-feature count of assigned points. */
   featureCounts?: GraphDataView<'uint32'>;
-  /** Optional compact stable IDs of points that joined a feature (unspecified order). */
+  /**
+   * Optional compact stable IDs of joined points in global source-row order across chunks.
+   * As specified by GPUCompactOutput, its overflow flag reports any contributor capacity loss,
+   * including BVH or candidate loss even when the retained matches fit ids.length. requiredCount
+   * counts the retained assignments before final compaction; it cannot recover dropped candidates.
+   */
   matches?: GPUCompactOutput;
   /**
    * Optional per-point-row flag (one `uint32` per point, in row order across chunks), 1 when that
@@ -138,9 +182,10 @@ export type GPUPointInPolygonJoinOutput = {
    * point that had a candidate (it keeps none); earlier points are complete. A flagged point may
    * show `GPU_SPATIAL_JOIN_NO_FEATURE` although a feature contains it. A BVH overflow (more
    * features than `leafCapacity`) drops features that any point may fall in, so it flags every
-   * point. See `status.candidateOverflow`.
+   * point. See `status.candidateOverflow`. A chunked view follows `points.positions`; a single
+   * packed view covering every point is also accepted for compatibility.
    */
-  candidateTruncated?: GraphDataView<'uint32'>;
+  candidateTruncated?: TruncationRows;
   /**
    * Completeness scalars. Optional `antimeridianUncertainCount` counts unprepared crossing rings;
    * optional `poleUncertainCount` counts unprepared pole-enclosing rings. Prepare these polygons
@@ -154,7 +199,7 @@ export type GPUPointInPolygonJoinOutput = {
        * candidate), leaving out `matches`.
        */
       overflow: GraphDataView<'uint32'>;
-      /** Optional one-row unclamped candidate count, for sizing `candidateCapacity`. */
+      /** Optional one-row candidate count for sizing `candidateCapacity`; saturates at `0xffffffff`. */
       candidateCount?: GraphDataView<'uint32'>;
       /**
        * Optional one-row count of refined (point, feature) candidates classified `uncertain`.
@@ -171,7 +216,9 @@ export type GPUPointInPolygonJoinOutput = {
  * Per-frame: the contents of every input buffer. Topology: view lengths and chunking,
  * `candidateCapacity`, `leafCapacity`, `boundaryRule`, `spatialSort`, and which optional views exist.
  */
-export type GPUPointInPolygonJoinProps = {
+export type GPUPointInPolygonJoinProps<
+  TruncationRows extends GPUUint32Rows = GraphDataView<'uint32'>
+> = {
   /** Prefix for generated node and transient IDs. Defaults to `'point-in-polygon-join'`. */
   id?: string;
   /**
@@ -194,6 +241,8 @@ export type GPUPointInPolygonJoinProps = {
   prepared?: GPUSpatialJoinPrepared;
   /** Maximum `(point, feature)` bounding-box candidates per encoding. */
   candidateCapacity: number;
+  /** Optional scratch page capacity; defaults to the device binding/buffer envelope. Global cutoff and results are unchanged. */
+  candidateTileCapacity?: number;
   /** Power-of-two BVH leaf slots. Defaults to the next power of two of the feature count. */
   leafCapacity?: number;
   /**
@@ -268,8 +317,10 @@ export type GPUPointInPolygonJoinProps = {
    * order, so neighboring invocations walk neighboring BVH subtrees. Per-point results, candidate
    * slots and counts stay addressed by the original row, so `pointFeatureIds`, `matches`,
    * `featureCounts`, the candidate pairs and what a `candidateCapacity` overflow drops are
-   * identical either way; only traversal cost changes. Costs one key pass and a radix sort per point
-   * chunk, which is why chunks of fewer than two points are never sorted.
+   * identical either way; only traversal cost changes. Costs one key pass per chunk and two global
+   * radix sorts per encoding. A global Hilbert sort followed by stable chunk regrouping preserves each chunk's
+   * order without per-chunk sorting pipelines or padding. Singleton chunks retain identity order.
+   * Each chunk's key pass dispatches only its own rows.
    *
    * Defaults to on from 4096 points and 256 features (provisional; see
    * `spatial-join-query-order.spec.ts` for the A/B harness), and off below, where the sort cannot
@@ -302,7 +353,7 @@ export type GPUPointInPolygonJoinProps = {
    */
   edgeSlabs?: boolean;
   /** Caller-owned outputs. */
-  output: GPUPointInPolygonJoinOutput;
+  output: GPUPointInPolygonJoinOutput<TruncationRows>;
 };
 
 /**
@@ -322,18 +373,33 @@ export type GPUPointInPolygonJoinProps = {
  * Candidates whose containment cannot be proven (`uncertain`) are not assigned and are not
  * silently ignored: they are counted in `uncertainCount`. Read it to know whether assignments may
  * be incomplete.
+ *
+ * Point positions, source IDs and point feature IDs may be chunked; source-aligned vectors have
+ * matching ordered chunk lengths. Polygon views stay packed. Feature counts accumulate across
+ * all chunks, and matches retain global source-row order, including the retained prefix on
+ * overflow. Candidate capacity is shared across the encoding, so chunking does not change which
+ * points lose candidates. Candidates stream through fixed-capacity scratch pages, including
+ * pages that split one point's candidate segment. The GPU finds each page's query interval in
+ * every source chunk, then dispatches only those rows. Pages preserve the existing BVH traversal order,
+ * while assignments and compact matches retain their documented global source-row order.
+ * Row-proportional assignment, probe and compaction scratch still needs
+ * one packed storage binding, checked against the device before any nodes are created.
  */
-export class GPUPointInPolygonJoin implements GPUCommandNodeProducer {
+export class GPUPointInPolygonJoin<TruncationRows extends GPUUint32Rows = GraphDataView<'uint32'>>
+  implements GPUCommandNodeProducer
+{
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
-  readonly props: GPUPointInPolygonJoinProps;
+  readonly props: GPUPointInPolygonJoinProps<TruncationRows>;
   /** Number of features, `featureOffsets.length - 1`. */
   readonly featureCount: number;
   /** Resolved BVH leaf capacity. */
   readonly leafCapacity: number;
   /** Candidate pair capacity. */
   readonly candidateCapacity: number;
+  /** Construction-sized candidate scratch page. */
+  readonly candidatePages: ReturnType<typeof planSpatialJoinCandidatePages>;
   /** Resolved boundary rule. */
   readonly boundaryRule: GPUPointInPolygonBoundaryRule;
   /** Resolved spatial context: native planar coordinates. */
@@ -345,7 +411,10 @@ export class GPUPointInPolygonJoin implements GPUCommandNodeProducer {
   /** Whether the exact refine tests only the edges of the y-slab at the point. */
   readonly edgeSlabs: boolean;
 
-  constructor(props: GPUPointInPolygonJoinProps) {
+  /** Conservative node upper bound including published primitives. */
+  readonly estimatedCommandNodeCount: number;
+
+  constructor(props: GPUPointInPolygonJoinProps<TruncationRows>) {
     this.id = props.id ?? 'point-in-polygon-join';
     this.props = props;
     const {id} = this;
@@ -356,6 +425,26 @@ export class GPUPointInPolygonJoin implements GPUCommandNodeProducer {
     }
     for (const chunk of getGraphViewChunks(points.positions)) {
       validateSinglePackedView(chunk, ['float32x2'], `${id} points.positions`);
+    }
+    // Validate count metadata before it can become a WGSL literal or runtime uint32 word.
+    for (const [name, view] of Object.entries({...getInputs(props), ...getOutputs(props)})) {
+      if (!view) continue;
+      validateCapacity(
+        id,
+        `${name}.length`,
+        view.length,
+        0,
+        GPU_POINT_IN_POLYGON_JOIN_MAXIMUM_ROWS
+      );
+      for (const chunk of getGraphViewChunks(view)) {
+        validateCapacity(
+          id,
+          `${name} chunk.length`,
+          chunk.length,
+          0,
+          GPU_POINT_IN_POLYGON_JOIN_MAXIMUM_ROWS
+        );
+      }
     }
     validateSpatialJoinGeometry(id, 'polygons', polygons, {allowEmpty: true});
     this.featureCount = polygons.featureOffsets.length - 1;
@@ -381,11 +470,17 @@ export class GPUPointInPolygonJoin implements GPUCommandNodeProducer {
     }
     validateStatusScalars(id, status);
     if (output.candidateTruncated) {
-      validateSinglePackedView(
-        output.candidateTruncated,
-        ['uint32'],
-        `${id} output.candidateTruncated`
-      );
+      for (const chunk of getGraphViewChunks(output.candidateTruncated)) {
+        validateSinglePackedView(chunk, ['uint32'], `${id} output.candidateTruncated`);
+      }
+      if (output.candidateTruncated instanceof GraphVectorView) {
+        validateMatchingChunks(
+          id,
+          'output.candidateTruncated',
+          points.positions,
+          output.candidateTruncated
+        );
+      }
       if (output.candidateTruncated.length !== points.positions.length) {
         throw new Error(`${id} output.candidateTruncated needs one row per point`);
       }
@@ -395,7 +490,13 @@ export class GPUPointInPolygonJoin implements GPUCommandNodeProducer {
     }
     this.candidateCapacity = props.candidateCapacity;
     // Candidate pairs are stored as two words each in a uint32-addressed buffer.
-    validateCapacity(id, 'candidateCapacity', this.candidateCapacity, 1, 0x7ffffffe);
+    validateCapacity(
+      id,
+      'candidateCapacity',
+      this.candidateCapacity,
+      1,
+      GPU_POINT_IN_POLYGON_JOIN_MAXIMUM_CANDIDATES
+    );
     this.leafCapacity = props.leafCapacity ?? getNextPowerOfTwo(Math.max(this.featureCount, 1));
     validatePowerOfTwo(id, 'leafCapacity', this.leafCapacity);
     if (
@@ -433,7 +534,84 @@ export class GPUPointInPolygonJoin implements GPUCommandNodeProducer {
         throw new Error(`${id} prepared must index the same polygon views`);
       }
     }
-    validateDisjointOutputs(id, getInputs(props), getOutputs(props));
+    validateCapacity(
+      id,
+      'point offset scratch words',
+      points.positions.length +
+        SPATIAL_JOIN_PAGE_QUERY_WORD_COUNT * getGraphViewChunks(points.positions).length,
+      0,
+      GPU_POINT_IN_POLYGON_JOIN_MAXIMUM_ROWS
+    );
+    this.candidatePages = planSpatialJoinCandidatePages(
+      (polygons.positions.buffer.graph as GPUCommandGraph).device,
+      id,
+      this.candidateCapacity,
+      props.candidateTileCapacity,
+      this.edgeSlabs ? 16 : 8,
+      0,
+      getGraphViewChunks(points.positions).length
+    );
+    const hasQuerySort =
+      this.querySort && getGraphViewChunks(points.positions).some(chunk => chunk.length >= 2);
+    const pointChunkCount = getGraphViewChunks(points.positions).filter(
+      chunk => chunk.length > 0
+    ).length;
+    this.estimatedCommandNodeCount =
+      this.candidatePages.estimatedCommandNodeCount +
+      GPU_POINT_IN_POLYGON_JOIN_FIXED_NODE_ALLOWANCE +
+      pointChunkCount *
+        (hasQuerySort
+          ? GPU_POINT_IN_POLYGON_JOIN_CHUNK_NODE_ALLOWANCE
+          : GPU_POINT_IN_POLYGON_JOIN_UNSORTED_CHUNK_NODE_ALLOWANCE);
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
+    validateDisjointOutputs(
+      id,
+      Object.values(getInputs(props, this.edgeSlabs)),
+      Object.values(getOutputs(props)),
+      [
+        {pointFeatureIds: output.pointFeatureIds, featureCounts: output.featureCounts},
+        {
+          overflow: output.status.overflow,
+          candidateCount: output.status.candidateCount,
+          uncertainCount: output.status.uncertainCount,
+          matchCount: output.matches?.status.count,
+          matchOverflow: output.matches?.status.overflow,
+          matchRequired: output.matches?.status.requiredCount
+        },
+        ...(this.spatialContext.coordinateSpace === 'longitude-latitude'
+          ? [
+              {
+                antimeridian: output.status.antimeridianUncertainCount,
+                pole: output.status.poleUncertainCount
+              }
+            ]
+          : [])
+      ]
+    );
+    if (points.positions.length > 0)
+      validateSpatialJoinReadWriteBindings(
+        id,
+        [polygons.sourceIds],
+        [output.pointFeatureIds, output.featureCounts]
+      );
+    if (props.prepared)
+      validateSpatialJoinReadWriteBindings(
+        id,
+        [
+          (props.prepared.isDeclaredIn(polygons.positions.buffer.graph)
+            ? props.prepared.storage
+            : props.prepared.props.storage
+          )?.overflow
+        ],
+        [
+          output.status.overflow,
+          output.status.candidateCount,
+          output.status.uncertainCount,
+          output.matches?.status.count,
+          output.matches?.status.overflow,
+          output.matches?.status.requiredCount
+        ]
+      );
   }
 
   /** Returns bounds, BVH, candidate, refinement, assignment, and finalize nodes in order. */
@@ -444,7 +622,143 @@ export class GPUPointInPolygonJoin implements GPUCommandNodeProducer {
     const {polygons, output} = props;
     const points = props.points.positions;
     const {matches, status} = output;
-    validateGraphViewsBelongToGraph(id, graph, [...getInputs(props), ...getOutputs(props)]);
+    if (props.prepared && !props.prepared.isDeclaredIn(graph)) {
+      throw new Error(`${id} requires prepared to be added to the graph first`);
+    }
+    const views = {...getInputs(props, this.edgeSlabs), ...getOutputs(props)};
+    validateSpatialJoinBindings(graph, id, views, {});
+    const checkScratch = (name: string, byteLength: number, hint: string) => {
+      validateGPUStorageBindingByteLength(graph.device, id, name, byteLength, hint);
+      validateCapacity(
+        id,
+        `${name} byteLength (device.limits.maxBufferSize)`,
+        Math.max(4, byteLength),
+        0,
+        graph.device.limits.maxBufferSize
+      );
+    };
+    checkScratch(
+      'point assignment, probe and match scratch',
+      (points.length + SPATIAL_JOIN_PAGE_QUERY_WORD_COUNT * getGraphViewChunks(points).length) *
+        Uint32Array.BYTES_PER_ELEMENT,
+      'reduce points.positions.length; join scratch requires one packed binding'
+    );
+    checkScratch('state', 20, 'use a device supporting at least 20-byte storage bindings');
+    checkScratch(
+      'candidate pairs',
+      this.candidatePages.capacity * (this.edgeSlabs ? 4 : 2) * Uint32Array.BYTES_PER_ELEMENT,
+      'reduce candidateCapacity'
+    );
+    if (!props.prepared) {
+      checkScratch(
+        'BVH node bounds and children',
+        (2 * leafCapacity - 1) * 8,
+        'reduce leafCapacity'
+      );
+      checkScratch('BVH leaf IDs', leafCapacity * 4, 'reduce leafCapacity');
+      checkScratch(
+        'feature bounds and sorted bounds',
+        featureCount * 8,
+        'reduce polygons feature count'
+      );
+      checkScratch(
+        'feature radix histogram',
+        16 * Math.ceil(featureCount / 256) * 4,
+        'reduce polygons feature count'
+      );
+      checkScratch(
+        'feature sort tile bounds',
+        Math.ceil(featureCount / 256) * 16,
+        'reduce polygons feature count'
+      );
+    } else {
+      for (const view of Object.values(props.prepared.storage)) {
+        checkScratch(
+          'prepared BVH storage',
+          getViewBindingRange(view).size,
+          'reduce prepared leafCapacity'
+        );
+      }
+    }
+    if (this.querySort) {
+      checkScratch('point query sort', points.length * 4, 'reduce points.positions.length');
+      checkScratch(
+        'point query radix histogram',
+        16 * Math.ceil(points.length / 256) * 4,
+        'reduce points.positions.length'
+      );
+    }
+    let slabEntryCapacity: number | undefined;
+    if (this.edgeSlabs) {
+      const preparedSlabs = props.prepared?.edgeSlabStorage;
+      if (preparedSlabs) {
+        for (const view of [
+          preparedSlabs.slabs.params,
+          preparedSlabs.slabs.slabOffsets,
+          preparedSlabs.slabs.slabEntries,
+          preparedSlabs.layout
+        ]) {
+          checkScratch(
+            'prepared edge slab storage',
+            getViewBindingRange(view).size,
+            'reduce the prepared polygon index size'
+          );
+        }
+      } else {
+        const vertexCount = polygons.positions.length;
+        const ownerCount = polygons.polygonOffsets.length - 1;
+        checkScratch(
+          'edge slab parameters',
+          Math.max(ownerCount, 1) * POLYGON_EDGE_SLAB_PARAMS_STRIDE * 4,
+          'reduce polygons part count or disable edgeSlabs'
+        );
+        checkScratch(
+          'edge slab owner scan',
+          (ownerCount + 1) * 4,
+          'reduce polygons part count or disable edgeSlabs'
+        );
+        checkScratch(
+          'edge slab ring owners',
+          Math.max(polygons.ringOffsets.length - 1, 1) * 4,
+          'reduce polygons ring count or disable edgeSlabs'
+        );
+        checkScratch(
+          'edge slab vertex owners',
+          vertexCount * 4,
+          'reduce polygons vertex count or disable edgeSlabs'
+        );
+        checkScratch(
+          'edge slab offsets',
+          (Math.floor(vertexCount / 4) + 2) * 4,
+          'reduce polygons vertex count or disable edgeSlabs'
+        );
+        checkScratch(
+          'edge slab base edges',
+          vertexCount * 8,
+          'reduce polygons vertex count or disable edgeSlabs'
+        );
+        // Supply the planned budget to the builder so its complete entry allocation, including
+        // the unslabbed edge prefix, is the size validated here against both device limits.
+        slabEntryCapacity = Math.min(
+          getStorageBindingElementLimit(graph.device, 8, vertexCount),
+          Math.max(
+            GPU_POINT_IN_POLYGON_JOIN_SLAB_ENTRIES_PER_VERTEX * vertexCount,
+            GPU_POINT_IN_POLYGON_JOIN_MINIMUM_SLAB_ENTRIES
+          )
+        );
+        checkScratch(
+          'edge slab entries',
+          (vertexCount + slabEntryCapacity) * 8,
+          'reduce polygons vertex count or disable edgeSlabs'
+        );
+        checkScratch(
+          'edge slab layout',
+          getPolygonEdgeLayoutLength(vertexCount, featureCount) * 4,
+          'reduce polygons feature count or disable edgeSlabs'
+        );
+      }
+    }
+    validateGraphChunkGroupKernelSupport(graph, id, 8);
     const pointCount = points.length;
     const nodes: GPUCommandNode<Parameters>[] = [];
     if (
@@ -477,9 +791,6 @@ export class GPUPointInPolygonJoin implements GPUCommandNodeProducer {
       );
     }
 
-    if (props.prepared && !props.prepared.isDeclaredIn(graph)) {
-      throw new Error(`${id} requires prepared to be added to the graph first`);
-    }
     let bvh: Pick<
       GPUBVH,
       'nodeMinima' | 'nodeMaxima' | 'leafIds' | 'overflow' | 'internalNodeCount'
@@ -517,7 +828,7 @@ export class GPUPointInPolygonJoin implements GPUCommandNodeProducer {
       bvh = built.bvh;
     }
 
-    const state = createTransientView(graph, `${id}-state`, 'uint32', 4);
+    const state = createTransientView(graph, `${id}-state`, 'uint32', 5);
     const assignment = createTransientView(graph, `${id}-assignment`, 'uint32', pointCount);
     // With slabs a candidate is four words in one binding: row, feature, point x and y bits.
     const useSlabs = this.edgeSlabs;
@@ -526,11 +837,16 @@ export class GPUPointInPolygonJoin implements GPUCommandNodeProducer {
       graph,
       `${id}-candidate-pairs`,
       'uint32x2',
-      candidateCapacity * (pairStride / 2)
+      this.candidatePages.capacity * (pairStride / 2)
     );
     const candidatePoints = useSlabs
       ? undefined
-      : createTransientView(graph, `${id}-candidate-points`, 'float32x2', candidateCapacity);
+      : createTransientView(
+          graph,
+          `${id}-candidate-points`,
+          'float32x2',
+          this.candidatePages.capacity
+        );
     let slabs: PolygonEdgeSlabs | undefined;
     let edgeLayout: GraphDataView<'uint32'> | undefined;
     if (useSlabs) {
@@ -542,6 +858,7 @@ export class GPUPointInPolygonJoin implements GPUCommandNodeProducer {
           id: `${id}-edges`,
           operation: OPERATION,
           owner: 'polygon',
+          entryCapacity: slabEntryCapacity || undefined,
           positions: polygons.positions,
           polygonOffsets: polygons.polygonOffsets,
           ringOffsets: polygons.ringOffsets
@@ -560,7 +877,7 @@ export class GPUPointInPolygonJoin implements GPUCommandNodeProducer {
       graph,
       `${id}-pair-classifications`,
       'uint32',
-      candidateCapacity
+      this.candidatePages.capacity
     );
     nodes.push(
       createSpatialJoinClearNode<Parameters>(graph, {
@@ -572,68 +889,138 @@ export class GPUPointInPolygonJoin implements GPUCommandNodeProducer {
         featureCounts: output.featureCounts
       })
     );
-    nodes.push(
-      ...getSpatialJoinProbeNodes<Parameters>(graph, {
-        id: `${id}-probe`,
-        operation: OPERATION,
-        points,
-        bvh,
-        featureCount,
-        candidateCapacity,
-        state,
-        candidatePairs,
-        candidatePoints,
-        packedCandidates: useSlabs,
-        pointRowScale: 1,
-        pointRowOffset: 0,
-        querySort: this.querySort,
-        candidateTruncated: output.candidateTruncated,
-        candidateOverflow: output.status.candidateOverflow,
-        bvhOverflow: bvh.overflow
-      })
+    const callerTruncation: GPUUint32Rows | undefined = output.candidateTruncated;
+    const candidateTruncated =
+      callerTruncation instanceof GraphVectorView
+        ? createTransientView(graph, `${id}-candidate-truncated`, 'uint32', pointCount)
+        : callerTruncation;
+    const pageCounts = createTransientView(graph, `${id}-page-counts`, 'uint32', pointCount);
+    const pageOffsets = createTransientView(
+      graph,
+      `${id}-page-offsets`,
+      'uint32',
+      pointCount + SPATIAL_JOIN_PAGE_QUERY_WORD_COUNT * getGraphViewChunks(points).length,
+      Buffer.STORAGE | Buffer.INDIRECT
     );
-    const candidateDispatch = createWGSLActiveCountDispatch(graph, {
-      id: `${id}-candidate-dispatch`,
-      operation: OPERATION,
-      count: state,
-      maximumItemCount: candidateCapacity
-    });
-    nodes.push(candidateDispatch.updateNode);
-    if (slabs && edgeLayout) {
+    const pageOrders = new Map<number, GraphDataView<'uint32'>>();
+    for (let pageIndex = 0; pageIndex < this.candidatePages.pageCount; pageIndex++) {
+      const id = this.candidatePages.pageCount > 1 ? `${this.id}-tile-${pageIndex}` : this.id;
+      const candidateCapacity = this.candidatePages.capacity;
+      const firstSlot = pageIndex * candidateCapacity;
+      const pageLength = Math.min(candidateCapacity, this.candidateCapacity - firstSlot);
       nodes.push(
-        this.createSlabClassifyNode(graph, {
-          condition: candidateDispatch.condition,
+        ...getSpatialJoinProbeNodes<Parameters>(graph, {
+          id: `${id}-probe`,
+          operation: OPERATION,
+          points,
+          bvh,
+          featureCount,
+          candidateCapacity: this.candidateCapacity,
+          page: {
+            firstSlot,
+            length: pageLength,
+            initialize: pageIndex === 0,
+            counts: pageCounts,
+            offsets: pageOffsets,
+            orders: pageOrders,
+            metadataRow: pointCount
+          },
           state,
           candidatePairs,
-          pairClassifications,
-          slabs,
-          edgeLayout
+          candidatePoints,
+          packedCandidates: useSlabs,
+          pointRowScale: 1,
+          pointRowOffset: 0,
+          querySort: this.querySort,
+          candidateTruncated,
+          candidateOverflow: output.status.candidateOverflow,
+          bvhOverflow: bvh.overflow
         })
       );
-    } else {
+      if (
+        pageIndex === 0 &&
+        output.candidateTruncated instanceof GraphVectorView &&
+        candidateTruncated
+      ) {
+        let firstRow = 0;
+        for (const [chunkIndex, chunk] of output.candidateTruncated.data.entries()) {
+          if (chunk.length > 0) {
+            nodes.push(
+              createSpatialJoinChunkNode<Parameters>(graph, {
+                id: `${id}-candidate-truncated-${chunkIndex}`,
+                operation: OPERATION,
+                bindings: [
+                  {name: 'flags', view: candidateTruncated, type: 'u32', access: 'read'},
+                  {name: 'outputFlags', view: chunk, type: 'u32', access: 'read_write'}
+                ],
+                invocationCount: chunk.length,
+                firstRow,
+                body: `outputFlags[outputFlagsOffset + index] = flags[flagsOffset + CHUNK_FIRST_ROW + index];`
+              })
+            );
+          }
+          firstRow += chunk.length;
+        }
+      }
       nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-classify`,
+        createSpatialJoinChunkNode(graph, {
+          id: `${id}-page-count`,
           operation: OPERATION,
-          variant: 'classify-exact',
-          bindings: [
-            {name: 'state', view: state, type: 'u32', access: 'read'},
-            {name: 'candidatePairs', view: candidatePairs, type: 'u32', access: 'read'},
-            {name: 'candidatePoints', view: candidatePoints!, type: 'f32', access: 'read'},
-            {name: 'featureOffsets', view: polygons.featureOffsets, type: 'u32', access: 'read'},
-            {name: 'polygonPositions', view: polygons.positions, type: 'f32', access: 'read'},
-            {name: 'polygonOffsets', view: polygons.polygonOffsets, type: 'u32', access: 'read'},
-            {name: 'ringOffsets', view: polygons.ringOffsets, type: 'u32', access: 'read'},
-            {
-              name: 'pairClassifications',
-              view: pairClassifications,
-              type: 'u32',
-              access: 'read_write'
-            }
-          ],
-          invocationCount: candidateCapacity,
-          condition: candidateDispatch.condition,
-          declarations: `const CANDIDATE_CAPACITY: u32 = ${candidateCapacity}u;
+          invocationCount: 1,
+          firstRow: 0,
+          candidatePageFirstSlot: firstSlot,
+          candidatePageLength: pageLength,
+          bindings: [{name: 'state', view: state, type: 'u32', access: 'read_write'}],
+          body: `let retained = min(state[stateOffset], ${this.candidateCapacity}u);
+  let first = min(CANDIDATE_PAGE_FIRST_SLOT, retained);
+  state[stateOffset + 4u] = min(retained - first, CANDIDATE_PAGE_LENGTH);`
+        })
+      );
+      const candidateDispatch = createWGSLActiveCountDispatch(graph, {
+        id: `${id}-candidate-dispatch`,
+        operation: OPERATION,
+        count: state,
+        countRow: 4,
+        maximumItemCount: candidateCapacity
+      });
+      nodes.push(candidateDispatch.updateNode);
+      if (slabs && edgeLayout) {
+        nodes.push(
+          this.createSlabClassifyNode(graph, {
+            condition: candidateDispatch.condition,
+            id,
+            capacity: candidateCapacity,
+            state,
+            candidatePairs,
+            pairClassifications,
+            slabs,
+            edgeLayout
+          })
+        );
+      } else {
+        nodes.push(
+          createWGSLKernelNode<Parameters>(graph, {
+            id: `${id}-classify`,
+            operation: OPERATION,
+            variant: 'classify-exact',
+            bindings: [
+              {name: 'state', view: state, type: 'u32', access: 'read'},
+              {name: 'candidatePairs', view: candidatePairs, type: 'u32', access: 'read'},
+              {name: 'candidatePoints', view: candidatePoints!, type: 'f32', access: 'read'},
+              {name: 'featureOffsets', view: polygons.featureOffsets, type: 'u32', access: 'read'},
+              {name: 'polygonPositions', view: polygons.positions, type: 'f32', access: 'read'},
+              {name: 'polygonOffsets', view: polygons.polygonOffsets, type: 'u32', access: 'read'},
+              {name: 'ringOffsets', view: polygons.ringOffsets, type: 'u32', access: 'read'},
+              {
+                name: 'pairClassifications',
+                view: pairClassifications,
+                type: 'u32',
+                access: 'read_write'
+              }
+            ],
+            invocationCount: candidateCapacity,
+            condition: candidateDispatch.condition,
+            declarations: `const CANDIDATE_CAPACITY: u32 = ${candidateCapacity}u;
   const POLYGON_COUNT: u32 = ${polygons.polygonOffsets.length - 1}u;
   const RING_COUNT: u32 = ${polygons.ringOffsets.length - 1}u;
   const VERTEX_COUNT: u32 = ${polygons.positions.length}u;
@@ -707,7 +1094,7 @@ export class GPUPointInPolygonJoin implements GPUCommandNodeProducer {
     if (onBoundary) { return BOUNDARY | select(0u, HALF_OPEN_OWNER_BIT, geometryOwned); }
     return select(OUTSIDE, INSIDE, geometryInside);
   }`,
-          body: `let activeCount = min(state[stateOffset], CANDIDATE_CAPACITY);
+            body: `let activeCount = min(state[stateOffset + 4u], CANDIDATE_CAPACITY);
     if (index >= activeCount) { return; }
     let featureRow = candidatePairs[candidatePairsOffset + index * 2u + 1u];
     let geometryStart = featureOffsets[featureOffsetsOffset + featureRow];
@@ -718,30 +1105,30 @@ export class GPUPointInPolygonJoin implements GPUCommandNodeProducer {
       classification = classifyExactly(point, geometryStart, geometryEnd);
     }
     pairClassifications[pairClassificationsOffset + index] = classification;`
-        })
-      );
-    }
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-resolve`,
-        operation: OPERATION,
-        variant: 'resolve',
-        bindings: [
-          {name: 'state', view: state, type: 'atomic<u32>', access: 'read_write'},
-          {name: 'candidatePairs', view: candidatePairs, type: 'u32', access: 'read'},
-          {name: 'pairClassifications', view: pairClassifications, type: 'u32', access: 'read'},
-          {name: 'assignment', view: assignment, type: 'atomic<u32>', access: 'read_write'}
-        ],
-        invocationCount: candidateCapacity,
-        condition: candidateDispatch.condition,
-        declarations: `const CANDIDATE_CAPACITY: u32 = ${candidateCapacity}u;
+          })
+        );
+      }
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-resolve`,
+          operation: OPERATION,
+          variant: 'resolve',
+          bindings: [
+            {name: 'state', view: state, type: 'atomic<u32>', access: 'read_write'},
+            {name: 'candidatePairs', view: candidatePairs, type: 'u32', access: 'read'},
+            {name: 'pairClassifications', view: pairClassifications, type: 'u32', access: 'read'},
+            {name: 'assignment', view: assignment, type: 'atomic<u32>', access: 'read_write'}
+          ],
+          invocationCount: candidateCapacity,
+          condition: candidateDispatch.condition,
+          declarations: `const CANDIDATE_CAPACITY: u32 = ${candidateCapacity}u;
 const INSIDE: u32 = ${GPU_POINT_IN_POLYGON_CLASSIFICATION.inside}u;
 const BOUNDARY: u32 = ${GPU_POINT_IN_POLYGON_CLASSIFICATION.boundary}u;
 const UNCERTAIN: u32 = ${GPU_POINT_IN_POLYGON_CLASSIFICATION.uncertain}u;
 const HALF_OPEN_OWNER_BIT: u32 = ${HALF_OPEN_OWNER_BIT}u;
 const BOUNDARY_CLOSED: bool = ${this.boundaryRule === 'closed'};
 const BOUNDARY_HALF_OPEN: bool = ${this.boundaryRule === 'half-open'};`,
-        body: `let activeCount = min(atomicLoad(&state[stateOffset]), CANDIDATE_CAPACITY);
+          body: `let activeCount = min(atomicLoad(&state[stateOffset + 4u]), CANDIDATE_CAPACITY);
   if (index >= activeCount) { return; }
   let pointRow = candidatePairs[candidatePairsOffset + index * ${pairStride}u];
   let featureRow = candidatePairs[candidatePairsOffset + index * ${pairStride}u + 1u];
@@ -753,8 +1140,9 @@ const BOUNDARY_HALF_OPEN: bool = ${this.boundaryRule === 'half-open'};`,
   } else if (classification == UNCERTAIN) {
     atomicAdd(&state[stateOffset + 1u], 1u);
   }`
-      })
-    );
+        })
+      );
+    }
     nodes.push(
       ...getSpatialJoinAssignNodes<Parameters>(graph, {
         id: `${id}-assign`,
@@ -803,6 +1191,8 @@ const BOUNDARY_HALF_OPEN: bool = ${this.boundaryRule === 'half-open'};`,
     graph: GPUCommandGraph<Parameters>,
     props: {
       condition: GPUCommandNode<Parameters>['condition'];
+      id: string;
+      capacity: number;
       state: GraphDataView<'uint32'>;
       candidatePairs: GraphDataView;
       pairClassifications: GraphDataView<'uint32'>;
@@ -810,7 +1200,7 @@ const BOUNDARY_HALF_OPEN: bool = ${this.boundaryRule === 'half-open'};`,
       edgeLayout: GraphDataView<'uint32'>;
     }
   ): GPUCommandNode<Parameters> {
-    const {id, candidateCapacity} = this;
+    const {id, capacity: candidateCapacity} = props;
     const {polygons} = this.props;
     const edgeLoop = getPolygonEdgeSlabLoopWGSL({
       owner: 'polygonIndex',
@@ -895,7 +1285,7 @@ fn classifySlabs(point: vec2f, partStart: u32, partEnd: u32) -> u32 {
   if (onBoundary) { return BOUNDARY | select(0u, HALF_OPEN_OWNER_BIT, geometryOwned); }
   return select(OUTSIDE, INSIDE, geometryInside);
 }`,
-      body: `let activeCount = min(state[stateOffset], CANDIDATE_CAPACITY);
+      body: `let activeCount = min(state[stateOffset + 4u], CANDIDATE_CAPACITY);
   if (index >= activeCount) { return; }
   let candidate = candidatePairsOffset + index * 4u;
   let featureRow = candidatePairs[candidate + 1u];
@@ -913,35 +1303,59 @@ fn classifySlabs(point: vec2f, partStart: u32, partEnd: u32) -> u32 {
 }
 
 function getInputs(
-  props: GPUPointInPolygonJoinProps
-): (GraphDataView | GraphVectorView | undefined)[] {
+  props: GPUPointInPolygonJoinProps<GPUUint32Rows>,
+  edgeSlabs = true
+): Record<string, GraphDataView | GraphVectorView | undefined> {
   const {points, polygons} = props;
-  return [
-    points.positions,
-    points.sourceIds,
-    ...getSpatialJoinGeometryViews(polygons),
-    polygons.sourceIds
-  ];
+  return {
+    'points.positions': points.positions,
+    'points.sourceIds':
+      props.output.matches && points.positions.length > 0 ? points.sourceIds : undefined,
+    'polygons.positions': polygons.positions,
+    'polygons.featureOffsets': polygons.featureOffsets,
+    'polygons.polygonOffsets': polygons.polygonOffsets,
+    'polygons.ringOffsets': polygons.ringOffsets,
+    'polygons.sourceIds': points.positions.length > 0 ? polygons.sourceIds : undefined,
+    ...Object.fromEntries(
+      Object.entries(
+        props.prepared?.isDeclaredIn(polygons.positions.buffer.graph)
+          ? props.prepared.storage
+          : (props.prepared?.props.storage ?? {})
+      ).map(([name, view]) => [`prepared.${name}`, view])
+    ),
+    ...(edgeSlabs && props.prepared?.edgeSlabStorage
+      ? {
+          'prepared.slabParams': props.prepared.edgeSlabStorage.slabs.params,
+          'prepared.slabOffsets': props.prepared.edgeSlabStorage.slabs.slabOffsets,
+          'prepared.slabEntries': props.prepared.edgeSlabStorage.slabs.slabEntries,
+          'prepared.edgeLayout': props.prepared.edgeSlabStorage.layout
+        }
+      : {})
+  };
 }
 
 function getOutputs(
-  props: GPUPointInPolygonJoinProps
-): (GraphDataView | GraphVectorView | undefined)[] {
+  props: GPUPointInPolygonJoinProps<GPUUint32Rows>
+): Record<string, GraphDataView | GraphVectorView | undefined> {
   const {output} = props;
   const {matches, status} = output;
-  return [
-    output.pointFeatureIds,
-    output.featureCounts,
-    output.candidateTruncated,
-    status.overflow,
-    status.candidateOverflow,
-    status.candidateCount,
-    status.uncertainCount,
-    status.antimeridianUncertainCount,
-    status.poleUncertainCount,
-    matches?.ids,
-    matches?.status.count,
-    matches?.status.overflow,
-    matches?.status.requiredCount
-  ];
+  return {
+    'output.pointFeatureIds': output.pointFeatureIds,
+    'output.featureCounts': output.featureCounts,
+    'output.candidateTruncated': output.candidateTruncated,
+    'output.status.overflow': status.overflow,
+    'output.status.candidateOverflow': status.candidateOverflow,
+    'output.status.candidateCount': status.candidateCount,
+    'output.status.uncertainCount': status.uncertainCount,
+    ...(props.spatialContext?.coordinateSpace === 'longitude-latitude'
+      ? {
+          'output.status.antimeridianUncertainCount': status.antimeridianUncertainCount,
+          'output.status.poleUncertainCount': status.poleUncertainCount
+        }
+      : {}),
+    'output.matches.ids': matches?.ids,
+    'output.matches.status.count': matches?.status.count,
+    'output.matches.status.overflow': matches?.status.overflow,
+    'output.matches.status.requiredCount': matches?.status.requiredCount
+  };
 }

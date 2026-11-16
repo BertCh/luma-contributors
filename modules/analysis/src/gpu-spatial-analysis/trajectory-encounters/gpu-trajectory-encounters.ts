@@ -2,6 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {TRAJECTORY_MAXIMUM_CANDIDATE_CAPACITY} from '../trajectory-analysis/trajectory-counts-wgsl';
+import {
+  validateTrajectoryBindings,
+  validateTrajectoryScratch,
+  validateTrajectoryOutputRanges,
+  validateTrajectoryWritableDispatches
+} from '../trajectory-analysis/trajectory-binding-validation';
 import {toRadians} from '@math.gl/core';
 import {
   resolveGPUSpatialContext,
@@ -32,6 +39,7 @@ import {
   validateGraphViewsBelongToGraph,
   validateCapacity,
   validateExtent,
+  validateFiniteNumber,
   validateMaximumCount,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -236,7 +244,13 @@ export class GPUTrajectoryEncounters implements GPUCommandNodeProducer {
     const geodesicRadius = getGPUGreatCircleRadius(this.spatialContext);
     validateCapacity(id, 'trackCount', props.trackCount);
     validateCapacity(id, 'bucketCount', props.bucketCount);
-    validateCapacity(id, 'hitCapacity', props.hitCapacity);
+    validateCapacity(
+      id,
+      'hitCapacity',
+      props.hitCapacity,
+      1,
+      TRAJECTORY_MAXIMUM_CANDIDATE_CAPACITY
+    );
     const sampleCount = props.trackCount * props.bucketCount;
     if (sampleCount >= 0x7fffffff) {
       throw new Error(`${id} trackCount * bucketCount must be below 2^31`);
@@ -255,11 +269,12 @@ export class GPUTrajectoryEncounters implements GPUCommandNodeProducer {
     if (props.distance.length < 1) {
       throw new Error(`${id} distance must contain one float32 row`);
     }
-    if (!(Number.isFinite(props.cellSize) && props.cellSize > 0)) {
+    if (!(Number.isFinite(Math.fround(props.cellSize)) && Math.fround(props.cellSize) > 0)) {
       throw new Error(`${id} cellSize must be a positive finite number`);
     }
     const [minX, minY, maxX, maxY] = props.bounds;
     validateExtent(id, props.bounds, 'bounds');
+    props.bounds.forEach((value, index) => validateFiniteNumber(id, `bounds[${index}]`, value));
     if (!(Math.fround(minX) < Math.fround(maxX)) || !(Math.fround(minY) < Math.fround(maxY))) {
       throw new Error(`${id} bounds collapse in float32`);
     }
@@ -329,6 +344,17 @@ export class GPUTrajectoryEncounters implements GPUCommandNodeProducer {
         throw new Error(`${id} bucketTimes length must equal bucketCount`);
       }
     }
+    validateTrajectoryOutputRanges(this.id, this.props.output);
+    validateTrajectoryWritableDispatches(id, [
+      {ids: pairs.ids, partners: pairs.partners},
+      {
+        firstBuckets: pairs.firstBuckets,
+        minimumDistances: pairs.minimumDistances,
+        bucketCounts: pairs.bucketCounts
+      },
+      {...pairs.status}
+    ]);
+    validateGraphOutputsDisjointFromInputs(id, [pairs.firstTimes], [pairs.firstBuckets]);
     validateGraphOutputsDisjointFromInputs(
       id,
       [
@@ -351,6 +377,7 @@ export class GPUTrajectoryEncounters implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateTrajectoryBindings(graph, this.id, this.props);
     const {id, props, columns, rows} = this;
     const {pairs, status} = props.output;
     validateGraphViewsBelongToGraph(id, graph, [
@@ -390,6 +417,12 @@ export class GPUTrajectoryEncounters implements GPUCommandNodeProducer {
     };
     const sampleCount = props.trackCount * props.bucketCount;
     const capacity = props.hitCapacity;
+    validateTrajectoryScratch(graph, id, {
+      'sample positions': sampleCount * 12,
+      'hit pairs': capacity * 8,
+      'cell offsets': (columns * rows * props.bucketCount + 1) * 4,
+      'sort histograms': 16 * Math.ceil(Math.max(sampleCount, capacity) / 256) * 4
+    });
     const u32 = (name: string, length: number) =>
       createTransientView(graph, `${id}-${name}`, 'uint32', Math.max(length, 1));
     const f32 = (name: string, length: number) =>

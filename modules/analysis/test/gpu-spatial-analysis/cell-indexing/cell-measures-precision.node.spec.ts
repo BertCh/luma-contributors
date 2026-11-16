@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {addCellChunkNodes} from '../cell-topology/gpu-cell-chunks.test-utils';
 import {GPUCommandGraph, createTransientView} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
 import {WgslReflect} from 'wgsl_reflect';
@@ -22,19 +23,19 @@ for (const family of ['h3', 's2', 'quadbin'] as const) {
   it(`${family} opts into published integer-controlled fp64 and retains the default float32 path`, () => {
     const device = createNullWebGPUDevice();
     try {
-      const graph = new GPUCommandGraph(device);
-      const cells = createTransientView(graph, 'cells', 'uint32x2', 257);
-      const output = {
-        areas: createTransientView(graph, 'areas', 'float32', cells.length),
-        perimeters: createTransientView(graph, 'perimeters', 'float32', cells.length),
-        edgeLengths: createTransientView(graph, 'edges', 'float32', cells.length * 10),
-        edgeCounts: createTransientView(graph, 'counts', 'uint32', cells.length),
-        pentagons: createTransientView(graph, 'pentagons', 'uint32', cells.length)
-      };
-      const props: GPUCellMeasuresProps = {family, cells, maximumEdgeCount: 10, output};
       const getSource = (precision?: GPUCellMeasuresProps['precision']) => {
+        const graph = new GPUCommandGraph(device);
+        const cells = createTransientView(graph, 'cells', 'uint32x2', 257);
+        const output = {
+          areas: createTransientView(graph, 'areas', 'float32', cells.length),
+          perimeters: createTransientView(graph, 'perimeters', 'float32', cells.length),
+          edgeLengths: createTransientView(graph, 'edges', 'float32', cells.length * 10),
+          edgeCounts: createTransientView(graph, 'counts', 'uint32', cells.length),
+          pentagons: createTransientView(graph, 'pentagons', 'uint32', cells.length)
+        };
+        const props: GPUCellMeasuresProps = {family, cells, maximumEdgeCount: 10, output};
         const contributor = new GPUCellMeasures({...props, precision});
-        const [kernel] = getGPUCommandNodeKernelSources(contributor.getCommandNodes(graph));
+        const [kernel] = getGPUCommandNodeKernelSources(addCellChunkNodes(graph, contributor));
         return kernel!.source;
       };
       const ordinary = getSource();
@@ -88,7 +89,7 @@ it('the unit-sphere S2 compatibility API uses the same fp64 geometry and validat
       }
     };
     const contributor = new GPUS2CellMeasures({...props, precision: 'fp64'});
-    const [kernel] = getGPUCommandNodeKernelSources(contributor.getCommandNodes(graph));
+    const [kernel] = getGPUCommandNodeKernelSources(addCellChunkNodes(graph, contributor));
     expect(kernel!.source).toContain('fn fp64_two_sum_integer_bits(');
     expect(() => new WgslReflect(kernel!.source)).not.toThrow();
     expect(() => new GPUS2CellMeasures({...props, precision: 'double' as 'fp64'})).toThrow(

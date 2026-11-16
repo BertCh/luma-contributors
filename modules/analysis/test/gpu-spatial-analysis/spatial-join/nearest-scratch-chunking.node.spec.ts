@@ -9,6 +9,7 @@ import {WgslReflect} from 'wgsl_reflect';
 import {GPUNearestFeatureJoin} from '../../../src/gpu-spatial-analysis/spatial-join/index';
 import {getNearestNeighborNodes} from '../../../src/gpu-spatial-analysis/spatial-join/nearest-nodes';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {getReservedWGSLWords} from './wgsl-reserved-words';
 
 const BINDING_LIMIT_BYTES = 134217728;
 
@@ -21,6 +22,7 @@ function recordPipelines(nodes: readonly unknown[]): {id: string; source: string
   const pipelines: {id: string; source: string; key: string}[] = [];
   Object.defineProperty(device, 'createComputePipeline', {
     value: (props: {id?: string; shader: {source: string}; constants?: object}) => {
+      expect(getReservedWGSLWords(props.shader.source), props.id).toEqual([]);
       pipelines.push({
         id: props.id ?? '',
         source: props.shader.source,
@@ -148,11 +150,11 @@ it('nearest neighbors do not chunk when the scratch fits one binding', () => {
   device.destroy();
 });
 
-it('nearest neighbors reject a scratch chunk size that is not a multiple of 64', () => {
+it('nearest neighbors reject a nonpositive scratch chunk size', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
-  expect(() => buildNeighborNodes(graph, {queryCount: 1000, scratchChunkQueryCount: 100})).toThrow(
-    /multiple of 64/
+  expect(() => buildNeighborNodes(graph, {queryCount: 1000, scratchChunkQueryCount: 0})).toThrow(
+    /MINIMUM_SCRATCH_QUERY_COUNT/
   );
   device.destroy();
 });

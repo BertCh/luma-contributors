@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateSpatialCrossValidationBindings} from './validation-binding-plans';
+
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -22,7 +24,8 @@ import {
   resolveGPUSpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
-import {validatePredictionViews} from '../../analysis-core/kernels/gpu-prediction-utils';
+import {validateRegressionOutputDispatches} from '../spatial-regression/regression-output-dispatches';
+import {validateGraphOutputsDisjointFromInputs} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createSpatialValidationDesignNodes,
   type GPUSpatialValidationDesign,
@@ -134,20 +137,30 @@ export class GPUSpatialCrossValidation implements GPUCommandNodeProducer {
         validateSinglePackedView(view, [format], this.id);
         if (view.length !== length) throw new Error(`${this.id}: shape mismatch`);
       }
-    validatePredictionViews(
+    validateRegressionOutputDispatches(
       this.id,
-      [props.positions, props.blocks, ...(props.mask ? [props.mask] : [])],
-      Object.values(props.output)
+      {...props.output, diagnostics: props.design?.diagnostics},
+      [
+        ['folds', 'diagnostics'],
+        {read: ['folds', 'diagnostics'], write: ['training', 'testing']},
+        {read: ['folds', 'training', 'testing'], write: ['counts', 'status']}
+      ]
     );
+    validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
+      props.positions,
+      ...(!props.design || props.design.mode === 'groups' ? [props.blocks] : []),
+      ...(props.mask ? [props.mask] : [])
+    ]);
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
+    validateSpatialCrossValidationBindings(graph, id, props);
     const rows = props.positions.length;
     validateGraphViewsBelongToGraph(id, graph, [
       props.positions,
-      props.blocks,
+      !props.design || props.design.mode === 'groups' ? props.blocks : undefined,
       props.mask,
       ...Object.values(props.output)
     ]);

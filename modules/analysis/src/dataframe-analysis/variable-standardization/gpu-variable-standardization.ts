@@ -4,6 +4,7 @@
 
 import {
   createTransientView,
+  getBoundedDispatchLayout,
   GPUReduction,
   GraphVectorView,
   type GPUCommandGraph,
@@ -14,18 +15,32 @@ import {
 import {
   getGraphViewChunks,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
+  validateGPUStorageBindingByteLength,
+  validateCapacity,
+  validateMaximumCount,
   validateSinglePackedView,
-  validateRequirement
+  validateCommandNodeBudget
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import type {WGSLKernelBinding} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
-  createWGSLKernelNode,
-  type WGSLKernelBinding
-} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+  createGraphChunkGroupKernelNode,
+  validateGraphChunkGroupKernelSupport
+} from '../../analysis-core/kernels/graph-chunk-groups';
+import {
+  planGraphChunkDispatch,
+  type GraphChunkDispatchPlan,
+  validateDisjointWritableViews,
+  validateGraphChunkBindingRanges
+} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {SCALED_QUOTIENT_WGSL} from '../../analysis-core/kernels/scaled-quotient-wgsl';
 
-/** Largest column: the valid-row count is reduced in float32, which is exact only up to 2^24. */
-const MAXIMUM_ROW_COUNT = 2 ** 24;
+/** Row indices and the valid-row reduction use uint32; packed bindings are checked on the device. */
+const MAXIMUM_ROW_COUNT = 0xffffffff;
+/** Four published reductions need at most five hierarchy levels plus publication each; includes empty clears. */
+const REDUCTION_COMMAND_NODE_ALLOWANCE = 128;
+/** Fixed across row chunks and global elementwise passes. */
+const WORKGROUP_SIZE = 256;
 
 /** GeoDa variable transformations; MAD is mean absolute deviation about the mean. */
 export type GPUVariableStandardizationMethod =
@@ -56,20 +71,20 @@ type Column<Format extends 'float32' | 'uint32'> = GraphDataView<Format> | Graph
 /** Topology is fixed; input and mask buffer contents may change between encodings. */
 export type GPUVariableStandardizationProps = {
   id?: string;
-  /** Packed scalar float32 column, a single chunk. 0 to 2^24 rows. */
+  /** Scalar float32 column with packed chunks. 0 to 2^32 - 1 rows, bounded by the device storage binding size. */
   values: Column<'float32'>;
-  /** Nonzero includes the row. Single chunk. */
+  /** Nonzero includes the row. Chunk lengths must match values and output. */
   mask?: Column<'uint32'>;
   method: GPUVariableStandardizationMethod;
   /** Z-score convention. Defaults to sample (GeoDa), dividing squared deviations by n - 1. */
   variance?: 'sample' | 'population';
-  /** Caller-owned packed float32 output with the same logical length as values. */
+  /** Caller-owned packed or chunked float32 output with the same logical length as values. */
   output: Column<'float32'>;
 };
 
 /**
  * Named standardization recipes composed from shared GPUReduction and elementwise passes.
- * Finite, unmasked rows define one global population across all chunks. Excluded rows output NaN.
+ * Finite, unmasked rows define one global population across all chunks. Global scratch must fit one storage binding. Excluded rows output NaN.
  * MAD and range transformations preserve constant input values; deviation and z-score produce 0
  * for constant populations (sample z-score needs at least two rows, otherwise NaN).
  * No compilation, submission, reduction on the CPU, or readback is performed by this producer.
@@ -77,15 +92,13 @@ export type GPUVariableStandardizationProps = {
 export class GPUVariableStandardization implements GPUCommandNodeProducer {
   readonly id: string;
   readonly props: GPUVariableStandardizationProps;
+  readonly estimatedCommandNodeCount: number;
+  private readonly chunkPlan: GraphChunkDispatchPlan;
 
   constructor(props: GPUVariableStandardizationProps) {
     this.id = props.id ?? 'variable-standardization';
     this.props = props;
-    validateRequirement(
-      this.id,
-      Number.isInteger(props.values.length) && props.values.length <= MAXIMUM_ROW_COUNT,
-      `values length must be an integer in [0, ${MAXIMUM_ROW_COUNT}] (2^24): row counts are reduced in float32 and are exact only up to 2^24`
-    );
+    validateCapacity(this.id, 'values length', props.values.length, 0, MAXIMUM_ROW_COUNT);
     if (
       !['deviation-from-mean', 'z-score', 'mad', 'range-adjust', 'range-standardize'].includes(
         props.method
@@ -104,26 +117,23 @@ export class GPUVariableStandardization implements GPUCommandNodeProducer {
       if (!column) continue;
       if (column.length !== props.values.length)
         throw new Error(`${this.id} ${name} length mismatch`);
-      // Published GraphVectorView chunks are not realigned; each column must be a single chunk.
-      if (getGraphViewChunks(column).length > 1) throw new Error(`${this.id} ${name} single chunk`);
+
       for (const chunk of getGraphViewChunks(column))
         validateSinglePackedView(chunk, [format], `${this.id} ${name}`);
     }
-    const outputChunks = getGraphViewChunks(props.output);
-    for (let index = 0; index < outputChunks.length; index++) {
-      const current = outputChunks[index];
-      for (const previous of outputChunks.slice(0, index)) {
-        if (
-          current.buffer === previous.buffer &&
-          current.length > 0 &&
-          previous.length > 0 &&
-          current.byteOffset < previous.byteOffset + previous.length * 4 &&
-          previous.byteOffset < current.byteOffset + current.length * 4
-        ) {
-          throw new Error(`${this.id} output chunks must not overlap`);
-        }
-      }
-    }
+    validateDisjointWritableViews(this.id, {output: props.output});
+    this.chunkPlan = planGraphChunkDispatch(this.id, {
+      values: props.values,
+      output: props.output,
+      mask: props.mask
+    });
+    this.estimatedCommandNodeCount =
+      REDUCTION_COMMAND_NODE_ALLOWANCE +
+      2 *
+        (getGraphViewChunks(props.values).length +
+          getGraphViewChunks(props.output).length +
+          (props.mask ? getGraphViewChunks(props.mask).length : 0));
+    validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
     validateGraphOutputsDisjointFromInputs(this.id, getGraphViewChunks(props.output), [
       ...getGraphViewChunks(props.values),
       ...(props.mask ? getGraphViewChunks(props.mask) : [])
@@ -134,71 +144,102 @@ export class GPUVariableStandardization implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    validateGraphViewsBelongToGraph(id, graph, [
-      ...getGraphViewChunks(props.values),
-      ...getGraphViewChunks(props.output),
-      ...(props.mask ? getGraphViewChunks(props.mask) : [])
-    ]);
-    const nodes: GPUCommandNode<Parameters>[] = [];
-    // Each column is a single chunk (validated in the constructor), so there is one span.
-    const spans = [
-      [
-        getGraphViewChunks(props.values)[0],
-        getGraphViewChunks(props.output)[0],
-        props.mask ? getGraphViewChunks(props.mask)[0] : undefined
-      ]
-    ] as const;
-    const totalLength = props.values.length;
-    const spanStarts: number[] = [];
-    let spanStart = 0;
-    for (const span of spans) {
-      spanStarts.push(spanStart);
-      spanStart += span[0].length;
+    validateGraphChunkBindingRanges(graph, id, {
+      values: props.values,
+      output: props.output,
+      mask: props.mask
+    });
+    validateMaximumCount(
+      id,
+      'row scratch byteLength',
+      Math.max(props.values.length, 2) * 4,
+      graph.device.limits.maxBufferSize
+    );
+    // Every row-proportional scratch plane is scalar; reduction partials are smaller.
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'row scratch',
+      Math.max(props.values.length, 2) * 4,
+      'reduce the packed values row count'
+    );
+    validateGraphChunkGroupKernelSupport(graph, id, 7, WORKGROUP_SIZE);
+    const spans = this.chunkPlan.chunks.map(
+      chunk => [chunk.views['values'], chunk.views['output'], chunk.views['mask']] as const
+    );
+    for (const [values] of spans) {
+      if (values.length > 0)
+        getBoundedDispatchLayout(
+          id,
+          values.length,
+          WORKGROUP_SIZE,
+          graph.device.limits.maxComputeWorkgroupsPerDimension
+        );
     }
-    const cleanAll = createTransientView(graph, `${id}-clean`, 'float32', totalLength);
-    const validAll = createTransientView(graph, `${id}-valid`, 'uint32', totalLength);
-    const cleanChunks: GraphDataView<'float32'>[] = [];
-    const validChunks: GraphDataView<'uint32'>[] = [];
+    const totalLength = props.values.length;
+    if (totalLength > 0)
+      getBoundedDispatchLayout(
+        id,
+        totalLength,
+        WORKGROUP_SIZE,
+        graph.device.limits.maxComputeWorkgroupsPerDimension
+      );
+    const clean = createTransientView(graph, `${id}-clean`, 'float32', totalLength);
+    const valid = createTransientView(graph, `${id}-valid`, 'uint32', totalLength);
     const count = createTransientView(graph, `${id}-count`, 'uint32', 1);
     const sum = createTransientView(graph, `${id}-sum`, 'float32', 1);
     const extent = createTransientView(graph, `${id}-extent`, 'float32', 2);
     const dispersion = createTransientView(graph, `${id}-dispersion`, 'float32', 1);
     const needsMean = !props.method.startsWith('range-');
     const needsDispersion = props.method === 'mad' || props.method === 'z-score';
-    for (const [spanIndex, [values, , mask]] of spans.entries()) {
-      const clean = sliceView(graph, cleanAll, spanStarts[spanIndex], values.length);
-      const valid = sliceView(graph, validAll, spanStarts[spanIndex], values.length);
-      cleanChunks.push(clean);
-      validChunks.push(valid);
-      const bindings: WGSLKernelBinding[] = [
-        {name: 'values', view: values, type: 'f32', access: 'read'},
-        {name: 'clean', view: clean, type: 'f32', access: 'read_write'},
-        {name: 'valid', view: valid, type: 'u32', access: 'read_write'}
-      ];
-      if (mask) bindings.push({name: 'mask', view: mask, type: 'u32', access: 'read'});
-      nodes.push(
-        createWGSLKernelNode(graph, {
-          id: `${id}-prepare-${spanIndex}`,
-          operation: 'GPUVariableStandardization',
-          variant: 'prepare',
-          invocationCount: values.length,
-          bindings,
-          declarations: IS_FINITE_BITS_WGSL,
-          body: `let value = values[valuesOffset + index];
-  let included = isFiniteBits(value)${mask ? ' && mask[maskOffset + index] != 0u' : ''};
+    const nodes: GPUCommandNode<Parameters>[] = [];
+    const read = (name: string, view: GraphDataView, type: 'f32' | 'u32'): WGSLKernelBinding => ({
+      name,
+      view,
+      type,
+      access: 'read'
+    });
+    const write = (name: string, view: GraphDataView, type: 'f32' | 'u32'): WGSLKernelBinding => ({
+      name,
+      view,
+      type,
+      access: 'read_write'
+    });
+    let rowStart = 0;
+    const prepared = spans
+      .filter(([values]) => values.length > 0)
+      .map(([values, output, mask], spanIndex) => {
+        const cleanSpan = sliceView(graph, clean, rowStart, values.length);
+        const validSpan = sliceView(graph, valid, rowStart, values.length);
+        rowStart += values.length;
+        nodes.push(
+          createGraphChunkGroupKernelNode(graph, {
+            id: `${id}-prepare-${spanIndex}`,
+            operation: 'GPUVariableStandardization',
+            variant: 'prepare',
+            invocationCount: values.length,
+            workgroupSize: WORKGROUP_SIZE,
+            bindings: [
+              read('values', values, 'f32'),
+              write('clean', cleanSpan, 'f32'),
+              write('valid', validSpan, 'u32'),
+              ...(mask ? [read('mask', mask, 'u32')] : [])
+            ],
+            declarations: IS_FINITE_BITS_WGSL,
+            body: `let value = values[valuesOffset + index];
+  let included = isFiniteBits(value)${props.mask ? ' && mask[maskOffset + index] != 0u' : ''};
   clean[cleanOffset + index] = select(0.0, value, included);
   valid[validOffset + index] = select(0u, 1u, included);`
-        })
-      );
-    }
-    const clean = cleanAll;
-    const valid = validAll;
+          })
+        );
+        return {values, output, valid: validSpan};
+      });
     nodes.push(
       ...new GPUReduction({
         id: `${id}-count`,
         input: valid,
-        operation: 'sum',
-        output: count
+        output: count,
+        operation: 'sum'
       }).getCommandNodes(graph)
     );
     nodes.push(
@@ -206,104 +247,94 @@ export class GPUVariableStandardization implements GPUCommandNodeProducer {
         id: `${id}-extent`,
         input: clean,
         mask: valid,
-        operation: 'extent',
-        output: extent
+        output: extent,
+        operation: 'extent'
       }).getCommandNodes(graph)
     );
-    const normalizedChunks: GraphDataView<'float32'>[] = [];
-    const normalizedAll = createTransientView(graph, `${id}-normalized`, 'float32', totalLength);
-    if (needsMean) {
-      for (const [spanIndex, values] of cleanChunks.entries()) {
-        const normalized = sliceView(graph, normalizedAll, spanStarts[spanIndex], values.length);
-        normalizedChunks.push(normalized);
+    const normalized = needsMean
+      ? createTransientView(graph, `${id}-normalized`, 'float32', totalLength)
+      : undefined;
+    if (normalized) {
+      if (totalLength > 0)
         nodes.push(
-          createWGSLKernelNode(graph, {
-            id: `${id}-normalize-${spanIndex}`,
+          createGraphChunkGroupKernelNode(graph, {
+            id: `${id}-normalize`,
             operation: 'GPUVariableStandardization',
             variant: 'normalized-mean',
-            declarations: RATIO_WGSL,
-            invocationCount: values.length,
+            invocationCount: totalLength,
             bindings: [
-              {name: 'values', view: values, type: 'f32', access: 'read'},
-              {name: 'valid', view: validChunks[spanIndex], type: 'u32', access: 'read'},
-              {name: 'extent', view: extent, type: 'f32', access: 'read'},
-              {name: 'normalized', view: normalized, type: 'f32', access: 'read_write'}
+              read('values', clean, 'f32'),
+              read('valid', valid, 'u32'),
+              read('extent', extent, 'f32'),
+              write('normalized', normalized, 'f32')
             ],
+            declarations: RATIO_WGSL,
             body: `${NORMALIZATION_WGSL}
   let value = values[valuesOffset + index];
   normalized[normalizedOffset + index] = select(0.0, getRatio(value - origin, radius), radius > 0.0 && valid[validOffset + index] != 0u);`
           })
         );
-      }
       nodes.push(
         ...new GPUReduction({
           id: `${id}-mean-sum`,
-          input: normalizedAll,
-          operation: 'sum',
-          output: sum
+          input: normalized,
+          output: sum,
+          operation: 'sum'
         }).getCommandNodes(graph)
       );
     }
-    if (needsDispersion) {
-      const termsAll = createTransientView(graph, `${id}-terms`, 'float32', totalLength);
-      for (const [spanIndex, values] of normalizedChunks.entries()) {
-        const term = sliceView(graph, termsAll, spanStarts[spanIndex], values.length);
+    if (needsDispersion && normalized) {
+      const terms = createTransientView(graph, `${id}-terms`, 'float32', totalLength);
+      if (totalLength > 0)
         nodes.push(
-          createWGSLKernelNode(graph, {
-            id: `${id}-center-${spanIndex}`,
+          createGraphChunkGroupKernelNode(graph, {
+            id: `${id}-center`,
             operation: 'GPUVariableStandardization',
             variant: props.method,
-            invocationCount: values.length,
+            invocationCount: totalLength,
             bindings: [
-              {name: 'values', view: values, type: 'f32', access: 'read'},
-              {name: 'valid', view: validChunks[spanIndex], type: 'u32', access: 'read'},
-              {name: 'sum', view: sum, type: 'f32', access: 'read'},
-              {name: 'count', view: count, type: 'u32', access: 'read'},
-              {name: 'term', view: term, type: 'f32', access: 'read_write'}
+              read('values', normalized, 'f32'),
+              read('valid', valid, 'u32'),
+              read('sum', sum, 'f32'),
+              read('count', count, 'u32'),
+              write('term', terms, 'f32')
             ],
             body: `let mean = sum[sumOffset] / f32(max(count[countOffset], 1u));
   let difference = values[valuesOffset + index] - mean;
   term[termOffset + index] = select(0.0, ${props.method === 'mad' ? 'abs(difference)' : 'difference * difference'}, valid[validOffset + index] != 0u);`
           })
         );
-      }
       nodes.push(
         ...new GPUReduction({
           id: `${id}-dispersion`,
-          input: termsAll,
-          operation: 'sum',
-          output: dispersion
+          input: terms,
+          output: dispersion,
+          operation: 'sum'
         }).getCommandNodes(graph)
       );
     }
-    for (const [spanIndex, [values, output]] of spans.entries()) {
-      const bindings: WGSLKernelBinding[] = [
-        {name: 'values', view: values, type: 'f32', access: 'read'},
-        {name: 'valid', view: validChunks[spanIndex], type: 'u32', access: 'read'},
-        {name: 'count', view: count, type: 'u32', access: 'read'},
-        {name: 'output', view: output, type: 'f32', access: 'read_write'},
-        {
-          name: 'extent',
-          view: extent,
-          type: 'f32',
-          access: 'read'
-        }
-      ];
-      if (needsMean) bindings.push({name: 'sum', view: sum, type: 'f32', access: 'read'});
-      if (needsDispersion)
-        bindings.push({name: 'dispersion', view: dispersion, type: 'f32', access: 'read'});
+    for (const [spanIndex, span] of prepared.entries()) {
       nodes.push(
-        createWGSLKernelNode(graph, {
+        createGraphChunkGroupKernelNode(graph, {
           id: `${id}-apply-${spanIndex}`,
           operation: 'GPUVariableStandardization',
           variant: props.method,
-          invocationCount: values.length,
-          bindings,
+          invocationCount: span.values.length,
+          bindings: [
+            read('values', span.values, 'f32'),
+            read('valid', span.valid, 'u32'),
+            read('count', count, 'u32'),
+            write('output', span.output, 'f32'),
+            read('extent', extent, 'f32'),
+            ...(needsMean ? [read('sum', sum, 'f32')] : []),
+            ...(needsDispersion ? [read('dispersion', dispersion, 'f32')] : [])
+          ],
           declarations: GET_NAN_WGSL + IS_FINITE_BITS_WGSL + RATIO_WGSL,
           body: getApplyBody(props)
         })
       );
     }
+
     return nodes;
   }
 }
@@ -350,10 +381,9 @@ const NORMALIZATION_WGSL = /* wgsl */ `let minimum = extent[extentOffset];
   let origin = select(0.0, minimum, sameSign);
   let radius = max(abs(minimum - origin), abs(maximum - origin));`;
 
-/** Rescale extreme divisors to avoid a flushed subnormal reciprocal on GPU implementations. */
-const RATIO_WGSL = /* wgsl */ `fn getRatio(numerator: f32, denominator: f32) -> f32 {
+/** Exponent-scaled division keeps extreme normal results under Metal reciprocal fast math. */
+const RATIO_WGSL = /* wgsl */ `${SCALED_QUOTIENT_WGSL}
+fn getRatio(numerator: f32, denominator: f32) -> f32 {
   if (denominator == 0.0) { return 0.0; }
-  if (denominator > 1e19) { return (numerator * 1e-19) / (denominator * 1e-19); }
-  if (denominator < 1e-19) { return (numerator * 1e19) / (denominator * 1e19); }
-  return numerator / denominator;
+  return getScaledQuotient(numerator, denominator, 1.0, 0);
 }`;

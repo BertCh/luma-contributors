@@ -224,3 +224,24 @@ it('GPURandomPointsOnLine keeps a stable prefix, flags overflow and samples unif
   expect(Math.abs(onFirstSegment / sampleCount - 0.25)).toBeLessThan(0.03);
   expect(Math.abs(fractionSum / sampleCount - 0.5)).toBeLessThan(0.02);
 });
+
+it('concurrent line counts clamp with an exact total and a deterministic first point', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const result = await runRandomPoints(
+    device,
+    Array.from({length: 256}, () => [
+      [0, 0],
+      [1, 0]
+    ]),
+    Array(256).fill(100),
+    1
+  );
+  expect([result.count, result.total, result.overflow]).toEqual([1, 512, 1]);
+  expect(result.ids).toEqual([0]);
+  const fraction = getPhiloxUnitFloat(
+    getPhilox4x32([0, 0, 0, 0], [SEED, RANDOM_POINTS_ON_LINE_PURPOSE])[0]
+  );
+  expect(result.positions[0]).toBeCloseTo(fraction, 6);
+  expect(result.positions[1]).toBe(0);
+});

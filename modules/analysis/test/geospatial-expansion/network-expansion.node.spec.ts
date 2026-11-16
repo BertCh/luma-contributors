@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
+import {captureGraphCommandNodes} from '../../src/analysis-core/kernels/gpu-contributor-utils';
 import {addCellFlowTopologyRecipe} from '../../src/gpu-spatial-analysis/recipes/cell-flow-topology-recipe';
 import {GPUNetworkStructure} from '../../src/gpu-network/network-structure/index';
 import {GPUAlternativeRoutes} from '../../src/gpu-network/alternative-routes/index';
@@ -71,14 +72,23 @@ it('network expansion kernels parse and stay within eight storage bindings', () 
       }
     })
   ];
-  const recipe = addCellFlowTopologyRecipe(graph, {
-    cells: view('uint32x2', 3),
-    origins: view('uint32', 5),
-    destinations: view('uint32', 5),
-    values: view('float32', 5)
+  // RecipeBuilder adds its contributors immediately. Record those nodes once rather than
+  // re-declaring the identities contributor's chunk-parameter resource afterward.
+  const recipeNodes = captureGraphCommandNodes(graph, () => {
+    addCellFlowTopologyRecipe(graph, {
+      cells: view('uint32x2', 3),
+      origins: view('uint32', 5),
+      destinations: view('uint32', 5),
+      values: view('float32', 5)
+    });
   });
-  for (const contributor of [...contributors, ...recipe.contributors]) {
-    const sources = getParsedKernelSources(contributor.getCommandNodes(graph));
+  for (const node of recipeNodes) graph.add(node);
+  expect(recipeNodes.filter(node => node.type === 'compute').length).toBeGreaterThan(0);
+  for (const nodes of [
+    ...contributors.map(contributor => contributor.getCommandNodes(graph)),
+    ...recipeNodes.filter(node => node.type === 'compute').map(node => [node])
+  ]) {
+    const sources = getParsedKernelSources(nodes);
     expect(sources.size).toBeGreaterThan(0);
     for (const [name, source] of sources) {
       expect(getStorageBindingCount(source), name).toBeLessThanOrEqual(8);
@@ -141,6 +151,7 @@ it('bounded exact network algorithms reject graphs above their documented node c
   expect(
     () =>
       new GPUNetworkStructure({
+        mode: 'exact',
         topology: createTopology(1025),
         output: {strongComponents: view('uint32', 1025)}
       }),
@@ -149,11 +160,21 @@ it('bounded exact network algorithms reject graphs above their documented node c
   expect(
     () =>
       new GPUNetworkStructure({
+        mode: 'exact',
         topology: createTopology(1024),
         output: {strongComponents: view('uint32', 1024)}
       }),
     'GPUNetworkStructure accepts exactly 1024 nodes'
   ).not.toThrow();
+  const scalable = new GPUNetworkStructure({
+    topology: createTopology(1025),
+    output: {strongComponents: view('uint32', 1025)}
+  });
+  expect(scalable.mode).toBe('auto');
+  expect(scalable.strongComponentsMode).toBe('parallel');
+  expect(scalable.getCommandNodes(graph).length).toBeLessThanOrEqual(
+    scalable.estimatedCommandNodeCount
+  );
   expect(
     () =>
       new GPUAlternativeRoutes({

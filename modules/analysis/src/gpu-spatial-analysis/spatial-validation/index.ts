@@ -82,3 +82,9 @@ export type {
 } from './cpu-nested-interpolation-validation-operation';
 export {GPUNestedInterpolationValidationOperation} from './gpu-nested-interpolation-validation-operation';
 export type {NestedInterpolationValidationOperationProps} from './gpu-nested-interpolation-validation-operation';
+export {
+  GPU_NESTED_VALIDATION_MAXIMUM_ROW_COUNT,
+  GPU_NESTED_VALIDATION_MAXIMUM_NEIGHBOR_COUNT
+} from './gpu-nested-interpolation-validation';
+
+export {GPU_NESTED_VALIDATION_REFERENCE_MAXIMUM_ROW_COUNT} from './gpu-nested-interpolation-validation';

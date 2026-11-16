@@ -3,6 +3,12 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  validateTrajectoryBindings,
+  validateTrajectoryWritableDispatches,
+  validateTrajectoryScratch,
+  validateTrajectoryOutputRanges
+} from './trajectory-binding-validation';
+import {
   resolveGPUSpatialContext,
   GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
   getGPUGreatCircleRadius
@@ -356,6 +362,29 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
     ) {
       throw new Error(`${id} requires at least one output`);
     }
+    validateTrajectoryOutputRanges(this.id, this.props.output);
+    validateTrajectoryWritableDispatches(this.id, [
+      {
+        stepSpeeds: output.stepSpeeds,
+        stepHeadings: output.stepHeadings,
+        stepAccelerations: output.stepAccelerations
+      },
+      {trackDurations: output.trackDurations, averageSpeeds: output.averageSpeeds},
+      {ids: output.stops?.ids, startRows: output.stops?.startRows, endRows: output.stops?.endRows},
+      {
+        count: output.stops?.status.count,
+        overflow: output.stops?.status.overflow,
+        requiredCount: output.stops?.status.requiredCount,
+        drawInstanceCount: output.stops?.drawInstanceCount
+      }
+    ]);
+    if (output.averageSpeeds) {
+      validateGraphOutputsDisjointFromInputs(
+        id,
+        [output.trackDurations, output.averageSpeeds],
+        [output.trackLengths]
+      );
+    }
     validateGraphOutputsDisjointFromInputs(
       id,
       [
@@ -388,6 +417,7 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateTrajectoryBindings(graph, this.id, this.props);
     const {props, id} = this;
     const {output} = props;
     const {stops} = output;
@@ -421,6 +451,10 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
     const nodes: GPUCommandNode<Parameters>[] = [];
     const geodesicRadius = getGPUGreatCircleRadius(this.spatialContext);
 
+    validateTrajectoryScratch(graph, id, {
+      'row scratch': Math.max(1, rowCount) * 4,
+      'centroid sum scratch': 2 * Math.max(1, Math.ceil(rowCount / 2)) * 4
+    });
     const needsLengths = Boolean(output.trackLengths || output.averageSpeeds);
     const stepDistances = needsLengths
       ? createTransientView(graph, `${id}-step-distances`, 'float32', rowCount)

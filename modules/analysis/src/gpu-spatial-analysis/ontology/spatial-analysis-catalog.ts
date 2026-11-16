@@ -412,7 +412,7 @@ const CAPABILITY_DEFINITIONS: readonly GPUSpatialAnalysisCapability[] = [
     domain: 'discrete-global-grids',
     stage: 'index',
     summary:
-      'Converts between points, H3 or Quadbin cells, boundaries, parents, neighbors and paths.',
+      'Converts between points, H3, Quadbin or S2 cells, boundaries, parents, neighbors and paths.',
     inputs: ['points', 'polygons', 'cells', 'parameters'],
     outputs: ['cells', 'points', 'lines', 'polygons', 'attributes'],
     coordinateModels: ['spherical', 'grid', 'topological'],

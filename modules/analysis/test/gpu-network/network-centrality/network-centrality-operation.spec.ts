@@ -51,6 +51,7 @@ for (const scene of ['weighted tied paths, multiple pivots', 'zero cycle', 'nega
       laneCount: 2,
       maximumIterations: 8,
       betweennessScale: 1.5,
+      sampling: 'sampled',
       output: {
         betweenness: 'between',
         edgeBetweenness: 'edges',
@@ -58,6 +59,7 @@ for (const scene of ['weighted tied paths, multiple pivots', 'zero cycle', 'nega
         harmonicCloseness: 'harmonic',
         reachedCounts: 'reached',
         status: {
+          approximation: 'approximation',
           converged: 'converged',
           zeroWeightCycle: 'cycle',
           iterationLimitReached: 'limitReached'
@@ -79,6 +81,7 @@ for (const scene of ['weighted tied paths, multiple pivots', 'zero cycle', 'nega
     };
     const results: Record<string, Record<string, OperationGraphRows>> = {};
     const outputs = [
+      'approximation',
       'between',
       'edges',
       'close',
@@ -100,7 +103,7 @@ for (const scene of ['weighted tied paths, multiple pivots', 'zero cycle', 'nega
       });
     for (const port of outputs) {
       expect(results['gpu'][port].length).toBe(results['cpu'][port].length);
-      if (['reached', 'converged', 'cycle', 'limitReached'].includes(port))
+      if (['approximation', 'reached', 'converged', 'cycle', 'limitReached'].includes(port))
         expect(Array.from(results['gpu'][port])).toEqual(Array.from(results['cpu'][port]));
       else
         for (let row = 0; row < results['cpu'][port].length; row++) {
@@ -111,6 +114,7 @@ for (const scene of ['weighted tied paths, multiple pivots', 'zero cycle', 'nega
           );
         }
     }
+    expect(results['cpu']['approximation'][0]).toBe(1);
     expect(results['cpu']['limitReached'][0]).toBe(0);
     expect(results['cpu']['cycle'][0]).toBe(Number(zeroCycle));
     expect(results['cpu']['converged'][0]).toBe(Number(!zeroCycle));

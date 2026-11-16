@@ -102,7 +102,11 @@ function createScene(rows: number, seed: number, withWeights: boolean): Scene {
   return {values, zoneIds, zoneCount: 7, mask, weights: withWeights ? weights : undefined};
 }
 
-function createFixture(device: Device, scene: Scene): Fixture {
+function createFixture(
+  device: Device,
+  scene: Scene,
+  mode: 'parallel' | 'reference' = 'parallel'
+): Fixture {
   const {zoneCount} = scene;
   const rows = scene.values.length;
   const buffers: Buffer[] = [];
@@ -139,6 +143,7 @@ function createFixture(device: Device, scene: Scene): Fixture {
   graph.add(
     new GPUInequality({
       id: 'inequality',
+      mode,
       values: importGraphBuffer(
         graph,
         'values',
@@ -406,5 +411,114 @@ it('GPUInequality stays accurate for one large zone and a large radix sort', asy
     expectClose(result.globalSummary, oracle.globalSummary, 2e-3, 'summary');
   } finally {
     fixture.destroy();
+  }
+});
+
+it('parallel inequality crosses Lorenz tiles and agrees with definitions and the retained reference route', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const rows of [255, 256, 257, 65537]) {
+    const scene = createScene(rows, 29, true);
+    const parallel = createFixture(device, scene, 'parallel');
+    const reference = rows <= 257 ? createFixture(device, scene, 'reference') : undefined;
+    try {
+      for (const settings of SETTINGS) {
+        const oracle = computeInequalityOnCPU({...scene, settings, lorenzKnotCount: KNOT_COUNT});
+        compare(await parallel.run(settings), oracle, `parallel ${rows}`);
+        if (reference) compare(await reference.run(settings), oracle, `reference ${rows}`);
+      }
+    } finally {
+      parallel.destroy();
+      reference?.destroy();
+    }
+  }
+});
+
+it('parallel inequality handles a million rows in one zone against closed forms', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const rows = 2 ** 20;
+  const values = new Float32Array(rows).fill(1);
+  values.fill(3, rows / 2);
+  const fixture = createFixture(device, {values, zoneIds: new Uint32Array(rows), zoneCount: 1});
+  try {
+    const result = await fixture.run({epsilon: 1});
+    expect(result.count).toEqual([rows]);
+    expect(result.mean[0]).toBeCloseTo(2, 5);
+    expect(result.gini[0]).toBeCloseTo(0.25, 5);
+    expect(result.hoover[0]).toBeCloseTo(0.25, 5);
+    expect(result.theilT[0]).toBeCloseTo((0.5 * Math.log(0.5) + 1.5 * Math.log(1.5)) / 2, 4);
+    expect(result.theilL[0]).toBeCloseTo(-Math.log(0.75) / 2, 4);
+    expect(result.atkinson[0]).toBeCloseTo(1 - Math.sqrt(0.75), 4);
+    expect(result.palma[0]).toBeCloseTo(0.75, 4);
+    expect(result.lorenzKnots[5]).toBeCloseTo(0.25, 5);
+  } finally {
+    fixture.destroy();
+  }
+});
+
+it('inequality accepts disjoint packed outputs sharing an alignment prefix across publication passes', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const graph = new GPUCommandGraph(device);
+  const values = createInputBuffer(device, new Float32Array([1, 3]));
+  const zones = createInputBuffer(device, new Uint32Array(2));
+  const parameters = createInputBuffer(device, getGPUInequalityParameterValues());
+  const output = createOutputBuffer(device, 2);
+  const packed = importGraphBuffer(graph, 'packed', output, 'float32', 2);
+  graph.add(
+    new GPUInequality({
+      values: importGraphBuffer(graph, 'values', values, 'float32', 2),
+      zoneIds: importGraphBuffer(graph, 'zones', zones, 'uint32', 2),
+      zoneCount: 1,
+      parameters: importGraphBuffer(graph, 'parameters', parameters, 'float32', 4),
+      output: {
+        gini: graph.createDataView(packed.buffer, {format: 'float32', length: 1}),
+        mean: graph.createDataView(packed.buffer, {format: 'float32', length: 1, byteOffset: 4})
+      }
+    })
+  );
+  const compiled = graph.compile();
+  try {
+    submitGraph(device, compiled, undefined);
+    const result = await readFloat32(output, 2);
+    expect(result[0]).toBeCloseTo(0.25, 5);
+    expect(result[1]).toBe(2);
+  } finally {
+    compiled.destroy();
+    values.destroy();
+    zones.destroy();
+    parameters.destroy();
+    output.destroy();
+  }
+});
+
+it('inequality routes retain normalized indices at extreme normal income and population scales', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const scale of [1e37, 1e-37]) {
+    for (const scaleWeights of [false, true]) {
+      const scene = {
+        values: new Float32Array(scaleWeights ? [1, 3] : [scale, 3 * scale]),
+        weights: scaleWeights ? new Float32Array([scale, scale]) : undefined,
+        zoneIds: new Uint32Array(2),
+        zoneCount: 1
+      };
+      for (const mode of ['parallel', 'reference'] as const) {
+        const fixture = createFixture(device, scene, mode);
+        try {
+          const actual = await fixture.run({epsilon: 1});
+          expect(actual.mean[0] / (scaleWeights ? 1 : scale)).toBeCloseTo(2, 4);
+          expect(actual.gini[0]).toBeCloseTo(0.25, 4);
+          expect(actual.hoover[0]).toBeCloseTo(0.25, 4);
+          const theil = (0.5 * Math.log(0.5) + 1.5 * Math.log(1.5)) / 2;
+          expect(actual.theilT[0]).toBeCloseTo(theil, 4);
+          expect(actual.globalSummary[0]).toBeCloseTo(theil, 4);
+          expect(actual.globalSummary[3]).toBeCloseTo(0.25, 4);
+        } finally {
+          fixture.destroy();
+        }
+      }
+    }
   }
 });

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {
   validatePackedUint32View,
   type GPUCommandGraph,
@@ -46,6 +47,8 @@ import {
   getStudyWindowWGSL,
   getStudyWindowWGSLOptions
 } from '../../analysis-core/kernels/study-window-wgsl';
+
+import {validatePairStatisticsBindings} from './pair-statistics-preflight';
 
 const OPERATION = 'GPURipley';
 
@@ -222,6 +225,7 @@ export class GPURipley implements GPUCommandNodeProducer {
         throw new Error(`${id} output.pairCounts must hold radiusCount rows`);
       }
     }
+    validateDisjointWritableViews(id, output);
     validateGraphOutputsDisjointFromInputs(
       id,
       [output.k, output.l, output.lMinusR, output.pairCorrelation, output.pairCounts, output.radii],
@@ -264,6 +268,24 @@ export class GPURipley implements GPUCommandNodeProducer {
         studyWindow.packed
       ]);
     }
+    validatePairStatisticsBindings(graph, id, {
+      rows: positions.length,
+      gridSize,
+      slots: radiusCount,
+      channels: CHANNEL_COUNT,
+      views: {
+        positions,
+        mask: props.mask,
+        parameters: callerParameters,
+        window: studyWindow?.packed,
+        k: output.k,
+        l: output.l,
+        lMinusR: output.lMinusR,
+        pairCorrelation: output.pairCorrelation,
+        pairCounts: output.pairCounts,
+        radii: output.radii
+      }
+    });
     const windowParameters = studyWindow
       ? getPairStatisticsWindowParameterNodes(graph, {
           id,

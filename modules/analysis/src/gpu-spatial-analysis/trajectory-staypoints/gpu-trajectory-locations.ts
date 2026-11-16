@@ -3,6 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  validateTrajectoryBindings,
+  validateTrajectoryWritableDispatches,
+  validateTrajectoryOutputRanges
+} from '../trajectory-analysis/trajectory-binding-validation';
+import {
   createTransientView,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -67,7 +72,7 @@ export function getGPUTrajectoryLocationsParameterValues(
   settings: GPUTrajectoryLocationsSettings,
   target: Float32Array = new Float32Array(GPU_TRAJECTORY_LOCATIONS_PARAMETER_LENGTH)
 ): Float32Array {
-  if (!Number.isFinite(settings.epsilon) || settings.epsilon <= 0) {
+  if (!Number.isFinite(Math.fround(settings.epsilon)) || Math.fround(settings.epsilon) <= 0) {
     throw new Error('Location epsilon must be finite and positive');
   }
   warnGPUShortLongitudeLatitudeDistance(
@@ -166,6 +171,13 @@ export class GPUTrajectoryLocations implements GPUCommandNodeProducer {
       this.maximumIterations,
       GPU_TRAJECTORY_LOCATIONS_MAXIMUM_ITERATIONS
     );
+    validateTrajectoryOutputRanges(this.id, this.props.output);
+    validateTrajectoryWritableDispatches(this.id, [
+      {
+        converged: output.status.converged,
+        iterationLimitReached: output.status.iterationLimitReached
+      }
+    ]);
     validateGraphOutputsDisjointFromInputs(
       id,
       [
@@ -203,6 +215,7 @@ export class GPUTrajectoryLocations implements GPUCommandNodeProducer {
       capacity * 8,
       'use fewer staypoints per graph'
     );
+    validateTrajectoryBindings(graph, this.id, this.props);
     const radius = getGPUGreatCircleRadius(this.spatialContext);
     const labelsA = createTransientView(graph, `${id}-labels-a`, 'uint32', capacity);
     const labelsB = createTransientView(graph, `${id}-labels-b`, 'uint32', capacity);

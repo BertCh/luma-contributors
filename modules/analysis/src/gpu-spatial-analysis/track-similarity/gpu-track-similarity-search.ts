@@ -3,6 +3,12 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  validateTrajectoryBindings,
+  validateTrajectoryScratch,
+  validateTrajectoryOutputRanges,
+  validateTrajectoryWritableDispatches
+} from '../trajectory-analysis/trajectory-binding-validation';
+import {
   createTransientView,
   doGraphDataViewsOverlap,
   GPUScan,
@@ -233,6 +239,12 @@ export class GPUTrackSimilaritySearch implements GPUCommandNodeProducer {
         'outputs must not overlap each other'
       );
     }
+    validateTrajectoryOutputRanges(this.id, this.props.output);
+    validateTrajectoryWritableDispatches(this.id, [
+      {value, status: props.output.status, matched: props.output.matched},
+      {topKIndices: props.output.topKIndices, topKSummary: props.output.topKSummary}
+    ]);
+    validateGraphOutputsDisjointFromInputs(this.id, [props.output.status], [bound]);
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
       props.linesA.positions,
       props.linesA.lineOffsets,
@@ -246,6 +258,7 @@ export class GPUTrackSimilaritySearch implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateTrajectoryBindings(graph, this.id, this.props);
     const {id, props, value, bound, sphereRadius} = this;
     const subsequence = props.metric === 'longest-common-subsequence';
     const isBoxBounded =
@@ -271,6 +284,12 @@ export class GPUTrackSimilaritySearch implements GPUCommandNodeProducer {
       ...Object.values(props.output)
     ]);
     const capacity = props.survivorCapacity ?? props.pairA.length;
+    validateTrajectoryScratch(graph, id, {
+      'survivor rows': capacity * 4,
+      'survivor summary': 12,
+      'pair scratch': props.pairA.length * 4,
+      ...(props.topK ? {'sort histograms': 16 * Math.ceil(props.pairA.length / 256) * 4} : {})
+    });
     const filteredA = createTransientView(graph, `${id}-filtered-a`, 'uint32', capacity);
     const filteredB = createTransientView(graph, `${id}-filtered-b`, 'uint32', capacity);
     const flags = createTransientView(graph, `${id}-flags`, 'uint32', props.pairA.length);

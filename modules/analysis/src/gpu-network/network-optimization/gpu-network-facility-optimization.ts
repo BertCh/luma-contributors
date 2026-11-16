@@ -3,7 +3,13 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  validateNetworkOptimizationBindings,
+  validateNetworkOptimizationInputOutputBuffers
+} from './network-optimization-bindings';
+
+import {
   createTransientView,
+  getViewBindingRange,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -29,9 +35,7 @@ import {
   validateCommandNodeBudget,
   validateGPUStorageBindingByteLength,
   validateSinglePackedView,
-  validateRequirement,
-  validateGraphViewsBelongToGraph,
-  validateGraphOutputsDisjointFromInputs
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 
@@ -49,6 +53,8 @@ const MAXIMUM_CANDIDATE_COUNT = 1048576;
 const SUMMARY_WORD_COUNT = 4;
 /** Fixed score scratch bounds each candidate dispatch and its hierarchical reduction. */
 const CANDIDATE_BATCH_CAPACITY = 65536;
+/** Fixed control scratch: cursor, three winner words, invalid flag, valid flag, batch count. */
+const STATE_WORD_COUNT = 7;
 
 /** GPU-written exact-search result and named completion diagnostics. */
 export type GPUNetworkFacilityOptimizationOutput = {
@@ -149,7 +155,8 @@ export class GPUNetworkFacilityOptimization implements GPUCommandNodeProducer {
     const batchCapacity = Math.max(1, Math.min(examined, CANDIDATE_BATCH_CAPACITY));
     let reductionNodeCount = 0;
     for (let remaining = batchCapacity; remaining > 1; remaining = Math.ceil(remaining / 64)) {
-      reductionNodeCount++;
+      // The shared reducer uploads runtime parameters, then dispatches one reduction kernel.
+      reductionNodeCount += 2;
     }
     this.estimatedCommandNodeCount =
       2 +
@@ -210,7 +217,7 @@ export class GPUNetworkFacilityOptimization implements GPUCommandNodeProducer {
       props.output.summary
     ];
     validateNetworkOptimizationStatus(id, outputViews, props.output.status);
-    validateGraphOutputsDisjointFromInputs(this.id, getFacilityOutputViews(props.output), [
+    validateNetworkOptimizationInputOutputBuffers(this.id, getFacilityOutputViews(props.output), [
       props.costs,
       props.demand,
       props.capacities,
@@ -232,6 +239,13 @@ export class GPUNetworkFacilityOptimization implements GPUCommandNodeProducer {
       batchCapacity * 16,
       'reduce maximumCandidates'
     );
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'facility control state',
+      STATE_WORD_COUNT * 4,
+      'request a larger device binding limit'
+    );
     for (const view of [
       props.costs,
       props.demand,
@@ -242,21 +256,30 @@ export class GPUNetworkFacilityOptimization implements GPUCommandNodeProducer {
       validateGPUStorageBindingByteLength(
         graph.device,
         id,
-        'input/output view',
-        view.length * 4,
-        'reduce facilityCount or demand rows'
+        'input/output aligned binding range',
+        getViewBindingRange(view).size,
+        'reduce facilityCount, demand rows or the alignment prefix'
       );
     }
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.costs,
-      props.demand,
-      props.capacities,
-      props.threshold,
-      ...getFacilityOutputViews(props.output)
-    ]);
+    validateNetworkOptimizationBindings(graph, id, {
+      costs: props.costs.length ? props.costs : undefined,
+      demand: props.demand.length ? props.demand : undefined,
+      capacities: props.capacities,
+      threshold: props.threshold,
+      selectedFacilities: props.output.selectedFacilities,
+      assignments: props.output.assignments.length ? props.output.assignments : undefined,
+      objective: props.output.objective,
+      summary: props.output.summary,
+      ...props.output.status
+    });
     // Seven words: batch start, winning primary/secondary/rank, arithmetic failure, valid input,
     // and nonempty batches actually scored. The last counter survives result invalidation.
-    const state = createTransientView(graph, `${id}-${props.operation}-state`, 'uint32', 7);
+    const state = createTransientView(
+      graph,
+      `${id}-${props.operation}-state`,
+      'uint32',
+      STATE_WORD_COUNT
+    );
     const scores = createTransientView(
       graph,
       `${id}-${props.operation}-scores`,

@@ -18,7 +18,6 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {
@@ -35,6 +34,12 @@ import {
 } from '../../analysis-core/contracts/spatial-context';
 
 import {createListRankingNodes, getListRankingRoundCount} from './list-ranking';
+
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {
+  getGeometrySortScratchByteLengths,
+  validateGeometryScratchByteLengths
+} from '../geometry-edit/geometry-storage-validation';
 
 const OPERATION = 'GPULineMerge';
 
@@ -220,7 +225,17 @@ export class GPULineMerge implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, lineCount} = this;
     const {output} = props;
-    validateGraphViewsBelongToGraph(id, graph, [...getInputs(props), ...getOutputs(props)]);
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(
+        [...getInputs(props), ...getOutputs(props)].map((view, index) => [String(index), view])
+      )
+    );
+    validateGeometryScratchByteLengths(graph, id, {
+      ...getGeometrySortScratchByteLengths(lineCount * 2),
+      lineColumnsAndScan: lineCount * 4
+    });
     const endpointCount = lineCount * 2;
     const isDirected = props.directed === true;
     const transient = <Format extends 'uint32' | 'float32'>(

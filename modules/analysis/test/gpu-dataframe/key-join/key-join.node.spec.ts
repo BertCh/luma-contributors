@@ -5,7 +5,11 @@
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
 import {GPUKeyJoin, type GPUKeyJoinProps} from '../../../src/dataframe-analysis/key-join/index';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {
+  createNullWebGPUDevice,
+  getGPUCommandNodeKernelSources
+} from '../../utils/gpu-contributor-test-utils';
+import {auditWGSLModule} from '../../analysis-core/kernel-audit/kernel-audit-wgsl';
 import {decodeFixedPointSum, getScaledValue, joinOnCPU, packKeys} from './key-join-oracle';
 
 let serial = 0;
@@ -154,4 +158,41 @@ it('GPUKeyJoin validates its props', () => {
   const first = new GPUKeyJoin({...props, id: 'a'}).getCommandNodes(graph).map(node => node.id);
   expect(first.every(id => id.startsWith('a-'))).toBe(true);
   expect(first).toContain('a-probe');
+});
+
+it('count-distinct uses exact finite value identity and has independent Set-based expectations', () => {
+  const result = joinOnCPU({
+    keyBits: 32,
+    leftKeys: [1n, 2n, 3n, 4n],
+    rightKeys: [1n, 1n, 1n, 1n, 1n, 2n, 2n, 3n],
+    kind: 'left',
+    sumScale: 1,
+    aggregates: [
+      {
+        operation: 'count-distinct',
+        values: new Float32Array([-0, 0, 2, 2, NaN, Infinity, -Infinity, -3])
+      }
+    ]
+  });
+  expect(result.aggregates[0].values).toEqual([2, 0, 1, 0]);
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  try {
+    const props = createProps(graph, {
+      aggregates: [
+        {
+          operation: 'count-distinct',
+          column: createTransientView(graph, 'distinct-values', 'float32', 6),
+          output: createTransientView(graph, 'distinct-output', 'float32', 8)
+        }
+      ]
+    });
+    const contributor = new GPUKeyJoin(props);
+    const nodes = contributor.getCommandNodes(graph);
+    expect(nodes.length).toBeLessThanOrEqual(contributor.estimatedCommandNodeCount);
+    for (const kernel of getGPUCommandNodeKernelSources(nodes))
+      expect(auditWGSLModule(kernel.source, kernel.constants), kernel.id).toEqual([]);
+  } finally {
+    device.destroy();
+  }
 });

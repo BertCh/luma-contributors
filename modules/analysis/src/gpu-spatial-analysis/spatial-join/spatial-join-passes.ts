@@ -4,10 +4,14 @@
 
 import {
   createTransientView,
+  createGPUComputeCommandNode,
+  getBoundedDispatchLayout,
+  getViewBinding,
+  getViewElementOffset,
+  getViewBindingRange,
   doGraphDataViewsOverlap,
   GPUBVH,
   GPUFlagOffsets,
-  GPUScan,
   GPUSort,
   GraphVectorView,
   type GPUCommandGraph,
@@ -18,14 +22,27 @@ import {
   createWGSLKernelNode,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {createScanCarryNode} from '../../analysis-core/kernels/scan-total';
+import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateSpatialJoinOutputGroups} from './spatial-join-output-validation';
+import type {GraphChunkDispatchViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {Buffer, type Binding} from '@luma.gl/core';
+import {Kernel} from '@luma.gl/graph';
+import {createSaturatedCountScanNodes} from '../../analysis-core/kernels/scan-total';
+import {SCALED_QUOTIENT_WGSL} from '../../analysis-core/kernels/scaled-quotient-wgsl';
+import {
+  createSpatialJoinCandidateQueryRange,
+  SPATIAL_JOIN_PAGE_QUERY_WORD_COUNT,
+  type SpatialJoinCandidatePage
+} from './spatial-join-candidate-pages';
 import type {
   GPUCompactOutput,
   GPUUint32Rows
 } from '../../analysis-core/kernels/gpu-contributor-types';
 import {
   getGraphViewChunks,
-  getNextPowerOfTwo
+  getNextPowerOfTwo,
+  validateGPUStorageBindingByteLength,
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   IS_FINITE_VALUE_WGSL,
@@ -68,19 +85,18 @@ export function validateMatchingChunks(
 export function validateDisjointOutputs(
   id: string,
   inputs: readonly (GraphDataView | GraphVectorView | undefined)[],
-  outputs: readonly (GraphDataView | GraphVectorView | undefined)[]
+  outputs: readonly (GraphDataView | GraphVectorView | undefined)[],
+  dispatchGroups?: readonly GraphChunkDispatchViews[]
 ): void {
   const toChunks = (views: readonly (GraphDataView | GraphVectorView | undefined)[]) =>
     views.flatMap(view => (view ? getGraphViewChunks(view) : []));
   const inputChunks = toChunks(inputs);
   const outputChunks = toChunks(outputs);
-  for (const [outputIndex, output] of outputChunks.entries()) {
-    if (
-      inputChunks.some(input => doGraphDataViewsOverlap(input, output)) ||
-      outputChunks.some(
-        (other, otherIndex) => otherIndex !== outputIndex && doGraphDataViewsOverlap(other, output)
-      )
-    ) {
+  const fields = Object.fromEntries(outputs.map((view, index) => [`outputs[${index}]`, view]));
+  if (dispatchGroups) validateSpatialJoinOutputGroups(id, fields, dispatchGroups);
+  else validateDisjointWritableViews(id, fields);
+  for (const output of outputChunks) {
+    if (inputChunks.some(input => doGraphDataViewsOverlap(input, output))) {
       throw new Error(`${id} outputs must not overlap inputs or each other`);
     }
   }
@@ -160,10 +176,12 @@ export function getFeatureBVHNodes<Parameters>(
  * Quantizes `value` within `[minimum, maximum]` to a 16-bit cell (0 for an empty or non-finite
  * extent). Shared by the feature sort and the query order. @internal
  */
-export const QUANTIZE_AXIS_WGSL = /* wgsl */ `fn quantizeAxis(value: f32, minimum: f32, maximum: f32) -> u32 {
+export const QUANTIZE_AXIS_WGSL = /* wgsl */ `${SCALED_QUOTIENT_WGSL}
+fn quantizeAxis(value: f32, minimum: f32, maximum: f32) -> u32 {
   let extent = maximum - minimum;
   if (!(extent > 0.0) || !isFiniteValue(extent)) { return 0u; }
-  let normalized = clamp((value - minimum) / extent, 0.0, 1.0);
+  let offset = clamp(value, minimum, maximum) - minimum;
+  let normalized = clamp(getScaledQuotient(offset, extent, 1.0, 0), 0.0, 1.0);
   return min(u32(normalized * 65535.0 + 0.5), 65535u);
 }`;
 
@@ -489,7 +507,7 @@ export function getHilbertQueryOrderNodes<Parameters>(
   const sortedKeys = createTransientView(graph, `${id}-sorted-keys`, 'uint32', pointCount);
   const order = createTransientView(graph, `${id}-order`, 'uint32', pointCount);
   const nodes: GPUCommandNode<Parameters>[] = [
-    createWGSLKernelNode<Parameters>(graph, {
+    createSpatialJoinChunkNode<Parameters>(graph, {
       id: `${id}-keys`,
       operation,
       variant: 'query-keys-hilbert',
@@ -501,6 +519,8 @@ export function getHilbertQueryOrderNodes<Parameters>(
         {name: 'sortRows', view: rows, type: 'u32', access: 'read_write'}
       ],
       invocationCount: pointCount,
+      firstRow: 0,
+      sourceRowCount: points.length,
       declarations: `${SPATIAL_JOIN_WGSL_HELPERS}
 ${QUANTIZE_AXIS_WGSL}
 ${HILBERT_INDEX_WGSL}`,
@@ -521,6 +541,110 @@ ${HILBERT_INDEX_WGSL}`,
       keys,
       values: rows,
       outputKeys: sortedKeys,
+      outputValues: order,
+      algorithm: 'radix'
+    }).getCommandNodes(graph)
+  );
+  return {nodes, order};
+}
+
+/**
+ * Builds chunk-local Hilbert order through two global stable sorts. The first sorts spatial keys;
+ * the second groups by original chunk row base, preserving the first sort's order within each
+ * chunk. The result contains global source rows, partitioned into the original chunk lengths.
+ * Singleton chunks use identity keys and never build a dedicated sort. Both published sorts have
+ * the total row count, so changing chunk topology cannot specialize their pipelines or add padded
+ * work to short chunks. Only the key passes depend on chunk count, with runtime lengths and bases.
+ */
+function getSpatialJoinQueryOrderNodes<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    operation: string;
+    points: GraphDataView<'float32x2'> | GraphVectorView<'float32x2'>;
+    bvh: Pick<GPUBVH, 'nodeMinima' | 'nodeMaxima'>;
+  }
+): {nodes: GPUCommandNode<Parameters>[]; order: GraphDataView<'uint32'>} {
+  const {id, operation, points, bvh} = props;
+  const keys = createTransientView(graph, `${id}-keys`, 'uint32', points.length);
+  const rows = createTransientView(graph, `${id}-rows`, 'uint32', points.length);
+  const sortedKeys = createTransientView(graph, `${id}-sorted-keys`, 'uint32', points.length);
+  const spatialRows = createTransientView(graph, `${id}-spatial-rows`, 'uint32', points.length);
+  const rowBases = createTransientView(graph, `${id}-row-bases`, 'uint32', points.length);
+  const chunkKeys = createTransientView(graph, `${id}-chunk-keys`, 'uint32', points.length);
+  const sortedChunkKeys = createTransientView(
+    graph,
+    `${id}-sorted-chunk-keys`,
+    'uint32',
+    points.length
+  );
+  const order = createTransientView(graph, `${id}-order`, 'uint32', points.length);
+  const nodes: GPUCommandNode<Parameters>[] = [];
+  let firstRow = 0;
+  for (const [chunkIndex, chunk] of getGraphViewChunks(points).entries()) {
+    if (chunk.length > 0)
+      nodes.push(
+        createSpatialJoinChunkNode(graph, {
+          id: `${id}-keys-${chunkIndex}`,
+          operation,
+          invocationCount: chunk.length,
+          firstRow,
+          bindings: [
+            {name: 'points', view: chunk, type: 'f32', access: 'read'},
+            {name: 'nodeMinima', view: bvh.nodeMinima, type: 'f32', access: 'read'},
+            {name: 'nodeMaxima', view: bvh.nodeMaxima, type: 'f32', access: 'read'},
+            {name: 'keys', view: keys, type: 'u32', access: 'read_write'},
+            {name: 'rows', view: rows, type: 'u32', access: 'read_write'},
+            {name: 'rowBases', view: rowBases, type: 'u32', access: 'read_write'}
+          ],
+          declarations: `${SPATIAL_JOIN_WGSL_HELPERS}\n${QUANTIZE_AXIS_WGSL}\n${HILBERT_INDEX_WGSL}`,
+          body: `let row = CHUNK_FIRST_ROW + index;
+  rows[rowsOffset + row] = row;
+  rowBases[rowBasesOffset + row] = CHUNK_FIRST_ROW;
+  var key = 0u;
+  if (SOURCE_ROW_COUNT > 1u) {
+    key = 0xffffffffu;
+    let point = vec2f(points[pointsOffset + index * 2u], points[pointsOffset + index * 2u + 1u]);
+    if (isFiniteValue(point.x) && isFiniteValue(point.y)) {
+      key = getHilbertIndex(quantizeAxis(point.x, nodeMinima[nodeMinimaOffset], nodeMaxima[nodeMaximaOffset]),
+        quantizeAxis(point.y, nodeMinima[nodeMinimaOffset + 1u], nodeMaxima[nodeMaximaOffset + 1u]));
+    }
+  }
+  keys[keysOffset + row] = key;`
+        })
+      );
+    firstRow += chunk.length;
+  }
+  nodes.push(
+    ...new GPUSort({
+      id: `${id}-spatial-sort`,
+      keys,
+      values: rows,
+      outputKeys: sortedKeys,
+      outputValues: spatialRows,
+      algorithm: 'radix'
+    }).getCommandNodes(graph)
+  );
+  nodes.push(
+    createSpatialJoinChunkNode(graph, {
+      id: `${id}-regroup-keys`,
+      operation,
+      invocationCount: points.length,
+      firstRow: 0,
+      bindings: [
+        {name: 'spatialRows', view: spatialRows, type: 'u32', access: 'read'},
+        {name: 'rowBases', view: rowBases, type: 'u32', access: 'read'},
+        {name: 'chunkKeys', view: chunkKeys, type: 'u32', access: 'read_write'}
+      ],
+      body: 'chunkKeys[chunkKeysOffset + index] = rowBases[rowBasesOffset + spatialRows[spatialRowsOffset + index]];'
+    })
+  );
+  nodes.push(
+    ...new GPUSort({
+      id: `${id}-chunk-sort`,
+      keys: chunkKeys,
+      values: spatialRows,
+      outputKeys: sortedChunkKeys,
       outputValues: order,
       algorithm: 'radix'
     }).getCommandNodes(graph)
@@ -874,6 +998,7 @@ export function getSpatialJoinProbeNodes<Parameters>(
     bvh: Pick<GPUBVH, 'nodeMinima' | 'nodeMaxima' | 'leafIds' | 'internalNodeCount'>;
     featureCount: number;
     candidateCapacity: number;
+    page?: SpatialJoinCandidatePage;
     state: GraphDataView<'uint32'>;
     candidatePairs: GraphDataView<'uint32x2'>;
     /**
@@ -916,18 +1041,25 @@ export function getSpatialJoinProbeNodes<Parameters>(
 ): GPUCommandNode<Parameters>[] {
   const nodes: GPUCommandNode<Parameters>[] = [];
   const {bvh} = props;
-  const pointCounts = createTransientView(
-    graph,
-    `${props.id}-point-counts`,
-    'uint32',
-    props.points.length
-  );
-  const pointOffsets = createTransientView(
-    graph,
-    `${props.id}-point-offsets`,
-    'uint32',
-    props.points.length
-  );
+  const pointCounts =
+    props.page?.counts ??
+    createTransientView(graph, `${props.id}-point-counts`, 'uint32', props.points.length);
+  const pointOffsets =
+    props.page?.offsets ??
+    createTransientView(graph, `${props.id}-point-offsets`, 'uint32', props.points.length);
+  const getTruncationNodes = () =>
+    getCandidateTruncationNodes<Parameters>(graph, {
+      id: props.id,
+      operation: props.operation,
+      counts: pointCounts,
+      offsets: pointOffsets,
+      rowCount: props.points.length,
+      candidateCapacity: props.candidateCapacity,
+      total: props.state,
+      candidateTruncated: props.candidateTruncated,
+      candidateOverflow: props.candidateOverflow,
+      bvhOverflow: props.bvhOverflow
+    });
   const getBindings = (
     chunk: GraphDataView<'float32x2'>,
     extra: WGSLKernelBinding[],
@@ -943,8 +1075,8 @@ export function getSpatialJoinProbeNodes<Parameters>(
     ...(order ? [{name: 'queryOrder', view: order, type: 'u32', access: 'read'} as const] : []),
     ...extra
   ];
-  const declarations = (chunkFirstRow: number) => `${SPATIAL_JOIN_WGSL_HELPERS}
-const CHUNK_FIRST_ROW: u32 = ${chunkFirstRow}u;
+  const declarations = () => `${SPATIAL_JOIN_WGSL_HELPERS}
+
 const INTERNAL_NODE_COUNT: u32 = ${bvh.internalNodeCount}u;
 const FEATURE_COUNT: u32 = ${props.featureCount}u;
 const CANDIDATE_CAPACITY: u32 = ${props.candidateCapacity}u;
@@ -956,17 +1088,28 @@ ${NODE_OVERLAPS_WGSL}`;
   let queryMaximum = point + vec2f(searchRadius);`
     : `let queryMinimum = point;
   let queryMaximum = point;`;
-  // With a query order, invocation `index` handles chunk-local row `queryOrder[index]`; results stay
-  // addressed by that row.
-  const probeBody = (leaf: string, prologue: string, epilogue: string, ordered: boolean) => `${
-    ordered
-      ? `let localRow = queryOrder[queryOrderOffset + index];
+  // The order contains global source rows; subtract the runtime base for the chunk-local read.
+  // Counts, offsets and candidate pairs remain addressed by the global source row.
+  const probeBody = (
+    leaf: string,
+    prologue: string,
+    epilogue: string,
+    ordered: boolean,
+    ranged = false
+  ) => `${
+    ranged
+      ? `let metadata = pointOffsetsOffset + CANDIDATE_QUERY_METADATA_ROW;
+  if (index >= pointOffsets[metadata + 1u]) { return; }
+  let row = pointOffsets[metadata] + index;
+  let localRow = row - CHUNK_FIRST_ROW;`
+      : ordered
+        ? `let localRow = queryOrder[queryOrderOffset + index] - CHUNK_FIRST_ROW;
   let row = CHUNK_FIRST_ROW + localRow;`
-      : 'let row = CHUNK_FIRST_ROW + index;'
+        : 'let row = CHUNK_FIRST_ROW + index;'
   }
   ${prologue}
   var found = 0u;
-  let point = vec2f(points[pointsOffset + ${ordered ? 'localRow' : 'index'} * 2u], points[pointsOffset + ${ordered ? 'localRow' : 'index'} * 2u + 1u]);
+  let point = vec2f(points[pointsOffset + ${ordered || ranged ? 'localRow' : 'index'} * 2u], points[pointsOffset + ${ordered || ranged ? 'localRow' : 'index'} * 2u + 1u]);
   if (!isFiniteValue(point.x) || !isFiniteValue(point.y)) { return; }
   ${query}
   var node = 0u;
@@ -992,92 +1135,111 @@ ${NODE_OVERLAPS_WGSL}`;
   ${epilogue}`;
 
   if (props.points.length === 0) {
-    return nodes;
+    // No probes or scan are needed, but caller-owned scalar status must still be written.
+    return getTruncationNodes();
   }
 
-  // One order per sorted point chunk, built once and read by both passes.
-  const orders = new Map<number, GraphDataView<'uint32'>>();
-  if (props.querySort) {
+  // Two published global sorts preserve chunk-local Hilbert order without padded work or
+  // chunk-dependent primitive pipelines. Singleton chunks have no ordering work of their own.
+  const orders = props.page?.orders ?? new Map<number, GraphDataView<'uint32'>>();
+  if (
+    (!props.page || props.page.initialize) &&
+    props.querySort &&
+    getGraphViewChunks(props.points).some(chunk => chunk.length >= 2)
+  ) {
+    const ordered = getSpatialJoinQueryOrderNodes(graph, {
+      id: `${props.id}-order`,
+      operation: props.operation,
+      points: props.points,
+      bvh
+    });
+    nodes.push(...ordered.nodes);
+    let rowBase = 0;
     for (const [chunkIndex, chunk] of getGraphViewChunks(props.points).entries()) {
-      if (chunk.length >= 2) {
-        const ordered = getHilbertQueryOrderNodes<Parameters>(graph, {
-          id: `${getChunkNodeId(props.id, props.points, chunkIndex)}-order`,
-          operation: props.operation,
-          points: chunk,
-          bvh
-        });
-        nodes.push(...ordered.nodes);
-        orders.set(chunkIndex, ordered.order);
-      }
+      if (chunk.length > 0)
+        orders.set(
+          chunkIndex,
+          graph.createDataView(ordered.order.buffer, {
+            format: 'uint32',
+            length: chunk.length,
+            byteOffset: rowBase * Uint32Array.BYTES_PER_ELEMENT
+          })
+        );
+      rowBase += chunk.length;
     }
   }
   let chunkFirstRow = 0;
-  for (const [chunkIndex, chunk] of getGraphViewChunks(props.points).entries()) {
-    if (chunk.length > 0) {
-      const order = orders.get(chunkIndex);
-      nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: getChunkNodeId(props.id, props.points, chunkIndex),
-          operation: props.operation,
-          variant: order ? 'probe-count-ordered' : 'probe-count',
-          bindings: getBindings(
-            chunk,
-            [{name: 'pointCounts', view: pointCounts, type: 'u32', access: 'read_write'}],
-            order
-          ),
-          invocationCount: chunk.length,
-          declarations: declarations(chunkFirstRow),
-          body: probeBody(
-            'found = found + 1u;',
-            'pointCounts[pointCountsOffset + row] = 0u;',
-            'pointCounts[pointCountsOffset + row] = found;',
-            Boolean(order)
-          )
-        })
-      );
+  if (!props.page || props.page.initialize) {
+    for (const [chunkIndex, chunk] of getGraphViewChunks(props.points).entries()) {
+      if (chunk.length > 0) {
+        const order = orders.get(chunkIndex);
+        nodes.push(
+          createSpatialJoinChunkNode<Parameters>(graph, {
+            id: getChunkNodeId(props.id, props.points, chunkIndex),
+            operation: props.operation,
+            variant: order ? 'probe-count-ordered' : 'probe-count',
+            bindings: getBindings(
+              chunk,
+              [{name: 'pointCounts', view: pointCounts, type: 'u32', access: 'read_write'}],
+              order
+            ),
+            invocationCount: chunk.length,
+            firstRow: chunkFirstRow,
+            declarations: declarations(),
+            body: probeBody(
+              'found = found + 1u;',
+              'pointCounts[pointCountsOffset + row] = 0u;',
+              'pointCounts[pointCountsOffset + row] = found;',
+              Boolean(order)
+            )
+          })
+        );
+      }
+      chunkFirstRow += chunk.length;
     }
-    chunkFirstRow += chunk.length;
+    // Saturate offsets as well as the total: wrapped offsets would let late points overwrite
+    // the retained candidate prefix. Nearest-feature joins share this row-ordered candidate layout.
+    nodes.push(
+      ...createSaturatedCountScanNodes(graph, {
+        id: `${props.id}-scan`,
+        operation: props.operation,
+        counts: pointCounts,
+        offsets: pointOffsets,
+        rowCount: props.points.length,
+        total: props.state
+      })
+    );
   }
-  nodes.push(
-    ...new GPUScan({
-      id: `${props.id}-scan`,
-      input: pointCounts,
-      output: pointOffsets,
-      mode: 'exclusive'
-    }).getCommandNodes(graph)
-  );
-  nodes.push(
-    createWGSLKernelNode<Parameters>(graph, {
-      id: `${props.id}-total`,
-      operation: props.operation,
-      variant: 'probe-total',
-      bindings: [
-        {name: 'pointCounts', view: pointCounts, type: 'u32', access: 'read'},
-        {name: 'pointOffsets', view: pointOffsets, type: 'u32', access: 'read'},
-        {name: 'state', view: props.state, type: 'u32', access: 'read_write'}
-      ],
-      invocationCount: 1,
-      body: `state[stateOffset] = pointOffsets[pointOffsetsOffset + ${props.points.length - 1}u] + pointCounts[pointCountsOffset + ${props.points.length - 1}u];`
-    })
-  );
-  // A probe total of 2^32 or more wraps in the uint32 scan; saturate it (S-8).
-  nodes.push(
-    createScanCarryNode<Parameters>(graph, {
-      id: props.id,
-      operation: props.operation,
-      counts: pointCounts,
-      offsets: pointOffsets,
-      rowCount: props.points.length,
-      total: props.state
-    })
-  );
   chunkFirstRow = 0;
   for (const [chunkIndex, chunk] of getGraphViewChunks(props.points).entries()) {
     if (chunk.length > 0) {
       // The write pass binds eight buffers with a radius, so it cannot also read the order.
       const order = props.radius ? undefined : orders.get(chunkIndex);
+      const metadataRow =
+        props.page?.metadataRow === undefined
+          ? undefined
+          : props.page.metadataRow + chunkIndex * SPATIAL_JOIN_PAGE_QUERY_WORD_COUNT;
+      const queryRange =
+        metadataRow === undefined || !props.page || order
+          ? undefined
+          : createSpatialJoinCandidateQueryRange(graph, {
+              id: `${getChunkNodeId(props.id, props.points, chunkIndex)}-write`,
+              offsets: pointOffsets,
+              total: props.state,
+              firstSlot: props.page.firstSlot,
+              length: props.page.length,
+              candidateCapacity: props.candidateCapacity,
+              queryFirst: chunkFirstRow,
+              queryLength: chunk.length,
+              queryCount: props.points.length,
+              metadataRow
+            });
+      if (queryRange) nodes.push(queryRange.updateNode);
+      // An ordered chunk visits its own Hilbert permutation, retaining spatial order among the
+      // page's active queries. The prefix guard below rejects inactive rows before any BVH read.
+      // Source-ordered chunks can instead use the contiguous active range and indirect dispatch.
       nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
+        createSpatialJoinChunkNode<Parameters>(graph, {
           id: `${getChunkNodeId(props.id, props.points, chunkIndex)}-write`,
           operation: props.operation,
           variant: order ? 'probe-write-ordered' : 'probe-write',
@@ -1105,55 +1267,55 @@ ${NODE_OVERLAPS_WGSL}`;
             order
           ),
           invocationCount: chunk.length,
-          declarations: declarations(chunkFirstRow),
+          firstRow: chunkFirstRow,
+          condition: queryRange?.condition,
+          candidateQueryMetadataRow: metadataRow,
+          candidatePageFirstSlot: props.page?.firstSlot ?? 0,
+          candidatePageLength: props.page?.length ?? props.candidateCapacity,
+          declarations: declarations(),
           body: probeBody(
             props.packedCandidates
-              ? `let slot = slotStart + found;
+              ? `if (found >= skipped) {
+        let slot = slotStart + found - skipped;
         candidatePairs[candidatePairsOffset + slot * 4u] = row;
         candidatePairs[candidatePairsOffset + slot * 4u + 1u] = featureRow;
         candidatePairs[candidatePairsOffset + slot * 4u + 2u] = bitcast<u32>(point.x);
         candidatePairs[candidatePairsOffset + slot * 4u + 3u] = bitcast<u32>(point.y);
-        found = found + 1u;
-        if (slot + 1u >= slotEnd) { break; }`
-              : `let slot = slotStart + found;
+        if (slot + 1u >= slotEnd) { break; }
+        }
+        found = found + 1u;`
+              : `if (found >= skipped) {
+        let slot = slotStart + found - skipped;
         candidatePairs[candidatePairsOffset + slot * 2u] = row;
         candidatePairs[candidatePairsOffset + slot * 2u + 1u] = featureRow;
         let pointRow = slot * ${props.pointRowScale}u + ${props.pointRowOffset}u;
         candidatePoints[candidatePointsOffset + pointRow * 2u] = point.x;
         candidatePoints[candidatePointsOffset + pointRow * 2u + 1u] = point.y;
-        found = found + 1u;
-        if (slot + 1u >= slotEnd) { break; }`,
+        if (slot + 1u >= slotEnd) { break; }
+        }
+        found = found + 1u;`,
             // Points with no candidates, or whose slots all fall past the capacity, skip the second
             // traversal; the rest stop at their last counted candidate instead of finishing the walk.
             // The last row's end comes from the capacity, which keeps this pass within 8 bindings.
-            `let slotStart = pointOffsets[pointOffsetsOffset + row];
-  var slotEnd = CANDIDATE_CAPACITY;
-  if (row + 1u < ${props.points.length}u) {
-    slotEnd = min(pointOffsets[pointOffsetsOffset + row + 1u], CANDIDATE_CAPACITY);
-  }
+            `let globalStart = pointOffsets[pointOffsetsOffset + row];
+  var globalEnd = CANDIDATE_CAPACITY;
+  if (row + 1u < ${props.points.length}u) { globalEnd = min(pointOffsets[pointOffsetsOffset + row + 1u], CANDIDATE_CAPACITY); }
+  let pageEnd = CANDIDATE_PAGE_FIRST_SLOT + CANDIDATE_PAGE_LENGTH;
+  if (globalStart >= pageEnd || globalEnd <= CANDIDATE_PAGE_FIRST_SLOT) { return; }
+  let skipped = max(globalStart, CANDIDATE_PAGE_FIRST_SLOT) - globalStart;
+  let slotStart = max(globalStart, CANDIDATE_PAGE_FIRST_SLOT) - CANDIDATE_PAGE_FIRST_SLOT;
+  let slotEnd = min(globalEnd, pageEnd) - CANDIDATE_PAGE_FIRST_SLOT;
   if (slotStart >= slotEnd) { return; }`,
             '',
-            Boolean(order)
+            Boolean(order),
+            Boolean(queryRange)
           )
         })
       );
     }
     chunkFirstRow += chunk.length;
   }
-  nodes.push(
-    ...getCandidateTruncationNodes<Parameters>(graph, {
-      id: props.id,
-      operation: props.operation,
-      counts: pointCounts,
-      offsets: pointOffsets,
-      rowCount: props.points.length,
-      candidateCapacity: props.candidateCapacity,
-      total: props.state,
-      candidateTruncated: props.candidateTruncated,
-      candidateOverflow: props.candidateOverflow,
-      bvhOverflow: props.bvhOverflow
-    })
-  );
+  if (!props.page || props.page.initialize) nodes.push(...getTruncationNodes());
   return nodes;
 }
 
@@ -1205,14 +1367,15 @@ export function getSpatialJoinAssignNodes<Parameters>(
         );
       }
       nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
+        createSpatialJoinChunkNode<Parameters>(graph, {
           id: getChunkNodeId(props.id, props.pointFeatureIds, chunkIndex),
           operation: props.operation,
           variant: 'assign',
           bindings,
           invocationCount: chunk.length,
+          firstRow: chunkFirstRow,
           declarations: `${SPATIAL_JOIN_WGSL_HELPERS}
-const CHUNK_FIRST_ROW: u32 = ${chunkFirstRow}u;`,
+`,
           body: `let row = CHUNK_FIRST_ROW + index;
   let featureRow = assignment[assignmentOffset + row];
   let matched = featureRow != NO_FEATURE;
@@ -1260,7 +1423,7 @@ export function getSpatialJoinCollectNodes<Parameters>(
   for (const [chunkIndex, chunk] of getGraphViewChunks(props.points).entries()) {
     if (chunk.length > 0) {
       nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
+        createSpatialJoinChunkNode<Parameters>(graph, {
           id: getChunkNodeId(props.id, props.points, chunkIndex),
           operation: props.operation,
           variant: 'collect-match-flags',
@@ -1269,8 +1432,9 @@ export function getSpatialJoinCollectNodes<Parameters>(
             {name: 'flags', view: flags, type: 'u32', access: 'read_write'}
           ],
           invocationCount: chunk.length,
+          firstRow: chunkFirstRow,
           declarations: `${SPATIAL_JOIN_WGSL_HELPERS}
-const CHUNK_FIRST_ROW: u32 = ${chunkFirstRow}u;`,
+`,
           body: `let row = CHUNK_FIRST_ROW + index;
   flags[flagsOffset + row] = select(0u, 1u, assignment[assignmentOffset + row] != NO_FEATURE);`
         })
@@ -1307,14 +1471,15 @@ const CHUNK_FIRST_ROW: u32 = ${chunkFirstRow}u;`,
         bindings.push({name: 'sourceIds', view: sourceChunk, type: 'u32', access: 'read'});
       }
       nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
+        createSpatialJoinChunkNode<Parameters>(graph, {
           id: `${getChunkNodeId(props.id, props.points, chunkIndex)}-write`,
           operation: props.operation,
           variant: 'collect-match-write',
           bindings,
           invocationCount: chunk.length,
+          firstRow: chunkFirstRow,
           declarations: `${SPATIAL_JOIN_WGSL_HELPERS}
-const CHUNK_FIRST_ROW: u32 = ${chunkFirstRow}u;
+
 const MATCH_CAPACITY: u32 = ${capacity}u;`,
           body: `let row = CHUNK_FIRST_ROW + index;
   if (flags[flagsOffset + row] == 0u) { return; }
@@ -1330,7 +1495,13 @@ const MATCH_CAPACITY: u32 = ${capacity}u;`,
   return nodes;
 }
 
-/** Publishes overflow, candidate and uncertain counts, and the clamped match count. @internal */
+/**
+ * Publishes aggregate overflow, candidate and uncertain counts, and the clamped match count.
+ * GPUCompactOutput specifies that match overflow includes every contributor capacity loss, so
+ * both overflow words receive the same aggregate value. matchTotal counts retained assignments;
+ * it can fit MATCH_CAPACITY even when lost BVH leaves or candidates make the result incomplete.
+ * @internal
+ */
 export function createSpatialJoinFinalizeNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: {
@@ -1556,4 +1727,142 @@ const FEATURE_BASE: u32 = ${wordCount}u;`,
     })
   ];
   return {nodes, layout};
+}
+
+/** Fixed workgroup shape permits one pipeline across uneven point chunks. */
+const SPATIAL_JOIN_CHUNK_WORKGROUP_SIZE = 256;
+/** Eight offset slots cover the core WebGPU storage bindings used by a point probe. */
+const SPATIAL_JOIN_MAXIMUM_CHUNK_BINDINGS = 8;
+/** Row base, dispatch/input lengths and eight binding offsets, padded to uniform vec4 alignment. */
+const SPATIAL_JOIN_CHUNK_PARAMETER_WORDS = 16;
+
+/**
+ * Records a spatial-join chunk kernel with runtime row bases, lengths and binding offsets.
+ * The shared WGSL node helper specializes those values in source/overrides; the published Kernel
+ * uniform API lets these chunk passes instead reuse one shader and pipeline. @internal
+ */
+export function createSpatialJoinChunkNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    operation: string;
+    variant?: string;
+    bindings: WGSLKernelBinding[];
+    invocationCount: number;
+    firstRow: number;
+    sourceRowCount?: number;
+    candidatePageFirstSlot?: number;
+    candidatePageLength?: number;
+    candidateQueryMetadataRow?: number;
+    condition?: GPUCommandNode<Parameters>['condition'];
+    declarations?: string;
+    body: string;
+  }
+): GPUCommandNode<Parameters> {
+  validateRequirement(
+    props.id,
+    props.bindings.length <=
+      Math.min(
+        SPATIAL_JOIN_MAXIMUM_CHUNK_BINDINGS,
+        graph.device.limits.maxStorageBuffersPerShaderStage
+      ),
+    'bindings must fit the device storage binding limit and eight runtime offset slots'
+  );
+  for (const binding of props.bindings) {
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      props.id,
+      binding.name,
+      getViewBindingRange(binding.view).size,
+      'reduce the bound view length'
+    );
+  }
+  const values = new Uint32Array(SPATIAL_JOIN_CHUNK_PARAMETER_WORDS);
+  values[0] = props.firstRow;
+  values[1] = props.invocationCount;
+  values[10] = props.sourceRowCount ?? props.invocationCount;
+  values[11] = props.candidatePageFirstSlot ?? 0;
+  values[12] = props.candidatePageLength ?? 0;
+  values[13] = props.candidateQueryMetadataRow ?? 0;
+  let declarations = props.declarations ?? '';
+  let body = props.body;
+  const runtimeValue = (word: number) => `chunkSettings[${Math.floor(word / 4)}][${word % 4}]`;
+  for (const [index, binding] of props.bindings.entries()) {
+    values[index + 2] = getViewElementOffset(binding.view);
+    const pattern = new RegExp(`\\b${binding.name}Offset\\b`, 'g');
+    declarations = declarations.replace(pattern, runtimeValue(index + 2));
+    body = body.replace(pattern, runtimeValue(index + 2));
+  }
+  body = body
+    .replace(/\bCHUNK_FIRST_ROW\b/g, runtimeValue(0))
+    .replace(/\bSOURCE_ROW_COUNT\b/g, runtimeValue(10))
+    .replace(/\bCANDIDATE_PAGE_FIRST_SLOT\b/g, runtimeValue(11))
+    .replace(/\bCANDIDATE_PAGE_LENGTH\b/g, runtimeValue(12))
+    .replace(/\bCANDIDATE_QUERY_METADATA_ROW\b/g, runtimeValue(13));
+  const source = `${props.bindings.map((binding, index) => `@group(0) @binding(${index}) var<storage, ${binding.access}> ${binding.name}: array<${binding.type}>;`).join('\n')}
+@group(0) @binding(${props.bindings.length}) var<uniform> chunkSettings: array<vec4<u32>, 4>;
+${declarations}
+@compute @workgroup_size(${SPATIAL_JOIN_CHUNK_WORKGROUP_SIZE})
+fn main(@builtin(local_invocation_index) localInvocationIndex: u32,
+        @builtin(workgroup_id) workgroupId: vec3<u32>,
+        @builtin(num_workgroups) workgroupCounts: vec3<u32>) {
+  ${props.bindings.map(binding => `_ = &${binding.name};`).join('\n')}
+  let index = ((workgroupId.z * workgroupCounts.y + workgroupId.y) * workgroupCounts.x + workgroupId.x) * ${SPATIAL_JOIN_CHUNK_WORKGROUP_SIZE}u + localInvocationIndex;
+  if (index >= chunkSettings[0][1]) { return; }
+  ${body}
+}`;
+  const layout = getBoundedDispatchLayout(
+    props.operation,
+    Math.max(1, props.invocationCount),
+    SPATIAL_JOIN_CHUNK_WORKGROUP_SIZE,
+    graph.device.limits.maxComputeWorkgroupsPerDimension
+  );
+  return createGPUComputeCommandNode<Parameters>({
+    id: props.id,
+    condition: props.condition,
+    resources: props.bindings.map(binding => ({
+      buffer: binding.view,
+      usage: binding.access === 'read' ? 'storage-read' : 'storage-read-write'
+    })),
+    workload: {
+      operation: props.operation,
+      ...(props.variant ? {variant: props.variant} : {}),
+      maximumInvocationCount: props.invocationCount
+    },
+    compile: ({device}) => {
+      const configuration = device.createBuffer({
+        id: `${props.id}-settings`,
+        data: values,
+        usage: Buffer.UNIFORM | Buffer.COPY_DST
+      });
+      const kernel = new Kernel(device, {
+        id: props.id,
+        source,
+        shaderLayout: {
+          bindings: [
+            ...props.bindings.map((binding, index) => ({
+              name: binding.name,
+              type:
+                binding.access === 'read' ? ('read-only-storage' as const) : ('storage' as const),
+              group: 0,
+              location: index
+            })),
+            {name: 'chunkSettings', type: 'uniform', group: 0, location: props.bindings.length}
+          ]
+        }
+      });
+      return {
+        encode: ({computePass, getBuffer}) => {
+          const bindings: Record<string, Binding> = {chunkSettings: configuration};
+          for (const binding of props.bindings)
+            bindings[binding.name] = getViewBinding(binding.view, getBuffer);
+          kernel.dispatch(computePass, {bindings, x: layout.x, y: layout.y, z: layout.z});
+        },
+        destroy: () => {
+          kernel.destroy();
+          configuration.destroy();
+        }
+      };
+    }
+  });
 }

@@ -138,6 +138,7 @@ export const ENTRY_POINT_CAPABILITIES: readonly GPUSpatialAnalysisCapability[] =
       'GPUNetworkAnalyticsColumns',
       'GPUNetworkNeighborhood',
       'GPUNetworkCentrality',
+      'GPUNetworkCentralityScheduleStep',
       'GPUNetworkLouvain'
     ]
   },

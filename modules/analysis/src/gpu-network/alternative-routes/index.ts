@@ -16,3 +16,9 @@ export type {
 } from './cpu-alternative-routes-operation';
 export {GPUAlternativeRoutesOperation} from './gpu-alternative-routes-operation';
 export type {AlternativeRoutesOperationProps} from './gpu-alternative-routes-operation';
+export {
+  GPU_ALTERNATIVE_ROUTES_MAXIMUM_NODE_COUNT,
+  GPU_ALTERNATIVE_ROUTES_MAXIMUM_ROUTE_COUNT,
+  GPU_ALTERNATIVE_ROUTES_MAXIMUM_FRONTIER_SIZE,
+  GPU_ALTERNATIVE_ROUTES_MAXIMUM_EXPANSIONS
+} from './gpu-alternative-routes';

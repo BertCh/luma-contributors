@@ -14,6 +14,7 @@ import {
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {createRasterGateSlotTable} from '../cost-distance/raster-relaxation';
+import {createRasterFractionalTileNode} from '../fractional-coverage/raster-fractional-tile-kernel';
 import {GPU_DISTANCE_FIELD_NONE} from './distance-field-parameters';
 
 /** Operation name reported in workload estimates. @internal */
@@ -594,19 +595,23 @@ const ROW_BAND_COUNT: u32 = ${rowBandCount}u;`;
       groupSize: mergeRoundCount
     });
     nodes.push(roundSlots.writeNode);
-    // Every round dispatches the first round's pair count, so all rounds share one pipeline.
-    const pairInvocationCount = Math.ceil(rowBandCount / 2) * grid.height;
+    // Each round dispatches only its existing band pairs. Runtime round slots keep one shader
+    // and pipeline while command nodes shrink their own workgroup counts.
     for (let round = 0; round < mergeRoundCount; round++) {
+      const blockBands = 2 ** round;
+      const pairInvocationCount =
+        Math.floor((rowBandCount + blockBands - 1) / (2 * blockBands)) * grid.height;
       nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
+        createRasterFractionalTileNode<Parameters>(graph, {
           id: `${props.id}-row-merge-${round}`,
           operation: DISTANCE_FIELD_OPERATION,
-          variant: 'exact-row-merge',
           bindings: [
             ...envelopeBindings,
             {name: 'mergeRound', view: roundSlots.getSlot(round), type: 'u32', access: 'read'}
           ],
           invocationCount: pairInvocationCount,
+          rowCount:
+            '((ROW_BAND_COUNT + (1u << mergeRound[mergeRoundOffset]) - 1u) / (2u << mergeRound[mergeRoundOffset])) * GRID_HEIGHT',
           declarations: `${declarations}\n${DISTANCE_FIELD_ENVELOPE_WGSL}`,
           body: /* wgsl */ `let blockBands = 1u << mergeRound[mergeRoundOffset];
   let row = index % GRID_HEIGHT;

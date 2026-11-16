@@ -8,10 +8,10 @@ import {GPURasterDilation, GPURasterErosion} from '@luma.gl/graph/gpu-raster';
 import {captureGraphCommandNodes} from '../analysis-core/kernels/gpu-contributor-utils';
 
 /**
- * Largest radius of one published `GPURasterErosion` or `GPURasterDilation` pass
- * (`@luma.gl/graph/gpu-raster` 10.0.0-alpha.10 refuses a larger one).
+ * Use a fixed radius-one public morphology pass so all radii share a shader and pipeline.
+ * Repeated Manhattan unit diamonds equal the requested diamond exactly on a rectangle.
  */
-const RASTER_MORPHOLOGY_MAXIMUM_PASS_RADIUS = 8;
+const RASTER_MORPHOLOGY_MAXIMUM_PASS_RADIUS = 1;
 
 /**
  * @internal Minimum or maximum of a dense float32 raster over the Manhattan diamond of `radius`
@@ -19,7 +19,7 @@ const RASTER_MORPHOLOGY_MAXIMUM_PASS_RADIUS = 8;
  *
  * The windows are the published `GPURasterErosion` and `GPURasterDilation` with the `'cross'`
  * structuring element, a `'nodata'` border and the `'ignore'` policy, so cells outside the grid
- * do not take part. One pass covers a radius of at most 8; a larger diamond is a sequence of
+ * do not take part. One pass covers a radius of one; a larger diamond is a sequence of
  * passes, which is exact: a diamond is the Minkowski sum of smaller diamonds, and clipping to a
  * rectangle preserves shortest Manhattan paths. Every input cell must hold a finite value (SMRF
  * inpaints first); the published classes treat a non-finite sample as missing.

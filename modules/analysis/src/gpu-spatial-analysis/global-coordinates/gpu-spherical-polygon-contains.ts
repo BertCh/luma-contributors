@@ -2,9 +2,15 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {Kernel} from '@luma.gl/graph';
 import {assertUnitVector} from './assert-unit-vector';
 import {
   createTransientView,
+  createGPUComputeCommandNode,
+  getBoundedDispatchLayout,
+  getViewBinding,
+  getViewElementOffset,
+  GraphVectorView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -12,15 +18,26 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {
   createWGSLKernelNode,
-  getWGSLFloatLiteral
+  getWGSLFloatLiteral,
+  type WGSLKernelProps
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {getReadPoint3WGSL} from '../shared/spatial-wgsl-point-helpers';
 import {
   validateSinglePackedView,
   validateRequirement,
-  validateGraphViewsBelongToGraph,
+  validateCommandNodeBudget,
+  validateMaximumCount,
+  validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  planGraphChunkDispatch,
+  validateDisjointWritableViews,
+  validateGraphChunkBindingRanges,
+  validateGraphChunkDispatchBindings,
+  createGraphChunkDispatchParameters,
+  type GraphChunkDispatchPlan
+} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {
   resolveGPUSpatialContext,
   type GPUSpatialContext
@@ -40,7 +57,18 @@ export const GPU_SPHERICAL_POLYGON_CONTAINS_STATUS_INVALID = 1;
 /** Status: the query lies on the boundary within `tolerance`; `contains` follows `boundary`. */
 export const GPU_SPHERICAL_POLYGON_CONTAINS_STATUS_BOUNDARY = 2;
 
-export type GPUSphericalPolygonContainsProps = {
+export type GPUSphericalPolygonContainsProps<
+  QueryRows extends
+    | GraphDataView<'float32x3'>
+    | GraphVectorView<'float32x3'> = GraphDataView<'float32x3'>,
+  SelectorRows extends
+    | GraphDataView<'uint32'>
+    | GraphVectorView<'uint32'> = GraphDataView<'uint32'>,
+  ContainsRows extends
+    | GraphDataView<'uint32'>
+    | GraphVectorView<'uint32'> = GraphDataView<'uint32'>,
+  StatusRows extends GraphDataView<'uint32'> | GraphVectorView<'uint32'> = GraphDataView<'uint32'>
+> = {
   id?: string;
   /**
    * Coordinate space of the unit vectors: longitude-latitude (their embedding on the sphere) with
@@ -52,8 +80,9 @@ export type GPUSphericalPolygonContainsProps = {
   ringOffsets: GraphDataView<'uint32'>;
   /** Ring offsets per polygon: first ring is the shell; subsequent rings are holes. */
   polygonOffsets: GraphDataView<'uint32'>;
-  queries: GraphDataView<'float32x3'>;
-  polygonIndices: GraphDataView<'uint32'>;
+  /** Packed or chunked queries; selectors and outputs mirror the same ordered chunks. */
+  queries: QueryRows;
+  polygonIndices: SelectorRows;
   boundary?: 'closed' | 'open';
   complement?: boolean;
   tolerance?: number;
@@ -61,21 +90,40 @@ export type GPUSphericalPolygonContainsProps = {
   hemisphereCenter?: readonly [number, number, number];
   output: {
     /** 0 outside, 1 inside (after `complement`); read it together with `status`. */
-    contains: GraphDataView<'uint32'>;
+    contains: ContainsRows;
     /**
      * Per query: {@link GPU_SPHERICAL_POLYGON_CONTAINS_STATUS_VALID} (0),
      * {@link GPU_SPHERICAL_POLYGON_CONTAINS_STATUS_INVALID} (1) or
      * {@link GPU_SPHERICAL_POLYGON_CONTAINS_STATUS_BOUNDARY} (2).
      */
-    status: GraphDataView<'uint32'>;
+    status: StatusRows;
   };
 };
+
+type PackedSphericalPolygonContainsProps = Omit<
+  GPUSphericalPolygonContainsProps,
+  'queries' | 'polygonIndices' | 'output'
+> & {
+  queries: GraphDataView<'float32x3'>;
+  polygonIndices: GraphDataView<'uint32'>;
+  output: {contains: GraphDataView<'uint32'>; status: GraphDataView<'uint32'>};
+};
+
+/** Query output packing plus runtime row parameters fits the default eight storage bindings. */
+const SPHERICAL_POLYGON_QUERY_STORAGE_BINDING_COUNT = 8;
+/** Independent query rows use the standard 256-thread bounded dispatch. */
+const SPHERICAL_POLYGON_CHUNK_WORKGROUP_SIZE = 256;
+/** Prevent multiplication by the workgroup size from wrapping the uint32 index. */
+const SPHERICAL_POLYGON_MAXIMUM_LINEAR_WORKGROUP_COUNT = 0x1000000;
 
 /**
  * Nonconvex spherical winding containment with holes and explicit complementary-region semantics.
  *
  * Ring validity (unit vertices, hemisphere condition, no crossing or touching nonadjacent arcs) is
  * checked once per ring, not once per query; a query then costs one pass over its rings' edges.
+ * Packed resident geometry is shared by every query chunk. Query selectors and output chunks
+ * mirror query lengths, including empty chunks. Two-word temporary results are reused between
+ * chunks so query kernels stay within eight storage bindings; scatter keeps the public layout.
  *
  * Status per query: `0` inside or outside, `1` invalid query, polygon index or ring (this includes
  * a ring with an edge whose cross product is within `tolerance`, i.e. an edge shorter than about
@@ -83,11 +131,33 @@ export type GPUSphericalPolygonContainsProps = {
  * f32 winding sum is only trustworthy for queries farther than `tolerance` from every vertex, so
  * keep `tolerance` (at least 1e-7, default 1e-6 or about 6 m) below the shortest edge of interest.
  */
-export class GPUSphericalPolygonContains implements GPUCommandNodeProducer {
+export class GPUSphericalPolygonContains<
+  QueryRows extends
+    | GraphDataView<'float32x3'>
+    | GraphVectorView<'float32x3'> = GraphDataView<'float32x3'>,
+  SelectorRows extends
+    | GraphDataView<'uint32'>
+    | GraphVectorView<'uint32'> = GraphDataView<'uint32'>,
+  ContainsRows extends
+    | GraphDataView<'uint32'>
+    | GraphVectorView<'uint32'> = GraphDataView<'uint32'>,
+  StatusRows extends GraphDataView<'uint32'> | GraphVectorView<'uint32'> = GraphDataView<'uint32'>
+> implements GPUCommandNodeProducer
+{
   readonly id: string;
+  readonly estimatedCommandNodeCount: number;
+  private readonly chunkPlan: GraphChunkDispatchPlan;
+  private readonly chunked: boolean;
   /** Validated coordinate space of the unit vectors. */
   readonly spatialContext: GPUSpatialContext;
-  constructor(readonly props: GPUSphericalPolygonContainsProps) {
+  constructor(
+    readonly props: GPUSphericalPolygonContainsProps<
+      QueryRows,
+      SelectorRows,
+      ContainsRows,
+      StatusRows
+    >
+  ) {
     this.id = props.id ?? 'spherical-polygon-contains';
     this.spatialContext = resolveGPUSpatialContext(
       this.id,
@@ -96,15 +166,29 @@ export class GPUSphericalPolygonContains implements GPUCommandNodeProducer {
     );
     if (props.hemisphereCenter)
       assertUnitVector(props.hemisphereCenter, this.id, 'hemisphereCenter');
-    for (const view of [props.positions, props.queries])
-      validateSinglePackedView(view, ['float32x3'], this.id);
-    for (const view of [
-      props.ringOffsets,
-      props.polygonOffsets,
-      props.polygonIndices,
-      ...Object.values(props.output)
-    ])
-      validateSinglePackedView(view, ['uint32'], this.id);
+    validateSinglePackedView(props.positions, ['float32x3'], `${this.id} positions`);
+    for (const [name, view] of Object.entries({
+      ringOffsets: props.ringOffsets,
+      polygonOffsets: props.polygonOffsets
+    }))
+      validateSinglePackedView(view, ['uint32'], `${this.id} ${name}`);
+    this.chunkPlan = planGraphChunkDispatch(this.id, {
+      queries: props.queries,
+      polygonIndices: props.polygonIndices,
+      contains: props.output.contains,
+      status: props.output.status
+    });
+    for (const chunk of this.chunkPlan.chunks) {
+      validateSinglePackedView(chunk.views['queries'], ['float32x3'], `${this.id} queries`);
+      for (const name of ['polygonIndices', 'contains', 'status'])
+        validateSinglePackedView(chunk.views[name], ['uint32'], `${this.id} ${name}`);
+    }
+    validateDisjointWritableViews(this.id, props.output);
+    this.chunked = [props.queries, props.polygonIndices, ...Object.values(props.output)].some(
+      view => view instanceof GraphVectorView
+    );
+    this.estimatedCommandNodeCount = this.chunked ? 3 + this.chunkPlan.nonemptyChunkCount * 2 : 3;
+    validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
     validateRequirement(
       this.id,
       props.ringOffsets.length >= 1 && props.polygonOffsets.length >= 1,
@@ -135,14 +219,56 @@ export class GPUSphericalPolygonContains implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.positions,
-      props.ringOffsets,
-      props.polygonOffsets,
-      props.queries,
-      props.polygonIndices,
-      ...Object.values(props.output)
-    ]);
+    validateGraphChunkBindingRanges(graph, id, {
+      positions: props.positions,
+      ringOffsets: props.ringOffsets,
+      polygonOffsets: props.polygonOffsets,
+      queries: props.queries,
+      polygonIndices: props.polygonIndices,
+      ...props.output
+    });
+    if (this.chunked) validateGraphChunkDispatchBindings(graph, id, this.chunkPlan);
+    const maximumChunkLength = this.chunkPlan.chunks.reduce(
+      (maximum, chunk) => Math.max(maximum, chunk.length),
+      0
+    );
+    const scratchRingCount = Math.max(props.ringOffsets.length - 1, 1);
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'ringCenters',
+      scratchRingCount * 12,
+      'reduce the packed ring count'
+    );
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'ringFailures',
+      scratchRingCount * 4,
+      'reduce the packed ring count'
+    );
+    if (this.chunked)
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        'chunk results',
+        Math.max(maximumChunkLength, 1) * 8,
+        'reduce the query chunk size'
+      );
+    validateMaximumCount(
+      id,
+      'storage bindings',
+      SPHERICAL_POLYGON_QUERY_STORAGE_BINDING_COUNT,
+      graph.device.limits.maxStorageBuffersPerShaderStage
+    );
+    const layouts = this.chunkPlan.chunks.map(chunk =>
+      getBoundedDispatchLayout(
+        id,
+        chunk.length,
+        SPHERICAL_POLYGON_CHUNK_WORKGROUP_SIZE,
+        graph.device.limits.maxComputeWorkgroupsPerDimension
+      )
+    );
     const tolerance = getWGSLFloatLiteral(props.tolerance ?? 1e-6);
     const ringCount = props.ringOffsets.length - 1;
     // Query-independent ring validation is computed once per ring instead of once per query.
@@ -165,7 +291,7 @@ fn polygonOnArc(first: vec3f, second: vec3f, point: vec3f, margin: f32) -> bool 
   let normal = normalize(cross(first, second));
   return abs(dot(normal, point)) <= margin && dot(cross(first, point), normal) >= -margin && dot(cross(point, second), normal) >= -margin;
 }`;
-    return [
+    const sharedNodes = [
       createWGSLKernelNode(graph, {
         id: `${id}-ring-center`,
         operation: 'GPUSphericalPolygonContains',
@@ -232,24 +358,218 @@ for (var other = begin; other < end && failure == 0u; other++) {
   } else if (polygonOnArc(first, second, third, POLYGON_TOLERANCE) || polygonOnArc(first, second, fourth, POLYGON_TOLERANCE)) { failure = 1u; }
 }
 if (failure != 0u) { atomicMax(&ringFailures[ringFailuresOffset + ring], 1u); }`
-      }),
-      createWGSLKernelNode(graph, {
-        id,
-        operation: 'GPUSphericalPolygonContains',
-        variant: `${props.boundary ?? 'closed'}-${Boolean(props.complement)}`,
-        invocationCount: props.queries.length,
-        bindings: [
-          {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
-          {name: 'ringOffsets', view: props.ringOffsets, type: 'u32', access: 'read'},
-          {name: 'polygonOffsets', view: props.polygonOffsets, type: 'u32', access: 'read'},
-          {name: 'queries', view: props.queries, type: 'f32', access: 'read'},
-          {name: 'polygonIndices', view: props.polygonIndices, type: 'u32', access: 'read'},
-          {name: 'contains', view: props.output.contains, type: 'u32', access: 'read_write'},
-          {name: 'status', view: props.output.status, type: 'u32', access: 'read_write'},
-          {name: 'ringFailures', view: ringFailures, type: 'u32', access: 'read'}
-        ],
+      })
+    ];
+    if (!this.chunked)
+      return [
+        ...sharedNodes,
+        createWGSLKernelNode(
+          graph,
+          this.getQueryKernelProps(
+            props as PackedSphericalPolygonContainsProps,
+            ringFailures,
+            declarations
+          )
+        )
+      ];
+    const {slots, nodes} = createGraphChunkDispatchParameters(graph, {
+      id: `${id}-chunks`,
+      plan: this.chunkPlan
+    });
+    const results = createTransientView(
+      graph,
+      `${id}-chunk-results`,
+      'uint32x2',
+      maximumChunkLength
+    );
+    const queryNodes: GPUCommandNode<Parameters>[] = [];
+    for (const chunk of this.chunkPlan.chunks) {
+      if (chunk.length === 0) continue;
+      const chunkProps: PackedSphericalPolygonContainsProps = {
+        ...props,
+        queries: chunk.views['queries'] as GraphDataView<'float32x3'>,
+        polygonIndices: chunk.views['polygonIndices'] as GraphDataView<'uint32'>,
+        output: {
+          contains: chunk.views['contains'] as GraphDataView<'uint32'>,
+          status: chunk.views['status'] as GraphDataView<'uint32'>
+        }
+      };
+      const kernelProps = this.getQueryKernelProps<Parameters>(
+        chunkProps,
+        ringFailures,
         declarations,
-        body: `let queryOffset = queriesOffset + index * 3u;
+        results
+      );
+      queryNodes.push(
+        this.createChunkQueryNode(
+          `${id}-query-${chunk.chunkIndex}`,
+          slots[chunk.chunkIndex],
+          layouts[chunk.chunkIndex],
+          kernelProps,
+          {queries: 3, polygonIndices: 1, results: 2}
+        )
+      );
+      queryNodes.push(
+        this.createChunkQueryNode(
+          `${id}-scatter-${chunk.chunkIndex}`,
+          slots[chunk.chunkIndex],
+          layouts[chunk.chunkIndex],
+          {
+            id: `${id}-scatter`,
+            operation: 'GPUSphericalPolygonContains',
+            variant: 'scatter',
+            invocationCount: chunk.length,
+            bindings: [
+              {name: 'results', view: results, type: 'u32', access: 'read'},
+              {
+                name: 'contains',
+                view: chunkProps.output.contains,
+                type: 'u32',
+                access: 'read_write'
+              },
+              {name: 'status', view: chunkProps.output.status, type: 'u32', access: 'read_write'}
+            ],
+            body: `contains[containsOffset + index] = results[resultsOffset + index * 2u];
+status[statusOffset + index] = results[resultsOffset + index * 2u + 1u];`
+          },
+          {results: 2, contains: 1, status: 1}
+        )
+      );
+    }
+    return [...sharedNodes, ...nodes, ...queryNodes];
+  }
+
+  private createChunkQueryNode<Parameters>(
+    id: string,
+    parameters: GraphDataView<'uint32'>,
+    layout: ReturnType<typeof getBoundedDispatchLayout>,
+    kernelProps: WGSLKernelProps<Parameters>,
+    rowComponents: Record<string, number>
+  ): GPUCommandNode<Parameters> {
+    // Bound array lengths include only the aligned prefix and the logical view bytes. Scratch
+    // results have maximum chunk capacity: each shorter chunk writes its trailing rows, then scatters.
+    const source = `${kernelProps.bindings
+      .map(
+        (binding, location) =>
+          `@group(0) @binding(${location}) var<storage, ${binding.access}> ${binding.name}: array<${binding.type}>;\n` +
+          (binding.name in rowComponents
+            ? `var<private> ${binding.name}Offset: u32;`
+            : `const ${binding.name}Offset: u32 = ${getViewElementOffset(binding.view)}u;`)
+      )
+      .join('\n')}
+@group(0) @binding(${kernelProps.bindings.length}) var<storage, read> chunkParameters: array<u32>;
+${kernelProps.declarations ?? ''}
+@compute @workgroup_size(${SPHERICAL_POLYGON_CHUNK_WORKGROUP_SIZE})
+fn main(@builtin(workgroup_id) workgroupId: vec3<u32>,
+  @builtin(num_workgroups) workgroupCount: vec3<u32>,
+  @builtin(local_invocation_index) localInvocationIndex: u32) {
+  let workgroupIndex = (workgroupId.z * workgroupCount.y + workgroupId.y) * workgroupCount.x + workgroupId.x;
+  if (workgroupIndex >= ${SPHERICAL_POLYGON_MAXIMUM_LINEAR_WORKGROUP_COUNT}u) { return; }
+  let index = workgroupIndex * ${SPHERICAL_POLYGON_CHUNK_WORKGROUP_SIZE}u + localInvocationIndex;
+  if (index >= chunkParameters[1]) { return; }
+  ${Object.entries(rowComponents)
+    .map(
+      ([name, components]) =>
+        `${name}Offset = arrayLength(&${name}) - chunkParameters[1] * ${components}u;`
+    )
+    .join('\n  ')}
+  ${kernelProps.body}
+}`;
+    return createGPUComputeCommandNode<Parameters>({
+      id,
+      workload: {
+        operation: kernelProps.operation,
+        ...(kernelProps.variant ? {variant: kernelProps.variant} : {}),
+        commandCount: 1,
+        maximumInvocationCount: kernelProps.invocationCount,
+        maximumWorkgroupCount: layout.x * layout.y * layout.z
+      },
+      resources: [
+        ...kernelProps.bindings.map(binding => ({
+          buffer: binding.view,
+          usage:
+            binding.access === 'read' ? ('storage-read' as const) : ('storage-read-write' as const)
+        })),
+        {buffer: parameters, usage: 'storage-read'}
+      ],
+      compile: ({device}) => {
+        const kernel = new Kernel(device, {
+          id: kernelProps.id,
+          source,
+          shaderLayout: {
+            bindings: [
+              ...kernelProps.bindings.map((binding, location) => ({
+                name: binding.name,
+                group: 0,
+                location,
+                type:
+                  binding.access === 'read' ? ('read-only-storage' as const) : ('storage' as const)
+              })),
+              {
+                name: 'chunkParameters',
+                group: 0,
+                location: kernelProps.bindings.length,
+                type: 'read-only-storage'
+              }
+            ]
+          }
+        });
+        return {
+          encode: ({computePass, getBuffer}) =>
+            kernel.dispatch(computePass, {
+              bindings: Object.fromEntries([
+                ...kernelProps.bindings.map(binding => [
+                  binding.name,
+                  getViewBinding(binding.view, getBuffer)
+                ]),
+                ['chunkParameters', getViewBinding(parameters, getBuffer)]
+              ]),
+              ...layout
+            }),
+          destroy: () => kernel.destroy()
+        };
+      }
+    });
+  }
+
+  private getQueryKernelProps<Parameters>(
+    props: PackedSphericalPolygonContainsProps,
+    ringFailures: GraphDataView<'uint32'>,
+    declarations: string,
+    results?: GraphDataView<'uint32x2'>
+  ): WGSLKernelProps<Parameters> {
+    const {id} = this;
+    return {
+      id,
+      operation: 'GPUSphericalPolygonContains',
+      variant: `${props.boundary ?? 'closed'}-${Boolean(props.complement)}`,
+      invocationCount: props.queries.length,
+      bindings: [
+        {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
+        {name: 'ringOffsets', view: props.ringOffsets, type: 'u32', access: 'read'},
+        {name: 'polygonOffsets', view: props.polygonOffsets, type: 'u32', access: 'read'},
+        {name: 'queries', view: props.queries, type: 'f32', access: 'read'},
+        {name: 'polygonIndices', view: props.polygonIndices, type: 'u32', access: 'read'},
+        ...(results
+          ? [{name: 'results', view: results, type: 'u32' as const, access: 'read_write' as const}]
+          : [
+              {
+                name: 'contains',
+                view: props.output.contains,
+                type: 'u32' as const,
+                access: 'read_write' as const
+              },
+              {
+                name: 'status',
+                view: props.output.status,
+                type: 'u32' as const,
+                access: 'read_write' as const
+              }
+            ]),
+        {name: 'ringFailures', view: ringFailures, type: 'u32', access: 'read'}
+      ],
+      declarations,
+      body: `let queryOffset = queriesOffset + index * 3u;
 let point = vec3f(queries[queryOffset], queries[queryOffset + 1u], queries[queryOffset + 2u]);
 let polygon = polygonIndices[polygonIndicesOffset + index];
 var failure = 0u; var inside = false; var boundary = false;
@@ -277,9 +597,8 @@ if (failure == 0u) {
 }
 var accepted = ${props.complement ? '!inside' : 'inside'};
 if (boundary && failure == 0u) { failure = 2u; accepted = ${props.boundary !== 'open'}; }
-contains[containsOffset + index] = select(0u, 1u, accepted && failure != 1u);
-status[statusOffset + index] = failure;`
-      })
-    ];
+${results ? 'results[resultsOffset + index * 2u]' : 'contains[containsOffset + index]'} = select(0u, 1u, accepted && failure != 1u);
+${results ? 'results[resultsOffset + index * 2u + 1u]' : 'status[statusOffset + index]'} = failure;`
+    };
   }
 }

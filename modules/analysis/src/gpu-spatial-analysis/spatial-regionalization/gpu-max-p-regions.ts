@@ -21,12 +21,20 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validateSinglePackedView
+  validateSinglePackedView,
+  validateGPUStorageBindingByteLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {getLoadBalancedTileCount} from '../../analysis-core/kernels/load-balanced-for-each';
+import {validateSpatialOutputViews} from '../spatial-clustering/spatial-output-validation';
 import {type GPUSpatialWeights, validateGPUSpatialWeights} from '../spatial-weights/index';
 import {IS_FINITE_FLOAT_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {PHILOX_PURPOSES, PHILOX_WGSL} from '../../analysis-core/kernels/philox-random';
-import {GPUAZPRegions, GPU_AZP_MAXIMUM_ITERATIONS} from './gpu-azp-regions';
+import {
+  GPUAZPRegions,
+  GPU_AZP_MAXIMUM_ITERATIONS,
+  validateAZPRegionScratch
+} from './gpu-azp-regions';
 import {
   GPURegionPartitionEvaluation,
   GPU_REGION_PARTITION_EVALUATION_LAYOUT
@@ -37,7 +45,8 @@ import {
   getRegionalizationSeedParameterValues,
   REGIONALIZATION_SEED_PARAMETER_LENGTH,
   validateRegionalizationParameters,
-  validateRegionalizationSlotCount
+  validateRegionalizationSlotCount,
+  validateSymmetricAdjacencyScratch
 } from './regionalization-inputs';
 
 export const GPU_MAX_P_MAXIMUM_COLUMNS = 8;
@@ -69,8 +78,6 @@ const START_STATE_STRIDE = 4;
 const CLAIM_STRIDE = 4;
 /** Words of the region table before the column means: row count, extensive sum, squares. */
 const REGION_HEADER = 3;
-/** Fallback for the largest storage binding when the device does not report one (128 MiB). */
-const DEFAULT_MAXIMUM_BINDING_BYTES = 128 * 1024 * 1024;
 /** Odd multiplier of the bijective tie order `tie(x) = (x * multiplier) ^ salt`. */
 const TIE_MULTIPLIER = 0x9e3779b1;
 /** First wave plants seeds at this fraction of `1 / expectedRegionSize` of the rows. */
@@ -374,6 +381,7 @@ export class GPUMaxPRegions implements GPUCommandNodeProducer {
         props.parameters
       ]
     );
+    validateSpatialOutputViews(id, output, [[output.objective, output.status]]);
   }
 
   getCommandNodes<Parameters>(
@@ -393,16 +401,63 @@ export class GPUMaxPRegions implements GPUCommandNodeProducer {
       output.objective,
       output.status
     ]);
-    validateRegionalizationSlotCount(id, props.weights, getGPUMaxPMaximumSlotCount(graph.device));
     // Region record: row count, extensive sum, squared deviations, then one sum per column.
     const regionStride = columnCount + REGION_HEADER;
-    const maximumBindingBytes =
-      graph.device.limits.maxStorageBufferBindingSize ?? DEFAULT_MAXIMUM_BINDING_BYTES;
-    // The largest scratch binding is the region table or the four-word claim records.
-    const scratchWordsPerRow = Math.max(regionStride, CLAIM_STRIDE, 2);
-    if (startCount * rowCount * scratchWordsPerRow * 4 > maximumBindingBytes) {
-      throw new Error(`${id} scratch exceeds one storage binding; reduce startCount or rowCount`);
-    }
+    validateGraphChunkBindingRanges(graph, id, {
+      parameters: props.parameters,
+      offsets: props.weights.offsets,
+      neighbors: props.weights.neighbors,
+      weights: props.weights.weights,
+      values: props.values,
+      extensiveValues: props.extensiveValues,
+      threshold: props.threshold,
+      ...output
+    });
+    validateRegionalizationSlotCount(id, props.weights, getGPUMaxPMaximumSlotCount(graph.device));
+    validateSymmetricAdjacencyScratch(graph, id, props.weights, rowCount);
+    for (const [name, byteLength] of [
+      ['standardized table', props.standardize !== false ? rowCount * columnCount * 4 : 0],
+      ['packed extensive values', (rowCount + 1) * 4],
+      ['row state', startCount * rowCount * 8],
+      ['region phase', startCount * rowCount * 4],
+      ['region records', startCount * rowCount * regionStride * 4],
+      ['region sums', startCount * rowCount * columnCount * 4],
+      ['claims', startCount * rowCount * CLAIM_STRIDE * 4],
+      ['start state', startCount * START_STATE_STRIDE * 4],
+      ['control state', (STATE.startRecords + startCount * START_RECORD_WORDS) * 4],
+      ['region scan planes', rowCount * 4],
+      ['round dispatch', 36],
+      [
+        'evaluation summary',
+        maximumIterations > 0 ? 0 : GPU_REGION_PARTITION_EVALUATION_LAYOUT.length * 4
+      ],
+      ['evaluation label offsets', maximumIterations > 0 ? 0 : (rowCount + 1) * 4],
+      [
+        'evaluation row tile counts',
+        maximumIterations > 0 ? 0 : Math.ceil(rowCount / FINALIZE_WORKGROUP_SIZE) * 20
+      ],
+      [
+        'evaluation row tile sums',
+        maximumIterations > 0 ? 0 : Math.ceil(rowCount / FINALIZE_WORKGROUP_SIZE) * columnCount * 4
+      ],
+      [
+        'evaluation label tile counts',
+        maximumIterations > 0 ? 0 : Math.ceil(rowCount / FINALIZE_WORKGROUP_SIZE) * 12
+      ],
+      [
+        'evaluation reduction carries',
+        maximumIterations > 0 ? 0 : getLoadBalancedTileCount(rowCount, rowCount) * columnCount * 8
+      ]
+    ] as const)
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        name,
+        byteLength,
+        'reduce startCount, rowCount or columnCount'
+      );
+    if (maximumIterations > 0)
+      validateAZPRegionScratch(graph, id, rowCount, columnCount, rowCount, true);
     const {growthRounds, enclaveRounds} = getGPUMaxPRoundCounts(rowCount, this.maximumGrowthSteps);
     const standardize = props.standardize !== false;
     const table = standardize

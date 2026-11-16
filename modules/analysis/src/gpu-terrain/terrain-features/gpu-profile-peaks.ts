@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateTerrainBindings} from '../terrain-processing/terrain-binding-preflight';
 import {
   createTransientView,
   GPUCompaction,
@@ -422,6 +423,9 @@ export class GPUProfilePeaks implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateTerrainBindings(graph, this.id, this.props, {
+      'candidate scratch': 4 * this.props.values.length
+    });
     const {id, props, minimumSide, suppressionRadius, wrap, maximumSuppressionIterations} = this;
     const {output} = props;
     const converged = output.status?.converged;

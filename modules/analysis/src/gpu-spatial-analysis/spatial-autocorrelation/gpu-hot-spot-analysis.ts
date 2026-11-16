@@ -30,20 +30,21 @@ import {
   GPUMultipleTestingAdjustment,
   resolveGPUMultipleTestingMethod
 } from '../multiple-testing/index';
+import {createSpatialStatisticsRowNode} from '../spatial-weights/spatial-statistics-row-dispatch';
+import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {
-  getSpatialAutocorrelationConstantsWGSL,
   getSpatialAutocorrelationInputNodes,
   getSpatialWeightsNeighborLoopWGSL,
   resolveSpatialAutocorrelationMinimumNeighbors,
   SPATIAL_AUTOCORRELATION_FLOAT_WGSL,
-  validateSpatialAutocorrelationInputs
+  validateSpatialAutocorrelationInputs,
+  validateSpatialAutocorrelationBindings
 } from './spatial-autocorrelation-kernels';
 import {
   getGPUSpatialWeightsChunkDispatches,
   getGPUSpatialWeightsOrChunksViews,
   isGPUSpatialWeightsRowStandardized,
   resolveGPUIslandPolicy,
-  wrapGPUSpatialWeightsChunkBody,
   type GPUChunkedSpatialWeights,
   type GPUIslandPolicy,
   type GPUSpatialWeights
@@ -108,6 +109,8 @@ export type GPUHotSpotAnalysisOutput = {
   neighborCounts?: GraphDataView<'uint32'>;
   /** Optional caller-owned `[n, mean, variance, standardDeviation, islandCount]` actually used this frame. */
   globalStatistics?: GraphDataView<'float32'>;
+  /** Exact uint32 [populationCount, islandCount]; populationCount uses fixedMoments.count when supplied. */
+  globalCounts?: GraphDataView<'uint32'>;
 };
 
 /**
@@ -125,8 +128,7 @@ export type GPUHotSpotAnalysisProps = {
    * Square self-join spatial weights, one row per observation (for example from
    * `GPUNeighborSearch`, optionally transformed). Used as given, except that when
    * `weights.information.transform` is `'row'` each row's weights are re-standardized over the neighbors
-   * that remain after masking. The caller applies any other transform (binary, kernel). Fewer
-   * than 2^24 rows. The focal row's own weight is not read from the matrix (`w_ii = 0` by
+   * that remain after masking. The caller applies any other transform (binary, kernel). Each packed row view and CSR chunk must fit a device storage binding. The focal row's own weight is not read from the matrix (`w_ii = 0` by
    * invariant); see `selfWeight`. A neighbor is a slot with a positive weight that points at
    * another included row. If `weights.status.overflow` is nonzero every output is NaN.
    */
@@ -230,6 +232,9 @@ export type GPUHotSpotAnalysisProps = {
  * Non-goals: permutation (pseudo) p-values, building the weights, geodesic distances,
  * space-time neighborhoods (see `GPUEmergingHotSpots`). Chunked weights are accepted (one gather
  * dispatch per chunk).
+ *
+ * Row counts stay uint32 through statistical arithmetic; globalCounts publishes exact counts.
+ * The compatible globalStatistics float32 summary rounds counts above 2^24. Packed row views and each CSR chunk must fit device bindings.
  */
 export class GPUHotSpotAnalysis implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -257,6 +262,7 @@ export class GPUHotSpotAnalysis implements GPUCommandNodeProducer {
     const rows = validateSpatialAutocorrelationInputs({
       ...props,
       id,
+      globalCounts: props.output.globalCounts,
       globalStatistics: props.output.globalStatistics
     });
     const selfWeight = props.selfWeight ?? 1;
@@ -302,6 +308,7 @@ export class GPUHotSpotAnalysis implements GPUCommandNodeProducer {
       props.output.adjustedPValues,
       props.output.neighborCounts,
       props.output.globalStatistics,
+      props.output.globalCounts,
       props.output.bins
     ]);
     validateGraphOutputsDisjointFromInputs(
@@ -313,6 +320,7 @@ export class GPUHotSpotAnalysis implements GPUCommandNodeProducer {
         props.output.adjustedPValues,
         props.output.neighborCounts,
         props.output.globalStatistics,
+        props.output.globalCounts,
         ...Object.values(props.output.status ?? {})
       ],
       [
@@ -324,6 +332,19 @@ export class GPUHotSpotAnalysis implements GPUCommandNodeProducer {
         props.mask
       ]
     );
+    validateDisjointWritableViews(id, {
+      zScores: props.output.zScores,
+      bins: props.output.bins,
+      pValues: props.output.pValues,
+      adjustedPValues: props.output.adjustedPValues,
+      neighborCounts: props.output.neighborCounts,
+      globalCounts: props.output.globalCounts,
+      globalStatistics: props.output.globalStatistics,
+      ...Object.fromEntries(
+        Object.entries(props.output.status ?? {}).map(([name, view]) => [`status.${name}`, view])
+      ),
+      status: undefined
+    });
   }
 
   /**
@@ -368,7 +389,19 @@ export class GPUHotSpotAnalysis implements GPUCommandNodeProducer {
       props.output.adjustedPValues,
       props.output.neighborCounts,
       props.output.globalStatistics,
+      props.output.globalCounts,
       ...Object.values(props.output.status ?? {})
+    ]);
+    validateSpatialAutocorrelationBindings(graph, {...props, id}, [
+      props.output.zScores,
+      props.output.pValues,
+      props.output.adjustedPValues,
+      props.output.neighborCounts,
+      props.output.globalStatistics,
+      props.output.globalCounts,
+      props.output.bins,
+      ...Object.values(props.output.status ?? {}),
+      typeof props.selfWeight === 'object' ? props.selfWeight : undefined
     ]);
     const statusNodes = getSpatialAutocorrelationStatusNodes(graph, id, OPERATION, props);
     const runtime = createSpatialStatisticsParameterNodes(
@@ -379,6 +412,7 @@ export class GPUHotSpotAnalysis implements GPUCommandNodeProducer {
     const rows = props.values.length;
     const inputs = getSpatialAutocorrelationInputNodes<Parameters>(graph, {
       ...props,
+      globalCounts: props.output.globalCounts,
       globalStatistics: props.output.globalStatistics,
       id,
       islands: this.islands,
@@ -390,6 +424,7 @@ export class GPUHotSpotAnalysis implements GPUCommandNodeProducer {
     const neighborBindings: WGSLKernelBinding[] = [
       {name: 'selfWeightParameters', view: runtime.parameters, type: 'f32', access: 'read'},
       {name: 'statistics', view: inputs.statistics, type: 'f32', access: 'read'},
+      {name: 'counts', view: inputs.counts, type: 'u32', access: 'read'},
       {name: 'zScores', view: zScores, type: 'f32', access: 'read_write'}
     ];
     if (props.output.neighborCounts) {
@@ -473,17 +508,11 @@ export class GPUHotSpotAnalysis implements GPUCommandNodeProducer {
     if (fuseClassify) {
       neighborBindings.push(...fusedOutputBindings);
     }
-    if (unadjustedPValues) {
-      neighborBindings.push({
-        name: 'pValues',
-        view: unadjustedPValues,
-        type: 'f32',
-        access: 'read_write'
-      });
-    }
+
     nodes.push(
       ...dispatches.map(dispatch =>
-        createWGSLKernelNode<Parameters>(graph, {
+        createSpatialStatisticsRowNode<Parameters>(graph, {
+          rowBase: dispatch.rowStart,
           id: `${id}-neighbors${dispatch.idSuffix}`,
           operation: OPERATION,
           variant: `gi${fuseClassify ? '-classify' : ''}${isAdjusting ? '-p-value' : ''}`,
@@ -495,12 +524,11 @@ export class GPUHotSpotAnalysis implements GPUCommandNodeProducer {
           ],
           invocationCount: dispatch.rowCount,
           declarations: `${sharedWGSL}
-${getSpatialAutocorrelationConstantsWGSL(rows, dispatch.weights.neighbors.length, dispatch.isWhole ? undefined : dispatch.rowStart)}
+const MOMENTS: u32 = ${rows}u;
+const ROWS: u32 = ${rows}u;
 const MINIMUM_NEIGHBORS: u32 = ${this.minimumNeighbors}u;
 const STANDARDIZE: bool = ${isGPUSpatialWeightsRowStandardized(weights)};`,
-          body: wrapGPUSpatialWeightsChunkBody(
-            dispatch,
-            `let centered = statistics[statisticsOffset + index];
+          body: `let centered = statistics[statisticsOffset + index];
   var zScore = getQuietNaN(index);
   var neighborCount = 0u;
   if (isFiniteFloat(centered)) {
@@ -512,7 +540,7 @@ const STANDARDIZE: bool = ${isGPUSpatialWeightsRowStandardized(weights)};`,
       weightSum += weight;
       squareSum += weight * weight;
       neighborCount++;`,
-      dispatch.rowStartWGSL
+      'WEIGHTS_ROW_START'
     )}
     if (STANDARDIZE && weightSum > 0.0) {
       // Row-standardized weights are divided by what remains of their row sum.
@@ -520,18 +548,20 @@ const STANDARDIZE: bool = ${isGPUSpatialWeightsRowStandardized(weights)};`,
       squareSum = squareSum / (weightSum * weightSum);
       weightSum = 1.0;
     }
-    let count = statistics[statisticsOffset + MOMENTS];
+    let exactCount = counts[countsOffset];
+    let count = f32(exactCount);
     let variance = statistics[statisticsOffset + MOMENTS + 2u];
     if (neighborCount >= MINIMUM_NEIGHBORS) {
       let selfWeight = selfWeightParameters[selfWeightParametersOffset];
       if (selfWeight == 0.0) {
       // Ord-Getis Gi: standardize with the n - 1 other observations. The centered values of the
       // population sum to zero, so the others sum to -centered.
-      let others = count - 1.0;
+      let othersCount = max(exactCount, 1u) - 1u;
+      let others = f32(othersCount);
       let sumOfSquares = statistics[statisticsOffset + MOMENTS + 3u];
-      let otherMean = -centered / others;
-      let otherVariance = (sumOfSquares - centered * centered) / others - otherMean * otherMean;
-      let spread = (others * squareSum - weightSum * weightSum) / (others - 1.0);
+      let otherMean = divideBySpatialCount(-centered, othersCount);
+      let otherVariance = divideBySpatialCount(sumOfSquares - centered * centered, othersCount) - otherMean * otherMean;
+      let spread = divideBySpatialCount(multiplyBySpatialCount(squareSum, othersCount) - weightSum * weightSum, max(othersCount, 1u) - 1u);
       if (others >= 2.0 && otherVariance > 0.0 && spread > 0.0 && isFiniteFloat(spread)) {
         zScore = (weightedSum - weightSum * otherMean) / (sqrt(otherVariance) * sqrt(spread));
       }
@@ -539,7 +569,7 @@ const STANDARDIZE: bool = ${isGPUSpatialWeightsRowStandardized(weights)};`,
       weightedSum += selfWeight * centered;
       weightSum += selfWeight;
       squareSum += selfWeight * selfWeight;
-      let spread = (count * squareSum - weightSum * weightSum) / (count - 1.0);
+      let spread = divideBySpatialCount(multiplyBySpatialCount(squareSum, exactCount) - weightSum * weightSum, max(exactCount, 1u) - 1u);
       if (count >= 2.0 && variance > 0.0 && spread > 0.0 && isFiniteFloat(spread)) {
         zScore = weightedSum / (sqrt(variance) * sqrt(spread));
       }
@@ -548,9 +578,8 @@ const STANDARDIZE: bool = ${isGPUSpatialWeightsRowStandardized(weights)};`,
   }
   zScores[zScoresOffset + index] = zScore;
   ${props.output.neighborCounts ? 'neighborCounts[neighborCountsOffset + index] = neighborCount;' : ''}
-  ${unadjustedPValues ? 'pValues[pValuesOffset + index] = select(getQuietNaN(index), getTwoSidedPValue(zScore), isFiniteFloat(zScore));' : ''}
+  
   ${fuseClassify ? classifyWGSL : ''}`
-          )
         })
       )
     );
@@ -572,6 +601,21 @@ const STANDARDIZE: bool = ${isGPUSpatialWeightsRowStandardized(weights)};`,
         })
       );
     }
+    if (unadjustedPValues)
+      nodes.push(
+        createWGSLKernelNode(graph, {
+          id: `${id}-analytic-p-values`,
+          operation: OPERATION,
+          invocationCount: rows,
+          bindings: [
+            {name: 'zScores', view: zScores, type: 'f32', access: 'read'},
+            {name: 'pValues', view: unadjustedPValues, type: 'f32', access: 'read_write'}
+          ],
+          declarations: SPATIAL_AUTOCORRELATION_FLOAT_WGSL,
+          body: `let score = zScores[zScoresOffset + index];
+  pValues[pValuesOffset + index] = select(getQuietNaN(index), getTwoSidedPValue(score), isFiniteFloat(score));`
+        })
+      );
     if (isAdjusting) {
       nodes.push(
         ...new GPUMultipleTestingAdjustment({

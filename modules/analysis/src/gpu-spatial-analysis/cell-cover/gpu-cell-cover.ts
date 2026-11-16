@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  validateCellDispatchBindings,
+  validateCellDispatchOutputs
+} from '../cell-indexing/cell-dispatch-validation';
 import {clamp} from '@math.gl/core';
 import type {Device} from '@luma.gl/core';
 import {
@@ -11,7 +15,19 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {getCellKeyLayout, type GPUCellFamily} from '../cell-aggregation/cell-keys';
+import {getCellKeyLayout} from '../cell-aggregation/cell-keys';
+import {
+  validateCellIndexResolution,
+  type GPUCellFamily
+} from '../cell-indexing/cell-index-families';
+import {
+  getS2CellCoverNodes,
+  validateS2CellCoverBindings,
+  getS2CellCoverCommandNodeCount,
+  GPU_CELL_COVER_S2_MAXIMUM_LEVEL,
+  GPU_CELL_COVER_S2_MAXIMUM_FRONTIER,
+  GPU_CELL_COVER_S2_MAXIMUM_FEATURE_COUNT
+} from './s2-cell-cover';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import type {GPUPolygonGeometryFields} from '../../analysis-core/contracts/index';
 import {
@@ -26,6 +42,7 @@ import {getPolygonEdgeSlabNodes} from '../spatial-join/polygon-edge-slabs';
 import {
   getStorageBindingElementLimit,
   validateCapacity,
+  validateCommandNodeBudget,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
@@ -133,14 +150,14 @@ export type GPUCellCoverOutput = {
 export type GPUCellCoverProps = GPUPolygonGeometryFields & {
   /** Prefix for generated node and transient IDs. Defaults to `'cell-cover'`. */
   id?: string;
-  /** Cell family. `'quadbin'` supports every containment; `'h3'` supports only `'center'`. */
+  /** Cell family. Quadbin supports every containment; H3 and S2 support center containment. */
   family: GPUCellFamily;
   /**
    * Coordinate contract of `positions`. Defaults to, and must be, longitude/latitude without
    * a metric; the cover is planar in degrees, like `h3.polygonToCells` and turf.
    */
   spatialContext?: GPUSpatialContext;
-  /** Cell resolution (topology): Quadbin 0 to 26, H3 0 to 15. */
+  /** Cell resolution (topology): Quadbin 0–26, H3 0–15, S2 0–15. */
   resolution: number;
   /**
    * `'center'` (default): the cell center is inside the polygon. `'full'`: the whole cell is
@@ -211,11 +228,21 @@ export type GPUCellCoverProps = GPUPolygonGeometryFields & {
 };
 
 const DEFAULT_ID = 'cell-cover';
+/** Scalar vertex/key indices and metadata lengths are represented as uint32 in WGSL. */
+const MAXIMUM_CELL_COVER_COMPONENT_COUNT = 0xffffffff;
 /** Candidate capacity times vertex count from which the edge-slab index is built by default. */
 const EDGE_SLAB_DEFAULT_WORK = 4_000_000;
 
 /**
- * Polyfills polygon features with Quadbin or H3 cells.
+ * Polyfills polygon features with Quadbin, H3 or S2 cells.
+ *
+ * S2 uses a breadth-first integer hierarchy frontier bounded by candidateCapacity, with a
+ * conservative spherical-cap bounding box per cell and the same exact planar center test.
+ * Enumeration options and edge slabs apply to H3/Quadbin; S2 always uses the frontier. Its output
+ * order is feature row then native S2CellId. Intermediate truncation sets candidateOverflow;
+ * requiredCount is complete only when that flag is zero. core is conservative, using the cap's
+ * expanded longitude/latitude bounds. f32 decoded centers retain GPUCellGeometry's accuracy;
+ * the S2 limit of 15 avoids sub-meter cells. Split antimeridian crossings before this planar cover.
  *
  * Geometry is planar in longitude/latitude degrees (like `h3.polygonToCells` and turf) and rings
  * are even-odd (holes by nesting). Only linear edges are accepted. A feature with a non-pole
@@ -272,6 +299,9 @@ export class GPUCellCover implements GPUCommandNodeProducer {
   /** Resolved capacity of the scanline stage in (edge, row) slots (unused unless `scanline`). */
   readonly scanlineSlotCapacity: number;
 
+  /** Exact for the S2 frontier route; legacy routes retain their existing composition. */
+  readonly estimatedCommandNodeCount?: number;
+
   constructor(props: GPUCellCoverProps) {
     this.id = props.id ?? DEFAULT_ID;
     this.props = props;
@@ -281,30 +311,57 @@ export class GPUCellCover implements GPUCommandNodeProducer {
       props.spatialContext ?? GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT,
       {...GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT_SUPPORT, edgeModels: GPU_LINEAR_EDGE_MODELS}
     );
-    if (props.family !== 'quadbin' && props.family !== 'h3') {
-      throw new Error(`${id} family must be 'quadbin' or 'h3'`);
-    }
-    getCellKeyLayout(props.family, props.resolution);
+    if (!['quadbin', 'h3', 's2'].includes(props.family))
+      throw new Error(`${id} family must be 'quadbin', 'h3' or 's2'`);
+    validateCellIndexResolution(id, props.family, props.resolution);
+    if (props.family === 's2')
+      validateCapacity(id, 's2 resolution', props.resolution, 0, GPU_CELL_COVER_S2_MAXIMUM_LEVEL);
+    else getCellKeyLayout(props.family, props.resolution);
     this.containment = props.containment ?? 'center';
     if (!['center', 'full', 'intersects'].includes(this.containment)) {
       throw new Error(`${id} containment must be 'center', 'full' or 'intersects'`);
     }
-    if (props.family === 'h3' && this.containment !== 'center') {
-      throw new Error(`${id} h3 supports only containment 'center'`);
+    if (props.family !== 'quadbin' && this.containment !== 'center') {
+      throw new Error(`${id} ${props.family} supports only containment 'center'`);
     }
     validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
+    validateCapacity(
+      id,
+      'positions components',
+      props.positions.length * 2,
+      0,
+      MAXIMUM_CELL_COVER_COMPONENT_COUNT
+    );
     for (const [name, view] of [
       ['featureOffsets', props.featureOffsets],
       ['polygonOffsets', props.polygonOffsets],
       ['ringOffsets', props.ringOffsets]
     ] as const) {
       validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
+      validateCapacity(id, `${name}.length`, view.length, 1, MAXIMUM_CELL_COVER_COMPONENT_COUNT);
       if (view.length < 1) {
         throw new Error(`${id} ${name} requires a terminal entry`);
       }
     }
     this.featureCount = props.featureOffsets.length - 1;
+    if (props.family === 's2') {
+      validateCapacity(
+        id,
+        'featureCount',
+        this.featureCount,
+        0,
+        GPU_CELL_COVER_S2_MAXIMUM_FEATURE_COUNT
+      );
+      validateCapacity(
+        id,
+        'candidateCapacity',
+        props.candidateCapacity,
+        1,
+        GPU_CELL_COVER_S2_MAXIMUM_FRONTIER
+      );
+    }
     this.edgeSlabs =
+      props.family !== 's2' &&
       (props.edgeSlabs ??
         props.candidateCapacity * props.positions.length >= EDGE_SLAB_DEFAULT_WORK) &&
       props.ringOffsets.length >= 2 &&
@@ -319,7 +376,10 @@ export class GPUCellCover implements GPUCommandNodeProducer {
       }
     }
     validateCapacity(id, 'candidateCapacity', props.candidateCapacity);
-    if ((this.featureCount + 1) * (props.candidateCapacity + 1) >= 0xffffffff) {
+    if (
+      props.family !== 's2' &&
+      (this.featureCount + 1) * (props.candidateCapacity + 1) >= 0xffffffff
+    ) {
       throw new Error(`${id} (featureCount + 1) * (candidateCapacity + 1) must be below 2^32`);
     }
     this.candidateEnumeration = props.candidateEnumeration ?? 'auto';
@@ -328,6 +388,7 @@ export class GPUCellCover implements GPUCommandNodeProducer {
     }
     // Features without rings or vertices have no edges to trace and no candidates.
     this.scanline =
+      props.family !== 's2' &&
       (this.candidateEnumeration === 'scanline' ||
         (this.candidateEnumeration === 'auto' &&
           props.candidateCapacity >= CELL_COVER_SCANLINE_AUTO_MINIMUM_CANDIDATE_CAPACITY)) &&
@@ -342,7 +403,7 @@ export class GPUCellCover implements GPUCommandNodeProducer {
         CELL_COVER_SCANLINE_MAXIMUM_SLOT_CAPACITY,
         Math.max(16 * props.positions.length, 16384)
       );
-    if (props.scanlineSlotCapacity !== undefined || this.scanline) {
+    if (props.family !== 's2' && (props.scanlineSlotCapacity !== undefined || this.scanline)) {
       validateCapacity(
         id,
         'scanlineSlotCapacity',
@@ -355,6 +416,13 @@ export class GPUCellCover implements GPUCommandNodeProducer {
     const {status} = output;
     validateSinglePackedView(output.featureIds, ['uint32'], `${id} output.featureIds`);
     validateSinglePackedView(output.cells, ['uint32x2'], `${id} output.cells`);
+    validateCapacity(
+      id,
+      'output.cells components',
+      output.cells.length * 2,
+      1,
+      MAXIMUM_CELL_COVER_COMPONENT_COUNT
+    );
     if (output.cells.length !== output.featureIds.length) {
       throw new Error(`${id} output.cells and output.featureIds must have equal lengths`);
     }
@@ -383,6 +451,26 @@ export class GPUCellCover implements GPUCommandNodeProducer {
         }
       }
     }
+    validateCellDispatchOutputs(
+      id,
+      {featureIds: output.featureIds, cells: output.cells, core: output.core, ...status},
+      [
+        {featureIds: output.featureIds, cells: output.cells, core: output.core},
+        props.family === 's2'
+          ? {
+              count: status.count,
+              overflow: status.overflow,
+              requiredCount: status.requiredCount,
+              candidateOverflow: status.candidateOverflow,
+              candidateCount: status.candidateCount
+            }
+          : {candidateOverflow: status.candidateOverflow, candidateCount: status.candidateCount},
+        props.family === 's2'
+          ? {}
+          : {invalidCount: status.invalidCount, uncertainCount: status.uncertainCount},
+        {count: status.count, overflow: status.overflow, requiredCount: status.requiredCount}
+      ]
+    );
     validateGraphOutputsDisjointFromInputs(
       id,
       [
@@ -405,6 +493,10 @@ export class GPUCellCover implements GPUCommandNodeProducer {
         props.featureIds
       ]
     );
+    if (props.family === 's2') {
+      this.estimatedCommandNodeCount = getS2CellCoverCommandNodeCount(props);
+      validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
+    }
   }
 
   /** Returns count, candidate scan, test, accept scan, write, finalize and publish nodes. */
@@ -413,6 +505,79 @@ export class GPUCellCover implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, featureCount} = this;
     const {output, candidateCapacity} = props;
+    if (props.family === 's2') {
+      validateS2CellCoverBindings(graph, id, props);
+      return getS2CellCoverNodes(graph, id, props);
+    }
+    const scanlineSettings: CellCoverScanlineSettings | undefined = this.scanline
+      ? {slotCapacity: this.scanlineSlotCapacity, force: this.candidateEnumeration === 'scanline'}
+      : undefined;
+    const rangesLength = getCellCoverRangesLength(
+      featureCount,
+      scanlineSettings,
+      CELL_COVER_RANGE_STRIDE
+    );
+    const slabEntryMaximum = getGPUCellCoverMaximumEdgeSlabEntryCount(graph.device);
+    // Report the public capacity limits before the equivalent scratch byte ceilings.
+    validateCapacity(
+      id,
+      'candidateCapacity',
+      candidateCapacity,
+      1,
+      getGPUCellCoverMaximumCandidateCapacity(graph.device)
+    );
+    if (this.edgeSlabs) {
+      validateMaximumCount(
+        id,
+        'positions rows + edgeSlabEntryCapacity',
+        props.positions.length + (props.edgeSlabEntryCapacity ?? 1),
+        slabEntryMaximum
+      );
+    }
+    const slabEntryCapacity =
+      props.edgeSlabEntryCapacity ??
+      clamp(
+        slabEntryMaximum - props.positions.length,
+        1,
+        Math.max(4 * props.positions.length, 1024)
+      );
+    const scratch: [string, number][] = [
+      ['feature count scan scratch', (featureCount + 1) * 4],
+      ['candidate cells scratch', candidateCapacity * 8],
+      ['range scratch', rangesLength * 4],
+      ['total scratch', 4]
+    ];
+    if (scanlineSettings)
+      scratch.push(
+        ['scanline edge scratch', (props.positions.length + 1) * 4],
+        ['scanline demand scratch', featureCount * 8],
+        ['scanline event and sort scratch', this.scanlineSlotCapacity * 24]
+      );
+    if (this.edgeSlabs)
+      scratch.push(
+        ['edge slab parameters', Math.max(featureCount, 1) * 24],
+        ['edge slab owner scan', (featureCount + 1) * 4],
+        ['edge slab ring owners', Math.max(props.ringOffsets.length - 1, 1) * 4],
+        ['edge slab vertex owners', props.positions.length * 4],
+        ['edge slab offsets', (Math.floor(props.positions.length / 4) + 2) * 4],
+        ['edge slab entries', (props.positions.length + slabEntryCapacity) * 8]
+      );
+    validateCellDispatchBindings(
+      graph,
+      id,
+      {
+        positions: props.positions,
+        featureOffsets: props.featureOffsets,
+        polygonOffsets: props.polygonOffsets,
+        ringOffsets: props.ringOffsets,
+        featureIds: props.featureIds,
+        outputFeatureIds: output.featureIds,
+        outputCells: output.cells,
+        outputCore: output.core,
+        ...output.status
+      },
+      scratch
+    );
     validateGraphViewsBelongToGraph(id, graph, [
       props.positions,
       props.featureOffsets,
@@ -430,35 +595,8 @@ export class GPUCellCover implements GPUCommandNodeProducer {
       output.status.invalidCount,
       output.status.uncertainCount
     ]);
-    validateCapacity(
-      id,
-      'candidateCapacity',
-      candidateCapacity,
-      1,
-      getGPUCellCoverMaximumCandidateCapacity(graph.device)
-    );
-    const slabEntryMaximum = getGPUCellCoverMaximumEdgeSlabEntryCount(graph.device);
-    if (this.edgeSlabs) {
-      validateMaximumCount(
-        id,
-        'positions rows + edgeSlabEntryCapacity',
-        props.positions.length + (props.edgeSlabEntryCapacity ?? 1),
-        slabEntryMaximum
-      );
-    }
     const counts = createTransientView(graph, `${id}-counts`, 'uint32', featureCount + 1);
     const starts = createTransientView(graph, `${id}-starts`, 'uint32', featureCount + 1);
-    const scanlineSettings: CellCoverScanlineSettings | undefined = this.scanline
-      ? {
-          slotCapacity: this.scanlineSlotCapacity,
-          force: this.candidateEnumeration === 'scanline'
-        }
-      : undefined;
-    const rangesLength = getCellCoverRangesLength(
-      featureCount,
-      scanlineSettings,
-      CELL_COVER_RANGE_STRIDE
-    );
     validateMaximumCount(
       id,
       'range table words',
@@ -486,13 +624,7 @@ export class GPUCellCover implements GPUCommandNodeProducer {
           featureOffsets: props.featureOffsets,
           polygonOffsets: props.polygonOffsets,
           ringOffsets: props.ringOffsets,
-          entryCapacity:
-            props.edgeSlabEntryCapacity ??
-            clamp(
-              slabEntryMaximum - props.positions.length,
-              1,
-              Math.max(4 * props.positions.length, 1024)
-            ),
+          entryCapacity: slabEntryCapacity,
           gate: {counts, minimum: CELL_COVER_MINIMUM_SLAB_CANDIDATES}
         })
       : undefined;

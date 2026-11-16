@@ -65,9 +65,9 @@ it('dispatches one Gi* kernel per weights chunk and keeps the other nodes single
     '-chunk1',
     '-chunk2'
   ]);
-  for (const [index, rowStart] of [0, 25, 50].entries()) {
-    expect(giKernels[index].source).toContain(`const WEIGHTS_ROW_START: u32 = ${rowStart}u;`);
-  }
+  expect(new Set(giKernels.map(({source}) => source)).size).toBe(1);
+  for (const {source} of giKernels)
+    expect(source).toContain('let chunkRowStart = getChunkParameter(36u)');
   expect(kernels.filter(kernel => kernel.id.includes('mann-kendall'))).toHaveLength(1);
   expect(kernels.filter(kernel => kernel.id.includes('block-sums'))).toHaveLength(1);
   for (const {id, source} of kernels) {
@@ -86,6 +86,7 @@ it('keeps the whole-CSR kernel as a single dispatch without chunk constants', ()
 it('sizes each chunk kernel from its own rows', () => {
   const kernels = getKernels([40, 20]);
   const giKernels = kernels.filter(kernel => kernel.id.includes('gi-star'));
-  expect(giKernels[0].source).toContain('cell < WEIGHTS_ROW_START + 40u');
-  expect(giKernels[1].source).toContain('cell < WEIGHTS_ROW_START + 20u');
+  for (const {source} of giKernels)
+    expect(source).toContain('cell < chunkRowStart + chunkRowCount');
+  // Actual dispatch sizes are checked from node workloads in statistics-review.node.spec.ts.
 });

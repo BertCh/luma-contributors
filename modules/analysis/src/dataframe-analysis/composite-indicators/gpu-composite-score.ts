@@ -7,7 +7,8 @@ import {
   GPUSort,
   type GPUCommandGraph,
   type GPUCommandNode,
-  type GraphDataView
+  GraphDataView,
+  GraphVectorView
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
@@ -16,9 +17,11 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
+  validateMaximumCount,
+  validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
-  validateSinglePackedView
+  validateSinglePackedView,
+  getGraphViewChunks
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   GPU_COMPOSITE_SCORE_COLUMN_STATISTICS_STRIDE,
@@ -40,6 +43,16 @@ import {
   IS_FINITE_VALUE_WGSL,
   IS_NAN_BITS_WGSL
 } from '../../analysis-core/kernels/wgsl-common';
+
+import {
+  validateGraphChunkBindingRanges,
+  validateDisjointWritableViews
+} from '../../analysis-core/kernels/graph-chunk-dispatch';
+
+/** Flat indicator/rank addressing uses uint32. */
+const MAXIMUM_ELEMENT_COUNT = 0xffffffff;
+/** Published rank sorts accept at most 2^31 rows. */
+const MAXIMUM_RANK_ROW_COUNT = 0x80000000;
 
 const OPERATION = 'GPUCompositeScore';
 /** Rows summed in fixed order by one thread of a tile pass. */
@@ -181,6 +194,14 @@ export class GPUCompositeScore implements GPUCommandNodeProducer {
       throw new Error(`${id} indicators length must be a multiple of indicatorCount`);
     }
     this.rowCount = props.indicators.length / indicatorCount;
+    validateMaximumCount(id, 'indicators length', props.indicators.length, MAXIMUM_ELEMENT_COUNT);
+    if (props.enableRank)
+      validateMaximumCount(
+        id,
+        'values rows with enableRank',
+        this.rowCount,
+        MAXIMUM_RANK_ROW_COUNT
+      );
     if (this.rowCount < 1) {
       throw new Error(`${id} needs at least one row`);
     }
@@ -219,6 +240,54 @@ export class GPUCompositeScore implements GPUCommandNodeProducer {
     if ((output.loadings || output.principalComponentSummary) && !props.enablePrincipalComponent) {
       throw new Error(`${id} principal-component outputs need enablePrincipalComponent`);
     }
+    {
+      const writableOutputs: Readonly<Record<string, GraphDataView | GraphVectorView | undefined>> =
+        output;
+      const publicationPasses: readonly (readonly (
+        | GraphDataView
+        | GraphVectorView
+        | undefined
+      )[])[] = [
+        [output.loadings, output.principalComponentSummary],
+        [output.columnStatistics, output.loadings, output.score, output.scaled]
+      ];
+      // Model all logical writes as separate chunks; only the explicit publication groups coexist.
+      const writableWordChunks = Object.values(writableOutputs)
+        .flatMap(view => (view ? getGraphViewChunks(view) : []))
+        .map(
+          view =>
+            new GraphDataView(view.buffer, {
+              format: 'uint32',
+              length: (view.length * view.rowByteLength) / 4,
+              byteOffset: view.byteOffset,
+              byteStride: 4,
+              rowByteLength: 4
+            })
+        );
+      const writableWordCount = writableWordChunks.reduce(
+        (total, chunk) => total + chunk.length,
+        0
+      );
+      validateDisjointWritableViews(id, {
+        outputs: new GraphVectorView({
+          id: `${id}-writable-ranges`,
+          name: 'outputs',
+          format: 'uint32',
+          length: writableWordCount,
+          valueLength: writableWordCount,
+          stride: 1,
+          byteStride: 4,
+          rowByteLength: 4,
+          data: writableWordChunks
+        })
+      });
+      for (const fields of publicationPasses) {
+        validateDisjointWritableViews(
+          id,
+          Object.fromEntries(fields.map((view, index) => [String(index), view]))
+        );
+      }
+    }
     validateGraphOutputsDisjointFromInputs(
       id,
       lengths.map(([name]) => output[name]),
@@ -235,21 +304,51 @@ export class GPUCompositeScore implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id, rowCount} = this;
     const {output, indicatorCount, parameters, indicators} = props;
-    validateGraphViewsBelongToGraph(id, graph, [
+    validateGraphChunkBindingRanges(graph, id, {
       indicators,
-      props.mask,
+      mask: props.mask,
       parameters,
-      output.score,
-      output.scaled,
-      output.columnStatistics,
-      output.loadings,
-      output.principalComponentSummary
-    ]);
+      ...output
+    });
     const enableRank = Boolean(props.enableRank);
     const enablePrincipalComponent = Boolean(props.enablePrincipalComponent);
     const tileCount = Math.ceil(rowCount / TILE_ROWS);
     // Full correlation matrix for the principal component, otherwise only the variances.
     const momentCount = enablePrincipalComponent ? indicatorCount * indicatorCount : indicatorCount;
+    const maximumPairCount = enablePrincipalComponent
+      ? (indicatorCount * (indicatorCount + 1)) / 2
+      : indicatorCount;
+    for (const [name, length] of Object.entries({
+      rowValid: rowCount,
+      tileSums: tileCount * indicatorCount,
+      tileCounts: tileCount,
+      tileMoments: tileCount * maximumPairCount,
+      moments: momentCount,
+      columnStatistics: indicatorCount * GPU_COMPOSITE_SCORE_COLUMN_STATISTICS_STRIDE,
+      loadings: enablePrincipalComponent ? indicatorCount : 0,
+      principalComponentSummary: enablePrincipalComponent
+        ? GPU_COMPOSITE_SCORE_PRINCIPAL_COMPONENT_SUMMARY_LENGTH
+        : 0,
+      ranks: enableRank ? rowCount * indicatorCount : 0,
+      sortRows: enableRank ? rowCount : 0,
+      scalars: 1
+    })) {
+      if (length > 0) {
+        validateGPUStorageBindingByteLength(
+          graph.device,
+          id,
+          `${name} scratch`,
+          length * 4,
+          'reduce rows or indicatorCount'
+        );
+        validateMaximumCount(
+          id,
+          `${name} scratch byteLength`,
+          length * 4,
+          graph.device.limits.maxBufferSize
+        );
+      }
+    }
     const transient = <Format extends 'uint32' | 'float32'>(
       name: string,
       format: Format,
@@ -653,13 +752,14 @@ const LOADING_TIE_TOLERANCE: f32 = ${GPU_COMPOSITE_SCORE_LOADING_TIE_TOLERANCE};
         id: `${id}-score`,
         operation: OPERATION,
         variant: 'score',
+        // Retained statistics/loadings may share the packed writable score buffer.
         bindings: [
           read('indicators', indicators, 'f32'),
           read('rowValid', rowValid, 'u32'),
-          read('statistics', statistics, 'f32'),
+          write('statistics', statistics, 'f32'),
           read('params', parameters, 'f32'),
           ...(ranks ? [read('ranks', ranks, 'f32')] : []),
-          ...(loadings ? [read('loadings', loadings, 'f32')] : []),
+          ...(loadings ? [write('loadings', loadings, 'f32')] : []),
           ...(output.scaled ? [write('scaledOut', output.scaled, 'f32')] : []),
           write('score', output.score, 'f32')
         ],

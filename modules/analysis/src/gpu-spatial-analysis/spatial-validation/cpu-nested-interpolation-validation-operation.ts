@@ -316,7 +316,7 @@ function predictRow(
  * - All fits, scores and metrics use float64, rounding only the five returned arrays. Near score,
  *   neighbor or rank thresholds selection/status can differ; compare finite outputs with relative
  *   tolerance 5e-4 and absolute tolerance 2e-5 for values near zero.
- * - GPU work caps (256 rows, 16 outer folds/candidates, 8 inner folds, 32 neighbors) are removed.
+ * - GPU work caps (4096 tiled / 256 reference rows, 16 outer folds/candidates, 8 inner folds, 32 neighbors) are removed.
  *   The neighborCount hyperparameter still selects the nearest requested number, with row-index
  *   ties. uint32 output-length limits and the 2^24 exact float32 count limit remain.
  * - Matern uses the exact closed form rather than the GPU's short-lag truncated Taylor series;

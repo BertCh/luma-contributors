@@ -11,7 +11,14 @@ import {
 import {createGPULocalFrame} from '../../../src/analysis-core/contracts/local-frame';
 import type {GPUSpatialContext} from '../../../src/analysis-core/contracts/spatial-context';
 import {addDriveTimeCatchmentRecipe} from '../../../src/gpu-network/recipes/drive-time-catchment-recipe';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {
+  createNullWebGPUDevice,
+  getParsedKernelSources
+} from '../../utils/gpu-contributor-test-utils';
+import {GPUNetworkIsochrones} from '../../../src/gpu-network/network-isochrones/index';
+import {buildCSR, snapOracle} from '../network-accessibility/network-accessibility-oracle';
+import {getDriveTimeOracle} from './drive-time-oracle';
+import {auditWGSLModule} from '../../analysis-core/kernel-audit/kernel-audit-wgsl';
 
 let serial = 0;
 
@@ -194,4 +201,112 @@ it('drive-time recipe still schedules the exact scan above the unindexed snappin
   expect(snappings[1].pointCount * snappings[1].edgeCount).toBeGreaterThan(
     GPU_NETWORK_SNAPPING_MAXIMUM_UNINDEXED_WORK
   );
+});
+
+it('drive-time oracle preserves zero-cost junction access independently of one-way restrictions', () => {
+  for (const fixture of [
+    {
+      positions: [0, 0, 10, 0, 0, 10],
+      edges: [
+        [0, 1, 10],
+        [0, 2, 10]
+      ],
+      facilities: [0, 0],
+      demand: [0, 5, 0, 0],
+      expected: [5, 0]
+    },
+    {
+      positions: [10, 0, 0, 0, 0, 10],
+      edges: [
+        [0, 1, 10],
+        [2, 1, 10]
+      ],
+      facilities: [0, 5],
+      demand: [0, 0, 5, 0],
+      expected: [5, Infinity]
+    }
+  ]) {
+    const topology = buildCSR(3, fixture.edges as [number, number, number][]);
+    const options = {edgeCosts: topology.weights};
+    const facilities = snapOracle(
+      fixture.facilities,
+      fixture.positions,
+      topology.sources,
+      topology.neighbors,
+      options
+    );
+    const demand = snapOracle(
+      fixture.demand,
+      fixture.positions,
+      topology.sources,
+      topology.neighbors,
+      options
+    );
+    expect(getDriveTimeOracle(topology, 3, facilities, demand).demandTimes).toEqual(
+      fixture.expected
+    );
+  }
+});
+
+it.each([
+  false,
+  true
+])('drive-time raster source paths pass shader validation (labelled=%s)', labelled => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device, {id: 'drive-time-source-raster'});
+  const view = <Format extends 'uint32' | 'float32' | 'float32x2'>(
+    format: Format,
+    length: number
+  ) => createTransientView(graph, `source-raster-${serial++}`, format, length);
+  try {
+    const recipe = addDriveTimeCatchmentRecipe(graph, {
+      topology: {
+        offsets: view('uint32', 3),
+        neighbors: view('uint32', 2),
+        weights: view('float32', 2),
+        nodePositions: view('float32x2', 2)
+      },
+      facilities: view('float32x2', 2),
+      demand: view('float32x2', 2),
+      costBreaks: view('float32', 3),
+      isochrones: {
+        costBreaks: view('float32', 3),
+        parameters: view('float32', 12),
+        raster: {
+          width: 16,
+          height: 16,
+          output: {
+            values: view('float32', 256),
+            bandClasses: view('uint32', 256),
+            ...(labelled ? {pixelFacilities: view('uint32', 256)} : {})
+          }
+        }
+      }
+    });
+    const isochrones = recipe.contributors.find(
+      contributor => contributor instanceof GPUNetworkIsochrones
+    ) as GPUNetworkIsochrones;
+    const paths = isochrones.props.raster!.sourcePaths!;
+    expect(paths.costs.length).toBe(6);
+    expect(paths.topology.offsets.length).toBe(7);
+    expect(paths.topology.neighbors.length).toBe(4);
+    const kernels = getParsedKernelSources((graph as unknown as {nodes: unknown[]}).nodes);
+    const identifiers = [...kernels.keys()];
+    expect(identifiers.some(identifier => identifier.endsWith('-source-path-geometry'))).toBe(true);
+    const splat = identifiers.findIndex(identifier => identifier.endsWith('-source-paths-splat'));
+    const decode = identifiers.findIndex(identifier => identifier.endsWith('-decode'));
+    expect(splat).toBeGreaterThanOrEqual(0);
+    expect(decode).toBeGreaterThan(splat);
+    // wgsl_reflect parses reserved identifiers and constant non-finite bitcasts that Dawn
+    // rejects. Either error invalidates the submission, including the earlier routing outputs.
+    const sourcePathKernels = [...kernels].filter(([identifier]) =>
+      /-source-path(?:s-splat|-geometry|-topology)$/.test(identifier)
+    );
+    expect(sourcePathKernels).toHaveLength(3);
+    for (const [identifier, source] of sourcePathKernels) {
+      expect(auditWGSLModule(source), identifier).toEqual([]);
+    }
+  } finally {
+    device.destroy();
+  }
 });

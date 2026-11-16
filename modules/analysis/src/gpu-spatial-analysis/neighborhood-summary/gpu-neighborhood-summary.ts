@@ -30,6 +30,9 @@ import {type GPUSpatialWeights, validateGPUSpatialWeights} from '../spatial-weig
 import {isGPUSpatialWeightsRowStandardized} from '../spatial-weights/spatial-weights';
 import {SPATIAL_AUTOCORRELATION_FLOAT_WGSL} from '../spatial-autocorrelation/spatial-autocorrelation-kernels';
 
+import {validateSpatialStatisticsBindings} from '../spatial-weights/spatial-statistics-bindings';
+import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
+
 const OPERATION = 'GPUNeighborhoodSummary';
 
 /** Largest supported compile-time `maximumNeighbors` (members per row for the median). */
@@ -246,9 +249,10 @@ export class GPUNeighborhoodSummary implements GPUCommandNodeProducer {
       );
     }
     const focalWeight = props.focalWeight ?? 1;
-    if (!Number.isFinite(focalWeight) || focalWeight < 0) {
-      throw new Error(`${id} focalWeight must be finite and non-negative`);
+    if (!Number.isFinite(Math.fround(focalWeight)) || focalWeight < 0) {
+      throw new Error(`${id} focalWeight must round to a finite non-negative float32`);
     }
+    validateDisjointWritableViews(id, {...output, status: undefined, ...output.status});
     validateGraphOutputsDisjointFromInputs(
       id,
       [output.table, overflow, output.modes, output.entropy],
@@ -269,6 +273,7 @@ export class GPUNeighborhoodSummary implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
+    validateSpatialStatisticsBindings(graph, id, props);
     const {weights, mask, output} = props;
     validateGraphViewsBelongToGraph(id, graph, [
       weights.offsets,

@@ -4,6 +4,8 @@
 
 import {
   createTransientView,
+  getViewBindingRange,
+  doGraphDataViewsOverlap,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -16,15 +18,23 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
+  validateMaximumCount,
+  validateGPUStorageBindingByteLength,
+  validateCommandNodeBudget,
+  getGPUGridIndexMaximumCellCount,
   validateRequirement,
   validateSinglePackedView,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPUUncertaintyStatusPort} from '../../analysis-core/contracts/status';
-import {IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {GPUNeighborSearch} from '../neighbor-search/gpu-neighbor-search';
 import {createNeighborSearchDerivedParameterNodes} from '../neighbor-search/neighbor-search-derived-parameters';
+import {
+  ISLAND_ATTACHMENT_NEAREST_DECLARATIONS,
+  createIslandAttachmentFallbackNodes,
+  getIslandAttachmentFallbackBatchCount
+} from './island-attachment-fallback';
 import {getSlotGroupingNodes} from './slot-grouping';
 import {createCSRStages} from './spatial-weights-algebra-wgsl';
 import {
@@ -36,6 +46,9 @@ import {
   getGPUSpatialWeightsViews,
   getGPUSpatialWeightsStatusViews
 } from './spatial-weights';
+
+import {validateSpatialStatisticsBindings} from './spatial-statistics-bindings';
+import {getCoreDefaultBuffer} from '../../analysis-core/network-topology';
 
 /**
  * Largest row count for which {@link GPUIslandAttachmentProps.nearestSearch} `'auto'` scans every
@@ -55,17 +68,17 @@ export type GPUIslandAttachmentNearestSearch = 'auto' | 'scan' | 'grid';
  */
 const ISLAND_ATTACHMENT_CANDIDATE_COUNT = 16;
 
-/** WebGPU's portable workgroup size; one workgroup resolves each uncertain island. */
-const ISLAND_ATTACHMENT_WORKGROUP_SIZE = 256;
-
-/** Caps each fallback lane's serial work, independently of the actual representative count. */
-const ISLAND_ATTACHMENT_MAXIMUM_REPRESENTATIVES_PER_LANE = 256;
-
-/** Existing CSR row limit, also within the cooperative fallback's 256-by-256 coverage. */
-const ISLAND_ATTACHMENT_MAXIMUM_ROW_COUNT = Math.min(
-  65535,
-  ISLAND_ATTACHMENT_WORKGROUP_SIZE * ISLAND_ATTACHMENT_MAXIMUM_REPRESENTATIVES_PER_LANE
-);
+/** uint32 CSR offsets and the missing-row sentinel reserve the final row-count word. */
+const ISLAND_ATTACHMENT_MAXIMUM_ROW_COUNT = 0xfffffffe;
+/** CSR counts and candidate slot addressing must fit uint32 without wrapping their scans. */
+const ISLAND_ATTACHMENT_MAXIMUM_SLOT_COUNT = 0xffffffff;
+/** Retains the old reference scan coverage; large inputs must use the indexed route. */
+const ISLAND_ATTACHMENT_SCAN_MAXIMUM_ROW_COUNT = 65535;
+/**
+ * Conservative allowance for published grid builds, compaction, scans and radix sort: at most
+ * 32 radix bits and logarithmic scan levels in the uint32 row space. Node specs check the bound.
+ */
+const ISLAND_ATTACHMENT_PRIMITIVE_NODE_ALLOWANCE = 4096;
 
 /**
  * Relative margin by which the farthest listed candidate must exceed the chosen one before the
@@ -87,7 +100,7 @@ export type GPUIslandAttachmentProps = {
    * ties to the lowest row), so results do not depend on it, only speed. `'scan'` tests every
    * representative per island; `'grid'` takes the nearest candidates from a `GPUNeighborSearch`
    * grid; `'auto'` scans up to {@link GPU_ISLAND_ATTACHMENT_SCAN_MAXIMUM_ROW_COUNT} rows and uses
-   * the grid above.
+   * the grid above. The explicit scan retains its reference limit of 65,535 rows.
    */
   nearestSearch?: GPUIslandAttachmentNearestSearch;
   output: GPUSpatialWeightsOutput & {
@@ -111,7 +124,7 @@ export type GPUIslandAttachmentProps = {
  * Selection is simultaneous against the ORIGINAL graph, so two islands can attach to each other.
  * Output is sorted, unique and deterministic under truncation. Never silently row-standardizes.
  * Nonfinite representatives cannot acquire an attachment, but existing edges are preserved.
- * With `nearestSearch: 'scan'` each island scans every representative for its nearest one. With
+ * With `nearestSearch: 'scan'` (at most 65,535 rows) each island scans every representative. With
  * `'grid'` (and `'auto'` above {@link GPU_ISLAND_ATTACHMENT_SCAN_MAXIMUM_ROW_COUNT} rows) a
  * `GPUNeighborSearch` k-nearest cross join over a grid lists the 16 nearest representatives of each
  * island by float32 `dx^2 + dy^2`, ties to the lowest row; the island's own row is skipped, and the
@@ -120,13 +133,14 @@ export type GPUIslandAttachmentProps = {
  * is farther than the chosen one by more than a relative 1e-5 (the two rankings can differ only by
  * float32 rounding). Otherwise, for example when 16 or more representatives are tied or
  * coincident at the nearest distance, or when coordinates are so large that the bounds or squared
- * distances overflow, a dedicated pass gives that island one 256-lane workgroup. Each lane tests
- * at most 256 representatives, then eight tree-reduction steps choose the nearest with the scan's
- * scaled comparison, breaking ties by the lowest row. The construction-time limit of 65,535 rows
- * fits within that fixed 256-by-256 coverage, so the fallback always completes: there is no search
- * budget to exhaust and no invocation scans all representatives. `output.status.uncertainCount`,
- * when given, counts islands sent to this pass (0 with `'scan'`). A count near the island count
- * means the grid's candidate list rarely helps, but does not increase the per-lane work limit.
+ * distances overflow, a dedicated pass compacts the unresolved islands and gives each one a
+ * 256-lane workgroup. Representatives are processed in batches of at most 65,536; each lane
+ * tests at most 256 per dispatch and a tree reduction retains the best across batches. Query
+ * dispatches are bounded by the device's 3D dispatch layout and uint32 invocation space. GPU
+ * cursors supply batch bases, so shaders and pipelines do not grow with the number of batches.
+ * The indexed route is bounded by uint32 CSR indexing and device storage bindings, including
+ * 16 candidate slots per row. `output.status.uncertainCount`, when given, counts islands sent
+ * to this pass (0 with `'scan'`). Degenerate inputs can require exhaustive work across batches.
  * `nearestSearch` and `reciprocal` are compile-time props; there are no per-frame scalar props.
  * The output rows then merge the original row, its attachment and the islands attached to it
  * (grouped by a stable sort), so rows that are not islands cost their own degree rather than a
@@ -135,6 +149,7 @@ export type GPUIslandAttachmentProps = {
 export class GPUIslandAttachment implements GPUCommandNodeProducer {
   readonly id: string;
   readonly outputWeights: GPUSpatialWeights;
+  readonly estimatedCommandNodeCount: number;
   constructor(readonly props: GPUIslandAttachmentProps) {
     this.id = props.id ?? 'island-attachment';
     const nearestSearch = props.nearestSearch ?? 'auto';
@@ -145,6 +160,37 @@ export class GPUIslandAttachment implements GPUCommandNodeProducer {
     );
     const rows = validateGPUSpatialWeights(this.id, props.weights);
     validateCapacity(this.id, 'rows', rows, 1, ISLAND_ATTACHMENT_MAXIMUM_ROW_COUNT);
+    if (nearestSearch === 'scan') {
+      validateMaximumCount(
+        this.id,
+        'rows for nearestSearch scan',
+        rows,
+        ISLAND_ATTACHMENT_SCAN_MAXIMUM_ROW_COUNT
+      );
+    }
+    const useGrid =
+      nearestSearch === 'grid' ||
+      (nearestSearch === 'auto' && rows > GPU_ISLAND_ATTACHMENT_SCAN_MAXIMUM_ROW_COUNT);
+    if (useGrid) {
+      validateMaximumCount(
+        this.id,
+        'candidate slots (rows * 16)',
+        rows * ISLAND_ATTACHMENT_CANDIDATE_COUNT,
+        ISLAND_ATTACHMENT_MAXIMUM_SLOT_COUNT
+      );
+    }
+    // Every island adds at most one outward edge and one reciprocal edge. This upper bound
+    // keeps all CSR prefix sums exact and monotone even when caller output capacity is smaller.
+    validateMaximumCount(
+      this.id,
+      'maximum output edge count',
+      props.weights.neighbors.length + rows * (props.reciprocal !== false ? 2 : 1),
+      ISLAND_ATTACHMENT_MAXIMUM_SLOT_COUNT
+    );
+    this.estimatedCommandNodeCount =
+      ISLAND_ATTACHMENT_PRIMITIVE_NODE_ALLOWANCE +
+      (useGrid ? 3 * getIslandAttachmentFallbackBatchCount(rows) : 0);
+    validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
     if (
       validateGPUSpatialWeightsOutput(this.id, props.output) !== rows ||
       props.positions.length !== rows ||
@@ -153,9 +199,9 @@ export class GPUIslandAttachment implements GPUCommandNodeProducer {
     )
       throw new Error(`${this.id}: shape mismatch`);
     if (props.output.distances) throw new Error(`${this.id}: distances output is not supported`);
-    validateSinglePackedView(props.positions, ['float32x2'], this.id);
-    validateSinglePackedView(props.output.attachment, ['uint32'], this.id);
-    validateSinglePackedView(props.output.added, ['uint32'], this.id);
+    validateSinglePackedView(props.positions, ['float32x2'], `${this.id} positions`);
+    validateSinglePackedView(props.output.attachment, ['uint32'], `${this.id} output.attachment`);
+    validateSinglePackedView(props.output.added, ['uint32'], `${this.id} output.added`);
     validateGraphOutputsDisjointFromInputs(
       this.id,
       [
@@ -167,6 +213,88 @@ export class GPUIslandAttachment implements GPUCommandNodeProducer {
       ],
       [...getGPUSpatialWeightsViews(props.weights), props.positions]
     );
+    const outputs = [
+      ...getGPUSpatialWeightsViews(props.output),
+      ...getGPUSpatialWeightsStatusViews(props.output),
+      props.output.attachment,
+      props.output.added,
+      props.output.status.uncertainCount
+    ].filter((view): view is GraphDataView<'uint32'> | GraphDataView<'float32'> => Boolean(view));
+    if (props.output.status.uncertainCount) {
+      validateSinglePackedView(
+        props.output.status.uncertainCount,
+        ['uint32'],
+        `${this.id} output.status.uncertainCount`
+      );
+      validateCapacity(
+        this.id,
+        'output.status.uncertainCount length',
+        props.output.status.uncertainCount.length,
+        1,
+        1
+      );
+    }
+    for (let first = 0; first < outputs.length; first++) {
+      for (let second = first + 1; second < outputs.length; second++) {
+        validateRequirement(
+          this.id,
+          !doGraphDataViewsOverlap(outputs[first], outputs[second]),
+          'output writable byte ranges must not overlap'
+        );
+      }
+    }
+    // CSR offsets/status share one write pass. Emit passes read offsets and attachments while
+    // writing one attribute. WebGPU forbids mixed storage access to one physical buffer even
+    // for disjoint binding ranges; co-bound writable ranges only need aligned separation.
+    const passBindings: readonly (readonly (readonly [GraphDataView | undefined, boolean])[])[] = [
+      [
+        [props.output.offsets, true],
+        [props.output.status.overflow, true],
+        [props.output.status.requiredCount, true]
+      ],
+      ...[props.output.neighbors, props.output.weights, props.output.added].map(
+        view =>
+          [
+            [props.output.offsets, false],
+            [props.output.attachment, false],
+            [view, true]
+          ] as const
+      )
+    ];
+    for (const bindings of passBindings) {
+      for (let first = 0; first < bindings.length; first++) {
+        for (let second = first + 1; second < bindings.length; second++) {
+          const [firstView, firstWritable] = bindings[first];
+          const [secondView, secondWritable] = bindings[second];
+          if (!firstView || !secondView || !(firstWritable || secondWritable)) continue;
+          const firstBuffer = firstView.buffer.defaultBuffer
+            ? getCoreDefaultBuffer(firstView.buffer.defaultBuffer)
+            : firstView.buffer;
+          const secondBuffer = secondView.buffer.defaultBuffer
+            ? getCoreDefaultBuffer(secondView.buffer.defaultBuffer)
+            : secondView.buffer;
+          if (firstBuffer !== secondBuffer) continue;
+          validateRequirement(
+            this.id,
+            firstWritable === secondWritable,
+            'output read-only and writable bindings must use separate physical buffers'
+          );
+          validateRequirement(
+            this.id,
+            firstView.buffer === secondView.buffer,
+            'output views share a physical buffer: import it once and use offset views'
+          );
+          const firstRange = getViewBindingRange(firstView);
+          const secondRange = getViewBindingRange(secondView);
+          validateRequirement(
+            this.id,
+            firstRange.offset + firstRange.size <= secondRange.offset ||
+              secondRange.offset + secondRange.size <= firstRange.offset,
+            'output aligned binding ranges used together must not overlap'
+          );
+        }
+      }
+    }
     this.outputWeights = describeGPUSpatialWeights(props.output, {
       information: {
         rowCount: rows,
@@ -185,8 +313,71 @@ export class GPUIslandAttachment implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
+    validateSpatialStatisticsBindings(graph, id, props);
     const rows = props.positions.length;
     const capacity = props.output.neighbors.length;
+    // Check every aligned caller binding and all derived scratch before declaring graph resources.
+    const views: readonly (readonly [string, GraphDataView | undefined])[] = [
+      ['weights.offsets', props.weights.offsets],
+      ['weights.neighbors', props.weights.neighbors],
+      ['weights.weights', props.weights.weights],
+      ['weights.distances', props.weights.distances],
+      ['positions', props.positions],
+      ['output.offsets', props.output.offsets],
+      ['output.neighbors', props.output.neighbors],
+      ['output.weights', props.output.weights],
+      ['output.distances', props.output.distances],
+      ['output.attachment', props.output.attachment],
+      ['output.added', props.output.added],
+      ['output.status.overflow', props.output.status.overflow],
+      ['output.status.requiredCount', props.output.status.requiredCount],
+      ['output.status.candidateOverflow', props.output.status.candidateOverflow],
+      ['output.status.uncertainCount', props.output.status.uncertainCount]
+    ];
+    for (const [name, view] of views) {
+      if (view)
+        validateGPUStorageBindingByteLength(
+          graph.device,
+          id,
+          name,
+          getViewBindingRange(view).size,
+          'reduce rows or output capacity'
+        );
+    }
+    const nearestSearch = props.nearestSearch ?? 'auto';
+    const useGrid =
+      nearestSearch === 'grid' ||
+      (nearestSearch === 'auto' && rows > GPU_ISLAND_ATTACHMENT_SCAN_MAXIMUM_ROW_COUNT);
+    const scratch = [
+      ['CSR counts and starts', rows * 4],
+      ['CSR scan total', 4]
+    ] as [string, number][];
+    if (props.reciprocal !== false) {
+      scratch.push(['inverse offsets', (rows + 1) * 4], ['inverse sort rows', rows * 4]);
+      if (rows > 256) scratch.push(['inverse radix histograms', Math.ceil(rows / 256) * 16 * 4]);
+    }
+    if (useGrid) {
+      const columns = Math.max(1, Math.ceil(Math.sqrt(rows / 2)));
+      validateMaximumCount(
+        id,
+        'gridSize cells',
+        columns * columns,
+        getGPUGridIndexMaximumCellCount(graph.device)
+      );
+      scratch.push(
+        ['candidate lists and outputs', rows * ISLAND_ATTACHMENT_CANDIDATE_COUNT * 4],
+        ['neighbor records', rows * 3 * 4],
+        ['neighbor grid positions', rows * 2 * 4],
+        ['neighbor grid offsets', (columns * columns + 1) * 4],
+        ['neighbor bounds partials', Math.min(256, Math.ceil(rows / 4096)) * 16],
+        ['fallback cursor', 20],
+        ['fallback dispatch', 12],
+        ['neighbor parameters', 12 * 4]
+      );
+    }
+    for (const [name, byteLength] of scratch) {
+      validateGPUStorageBindingByteLength(graph.device, id, name, byteLength, 'reduce rows');
+    }
     const binding = (
       name: string,
       view: GraphDataView,
@@ -219,21 +410,10 @@ export class GPUIslandAttachment implements GPUCommandNodeProducer {
       props.output.status.uncertainCount
     ]);
     const reciprocal = props.reciprocal !== false;
-    const nearestSearch = props.nearestSearch ?? 'auto';
-    const useGrid =
-      nearestSearch === 'grid' ||
-      (nearestSearch === 'auto' && rows > GPU_ISLAND_ATTACHMENT_SCAN_MAXIMUM_ROW_COUNT);
     // Halving before subtraction prevents overflow for opposite finite coordinates. Compare both
     // distances at their shared scale so squared norms neither overflow nor collapse to zero.
     // Keep the scale multiplier normal even on devices that flush subnormal factors.
-    const nearestDeclarations = `${IS_FINITE_BITS_WGSL}
-const NO_ATTACHMENT: u32 = 0xffffffffu;
-fn isCloserDifference(difference: vec2<f32>, bestDifference: vec2<f32>, isFirst: bool) -> bool {
- let scale = max(max(abs(difference.x), abs(difference.y)), max(abs(bestDifference.x), abs(bestDifference.y)));
- var closer = isFirst;
- if (scale > 0.0) { let exponent = clamp(i32((bitcast<u32>(scale) >> 23u) & 255u) - 127, -120, 120); let normalizer = bitcast<f32>(u32(127 - exponent) << 23u); let normalized = difference * normalizer; let bestNormalized = bestDifference * normalizer; closer = closer || dot(normalized, normalized) < dot(bestNormalized, bestNormalized); }
- return closer;
-}`;
+    const nearestDeclarations = ISLAND_ATTACHMENT_NEAREST_DECLARATIONS;
     const scanWGSL = `for (var other = 0u; other < ${rows}u; other++) { let candidate = vec2<f32>(positions[positionsOffset + 2u * other], positions[positionsOffset + 2u * other + 1u]);
  if (other != index && isFiniteBits(candidate.x) && isFiniteBits(candidate.y)) {
  let difference = position * 0.5 - candidate * 0.5;
@@ -337,7 +517,6 @@ attachment[attachmentOffset + index] = nearest;`,
             status: {overflow: createTransientView(graph, `${id}-index-overflow`, 'uint32', 1)}
           }
         }).getCommandNodes(graph),
-        ...clearUncertainCount(),
         node(
           'nearest',
           rows,
@@ -348,10 +527,7 @@ attachment[attachmentOffset + index] = nearest;`,
             binding('candidateNeighbors', candidateNeighbors),
             binding('candidateDistances', candidateDistances, 'read', 'f32'),
             binding('unresolved', unresolved, 'read_write'),
-            binding('attachment', props.output.attachment, 'read_write'),
-            ...(uncertainCount
-              ? [binding('uncertainCount', uncertainCount, 'read_write', 'atomic<u32>')]
-              : [])
+            binding('attachment', props.output.attachment, 'read_write')
           ],
           `unresolved[unresolvedOffset + index] = 0u;
 var nearest = NO_ATTACHMENT; var bestDifference = vec2<f32>(0.0);
@@ -378,7 +554,6 @@ if (offsets[offsetsOffset + index] == offsets[offsetsOffset + index + 1u] && isF
   proven = isFiniteBits(chosenDistance) && isFiniteBits(farthest) && farthest > chosenDistance * ${ISLAND_ATTACHMENT_PROOF_MARGIN};
  }
  if (!proven) {
-  ${uncertainCount ? 'atomicAdd(&uncertainCount[uncertainCountOffset], 1u);' : ''}
   unresolved[unresolvedOffset + index] = 1u;
   nearest = NO_ATTACHMENT;
  }
@@ -386,69 +561,13 @@ if (offsets[offsetsOffset + index] == offsets[offsetsOffset + index + 1u] && isF
 attachment[attachmentOffset + index] = nearest;`,
           nearestDeclarations
         ),
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-resolve-unproven`,
-          operation: 'GPUIslandAttachment',
-          variant: 'resolve-unproven',
-          invocationCount: rows * ISLAND_ATTACHMENT_WORKGROUP_SIZE,
-          workgroupSize: ISLAND_ATTACHMENT_WORKGROUP_SIZE,
-          guardIndex: false,
-          bindings: [
-            binding('positions', props.positions, 'read', 'f32'),
-            binding('unresolved', unresolved),
-            binding('attachment', props.output.attachment, 'read_write')
-          ],
-          declarations: `${nearestDeclarations}
-const ROWS: u32 = ${rows}u;
-const WORKGROUP_SIZE: u32 = ${ISLAND_ATTACHMENT_WORKGROUP_SIZE}u;
-const MAXIMUM_REPRESENTATIVES_PER_LANE: u32 = ${ISLAND_ATTACHMENT_MAXIMUM_REPRESENTATIVES_PER_LANE}u;
-var<workgroup> nearestRows: array<u32, ${ISLAND_ATTACHMENT_WORKGROUP_SIZE}>;
-var<workgroup> nearestDifferences: array<vec2<f32>, ${ISLAND_ATTACHMENT_WORKGROUP_SIZE}>;`,
-          // All lanes, including unused lanes and padded workgroups, reach every barrier.
-          body: `let island = workgroupIndex;
-let lane = localInvocationIndex;
-var isUnresolved = false;
-var position = vec2<f32>(0.0);
-if (island < ROWS) {
- isUnresolved = unresolved[unresolvedOffset + island] != 0u;
- position = vec2<f32>(positions[positionsOffset + 2u * island], positions[positionsOffset + 2u * island + 1u]);
-}
-var nearest = NO_ATTACHMENT;
-var bestDifference = vec2<f32>(0.0);
-if (isUnresolved) {
- for (var round = 0u; round < MAXIMUM_REPRESENTATIVES_PER_LANE; round++) {
-  let other = round * WORKGROUP_SIZE + lane;
-  if (other >= ROWS) { break; }
-  let candidate = vec2<f32>(positions[positionsOffset + 2u * other], positions[positionsOffset + 2u * other + 1u]);
-  if (other != island && isFiniteBits(candidate.x) && isFiniteBits(candidate.y)) {
-   let difference = position * 0.5 - candidate * 0.5;
-   if (isCloserDifference(difference, bestDifference, nearest == NO_ATTACHMENT)) {
-    nearest = other; bestDifference = difference;
-   }
-  }
- }
-}
-nearestRows[lane] = nearest;
-nearestDifferences[lane] = bestDifference;
-workgroupBarrier();
-for (var stride = WORKGROUP_SIZE / 2u; stride > 0u; stride /= 2u) {
- if (lane < stride) {
-  let other = nearestRows[lane + stride];
-  let difference = nearestDifferences[lane + stride];
-  nearest = nearestRows[lane];
-  bestDifference = nearestDifferences[lane];
-  if (other != NO_ATTACHMENT &&
-      (isCloserDifference(difference, bestDifference, nearest == NO_ATTACHMENT) ||
-       (other < nearest && !isCloserDifference(bestDifference, difference, false)))) {
-   nearestRows[lane] = other;
-   nearestDifferences[lane] = difference;
-  }
- }
- workgroupBarrier();
-}
-if (isUnresolved && lane == 0u) {
- attachment[attachmentOffset + island] = nearestRows[0];
-}`
+        ...createIslandAttachmentFallbackNodes(graph, {
+          id,
+          positions: props.positions,
+          unresolved,
+          attachment: props.output.attachment,
+          uncertainCount,
+          nearestDeclarations
         })
       );
     }

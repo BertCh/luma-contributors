@@ -6,7 +6,8 @@ import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {validateRasterGrid} from '../raster-band-utils';
 import {
   getMaskedRegistrationNodes,
-  validateMaskedRegistrationProps
+  validateMaskedRegistrationProps,
+  validateRegistrationWritableViews
 } from './raster-masked-registration';
 import {
   GPUFFT2D,
@@ -28,9 +29,7 @@ import {
   validateCapacity,
   validateSinglePackedView,
   validatePowerOfTwo,
-  validateRequirement,
-  validateGraphViewsBelongToGraph,
-  validateGraphOutputsDisjointFromInputs
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   RASTER_FINITE_WGSL,
@@ -38,6 +37,11 @@ import {
   createRasterCountNodes,
   rasterBinding
 } from './raster-kernel-utils';
+
+import {
+  validateRasterStorageBindings,
+  validateRasterRegistrationFFT
+} from './raster-binding-validation';
 
 export {MAXIMUM_MASKED_REGISTRATION_DIMENSION} from './raster-masked-registration';
 
@@ -124,6 +128,8 @@ function createRegistrationKernel<Parameters>(
  * including ambiguous ties (1); invalid input has a NaN ratio.
  * Masked-linear mode instead uses padded normalized cross-correlation and bilinear
  * subpixel refinement, accepts dimensions 2–512, and returns status 3 for inadequate support.
+ * Masked means and paired moments use fixed-order float32 trees (score tolerance 1e-4 against
+ * float64); support is reduced as uint32.
  */
 export class GPURasterRegistration implements GPUCommandNodeProducer {
   readonly id: string;
@@ -190,11 +196,7 @@ export class GPURasterRegistration implements GPUCommandNodeProducer {
       validateSinglePackedView(view, [view.format], this.id);
       validateRequirement(this.id, view.length > 0, 'input and output views must not be empty');
     }
-    const outputs = Object.values(props.output).filter(view => view !== undefined);
-    validateGraphOutputsDisjointFromInputs(this.id, outputs, [props.reference, props.moving]);
-    outputs.forEach((view, index) =>
-      validateGraphOutputsDisjointFromInputs(this.id, [view], outputs.slice(index + 1))
-    );
+    validateRegistrationWritableViews(props, this.id);
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
@@ -205,11 +207,25 @@ export class GPURasterRegistration implements GPUCommandNodeProducer {
     const upsample = props.upsampleFactor ?? 20;
     const radius = Math.ceil(upsample / 2);
     const candidates = radius * 2 + 1;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.reference,
-      props.moving,
-      ...Object.values(props.output).filter(view => view !== undefined)
-    ]);
+    validateRasterStorageBindings(
+      graph,
+      id,
+      [
+        props.reference,
+        props.moving,
+        ...Object.values(props.output).filter(view => view !== undefined)
+      ],
+      {
+        'complex FFT fields': count * 8,
+        'spectral scale and argmax indices': 4,
+        'coarse shift': 8,
+        'horizontal refinement': candidates * props.grid.height * 8,
+        'refined scores': candidates * candidates * 4,
+        'input screens': 16,
+        'argmax group values and indices': Math.ceil(count / 256) * 4
+      }
+    );
+    validateRasterRegistrationFFT(graph, id, props.grid.width, props.grid.height);
     const reference = createTransientView(graph, `${id}-reference`, 'float32x2', count);
     const moving = createTransientView(graph, `${id}-moving`, 'float32x2', count);
     const referenceSpectrum = createTransientView(

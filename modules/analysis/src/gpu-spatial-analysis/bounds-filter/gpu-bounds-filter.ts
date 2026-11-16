@@ -9,24 +9,37 @@ import {
 } from '../../analysis-core/contracts/spatial-context';
 import {
   createTransientView,
-  GPUVisibilityWorkflow,
+  type GraphVectorView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import type {GPUCompactOutput} from '../../analysis-core/kernels/gpu-contributor-types';
+import type {
+  GPUCompactOutput,
+  GPUUint32Rows
+} from '../../analysis-core/kernels/gpu-contributor-types';
 import {
+  getGraphViewChunks,
+  validateCapacity,
+  validateCommandNodeBudget,
+  validateGraphViewTopology,
   validateCompactOutput,
-  validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
-  validateSinglePackedView
+  validateSinglePackedView,
+  validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {createPublishNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
-  createPublishNode,
-  createWGSLKernelNode
-} from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
+  planGraphChunkDispatch,
+  validateGraphChunkBindingRanges
+} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateSpatialJoinOutputGroups} from '../spatial-join/spatial-join-output-validation';
+import {createBoundsFilterMaskNode} from './bounds-filter-mask-node';
+import {
+  getBoundsFilterCompactionNodes,
+  planBoundsFilterCompaction
+} from './bounds-filter-compaction';
+import {validateGraphChunkGroupKernelSupport} from '../../analysis-core/kernels/graph-chunk-groups';
 
 /** Planar coordinates, or longitude/latitude used as plain coordinates (no metric). */
 const SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = Object.freeze({
@@ -35,6 +48,14 @@ const SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = Object.freeze({
 });
 
 const OPERATION = 'GPUBoundsFilter';
+
+/** Identity IDs and the required count are uint32, including carries between chunks. */
+const GPU_BOUNDS_FILTER_MAXIMUM_ROWS = 0xffffffff;
+/**
+ * Upper bound per chunk (plus one fixed allowance) for classify, bit-count and scatter,
+ * plus the global hierarchical scan nodes: a uint32 row count needs at most four 256-row scan levels.
+ */
+const GPU_BOUNDS_FILTER_COMMAND_NODE_ALLOWANCE = 32;
 
 /** Number of float32 elements of the per-frame box: `[minX, minY, maxX, maxY]`. */
 export const GPU_BOUNDS_FILTER_PARAMETER_LENGTH = 4;
@@ -98,18 +119,19 @@ export function getGPUBoundsFilterParameterValues(
 }
 
 /** Caller-owned outputs of {@link GPUBoundsFilter}. */
-export type GPUBoundsFilterOutput = GPUCompactOutput & {
-  /** Optional canonical 0/1 mask of accepted features, one row per feature. */
-  outputMask?: GraphDataView<'uint32'>;
-};
+export type GPUBoundsFilterOutput<MaskRows extends GPUUint32Rows = GraphDataView<'uint32'>> =
+  GPUCompactOutput & {
+    /** Optional canonical 0/1 mask of accepted features, with the same chunk topology as `bounds`. */
+    outputMask?: MaskRows;
+  };
 
 /**
  * Properties for {@link GPUBoundsFilter}.
  *
- * Per-frame (no recompile): the box and every input buffer. Compile-time: view lengths, `mode`,
+ * Per-frame (no recompile): the box and every input buffer. Compile-time: view lengths and chunking, `mode`,
  * `output.ids.length` and which optional views are present.
  */
-export type GPUBoundsFilterProps = {
+export type GPUBoundsFilterProps<MaskRows extends GPUUint32Rows = GraphDataView<'uint32'>> = {
   /** Prefix for generated node and transient IDs. Defaults to `'bounds-filter'`. */
   id?: string;
   /**
@@ -120,17 +142,17 @@ export type GPUBoundsFilterProps = {
    */
   spatialContext?: GPUSpatialContext;
   /**
-   * Packed per-feature bounds `[minX, minY, maxX, maxY]`, for example `GPUGeometryMeasures`
+   * Packed or chunked per-feature bounds `[minX, minY, maxX, maxY]`, for example `GPUGeometryMeasures`
    * bounds. Rows with a non-finite component (NaN or infinite, the empty-geometry marker) are
    * rejected in every mode.
    */
-  bounds: GraphDataView<'float32x4'>;
+  bounds: GraphDataView<'float32x4'> | GraphVectorView<'float32x4'>;
   /** Per-frame box: a packed float32 view written with {@link getGPUBoundsFilterParameterValues}. */
   parameters: GraphDataView<'float32'>;
   /** Relation tested between each feature's bounds and the box. Defaults to `'intersects'`. */
   mode?: GPUBoundsFilterMode;
   /** Caller-owned bounded result of accepted feature rows, ascending. `ids.length` is the capacity. */
-  output: GPUBoundsFilterOutput;
+  output: GPUBoundsFilterOutput<MaskRows>;
 };
 
 /**
@@ -145,22 +167,35 @@ export type GPUBoundsFilterProps = {
  * overflow flag. The box is read per frame, so a viewport or slider moves without recompiling.
  * Comparisons are closed (borders count) and exact in f32 (no arithmetic).
  *
+ * Bounds may be a `GraphVectorView` of packed chunks; an optional `outputMask` must have the
+ * same topology. One classify kernel runs per nonempty chunk. Compact IDs remain packed and
+ * ascending in global source-row order across chunks, including the retained prefix on overflow.
+ * Each chunk stores one bit per bound. A global scan of one count per 256 bounds provides
+ * stable compact positions; no scratch allocation grows as one uint32 per source row. Each
+ * scratch chunk fits the device binding and buffer limits. The packed output must fit one binding.
+ * Runtime chunk settings reuse classify, count and scatter shaders and pipelines.
+ *
  * Coordinates only, no metric: `spatialContext` accepts planar coordinates or longitude/latitude with
  * metric `'none'`; great-circle and other metric contexts throw. Longitude/latitude degrees are used
  * as plain coordinates. Feature bounds never wrap, but a query box with `minX > maxX` is read as
  * wrapping through the seam (a viewport crossing the antimeridian).
  */
-export class GPUBoundsFilter implements GPUCommandNodeProducer {
+export class GPUBoundsFilter<MaskRows extends GPUUint32Rows = GraphDataView<'uint32'>>
+  implements GPUCommandNodeProducer
+{
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
-  readonly props: GPUBoundsFilterProps;
+  readonly props: GPUBoundsFilterProps<MaskRows>;
   /** Resolved spatial context (planar or longitude/latitude without metric). */
   readonly spatialContext: GPUSpatialContext;
   /** Resolved relation mode. */
   readonly mode: GPUBoundsFilterMode;
 
-  constructor(props: GPUBoundsFilterProps) {
+  /** Conservative upper bound including the published visibility workflow. */
+  readonly estimatedCommandNodeCount: number;
+
+  constructor(props: GPUBoundsFilterProps<MaskRows>) {
     this.id = props.id ?? 'bounds-filter';
     this.props = props;
     this.spatialContext = resolveGPUSpatialContext(
@@ -173,10 +208,16 @@ export class GPUBoundsFilter implements GPUCommandNodeProducer {
     if (!['intersects', 'within', 'contains'].includes(this.mode)) {
       throw new Error(`${id} mode must be 'intersects', 'within' or 'contains'`);
     }
-    validateSinglePackedView(props.bounds, ['float32x4'], `${id} bounds`);
-    if (props.bounds.length < 1) {
-      throw new Error(`${id} needs at least one bounds row`);
+    planGraphChunkDispatch(id, {bounds: props.bounds});
+    const chunks = getGraphViewChunks(props.bounds);
+    for (const chunk of chunks) {
+      validateSinglePackedView(chunk, ['float32x4'], `${id} bounds`);
     }
+    validateCapacity(id, 'bounds.length', props.bounds.length, 1, GPU_BOUNDS_FILTER_MAXIMUM_ROWS);
+    this.estimatedCommandNodeCount =
+      GPU_BOUNDS_FILTER_COMMAND_NODE_ALLOWANCE *
+      (chunks.filter(chunk => chunk.length > 0).length + 1);
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < GPU_BOUNDS_FILTER_PARAMETER_LENGTH) {
       throw new Error(
@@ -188,22 +229,27 @@ export class GPUBoundsFilter implements GPUCommandNodeProducer {
       throw new Error(`${id} output.ids must contain at least one row`);
     }
     if (props.output.outputMask) {
-      validateSinglePackedView(props.output.outputMask, ['uint32'], `${id} output.outputMask`);
-      if (props.output.outputMask.length !== props.bounds.length) {
-        throw new Error(`${id} output.outputMask length must equal bounds length`);
+      for (const chunk of getGraphViewChunks(props.output.outputMask)) {
+        validateSinglePackedView(chunk, ['uint32'], `${id} output.outputMask`);
       }
+      validateGraphViewTopology(id, 'output.outputMask', props.bounds, props.output.outputMask);
     }
-    validateGraphOutputsDisjointFromInputs(
-      id,
-      [
-        props.output.ids,
-        props.output.status.count,
-        props.output.status.overflow,
-        props.output.status.requiredCount,
-        props.output.outputMask
-      ],
-      [props.bounds, props.parameters]
-    );
+    const outputs = {
+      'output.ids': props.output.ids,
+      'output.status.count': props.output.status.count,
+      'output.status.overflow': props.output.status.overflow,
+      'output.status.requiredCount': props.output.status.requiredCount,
+      'output.outputMask': props.output.outputMask
+    };
+    for (const [name, view] of Object.entries({...outputs, parameters: props.parameters})) {
+      if (view)
+        validateCapacity(id, `${name}.length`, view.length, 0, GPU_BOUNDS_FILTER_MAXIMUM_ROWS);
+    }
+    validateSpatialJoinOutputGroups(id, outputs, [{...props.output.status}]);
+    validateGraphOutputsDisjointFromInputs(id, Object.values(outputs), [
+      props.bounds,
+      props.parameters
+    ]);
   }
 
   /** Returns the mask kernel, the stable compaction nodes and the publish node. */
@@ -212,64 +258,72 @@ export class GPUBoundsFilter implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
     const {output} = props;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.bounds,
-      props.parameters,
-      output.outputMask,
-      output.ids,
-      output.status.count,
-      output.status.overflow,
-      output.status.requiredCount
-    ]);
-    const rows = props.bounds.length;
-    const mask = output.outputMask ?? createTransientView(graph, `${id}-mask`, 'uint32', rows);
+    const chunks = getGraphViewChunks(props.bounds);
+    const views = {
+      bounds: props.bounds,
+      parameters: props.parameters,
+      'output.ids': output.ids,
+      'output.outputMask': output.outputMask,
+      'output.status.count': output.status.count,
+      'output.status.overflow': output.status.overflow,
+      'output.status.requiredCount': output.status.requiredCount
+    };
+    validateGraphChunkBindingRanges(graph, id, views);
+    for (const [name, view] of Object.entries(views)) {
+      for (const chunk of view ? getGraphViewChunks(view) : []) {
+        validateCapacity(
+          id,
+          `${name}.buffer.byteLength (device.limits.maxBufferSize)`,
+          chunk.buffer.byteLength,
+          0,
+          graph.device.limits.maxBufferSize
+        );
+      }
+    }
+    validateGraphChunkGroupKernelSupport(graph, id, 4);
+    const plan = planBoundsFilterCompaction(
+      graph.device,
+      id,
+      chunks.map(chunk => chunk.length)
+    );
+    const masks = plan.chunks.map((chunk, index) =>
+      createTransientView(graph, `${id}-bits-${index}`, 'uint32', Math.max(chunk.wordCount, 1))
+    );
+    const maskChunks = output.outputMask ? getGraphViewChunks(output.outputMask) : [];
     // A box with minX > maxX wraps through the seam: its x extent is the union of two rays.
     const comparison = {
       intersects: `select(fMax.x >= boxMin.x && fMin.x <= boxMax.x, fMax.x >= boxMin.x || fMin.x <= boxMax.x, wrapped) && fMin.y <= boxMax.y && fMax.y >= boxMin.y`,
       within: `select(fMin.x >= boxMin.x && fMax.x <= boxMax.x, fMin.x >= boxMin.x || fMax.x <= boxMax.x, wrapped) && fMin.y >= boxMin.y && fMax.y <= boxMax.y`,
       contains: `!wrapped && fMin.x <= boxMin.x && fMax.x >= boxMax.x && fMin.y <= boxMin.y && fMax.y >= boxMax.y`
     }[this.mode];
-    const nodes: GPUCommandNode<Parameters>[] = [
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-mask`,
-        operation: OPERATION,
-        bindings: [
-          {name: 'bounds', view: props.bounds, type: 'f32', access: 'read'},
-          {name: 'box', view: props.parameters, type: 'f32', access: 'read'},
-          {name: 'maskOut', view: mask, type: 'u32', access: 'read_write'}
-        ],
-        invocationCount: rows,
-        declarations: IS_FINITE_BITS_WGSL,
-        body: `let base = boundsOffset + 4u * index;
-  let fMin = vec2<f32>(bounds[base], bounds[base + 1u]);
-  let fMax = vec2<f32>(bounds[base + 2u], bounds[base + 3u]);
-  let boxMin = vec2<f32>(box[boxOffset], box[boxOffset + 1u]);
-  let boxMax = vec2<f32>(box[boxOffset + 2u], box[boxOffset + 3u]);
-  let wrapped = boxMin.x > boxMax.x;
-  let finite = isFiniteBits(fMin.x) && isFiniteBits(fMin.y) && isFiniteBits(fMax.x) && isFiniteBits(fMax.y);
-  let accepted = finite && ${comparison};
-  maskOut[maskOutOffset + index] = select(0u, 1u, accepted);`
-      })
-    ];
-    // Compact straight into the caller's IDs when they hold every row; otherwise compact into
-    // full-size scratch and let the publish kernel copy the bounded prefix.
-    const direct = output.ids.length >= rows;
+    const nodes: GPUCommandNode<Parameters>[] = [];
+    for (const [chunkIndex, chunk] of chunks.entries()) {
+      if (chunk.length > 0) {
+        nodes.push(
+          createBoundsFilterMaskNode(graph, {
+            id: `${id}-mask-${chunkIndex}`,
+            bounds: chunk,
+            box: props.parameters,
+            mask: masks[chunkIndex],
+            callerMask: maskChunks[chunkIndex],
+            comparison
+          })
+        );
+      }
+    }
     const total = createTransientView(graph, `${id}-total`, 'uint32', 1);
-    const compactIds = direct
-      ? output.ids
-      : createTransientView(graph, `${id}-compact-ids`, 'uint32', rows);
     nodes.push(
-      ...new GPUVisibilityWorkflow({
-        id: `${id}-visibility`,
-        predicates: [{kind: 'bounds', mask}],
-        output: compactIds,
-        count: total
-      }).getCommandNodes(graph),
+      ...getBoundsFilterCompactionNodes(graph, {
+        id: `${id}-compact`,
+        plan,
+        masks,
+        output: output.ids,
+        total
+      }),
       createPublishNode<Parameters>(graph, {
         id: `${id}-publish`,
         operation: OPERATION,
         requiredCount: total,
-        compactIds: direct ? undefined : compactIds,
         output
       })
     );

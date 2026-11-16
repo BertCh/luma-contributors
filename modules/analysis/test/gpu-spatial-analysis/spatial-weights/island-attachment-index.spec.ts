@@ -6,22 +6,18 @@
 // ties (the lowest row wins), duplicates, non-finite representatives and ties wider than the
 // candidate list. Rows are shuffled so neither the row order nor the Morton order helps.
 
-import type {Buffer, Device} from '@luma.gl/core';
+import type {Device} from '@luma.gl/core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
-import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {describe, expect, it} from 'vitest';
-import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {
-  GPUIslandAttachment,
   GPU_ISLAND_ATTACHMENT_SCAN_MAXIMUM_ROW_COUNT,
   type GPUIslandAttachmentNearestSearch
 } from '../../../src/gpu-spatial-analysis/spatial-weights/gpu-island-attachment';
 import {
-  createInputBuffer,
-  createOutputBuffer,
-  readUint32,
-  submitGraph
-} from '../../utils/gpu-contributor-test-utils';
+  createIslandAttachmentHarness,
+  expectIslandAttachmentCSR,
+  type IslandAttachmentResult
+} from './island-attachment-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
 import {createSeededRandom} from '../neighbor-search/neighbor-search-oracle';
 
@@ -98,82 +94,12 @@ async function runAttachment(
   device: Device,
   scene: Scene,
   nearestSearch: GPUIslandAttachmentNearestSearch
-): Promise<{attachment: number[]; uncertainCount: number; milliseconds: number}> {
-  const rows = scene.positions.length / 2;
-  const graph = new GPUCommandGraph(device, {id: `island-index-${nearestSearch}`});
-  const buffers: Buffer[] = [];
-  let compiled: ReturnType<typeof graph.compile> | undefined;
+): Promise<IslandAttachmentResult> {
+  const harness = createIslandAttachmentHarness(device, scene, {nearestSearch});
   try {
-    let serial = 0;
-    const upload = <Format extends 'float32x2' | 'uint32'>(
-      format: Format,
-      data: Float32Array | Uint32Array,
-      length: number
-    ) => {
-      const buffer = createInputBuffer(device, data);
-      buffers.push(buffer);
-      return importGraphBuffer(graph, `input-${serial++}`, buffer, format, length);
-    };
-    const output = <Format extends 'float32' | 'uint32'>(format: Format, length: number) => {
-      const buffer = createOutputBuffer(device, length);
-      buffers.push(buffer);
-      return {buffer, view: importGraphBuffer(graph, `output-${serial++}`, buffer, format, length)};
-    };
-    // Room for every row to gain an edge to its nearest and from the islands attached to it.
-    const capacity = scene.neighbors.length + 2 * rows;
-    const offsets = output('uint32', rows + 1);
-    const neighbors = output('uint32', capacity);
-    const weights = output('float32', capacity);
-    const attachment = output('uint32', rows);
-    const added = output('uint32', capacity);
-    const overflow = output('uint32', 1);
-    const requiredCount = output('uint32', 1);
-    const uncertainCount = output('uint32', 1);
-    graph.add(
-      new GPUIslandAttachment({
-        weights: {
-          offsets: upload('uint32', scene.offsets, rows + 1),
-          neighbors: upload(
-            'uint32',
-            scene.neighbors.length ? scene.neighbors : new Uint32Array(1),
-            Math.max(scene.neighbors.length, 1)
-          ),
-          weights: importGraphBuffer(
-            graph,
-            'input-weights',
-            createInputBuffer(
-              device,
-              new Float32Array(Math.max(scene.neighbors.length, 1)).fill(1)
-            ),
-            'float32',
-            Math.max(scene.neighbors.length, 1)
-          )
-        },
-        positions: upload('float32x2', scene.positions, rows),
-        nearestSearch,
-        output: {
-          offsets: offsets.view,
-          neighbors: neighbors.view,
-          weights: weights.view,
-          attachment: attachment.view,
-          added: added.view,
-          status: {
-            overflow: overflow.view,
-            requiredCount: requiredCount.view,
-            uncertainCount: uncertainCount.view
-          }
-        }
-      })
-    );
-    compiled = graph.compile();
-    const start = performance.now();
-    submitGraph(device, compiled, undefined);
-    const result = Array.from(await readUint32(attachment.buffer, rows));
-    const [rescanned] = await readUint32(uncertainCount.buffer, 1);
-    return {attachment: result, uncertainCount: rescanned, milliseconds: performance.now() - start};
+    return await harness.run();
   } finally {
-    compiled?.destroy();
-    for (const buffer of buffers) buffer.destroy();
+    harness.destroy();
   }
 }
 
@@ -314,7 +240,7 @@ describe('GPUIslandAttachment grid path equals the scan', () => {
     expect(grid.uncertainCount).toBe(rows);
   }, 120_000);
 
-  it('the bounded fallback reaches the final representative at the maximum row count', async () => {
+  it('the fallback preserves the former 65,535-row boundary', async () => {
     const device = await getWebGPUTestDevice();
     requireTestDevice(device);
     const rows = 65535;
@@ -338,6 +264,61 @@ describe('GPUIslandAttachment grid path equals the scan', () => {
     expect(grid.attachment).toEqual(scan.attachment);
     expect(grid.uncertainCount).toBe(1);
   }, 120_000);
+
+  it('one million lattice rows with sparse islands follow the closed-form nearest rule', async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const rows = 1_000_000;
+    const columns = 1000;
+    const positions = new Float32Array(rows * 2);
+    const offsets = new Uint32Array(rows + 1);
+    const neighbors: number[] = [];
+    const expected = new Array<number>(rows).fill(NONE);
+    for (let row = 0; row < rows; row++) {
+      positions[row * 2] = row % columns;
+      positions[row * 2 + 1] = Math.floor(row / columns);
+      if (row % 100_000 === 0) {
+        // On the first column, up, right and down tie at one. The smallest row is up,
+        // except at the origin where right wins. Selection uses original representatives.
+        expected[row] = row === 0 ? 1 : row - columns;
+      } else {
+        neighbors.push(row === rows - 1 ? 1 : row + 1);
+      }
+      offsets[row + 1] = neighbors.length;
+    }
+    const scene = {positions, offsets, neighbors: Uint32Array.from(neighbors)};
+    const result = await runAttachment(device, scene, 'auto');
+    expectIslandAttachmentCSR(result, scene, expected);
+    expect(result.attachment).toEqual(expected);
+    expect(result.uncertainCount).toBe(0);
+  }, 120_000);
+
+  for (const rows of [65_536, 65_537, 131_073, 1_000_000]) {
+    it(`${rows} rows: unproven nearest search spans representative batches`, async () => {
+      const device = await getWebGPUTestDevice();
+      requireTestDevice(device);
+      const positions = new Float32Array(rows * 2);
+      for (let row = 1; row < rows; row++) positions[row * 2] = Math.fround(3e38);
+      positions[(rows - 1) * 2] = Math.fround(1e38);
+      // At 131,073 rows the lowest tied representative is in batch one and the other
+      // is the final row of batch three. At one million only the final row is nearest.
+      if (rows === 131_073) positions[65535 * 2] = Math.fround(1e38);
+      const scene: Scene = {
+        positions,
+        offsets: Uint32Array.from({length: rows + 1}, (_, row) => Math.max(row - 1, 0)),
+        neighbors: Uint32Array.from({length: rows - 1}, (_, slot) =>
+          slot === rows - 2 ? 1 : slot + 2
+        )
+      };
+      const expected = new Array<number>(rows).fill(NONE);
+      expected[0] = rows === 131_073 ? 65535 : rows - 1;
+      expect(getReference(scene)).toEqual(expected);
+      const result = await runAttachment(device, scene, 'grid');
+      expect(result.attachment).toEqual(expected);
+      expectIslandAttachmentCSR(result, scene, expected);
+      expect(result.uncertainCount).toBe(1);
+    }, 120_000);
+  }
 
   it('no finite other representative leaves the island unattached', async () => {
     const device = await getWebGPUTestDevice();

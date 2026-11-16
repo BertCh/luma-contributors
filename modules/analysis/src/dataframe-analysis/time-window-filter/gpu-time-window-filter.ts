@@ -12,7 +12,7 @@ import {
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUVisibilityPredicate,
-  type GraphDataView
+  GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import type {
   GPUCompactOutput,
@@ -27,9 +27,11 @@ import {
 import {
   getGraphViewChunks,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
   validateGraphViewTopology,
-  validateCompactOutput
+  validateCompactOutput,
+  validateGPUStorageBindingByteLength,
+  validateMaximumCount,
+  validateCapacity
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getTimeWindowClassifyNodes} from './time-window-classify-node';
 import {
@@ -44,6 +46,14 @@ import {
 } from './time-words';
 
 type Float32Rows = GraphDataView<'float32'> | GraphVectorView<'float32'>;
+
+import {
+  validateGraphChunkBindingRanges,
+  validateDisjointWritableViews
+} from '../../analysis-core/kernels/graph-chunk-dispatch';
+
+/** Global compacted IDs and counts are uint32; reject unaddressable totals before declaration. */
+const MAXIMUM_ROW_COUNT = 0xffffffff;
 
 /**
  * Caller-owned outputs of {@link GPUTimeWindowFilter}: the bounded compact list of accepted rows
@@ -185,6 +195,7 @@ export class GPUTimeWindowFilter implements GPUCommandNodeProducer {
     this.props = props;
     const id = this.id;
     const rows = props.timestamps.length;
+    validateCapacity(id, 'timestamps length', rows, 0, MAXIMUM_ROW_COUNT);
     const {output} = props;
 
     const isWordMode = props.timestamps.format === 'uint32x2';
@@ -249,6 +260,8 @@ export class GPUTimeWindowFilter implements GPUCommandNodeProducer {
       if (view && view.length !== rows) {
         throw new Error(`${id} ${name} length must equal timestamps length`);
       }
+      for (const chunk of view ? getGraphViewChunks(view) : [])
+        validatePackedUint32View(chunk, `${id} ${name}`);
     }
     if (props.endTimestampsLow && !props.endTimestamps) {
       throw new Error(`${id} endTimestampsLow requires endTimestamps`);
@@ -271,6 +284,98 @@ export class GPUTimeWindowFilter implements GPUCommandNodeProducer {
       validatePackedUint32View(output.drawInstanceCount, `${id} output.drawInstanceCount`);
       if (output.drawInstanceCount.length < 1) {
         throw new Error(`${id} output.drawInstanceCount must contain one uint32 row`);
+      }
+    }
+    const directIds = rows > 0 && output.ids.length >= rows;
+    // Published compaction and group aggregation bind masks as read-only storage.
+    // A physical buffer cannot also carry their writable output, even at disjoint offsets.
+    if (!props.sorted) {
+      if (directIds) validateGraphOutputsDisjointFromInputs(id, [output.ids], [output.outputMask]);
+      if (output.trackVisibleCounts)
+        validateGraphOutputsDisjointFromInputs(
+          id,
+          [output.trackVisibleCounts],
+          [output.outputMask]
+        );
+    }
+
+    const hasExtraPredicates = Boolean(props.additionalPredicates?.length);
+    {
+      const writableOutputs: Readonly<Record<string, GraphDataView | GraphVectorView | undefined>> =
+        {
+          ids: output.ids,
+          count: output.status.count,
+          overflow: output.status.overflow,
+          requiredCount: output.status.requiredCount,
+          outputMask: output.outputMask,
+          fadeWeights: output.fadeWeights,
+          clipFractions: output.clipFractions,
+          trackVisibleCounts: output.trackVisibleCounts,
+          drawInstanceCount: output.drawInstanceCount,
+          rowRange: output.rowRange,
+          drawFirstInstance: output.drawFirstInstance,
+          orderViolations: output.orderViolations
+        };
+      const publicationPasses: readonly (readonly (
+        | GraphDataView
+        | GraphVectorView
+        | undefined
+      )[])[] = [
+        [
+          !hasExtraPredicates ? output.outputMask : undefined,
+          output.fadeWeights,
+          output.clipFractions
+        ],
+        [
+          output.status.count,
+          output.status.overflow,
+          output.status.requiredCount,
+          output.drawInstanceCount,
+          ...(!props.sorted && !directIds ? [output.ids] : [])
+        ],
+        [output.rowRange, output.drawFirstInstance],
+        ...(props.sorted
+          ? [[output.ids, output.rowRange]]
+          : directIds
+            ? [[output.ids, output.outputMask]]
+            : []),
+        ...(output.trackVisibleCounts ? [[output.trackVisibleCounts, output.outputMask]] : [])
+      ];
+      // Model all logical writes as separate chunks; only the explicit publication groups coexist.
+      const writableWordChunks = Object.values(writableOutputs)
+        .flatMap(view => (view ? getGraphViewChunks(view) : []))
+        .map(
+          view =>
+            new GraphDataView(view.buffer, {
+              format: 'uint32',
+              length: (view.length * view.rowByteLength) / 4,
+              byteOffset: view.byteOffset,
+              byteStride: 4,
+              rowByteLength: 4
+            })
+        );
+      const writableWordCount = writableWordChunks.reduce(
+        (total, chunk) => total + chunk.length,
+        0
+      );
+      validateDisjointWritableViews(id, {
+        outputs: new GraphVectorView({
+          id: `${id}-writable-ranges`,
+          name: 'outputs',
+          format: 'uint32',
+          length: writableWordCount,
+          valueLength: writableWordCount,
+          stride: 1,
+          byteStride: 4,
+          rowByteLength: 4,
+          data: writableWordChunks
+        })
+      });
+      for (const fields of publicationPasses) {
+        validateDisjointWritableViews(
+          id,
+          Object.fromEntries(fields.map((view, index) => [String(index), view]))
+        );
       }
     }
     validateGraphOutputsDisjointFromInputs(
@@ -368,29 +473,49 @@ export class GPUTimeWindowFilter implements GPUCommandNodeProducer {
     const {output, trackIds} = props;
     const {outputMask, trackVisibleCounts, drawInstanceCount} = output;
     const additionalPredicates = props.additionalPredicates ?? [];
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.timestamps,
-      props.timestampsLow,
-      props.endTimestamps,
-      props.endTimestampsLow,
-      props.window,
-      props.sourceIds,
-      outputMask,
-      output.fadeWeights,
-      output.clipFractions,
-      trackIds,
-      trackVisibleCounts,
-      drawInstanceCount,
-      output.rowRange,
-      output.drawFirstInstance,
-      output.orderViolations,
-      output.ids,
-      output.status.count,
-      output.status.overflow,
-      output.status.requiredCount,
-      ...additionalPredicates.map(predicate => predicate.mask)
-    ]);
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(
+        [
+          props.timestamps,
+          props.timestampsLow,
+          props.endTimestamps,
+          props.endTimestampsLow,
+          props.window,
+          props.sourceIds,
+          outputMask,
+          output.fadeWeights,
+          output.clipFractions,
+          trackIds,
+          trackVisibleCounts,
+          drawInstanceCount,
+          output.rowRange,
+          output.drawFirstInstance,
+          output.orderViolations,
+          output.ids,
+          output.status.count,
+          output.status.overflow,
+          output.status.requiredCount,
+          ...additionalPredicates.map(predicate => predicate.mask)
+        ].map((view, index) => [`view[${index}]`, view])
+      )
+    );
     const rows = props.timestamps.length;
+    const scratchWords = props.sorted ? 2 : Math.max(rows, 2);
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'visibility scratch',
+      scratchWords * 4,
+      'reduce the total timestamp rows'
+    );
+    validateMaximumCount(
+      id,
+      'visibility scratch byteLength',
+      scratchWords * 4,
+      graph.device.limits.maxBufferSize
+    );
     if (props.sorted) {
       return this.getSortedCommandNodes(graph);
     }

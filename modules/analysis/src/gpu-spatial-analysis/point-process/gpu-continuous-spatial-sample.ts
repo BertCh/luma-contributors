@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+
 import type {
   GPUCommandGraph,
   GPUCommandNode,
@@ -229,6 +231,12 @@ export class GPUContinuousSpatialSample implements GPUCommandNodeProducer {
       ...Object.values(props.output)
     ]);
     const legacyCount = frame.legacySites?.length ?? 0;
+    validateGraphChunkBindingRanges(graph, id, {
+      framePositions: frame.positions,
+      legacySites: frame.legacySites,
+      parameters: props.parameters,
+      ...props.output
+    });
     const area = frame.type === 'area';
     const columns = area ? Math.ceil((frame.bounds[2] - frame.bounds[0]) / props.spacing) + 1 : 0;
     const rows = area ? Math.ceil((frame.bounds[3] - frame.bounds[1]) / props.spacing) + 1 : 0;

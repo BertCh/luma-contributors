@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {TERRAIN_VIEWSHED_BATCH_START_WGSL} from './terrain-viewshed-batches';
+import {
+  validateTerrainBindings,
+  getTerrainPyramidParameterScratch
+} from '../terrain-processing/terrain-binding-preflight';
 import {
   assertCompatibleGPUVerticalDatums,
   resolveGPUElevationVerticalDatum,
@@ -256,6 +261,23 @@ export class GPUTerrainCumulativeViewshed implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateTerrainBindings(graph, this.id, this.props, {
+      'canonical elevation': 4 * this.props.grid.width * this.props.grid.height,
+      'pyramid fused parameters': getTerrainPyramidParameterScratch(
+        this.props.pyramid ? undefined : this.pyramidLayout
+      ),
+      pyramid: this.pyramidLayout && !this.props.pyramid ? 8 * this.pyramidLayout.length : 0,
+      'observer records': 12 * this.props.observers.length,
+      'batch table':
+        256 *
+        Math.max(
+          1,
+          Math.ceil(
+            (this.props.observers.length * this.props.grid.width * this.props.grid.height) /
+              this.invocationsPerDispatch
+          )
+        )
+    });
     const {id, props, pyramidLayout} = this;
     const {output} = props;
     const {width, height} = props.grid;
@@ -344,8 +366,8 @@ export class GPUTerrainCumulativeViewshed implements GPUCommandNodeProducer {
     );
     const batchSize = this.invocationsPerDispatch;
     const batchCount = Math.ceil((observerCount * pixelCount) / batchSize);
-    // Batch b starts at pair b * batchSize = (first observer, first pixel). One thread walks the
-    // batches with a carry, so no product overflows u32 however many pairs there are.
+    // Each batch computes its own first observer/pixel with the shared exact uint64 arithmetic.
+    // This remains parallel when the observer/pixel product exceeds uint32.
     const batchTable = createTransientView(
       graph,
       `${id}-batch-words`,
@@ -358,19 +380,11 @@ export class GPUTerrainCumulativeViewshed implements GPUCommandNodeProducer {
         operation,
         variant: 'batch-table',
         bindings: [{name: 'batchTable', view: batchTable, type: 'u32', access: 'read_write'}],
-        invocationCount: 1,
-        body: `var firstObserver = 0u;
-  var firstPixel = 0u;
-  for (var batch = 0u; batch < ${batchCount}u; batch++) {
-    batchTable[batchTableOffset + batch * ${BATCH_STRIDE}u] = firstObserver;
-    batchTable[batchTableOffset + batch * ${BATCH_STRIDE}u + 1u] = firstPixel;
-    firstObserver = firstObserver + ${Math.floor(batchSize / pixelCount)}u;
-    firstPixel = firstPixel + ${batchSize % pixelCount}u;
-    if (firstPixel >= ${pixelCount}u) {
-      firstPixel = firstPixel - ${pixelCount}u;
-      firstObserver = firstObserver + 1u;
-    }
-  }`
+        invocationCount: batchCount,
+        declarations: TERRAIN_VIEWSHED_BATCH_START_WGSL,
+        body: `let firstPair = getViewshedBatchStart(index, ${batchSize}u, ${pixelCount}u);
+  batchTable[batchTableOffset + index * ${BATCH_STRIDE}u] = firstPair.x;
+  batchTable[batchTableOffset + index * ${BATCH_STRIDE}u + 1u] = firstPair.y;`
       })
     );
     const bindings: WGSLKernelBinding[] = [

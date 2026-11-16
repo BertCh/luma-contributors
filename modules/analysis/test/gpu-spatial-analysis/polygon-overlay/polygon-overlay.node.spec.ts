@@ -4,7 +4,7 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {WgslReflect} from 'wgsl_reflect';
-import {expect, it} from 'vitest';
+import {expect, it, vi} from 'vitest';
 import {
   GPUBufferSurface,
   GPUPolygonOverlay,
@@ -284,17 +284,42 @@ it('GPUPolygonOverlay pointer-jump rounds share pipelines whatever the round cou
 });
 
 it('GPUPolygonOverlay bounds hot pixels by a quarter of the segment table', () => {
-  const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'overlay-limit'});
-  expect(() =>
-    new GPUPolygonOverlay({
+  const device = createNullWebGPUDevice();
+  const maximumHotPixels = 2 ** 20;
+  expect(device.limits.maxStorageBufferBindingSize).toBe(maximumHotPixels * 128);
+  // Two operands each have eight vertices and two repeated closing vertices: 20 hot pixels
+  // before intersections. Keep the old overflow case and pin the exact accepted boundary.
+  const expandedVertices = 2 * (8 + 2);
+  for (const intersections of [
+    maximumHotPixels - expandedVertices,
+    maximumHotPixels - expandedVertices + 1,
+    maximumHotPixels
+  ]) {
+    const graph = new GPUCommandGraph(device, {id: 'overlay-limit'});
+    const contributor = new GPUPolygonOverlay({
       left: polygon(graph),
       right: polygon(graph),
       operation: 'union',
-      capacity: {intersections: 1048576, nodedSegments: 64},
+      capacity: {intersections, nodedSegments: 64},
       vertexTolerance: 0.25,
       output: output(graph)
-    }).getCommandNodes(graph)
-  ).toThrow(/positions rows \+ rings \+ capacity\.intersections must be at most 1048576/);
+    });
+    const allocate = vi.spyOn(graph, 'createTransientBuffer');
+    try {
+      if (intersections === maximumHotPixels - expandedVertices) {
+        expect(() => contributor.getCommandNodes(graph)).not.toThrow();
+      } else {
+        const requiredBytes = (expandedVertices + intersections) * 128;
+        expect(() => contributor.getCommandNodes(graph)).toThrow(
+          `polygon-overlay hotPixelSegmentTables needs ${requiredBytes} bytes in one binding (limit ${device.limits.maxStorageBufferBindingSize})`
+        );
+        expect(allocate).not.toHaveBeenCalled();
+      }
+    } finally {
+      allocate.mockRestore();
+    }
+  }
+  device.destroy();
 });
 
 it('GPUPolygonOverlay builds with the smallest capacities', () => {

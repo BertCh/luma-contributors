@@ -3,6 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  validateTrajectoryBindings,
+  validateTrajectoryOutputRanges
+} from '../trajectory-analysis/trajectory-binding-validation';
+import {
   createTransientView,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -75,7 +79,7 @@ export function getGPUTrajectoryOutlierFlagsParameterValues(
 ): Float32Array {
   const maximumAcceleration = settings.maximumAcceleration ?? 0;
   for (const value of [settings.maximumSpeed, maximumAcceleration]) {
-    if (!Number.isFinite(value) || value < 0) {
+    if (!Number.isFinite(Math.fround(value)) || value < 0) {
       throw new Error('Outlier limits must be finite and non-negative');
     }
   }
@@ -169,6 +173,8 @@ export class GPUTrajectoryOutlierFlags implements GPUCommandNodeProducer {
         trackOffsets.length - 1
       );
     }
+    validateTrajectoryOutputRanges(this.id, this.props.output);
+    validateGraphOutputsDisjointFromInputs(id, [output.trackFlaggedCounts], [output.flags]);
     validateGraphOutputsDisjointFromInputs(
       id,
       [output.flags, output.trackFlaggedCounts],
@@ -197,6 +203,7 @@ export class GPUTrajectoryOutlierFlags implements GPUCommandNodeProducer {
       rowCount * 8,
       'split the tracks over several graphs'
     );
+    validateTrajectoryBindings(graph, this.id, this.props);
     const timeMode = getTrajectoryTimeMode(props);
     const rowStarts = createTransientView(graph, `${id}-row-starts`, 'uint32', rowCount);
     const rowEnds = createTransientView(graph, `${id}-row-ends`, 'uint32', rowCount);

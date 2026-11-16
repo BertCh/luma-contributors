@@ -2,11 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {
   validatePackedUint32View,
   type GPUCommandGraph,
   type GPUCommandNode,
-  type GraphDataView
+  GraphDataView,
+  GraphVectorView
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {GUARDED_ATAN2_WGSL} from '../../analysis-core/kernels/wgsl-common';
@@ -18,7 +20,8 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validateSinglePackedView
+  validateSinglePackedView,
+  getGraphViewChunks
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   getPairHistogramNodes,
@@ -53,6 +56,8 @@ import {
   resolveGPUStudyWindow,
   type GPUStudyWindow
 } from '../../analysis-core/contracts/study-window';
+
+import {validatePairStatisticsBindings} from './pair-statistics-preflight';
 
 const OPERATION = 'GPUVariogram';
 
@@ -281,6 +286,60 @@ export class GPUVariogram implements GPUCommandNodeProducer {
         );
       }
     }
+    {
+      const writableOutputs: Readonly<Record<string, GraphDataView | GraphVectorView | undefined>> =
+        {
+          semivariances: output.semivariances,
+          pairCounts: output.pairCounts,
+          meanDistances: output.meanDistances,
+          robustSemivariances: output.robustSemivariances,
+          statistics: output.statistics,
+          overflow: output.status?.overflow
+        };
+      const publicationPasses: readonly (readonly (
+        | GraphDataView
+        | GraphVectorView
+        | undefined
+      )[])[] = [
+        [output.semivariances, output.pairCounts, output.meanDistances, output.robustSemivariances]
+      ];
+      // Model all logical writes as separate chunks; only the explicit publication groups coexist.
+      const writableWordChunks = Object.values(writableOutputs)
+        .flatMap(view => (view ? getGraphViewChunks(view) : []))
+        .map(
+          view =>
+            new GraphDataView(view.buffer, {
+              format: 'uint32',
+              length: (view.length * view.rowByteLength) / 4,
+              byteOffset: view.byteOffset,
+              byteStride: 4,
+              rowByteLength: 4
+            })
+        );
+      const writableWordCount = writableWordChunks.reduce(
+        (total, chunk) => total + chunk.length,
+        0
+      );
+      validateDisjointWritableViews(id, {
+        outputs: new GraphVectorView({
+          id: `${id}-writable-ranges`,
+          name: 'outputs',
+          format: 'uint32',
+          length: writableWordCount,
+          valueLength: writableWordCount,
+          stride: 1,
+          byteStride: 4,
+          rowByteLength: 4,
+          data: writableWordChunks
+        })
+      });
+      for (const fields of publicationPasses) {
+        validateDisjointWritableViews(
+          id,
+          Object.fromEntries(fields.map((view, index) => [String(index), view]))
+        );
+      }
+    }
     validateGraphOutputsDisjointFromInputs(
       id,
       [
@@ -337,6 +396,27 @@ export class GPUVariogram implements GPUCommandNodeProducer {
         studyWindow.packed
       ]);
     }
+    validatePairStatisticsBindings(graph, id, {
+      rows,
+      gridSize,
+      slots: binCount,
+      channels: channelCount,
+      moments: true,
+      unitVariance: true,
+      views: {
+        positions,
+        values: props.values,
+        mask: props.mask,
+        parameters: callerParameters,
+        window: studyWindow?.packed,
+        semivariances: output.semivariances,
+        pairCounts: output.pairCounts,
+        meanDistances: output.meanDistances,
+        robustSemivariances: output.robustSemivariances,
+        statistics: output.statistics,
+        overflow: output.status?.overflow
+      }
+    });
     const windowParameters = studyWindow
       ? getPairStatisticsWindowParameterNodes(graph, {
           id,

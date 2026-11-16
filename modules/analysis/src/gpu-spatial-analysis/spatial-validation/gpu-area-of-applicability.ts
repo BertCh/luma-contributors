@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRegressionAllocations} from '../spatial-regression/spatial-likelihood-allocations';
+
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -17,7 +21,8 @@ import {
   validateSinglePackedView,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {validatePredictionViews} from '../../analysis-core/kernels/gpu-prediction-utils';
+import {validateRegressionOutputDispatches} from '../spatial-regression/regression-output-dispatches';
+import {validateGraphOutputsDisjointFromInputs} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 
 /** Most predictors of the dissimilarity index. */
@@ -168,7 +173,12 @@ export class GPUAreaOfApplicability implements GPUCommandNodeProducer {
       validateSinglePackedView(view, [format], `${id} output.${name}`);
       validateViewLength(id, `output.${name}`, view, length);
     }
-    validatePredictionViews(id, this.getInputViews(), Object.values(output));
+    validateRegressionOutputDispatches(this.id, output, [
+      ['summary', 'status'],
+      {read: ['summary'], write: ['trainDissimilarity']},
+      {read: ['summary'], write: ['queryDissimilarity', 'applicable']}
+    ]);
+    validateGraphOutputsDisjointFromInputs(id, Object.values(output), this.getInputViews());
   }
 
   private getInputViews(): GraphDataView[] {
@@ -191,6 +201,16 @@ export class GPUAreaOfApplicability implements GPUCommandNodeProducer {
     const columns = props.predictorCount;
     const cross = props.crossValidation;
     const {output} = props;
+    validateGraphChunkBindingRanges(graph, id, {
+      ...Object.fromEntries(this.getInputViews().map((view, index) => [`input ${index}`, view])),
+      ...output
+    });
+    validateRegressionAllocations(graph.device, id, {
+      'training row scratch, keys and published sort/scan scratch': rows,
+      'feature moments': 2 * columns,
+      'scaled training': rows * columns,
+      'scaled query': queryRows * columns
+    });
     validateGraphViewsBelongToGraph(id, graph, [...this.getInputViews(), ...Object.values(output)]);
     const transient = <Format extends 'float32' | 'uint32'>(
       name: string,

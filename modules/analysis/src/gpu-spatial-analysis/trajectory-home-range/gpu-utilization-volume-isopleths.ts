@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateTrajectoryBindings} from '../trajectory-analysis/trajectory-binding-validation';
 import {
   createTransientView,
   GPUSort,
+  getViewBindingRange,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -12,6 +14,8 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
+  validateCommandNodeBudget,
+  validateGPUStorageBindingByteLength,
   validateFiniteNumber,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
@@ -20,18 +24,23 @@ import {
   validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateTrajectoryWritableDispatches} from '../trajectory-analysis/trajectory-binding-validation';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  createUtilizationOffsetNode,
+  createUtilizationPrefixNode,
+  getUtilizationPrefixLayout,
+  UTILIZATION_PREFIX_BLOCK_SIZE,
+  UTILIZATION_PREFIX_PARAMETER_BYTE_LENGTH
+} from './gpu-utilization-volume-isopleths-kernels';
 
 const OPERATION = 'GPUUtilizationVolumeIsopleths';
 
-/** Rows summed by one invocation of a prefix level; three levels cover 256^3 cells. */
-const BLOCK_SIZE = 256;
+/** Largest row count accepted by the published stable GPUSort; device bindings also limit it. */
+export const GPU_UTILIZATION_VOLUME_ISOPLETHS_MAXIMUM_CELLS = 0x80000000;
 
-/**
- * Largest accepted cell count: three prefix levels of {@link BLOCK_SIZE} rows each, the last one a
- * single invocation (16,777,216 cells).
- */
-export const GPU_UTILIZATION_VOLUME_ISOPLETHS_MAXIMUM_CELLS = BLOCK_SIZE ** 3;
+// Eight radix digits, each with histogram/scatter and at most four two-node scan levels.
+const SORT_COMMAND_NODE_ALLOWANCE = 8 * (2 + 2 * 4);
 
 /** Number of float32 elements in a {@link GPUUtilizationVolumeIsopleths} parameter view. */
 export const GPU_UTILIZATION_VOLUME_ISOPLETHS_PARAMETER_LENGTH = 4;
@@ -93,7 +102,7 @@ export type GPUUtilizationVolumeIsoplethsProps = {
      * own density is positive. 0 otherwise.
      */
     inside?: GraphDataView<'uint32'>;
-    /** Optional one row: the total mass (sum of the cell values). */
+    /** Optional one row: the fixed-order float32 total mass, with rounding at each tree level. */
     totalMass?: GraphDataView<'float32'>;
   };
 };
@@ -105,9 +114,11 @@ export type GPUUtilizationVolumeIsoplethsProps = {
  * serves the same purpose; no parity with it is claimed.
  *
  * Method: a stable radix sort of the cells by density (descending), then an exclusive prefix sum of
- * the sorted densities by three levels of 256-row block sums, each level one bounded invocation per
- * block. The sums are float32 in a fixed order, so results are reproducible; the relative rounding
- * error of a volume is about 1e-6 for 1e6 cells. Per-frame: `density` and `parameters`.
+ * the sorted densities by recursive levels of 256-row block sums, each level one bounded invocation
+ * per block. The original three levels and lowest-to-highest offset addition order are retained
+ * within the old 16,777,216-cell range. Larger surfaces add levels until the root fits one block.
+ * The sums are float32 in a fixed order, so results are reproducible; the relative rounding error
+ * of a volume is about 1e-6 for 1e6 cells. Per-frame: `density` and `parameters`.
  * Compile-time: the cell count and which outputs exist.
  *
  * Reference: tests compare with a binary64 sort and cumulative sum.
@@ -117,6 +128,8 @@ export class GPUUtilizationVolumeIsopleths implements GPUCommandNodeProducer {
   readonly id: string;
   /** Number of cells. */
   readonly cellCount: number;
+  /** Upper bound including the published radix sort and its recursive scans. */
+  readonly estimatedCommandNodeCount: number;
   /** Validated properties. */
   readonly props: Readonly<GPUUtilizationVolumeIsoplethsProps>;
 
@@ -157,6 +170,16 @@ export class GPUUtilizationVolumeIsopleths implements GPUCommandNodeProducer {
       [output.volume, output.inside, output.totalMass],
       [props.density, props.parameters]
     );
+    validateTrajectoryWritableDispatches(id, [
+      {volume: output.volume, inside: output.inside},
+      {totalMass: output.totalMass}
+    ]);
+    this.estimatedCommandNodeCount =
+      SORT_COMMAND_NODE_ALLOWANCE +
+      getUtilizationPrefixLayout(this.cellCount).lengths.length +
+      4 +
+      (output.totalMass ? 1 : 0);
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     this.id = id;
     this.props = props;
   }
@@ -164,6 +187,7 @@ export class GPUUtilizationVolumeIsopleths implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateTrajectoryBindings(graph, this.id, this.props);
     const {id, props, cellCount} = this;
     const {output} = props;
     validateGraphViewsBelongToGraph(id, graph, [
@@ -173,20 +197,88 @@ export class GPUUtilizationVolumeIsopleths implements GPUCommandNodeProducer {
       output.inside,
       output.totalMass
     ]);
-    const blockCount = Math.ceil(cellCount / BLOCK_SIZE);
-    const groupCount = Math.ceil(blockCount / BLOCK_SIZE);
+    const layout = getUtilizationPrefixLayout(cellCount);
+    for (const [name, view] of Object.entries({
+      density: props.density,
+      parameters: props.parameters,
+      'output.volume': output.volume,
+      'output.inside': output.inside,
+      'output.totalMass': output.totalMass
+    })) {
+      if (view) {
+        validateGPUStorageBindingByteLength(
+          graph.device,
+          id,
+          name,
+          getViewBindingRange(view).size,
+          'reduce the view binding range'
+        );
+      }
+    }
+    // Radix histograms have sixteen buckets per 256-row workgroup; recursive scan buffers
+    // are no larger than their histogram. Preflight every shape before declaration.
+    for (const [name, byteLength] of [
+      ['row and sort scratch', cellCount * 4],
+      ['radix histograms and scan scratch', 16 * Math.ceil(cellCount / 256) * 4],
+      ['upper prefixes', layout.upperLength * 4],
+      ...layout.lengths.map(
+        (length, level) =>
+          [`level ${level} totals`, Math.ceil(length / UTILIZATION_PREFIX_BLOCK_SIZE) * 4] as const
+      ),
+      ['total', 4]
+    ] as const) {
+      validateGPUStorageBindingByteLength(graph.device, id, name, byteLength, 'reduce cellCount');
+    }
+    validateRequirement(
+      id,
+      graph.device.limits.maxUniformBufferBindingSize >= UTILIZATION_PREFIX_PARAMETER_BYTE_LENGTH,
+      `prefix parameters need ${UTILIZATION_PREFIX_PARAMETER_BYTE_LENGTH} uniform bytes`
+    );
     const keys = createTransientView(graph, `${id}-keys`, 'uint32', cellCount);
     const cells = createTransientView(graph, `${id}-cells`, 'uint32', cellCount);
     const sortedKeys = createTransientView(graph, `${id}-sorted-keys`, 'uint32', cellCount);
     const sortedCells = createTransientView(graph, `${id}-sorted-cells`, 'uint32', cellCount);
     const sortedValues = createTransientView(graph, `${id}-sorted-values`, 'float32', cellCount);
     const localPrefix = createTransientView(graph, `${id}-local-prefix`, 'float32', cellCount);
-    const blockTotals = createTransientView(graph, `${id}-block-totals`, 'float32', blockCount);
-    const blockPrefix = createTransientView(graph, `${id}-block-prefix`, 'float32', blockCount);
-    const groupTotals = createTransientView(graph, `${id}-group-totals`, 'float32', groupCount);
-    const groupPrefix = createTransientView(graph, `${id}-group-prefix`, 'float32', groupCount);
-    const total = output.totalMass ?? createTransientView(graph, `${id}-total`, 'float32', 1);
-    const common = `const BLOCK: u32 = ${BLOCK_SIZE}u;`;
+    const upperPrefix = createTransientView(
+      graph,
+      `${id}-upper-prefix`,
+      'float32',
+      layout.upperLength
+    );
+    // Keep the read-only scatter input private: callers may pack totalMass beside volume.
+    // WebGPU forbids read-only and writable bindings of one physical buffer in a dispatch.
+    const total = createTransientView(graph, `${id}-total`, 'float32', 1);
+    const prefixNodes: GPUCommandNode<Parameters>[] = [];
+    let input = sortedValues;
+    for (const [level, length] of layout.lengths.entries()) {
+      const prefix =
+        level === 0
+          ? localPrefix
+          : graph.createDataView(upperPrefix.buffer, {
+              format: 'float32',
+              length,
+              byteOffset: layout.upperOffsets[level - 1] * 4
+            });
+      const totals =
+        level === layout.lengths.length - 1
+          ? total
+          : createTransientView(
+              graph,
+              `${id}-level-${level}-totals`,
+              'float32',
+              Math.ceil(length / UTILIZATION_PREFIX_BLOCK_SIZE)
+            );
+      prefixNodes.push(
+        createUtilizationPrefixNode(graph, {
+          id: `${id}-level-${level}`,
+          input,
+          prefix,
+          totals
+        })
+      );
+      input = totals;
+    }
     return [
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-keys`,
@@ -224,79 +316,12 @@ export class GPUUtilizationVolumeIsopleths implements GPUCommandNodeProducer {
         ],
         body: 'sortedValues[sortedValuesOffset + index] = bitcast<f32>(sortedKeys[sortedKeysOffset + index]);'
       }),
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-blocks`,
-        operation: OPERATION,
-        variant: 'level-0',
-        invocationCount: blockCount,
-        bindings: [
-          {name: 'sortedValues', view: sortedValues, type: 'f32', access: 'read'},
-          {name: 'localPrefix', view: localPrefix, type: 'f32', access: 'read_write'},
-          {name: 'blockTotals', view: blockTotals, type: 'f32', access: 'read_write'}
-        ],
-        declarations: common,
-        body: /* wgsl */ `
-  var sum = 0.0;
-  let end = min((index + 1u) * BLOCK, ${cellCount}u);
-  for (var row = index * BLOCK; row < end; row = row + 1u) {
-    localPrefix[localPrefixOffset + row] = sum;
-    sum = sum + sortedValues[sortedValuesOffset + row];
-  }
-  blockTotals[blockTotalsOffset + index] = sum;`
-      }),
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-groups`,
-        operation: OPERATION,
-        variant: 'level-1',
-        invocationCount: groupCount,
-        bindings: [
-          {name: 'blockTotals', view: blockTotals, type: 'f32', access: 'read'},
-          {name: 'blockPrefix', view: blockPrefix, type: 'f32', access: 'read_write'},
-          {name: 'groupTotals', view: groupTotals, type: 'f32', access: 'read_write'}
-        ],
-        declarations: common,
-        body: /* wgsl */ `
-  var sum = 0.0;
-  let end = min((index + 1u) * BLOCK, ${blockCount}u);
-  for (var block = index * BLOCK; block < end; block = block + 1u) {
-    blockPrefix[blockPrefixOffset + block] = sum;
-    sum = sum + blockTotals[blockTotalsOffset + block];
-  }
-  groupTotals[groupTotalsOffset + index] = sum;`
-      }),
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-total`,
-        operation: OPERATION,
-        variant: 'level-2',
-        invocationCount: 1,
-        bindings: [
-          {name: 'groupTotals', view: groupTotals, type: 'f32', access: 'read'},
-          {name: 'groupPrefix', view: groupPrefix, type: 'f32', access: 'read_write'},
-          {name: 'total', view: total, type: 'f32', access: 'read_write'}
-        ],
-        body: /* wgsl */ `
-  var sum = 0.0;
-  for (var group = 0u; group < ${groupCount}u; group = group + 1u) {
-    groupPrefix[groupPrefixOffset + group] = sum;
-    sum = sum + groupTotals[groupTotalsOffset + group];
-  }
-  total[totalOffset] = sum;`
-      }),
-      createWGSLKernelNode<Parameters>(graph, {
+      ...prefixNodes,
+      createUtilizationOffsetNode(graph, {
         id: `${id}-offsets`,
-        operation: OPERATION,
-        variant: 'offsets',
-        invocationCount: cellCount,
-        bindings: [
-          {name: 'localPrefix', view: localPrefix, type: 'f32', access: 'read_write'},
-          {name: 'blockPrefix', view: blockPrefix, type: 'f32', access: 'read'},
-          {name: 'groupPrefix', view: groupPrefix, type: 'f32', access: 'read'}
-        ],
-        declarations: common,
-        body: /* wgsl */ `
-  let block = index / BLOCK;
-  localPrefix[localPrefixOffset + index] = localPrefix[localPrefixOffset + index] +
-    blockPrefix[blockPrefixOffset + block] + groupPrefix[groupPrefixOffset + block / BLOCK];`
+        localPrefix,
+        upperPrefix,
+        upperOffsets: layout.upperOffsets
       }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-volume`,
@@ -327,7 +352,22 @@ ${
     ? `  inside[insideOffset + cell] = select(0u, 1u, hasMass && value > 0.0 && preceding / mass < parameters[parametersOffset]);`
     : '  _ = parameters[parametersOffset];'
 }`
-      })
+      }),
+      ...(output.totalMass
+        ? [
+            createWGSLKernelNode<Parameters>(graph, {
+              id: `${id}-publish-total`,
+              operation: OPERATION,
+              variant: 'publish-total',
+              invocationCount: 1,
+              bindings: [
+                {name: 'total', view: total, type: 'f32', access: 'read'},
+                {name: 'totalMass', view: output.totalMass, type: 'f32', access: 'read_write'}
+              ],
+              body: 'totalMass[totalMassOffset] = total[totalOffset];'
+            })
+          ]
+        : [])
     ];
   }
 }

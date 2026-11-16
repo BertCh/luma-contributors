@@ -13,7 +13,7 @@ import type {GraphDataView} from '@luma.gl/graph/gpu-core';
 /** Graph names in place of polygon/parameter views, with explicit output row count. */
 export type ShapeDescriptorsOperationProps = Pick<
   GPUShapeDescriptorsProps,
-  'id' | 'spatialContext' | 'convexityMethod' | 'maximumVerticesPerFeature'
+  'id' | 'spatialContext' | 'convexityMethod' | 'maximumVerticesPerFeature' | 'momentMethod'
 > & {
   positions: string;
   ringOffsets: string;

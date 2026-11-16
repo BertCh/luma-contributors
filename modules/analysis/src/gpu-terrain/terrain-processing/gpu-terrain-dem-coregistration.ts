@@ -151,7 +151,23 @@ export class GPUTerrainDEMCoregistration implements GPUCommandNodeProducer {
         props.differenceVariance,
         ...(props.validity ? [props.validity] : [])
       ],
-      Object.values(props.output)
+      Object.values(props.output),
+      [
+        {
+          reads: [...(!props.validity ? [props.reference, props.moving] : []), props.stableMask],
+          writes: [props.output.fit]
+        },
+        {
+          reads: [
+            ...(!props.validity ? [props.reference, props.moving] : []),
+            props.stableMask,
+            props.differenceVariance,
+            props.output.fit
+          ],
+          writes: [props.output.differences, props.output.validity]
+        },
+        {reads: [props.output.fit], writes: [props.output.volume]}
+      ]
     );
   }
   getCommandNodes<Parameters>(

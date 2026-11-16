@@ -2,6 +2,14 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getOrdinaryLeastSquaresAllocationLengths} from '../spatial-regression/gpu-ordinary-least-squares';
+
+import {validateSpatialCrossValidationBindings} from './validation-binding-plans';
+
+import {validateRegressionAllocations} from '../spatial-regression/spatial-likelihood-allocations';
+
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -15,7 +23,8 @@ import {
   validateSinglePackedView,
   validateGraphViewsBelongToGraph
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {validatePredictionViews} from '../../analysis-core/kernels/gpu-prediction-utils';
+import {validateRegressionOutputDispatches} from '../spatial-regression/regression-output-dispatches';
+import {validateGraphOutputsDisjointFromInputs} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getSpatialDesignInputs} from './spatial-validation-design';
 import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {GPUOrdinaryLeastSquares} from '../spatial-regression/gpu-ordinary-least-squares';
@@ -71,20 +80,38 @@ export class GPUSpatialCrossValidatedOLS implements GPUCommandNodeProducer {
       validateSinglePackedView(view, [format], this.id);
       if (view.length !== length) throw new Error(`${this.id}: shape mismatch`);
     }
-    validatePredictionViews(
+    validateRegressionOutputDispatches(
       this.id,
+      {
+        ...props.output,
+        ...Object.fromEntries(
+          Object.entries(props.folds.output).map(([name, view]) => [`fold ${name}`, view])
+        ),
+        diagnostics: props.folds.design?.diagnostics
+      },
       [
-        props.predictors,
-        props.response,
-        props.folds.positions,
-        props.folds.blocks,
-        ...(props.folds.mask ? [props.folds.mask] : []),
-        ...getSpatialDesignInputs(props.folds.design)
-      ],
+        ['coefficients', 'fitStatus'],
+        {read: ['fold training'], write: ['coefficients', 'fitStatus']},
+        {read: ['coefficients', 'fitStatus'], write: ['predictions']},
+        {read: ['predictions', 'fold testing'], write: ['metrics', 'metricStatus']}
+      ]
+    );
+    validateGraphOutputsDisjointFromInputs(
+      this.id,
       [
         ...Object.values(props.output),
         ...Object.values(props.folds.output),
         ...(props.folds.design?.diagnostics ? [props.folds.design.diagnostics] : [])
+      ],
+      [
+        props.predictors,
+        props.response,
+        props.folds.positions,
+        ...(!props.folds.design || props.folds.design.mode === 'groups'
+          ? [props.folds.blocks]
+          : []),
+        ...(props.folds.mask ? [props.folds.mask] : []),
+        ...getSpatialDesignInputs(props.folds.design)
       ]
     );
   }
@@ -92,6 +119,16 @@ export class GPUSpatialCrossValidatedOLS implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
+    validateSpatialCrossValidationBindings(graph, id, props.folds);
+    validateGraphChunkBindingRanges(graph, id, {
+      predictors: props.predictors,
+      response: props.response,
+      ...props.output
+    });
+    validateRegressionAllocations(graph.device, id, {
+      ...getOrdinaryLeastSquaresAllocationLengths(props.response.length, props.predictorCount),
+      'fold OLS output scratch': Math.max(props.predictorCount + 1, 22)
+    });
     const rows = props.response.length;
     const columns = props.predictorCount;
     const folds = props.folds.foldCount;

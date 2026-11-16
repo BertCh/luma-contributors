@@ -21,20 +21,33 @@ import {
 } from '../../analysis-core/kernels/wgsl-common';
 import {
   validateCapacity,
+  validateCommandNodeBudget,
+  validateGPUStorageBindingByteLength,
+  validateRequirement,
   validateSinglePackedView,
-  validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   validateGPUSpatialWeights,
-  getGPUSpatialWeightsViews,
   type GPUSpatialWeights
 } from '../spatial-weights/spatial-weights';
 import {getCholeskyWGSL} from './spatial-regression-solve';
 import {getEquilibratedCholeskyWGSL} from './local-weighted-least-squares-wgsl';
 import {GPU_UPPER_INCOMPLETE_GAMMA_WGSL} from '../../analysis-core/kernels/incomplete-gamma-wgsl';
+import {getDenseLUWGSL} from '../../analysis-core/kernels/dense-solve-wgsl';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {ADDITION_ROUNDING_ERROR_WGSL} from '../../analysis-core/kernels/addition-rounding-error-wgsl';
 import {ROUNDED_DIFFERENCE_WGSL} from './rounded-difference-wgsl';
+import {validateRegressionOutputDispatches} from './regression-output-dispatches';
+import {getPanelLagTiledNodes} from './panel-lag-tiled-nodes';
+import {GPU_SPATIAL_EXACT_LOG_DETERMINANT_MAXIMUM_ROW_COUNT} from './spatial-exact-log-determinant';
+import {REGRESSION_TILE_MAXIMUM_ROW_COUNT} from './regression-row-tiles';
+
+/** Supplied entity spectra share the existing exact-logdet decomposition envelope. */
+export const GPU_PANEL_LAG_TILED_MAXIMUM_ENTITY_COUNT =
+  GPU_SPATIAL_EXACT_LOG_DETERMINANT_MAXIMUM_ROW_COUNT;
+/** Tiled counts and row divisors stay exact in float32; scratch is checked on the device. */
+export const GPU_PANEL_LAG_TILED_MAXIMUM_ROW_COUNT = REGRESSION_TILE_MAXIMUM_ROW_COUNT;
 
 /**
  * Lowest random-effects `phi` the fit follows. `phi = sigma_e / sqrt(T sigma_u^2 + sigma_e^2)`
@@ -53,8 +66,26 @@ const RANDOM_EFFECTS_MINIMUM_PHI = 1e-8;
  */
 const RANDOM_EFFECTS_RELATIVE_PHI = 1e-2;
 
+/** The exact determinant and inverse hold a dense entity matrix in private memory. */
+export const GPU_PANEL_LAG_MAXIMUM_ENTITY_COUNT = 32;
+/** The reference fit walks periods and rows serially during each likelihood profile. */
+export const GPU_PANEL_LAG_MAXIMUM_PERIOD_COUNT = 32;
+/** Dense normal and information matrices include an intercept and the spatial parameter. */
+const MAXIMUM_PREDICTOR_COUNT = 7;
+/** Alternating random-effects profiling remains a bounded serial reference fit. */
+const MAXIMUM_ITERATION_COUNT = 128;
+/** Golden-section searches remain bounded inside one invocation. */
+const MAXIMUM_SEARCH_ITERATION_COUNT = 64;
+
 export type GPUSpatialPanelLagMaximumLikelihoodProps = {
   id?: string;
+  /** Auto uses tiled unit effects when eigenvalues are supplied; reference preserves the dense route. */
+  fitMode?: 'auto' | 'reference' | 'tiled';
+  /** Entity-graph eigenvalues from getSpatialWeightsEigenvalues, required for tiled unit effects.
+   * The caller supplies the spectrum of W (which must be similar to a symmetric matrix).
+   * Complete panel rows are tiled; the determinant is T times the entity log determinant.
+   */
+  eigenvalues?: GraphDataView<'float32'>;
   weights: GPUSpatialWeights;
   periodCount: number;
   predictors: GraphDataView<'float32'>;
@@ -98,8 +129,10 @@ export type GPUSpatialPanelLagMaximumLikelihoodProps = {
 /**
  * Balanced spatial lag ML, random or unit effects. Random mode alternates analytic phi
  * minimization with bounded exact-logdet rho profiling, matching spreg Panel_RE_Lag.
- * A dense entity determinant limits this reference-oriented mode to 32 entities, 32 periods,
- * 7 predictors. Complete panels and nonnegative row-standardized zero-diagonal weights are required.
+ * The reference route uses a dense entity determinant and is limited to 32 entities, 32 periods,
+ * 7 predictors. With unit effects and caller-supplied entity eigenvalues, auto selects row tiles
+ * and a storage-backed pivoted inverse: at most 1024 entities and 2^24 total panel rows. Random
+ * effects and Hausman comparisons retain the reference route. Complete panels and nonnegative row-standardized zero-diagonal weights are required.
  * No hidden regularization or CPU solve. Hausman uses spreg's RE-minus-FE conditional variance
  * difference; indefinite/singular or negative-statistic comparisons are explicitly invalid.
  *
@@ -159,21 +192,90 @@ export type GPUSpatialPanelLagMaximumLikelihoodProps = {
  */
 export class GPUSpatialPanelLagMaximumLikelihood implements GPUCommandNodeProducer {
   readonly id: string;
+  readonly fitMode: 'reference' | 'tiled';
+  readonly estimatedCommandNodeCount: number;
   constructor(readonly props: GPUSpatialPanelLagMaximumLikelihoodProps) {
     this.id = props.id ?? 'spatial-panel-lag-maximum-likelihood';
     const entities = validateGPUSpatialWeights(this.id, props.weights);
     const rows = entities * props.periodCount;
     const columns = props.predictorCount + 1;
-    validateCapacity(this.id, 'entities', entities, 2, 32);
-    validateCapacity(this.id, 'periodCount', props.periodCount, 2, 32);
-    validateCapacity(this.id, 'predictorCount', props.predictorCount, 1, 7);
-    validateCapacity(this.id, 'maximumIterations', props.maximumIterations ?? 64, 1, 128);
+    validateRequirement(
+      this.id,
+      props.fitMode === undefined || ['auto', 'reference', 'tiled'].includes(props.fitMode),
+      "fitMode must be 'auto', 'reference' or 'tiled'"
+    );
+    this.fitMode =
+      props.fitMode === 'reference'
+        ? 'reference'
+        : props.fitMode === 'tiled' || props.eigenvalues
+          ? 'tiled'
+          : 'reference';
+    validateRequirement(
+      this.id,
+      this.fitMode !== 'tiled' || (props.effects === 'unit' && Boolean(props.eigenvalues)),
+      "tiled fitMode requires effects 'unit' and entity eigenvalues"
+    );
+    validateRequirement(
+      this.id,
+      this.fitMode !== 'reference' || !props.eigenvalues,
+      'eigenvalues require tiled fitMode'
+    );
+    validateCapacity(
+      this.id,
+      'entities',
+      entities,
+      2,
+      this.fitMode === 'tiled'
+        ? GPU_PANEL_LAG_TILED_MAXIMUM_ENTITY_COUNT
+        : GPU_PANEL_LAG_MAXIMUM_ENTITY_COUNT
+    );
+    validateCapacity(
+      this.id,
+      'periodCount',
+      props.periodCount,
+      2,
+      this.fitMode === 'tiled'
+        ? GPU_PANEL_LAG_TILED_MAXIMUM_ROW_COUNT
+        : GPU_PANEL_LAG_MAXIMUM_PERIOD_COUNT
+    );
+    if (this.fitMode === 'tiled')
+      validateCapacity(
+        this.id,
+        'entities * periodCount',
+        rows,
+        1,
+        GPU_PANEL_LAG_TILED_MAXIMUM_ROW_COUNT
+      );
+    if (props.eigenvalues) {
+      validateSinglePackedView(props.eigenvalues, ['float32'], `${this.id} eigenvalues`);
+      validateRequirement(
+        this.id,
+        props.eigenvalues.length === entities,
+        'eigenvalues must hold one value per entity'
+      );
+    }
+    this.estimatedCommandNodeCount = this.fitMode === 'tiled' ? 5 * entities + 64 : 16;
+    validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
+    validateCapacity(this.id, 'predictorCount', props.predictorCount, 1, MAXIMUM_PREDICTOR_COUNT);
+    validateCapacity(
+      this.id,
+      'maximumIterations',
+      props.maximumIterations ?? 64,
+      1,
+      MAXIMUM_ITERATION_COUNT
+    );
     validateCapacity(
       this.id,
       'maximumSearchIterations',
       props.maximumSearchIterations ?? 32,
       1,
-      64
+      MAXIMUM_SEARCH_ITERATION_COUNT
+    );
+    validateRequirement(
+      this.id,
+      Math.fround(props.tolerance ?? 1e-5) > 0 &&
+        Number.isFinite(Math.fround(props.tolerance ?? 1e-5)),
+      'tolerance must be positive and finite when represented as float32'
     );
     if (
       !['random', 'unit'].includes(props.effects ?? 'random') ||
@@ -197,16 +299,38 @@ export class GPUSpatialPanelLagMaximumLikelihood implements GPUCommandNodeProduc
         validateSinglePackedView(view, [format], this.id);
         if (view.length !== length) throw new Error(`${this.id}: shape mismatch`);
       }
+    validateRegressionOutputDispatches(
+      this.id,
+      {
+        ...props.output,
+        hausmanTests: props.hausman?.tests,
+        hausmanStatus: props.hausman?.status
+      },
+      [
+        ['coefficients', 'covariance', 'summary', 'status'],
+        ['fitted', 'residuals'],
+        ['hausmanTests', 'hausmanStatus']
+      ]
+    );
     validateGraphOutputsDisjointFromInputs(
       this.id,
       [...Object.values(props.output), ...Object.values(props.hausman ?? {})],
-      [props.predictors, props.response, ...getGPUSpatialWeightsViews(props.weights)]
+      [
+        props.predictors,
+        props.response,
+        props.eigenvalues,
+        props.weights.offsets,
+        props.weights.neighbors,
+        props.weights.weights,
+        props.weights.status?.overflow
+      ]
     );
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
+    if (this.fitMode === 'tiled') return getPanelLagTiledNodes(graph, id, props);
     const entities = props.weights.offsets.length - 1,
       rows = props.response.length,
       columns = props.predictorCount + 1;
@@ -217,6 +341,32 @@ export class GPUSpatialPanelLagMaximumLikelihood implements GPUCommandNodeProduc
       // Intercept of the centered model, read by the fitted and residual node.
       centeredInterceptOffset = statusOffset + 1,
       stride = statusOffset + 2;
+    validateGraphChunkBindingRanges(graph, id, {
+      predictors: props.predictors,
+      response: props.response,
+      offsets: props.weights.offsets,
+      neighbors: props.weights.neighbors,
+      weights: props.weights.weights,
+      overflow: props.weights.status?.overflow,
+      ...props.output,
+      hausmanTests: props.hausman?.tests,
+      hausmanStatus: props.hausman?.status
+    });
+    for (const [name, length] of [
+      ['packed panel', rows * width * 2],
+      ['dense weights', entities * entities],
+      ['model results', stride * (props.hausman ? 2 : 1)],
+      ['spatial product', entities * entities * (props.hausman ? 2 : 1)],
+      ['pooled means', columns + 1]
+    ] as const) {
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        name,
+        length * 4,
+        'reduce panel dimensions'
+      );
+    }
     const data = createTransientView(graph, `${id}-packed-panel`, 'float32', rows * width * 2),
       dense = createTransientView(graph, `${id}-dense-weights`, 'float32', entities * entities),
       results = createTransientView(
@@ -236,13 +386,6 @@ export class GPUSpatialPanelLagMaximumLikelihood implements GPUCommandNodeProduc
     // The last slot is a zero written at run time (the runtime zero of getRoundedDifference).
     const centers = createTransientView(graph, `${id}-pooled-means`, 'float32', columns + 1);
     const runtimeZeroWGSL = `bitcast<u32>(centers[centersOffset + ${columns}u])`;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.predictors,
-      props.response,
-      ...getGPUSpatialWeightsViews(props.weights),
-      ...Object.values(props.output),
-      ...Object.values(props.hausman ?? {})
-    ]);
     const nodes: GPUCommandNode<Parameters>[] = [
       createWGSLKernelNode(graph, {
         id: `${id}-pooled-means`,
@@ -366,9 +509,9 @@ fn getVariance(rho:f32,direct:vec4<f32>)->f32 {
 fn objective(rho:f32,direct:vec4<f32>)->f32 {
  let variance=getVariance(rho,direct); if (!(variance > 0.0)) {return 3.402823e38;}
  var matrix:array<f32,${entities * entities}>;for(var row=0u;row<${entities}u;row++){for(var column=0u;column<${entities}u;column++){matrix[row*${entities}u+column]=select(0.0,1.0,row==column)-rho*dense[denseOffset+row*${entities}u+column];}}
- var determinant=0.0;for(var pivot=0u;pivot<${entities}u;pivot++){var chosen=pivot;for(var row=pivot+1u;row<${entities}u;row++){if(abs(matrix[row*${entities}u+pivot])>abs(matrix[chosen*${entities}u+pivot])){chosen=row;}}
- if(!(abs(matrix[chosen*${entities}u+pivot])>1.0e-10)){return 3.402823e38;}if(chosen!=pivot){for(var column=pivot;column<${entities}u;column++){let saved=matrix[pivot*${entities}u+column];matrix[pivot*${entities}u+column]=matrix[chosen*${entities}u+column];matrix[chosen*${entities}u+column]=saved;}}
- let diagonal=matrix[pivot*${entities}u+pivot];determinant+=log(abs(diagonal));for(var row=pivot+1u;row<${entities}u;row++){let factor=matrix[row*${entities}u+pivot]/diagonal;for(var column=pivot+1u;column<${entities}u;column++){matrix[row*${entities}u+column]-=factor*matrix[pivot*${entities}u+column];}}}
+ let factorization=factorDenseLU_${entities}(&matrix,${entities}u,0u,1.0e-10,0.0);
+ if(factorization.status!=0u){return 3.402823e38;}
+ let determinant=factorization.logAbsDeterminant;
  return ${getWGSLFloatLiteral(rows / 2)}*log(variance)-${props.periodCount}.0*determinant;
 }`,
           body: `let base=resultsOffset+${model * stride}u;for(var slot=0u;slot<${stride}u;slot++){results[base+slot]=getNaN();}results[base+${statusOffset}u]=1.0;
@@ -497,6 +640,15 @@ for(var column=0u;column<${parameterCount}u;column++){for(var row=0u;row<${param
     return nodes;
   }
 }
+/** Panel-specific in-place adapter over the shared scale-aware LU inverse. */
 function getInverseWGSL(size: number): string {
-  return `fn inverse_${size}(matrix:ptr<function,array<f32,${size * size}>>)->bool {var inverse:array<f32,${size * size}>;for(var row=0u;row<${size}u;row++){inverse[row*${size}u+row]=1.0;}for(var pivot=0u;pivot<${size}u;pivot++){var chosen=pivot;for(var row=pivot+1u;row<${size}u;row++){if(abs((*matrix)[row*${size}u+pivot])>abs((*matrix)[chosen*${size}u+pivot])){chosen=row;}}if(!(abs((*matrix)[chosen*${size}u+pivot])>1.0e-10)){return false;}if(chosen!=pivot){for(var column=0u;column<${size}u;column++){let first=(*matrix)[pivot*${size}u+column];(*matrix)[pivot*${size}u+column]=(*matrix)[chosen*${size}u+column];(*matrix)[chosen*${size}u+column]=first;let second=inverse[pivot*${size}u+column];inverse[pivot*${size}u+column]=inverse[chosen*${size}u+column];inverse[chosen*${size}u+column]=second;}}let diagonal=(*matrix)[pivot*${size}u+pivot];for(var column=0u;column<${size}u;column++){(*matrix)[pivot*${size}u+column]/=diagonal;inverse[pivot*${size}u+column]/=diagonal;}for(var row=0u;row<${size}u;row++){if(row==pivot){continue;}let factor=(*matrix)[row*${size}u+pivot];for(var column=0u;column<${size}u;column++){(*matrix)[row*${size}u+column]-=factor*(*matrix)[pivot*${size}u+column];inverse[row*${size}u+column]-=factor*inverse[pivot*${size}u+column];}}}(*matrix)=inverse;return true;}`;
+  return `${getDenseLUWGSL(size)}
+fn inverse_${size}(matrix:ptr<function,array<f32,${size * size}>>)->bool {
+  var factorization=factorDenseLU_${size}(matrix,${size}u,0u,0.0,0.0);
+  if(factorization.status!=0u){return false;}
+  var inverse:array<f32,${size * size}>;
+  if(!invertDenseLU_${size}(matrix,&factorization,&inverse)){return false;}
+  (*matrix)=inverse;
+  return true;
+}`;
 }

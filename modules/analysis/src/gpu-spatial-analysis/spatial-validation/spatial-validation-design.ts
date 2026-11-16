@@ -18,7 +18,7 @@ import {
   validateGraphViewsBelongToGraph,
   validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {validatePredictionViews} from '../../analysis-core/kernels/gpu-prediction-utils';
+import {validateRegressionOutputDispatches} from '../spatial-regression/regression-output-dispatches';
 import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import type {GPUSpatialCrossValidationProps} from './gpu-spatial-cross-validation';
 
@@ -156,12 +156,17 @@ export function validateSpatialValidationDesign(
       throw new Error(`${id}: diagnostics shape mismatch`);
   }
   if (design.diagnostics) {
-    validatePredictionViews(id, [], [...Object.values(props.output), design.diagnostics]);
+    validateRegressionOutputDispatches(id, {...props.output, diagnostics: design.diagnostics}, []);
   }
   validateGraphOutputsDisjointFromInputs(
     id,
     [...Object.values(props.output), design.diagnostics],
-    [...getSpatialDesignInputs(design), props.positions, props.blocks, props.mask]
+    [
+      ...getSpatialDesignInputs(design),
+      props.positions,
+      design.mode === 'groups' ? props.blocks : undefined,
+      props.mask
+    ]
   );
 }
 

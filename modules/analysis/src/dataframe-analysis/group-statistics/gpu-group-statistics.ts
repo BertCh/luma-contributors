@@ -4,40 +4,77 @@
 
 import {
   createTransientView,
+  getViewBindingRange,
   type GPUCommandGraph,
   type GPUCommandNode,
-  type GraphDataView
+  type GraphDataView,
+  GraphVectorView
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import type {
   GPUCardinalityPort,
   GPUOverflowStatusPort
 } from '../../analysis-core/kernels/gpu-contributor-types';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  createGroupStatisticsKernelNode,
+  GROUP_DISPATCH_PARAMETER_BYTE_LENGTH
+} from './group-statistics-kernel';
 import type {Device} from '@luma.gl/core';
 import {
+  getGraphViewChunks,
   getStorageBindingElementLimit,
   validateCapacity,
   validateCommandNodeBudget,
   validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
+  validateGraphViewTopology,
   validateMaximumCount,
-  validateSinglePackedView
+  validateRequirement,
+  validateSinglePackedView,
+  validatePowerOfTwo
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  validateDisjointWritableViews,
+  validateGraphChunkBindingRanges
+} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {GPU_CELL_DEFAULT_SUM_SCALE, validateSumScale} from '../../analysis-core/cell-key-wgsl';
 import {readBinding, writeBinding} from './group-statistics-common';
 import {getColumnReductionNodes} from './group-statistics-moments';
 import {getColumnOrderNodes} from './group-statistics-order';
 import {getGroupStructureNodes} from './group-statistics-sort';
 
+import {getTiledGroupStatisticsNodes} from './group-statistics-tiled';
+import {
+  validateTiledKeyUnionKernelSupport,
+  validateTiledKeyUnionRowCount
+} from '../../analysis-core/kernels/tiled-key-union';
+
 const OPERATION = 'GPUGroupStatistics';
+/** Fixed local sort/scan allowances plus gather passes, moments and pairwise key-union nodes. */
+const GROUP_TILE_COMMAND_NODE_ALLOWANCE = 1000;
+/** A tile moment tree has at most 29 merge levels, plus gathers and integer reduction passes. */
+const GROUP_TILE_COLUMN_COMMAND_NODE_ALLOWANCE = 64;
+/** Four scalar moment words per tile row must fit a uint32 storage-array length. */
+const GROUP_MAXIMUM_TILE_ROW_COUNT = 0x20000000;
 
 /** Largest number of value columns one contributor instance reduces. */
 const MAXIMUM_COLUMN_COUNT = 4;
 
 /** Published GPUSort accepts at most 2^31 rows, including its padding. */
 const MAXIMUM_ROW_COUNT = 2 ** 31;
+
+/** Four scalar moment words per group must be addressable by uint32 shader indices. */
+const MAXIMUM_GROUP_CAPACITY = Math.floor(0xffffffff / 4);
+
+/** The percentile-count shader literal and uniform row indices are uint32 values. */
+const MAXIMUM_PERCENTILE_COUNT = 0xffffffff;
+
+/** The group-major percentile output uses uint32 invocation counts and indices. */
+const MAXIMUM_PERCENTILE_TOTAL = 0xffffffff;
+
+type GroupKeyRows = GraphDataView<'uint32' | 'uint32x2'> | GraphVectorView<'uint32' | 'uint32x2'>;
+type GroupValueRows = GraphDataView<'float32'> | GraphVectorView<'float32'>;
 
 /**
  * Upper bound per published sort, scan or gather: includes radix histogram scans and their
@@ -51,7 +88,7 @@ const PRIMITIVE_COMMAND_NODE_ALLOWANCE = 512;
  * 8388608 on a default device (128 MiB bindings).
  */
 export function getGPUGroupStatisticsMaximumGroupCount(device: Device): number {
-  return getStorageBindingElementLimit(device, 16);
+  return Math.min(MAXIMUM_GROUP_CAPACITY, getStorageBindingElementLimit(device, 16));
 }
 
 /**
@@ -60,7 +97,7 @@ export function getGPUGroupStatisticsMaximumGroupCount(device: Device): number {
  * a default device.
  */
 export function getGPUGroupStatisticsMaximumPercentileTotal(device: Device): number {
-  return getStorageBindingElementLimit(device, 4);
+  return Math.min(MAXIMUM_PERCENTILE_TOTAL, getStorageBindingElementLimit(device, 4));
 }
 
 /** Statistics {@link GPUGroupStatistics} can compute per group and value column. */
@@ -140,9 +177,9 @@ export type GPUGroupStatisticsColumnOutput = {
 };
 
 /** One value column and the statistics to compute for it. */
-export type GPUGroupStatisticsColumn = {
+export type GPUGroupStatisticsColumn<Values extends GroupValueRows = GraphDataView<'float32'>> = {
   /** Per-row values. Rows with a non-finite value are excluded from this column only. */
-  values: GraphDataView<'float32'>;
+  values: Values;
   /** Statistics to compute. This set is topology: changing it needs a new graph. */
   statistics: readonly GPUGroupStatistic[];
   /** Output views, one per requested statistic. */
@@ -154,9 +191,11 @@ export type GPUGroupStatisticsColumn = {
  * column's {@link GPUGroupStatisticsColumnOutput}. Capacity is `keys.length`, at most
  * {@link getGPUGroupStatisticsMaximumGroupCount} (8388608 on a default device).
  */
-export type GPUGroupStatisticsOutput = {
+export type GPUGroupStatisticsOutput<
+  KeyFormat extends 'uint32' | 'uint32x2' = 'uint32' | 'uint32x2'
+> = {
   /** Distinct keys ascending, same format as the input keys. Empty tail rows hold the all-ones key. */
-  keys: GraphDataView<'uint32'> | GraphDataView<'uint32x2'>;
+  keys: GraphDataView<KeyFormat>;
   /** Valid rows per group (mask set and key valid, regardless of value finiteness). */
   counts: GraphDataView<'uint32'>;
   /**
@@ -171,10 +210,13 @@ export type GPUGroupStatisticsOutput = {
  * Properties for {@link GPUGroupStatistics}.
  *
  * Per-frame (no recompile): the contents of `keys`, `mask`, every `values` column, and the
- * `percentiles` fractions. Topology (needs a new graph): view lengths, the capacity, each column's
- * statistic set, `variance`, `sumScale`, and the number of percentiles.
+ * `percentiles` fractions. Topology (needs a new graph): view lengths and chunk boundaries, the
+ * capacity, each column's statistic set, `variance`, `sumScale`, and the number of percentiles.
  */
-export type GPUGroupStatisticsProps = {
+export type GPUGroupStatisticsProps<
+  Keys extends GroupKeyRows = GraphDataView<'uint32' | 'uint32x2'>,
+  Values extends GroupValueRows = GraphDataView<'float32'>
+> = {
   /** Prefix for generated node and transient IDs. Defaults to `'group-statistics'`. */
   id?: string;
   /**
@@ -182,9 +224,9 @@ export type GPUGroupStatisticsProps = {
    * The all-ones key (`0xffffffff`, or both words) is reserved and means "no key": such rows are
    * skipped.
    */
-  keys: GraphDataView<'uint32'> | GraphDataView<'uint32x2'>;
-  /** Optional per-row mask; zero skips the row. */
-  mask?: GraphDataView<'uint32'>;
+  keys: Keys;
+  /** Optional per-row mask; zero skips the row. Must match the key chunk topology. */
+  mask?: Keys extends GraphVectorView ? GraphVectorView<'uint32'> : GraphDataView<'uint32'>;
   /**
    * Dense mode. When set, `keys` must be `uint32` with group keys in `[0, keyCount)` and the
    * output tables are indexed by key: `output.keys.length` and every per-group view must hold
@@ -198,7 +240,7 @@ export type GPUGroupStatisticsProps = {
    */
   keyCount?: number;
   /** Zero to four value columns. */
-  columns: readonly GPUGroupStatisticsColumn[];
+  columns: readonly GPUGroupStatisticsColumn<Values>[];
   /** `'sample'` (n - 1, default, as d3 and kepler) or `'population'` (n). Stdev and z-scores follow it. */
   variance?: 'sample' | 'population';
   /**
@@ -213,8 +255,12 @@ export type GPUGroupStatisticsProps = {
    * Defaults to 65536. `sumValues`, `means` and the moments do not use it.
    */
   sumScale?: number;
+  /** Explicit reference route: all global order scratch must fit one device binding. */
+  scratchMode?: 'auto' | 'packed';
+  /** Optional power-of-two tile width. Exact order statistics and z-scores retain the packed route. */
+  scratchTileSize?: number;
   /** Caller-owned group table. Capacity is `output.keys.length`. */
-  output: GPUGroupStatisticsOutput;
+  output: GPUGroupStatisticsOutput<Keys['format']>;
 };
 
 /** Output field each statistic requires. */
@@ -287,13 +333,37 @@ const FLOAT_OUTPUTS = [
  * modes and unique counts come from run heads, a scan, and integer atomics. Ties resolve to the
  * smallest value. When more groups exist than the capacity, the smallest keys are kept.
  *
- * Inputs must be single packed views. Not included: HyperLogLog-style approximate distinct counts.
+ * Keys and values accept packed views or chunked GraphVectorView inputs; every chunk must be
+ * packed. Public props default to packed input views, and constructor inference preserves the
+ * supplied input and output view types. All outputs stay packed global group tables, including
+ * with chunked input; they do not mirror source chunk boundaries. The mask must share the key
+ * chunk boundaries; each value column may use different boundaries. Key preparation dispatches
+ * per chunk into the shared global key-sort scratch.
+ * Counts, sums, means and extremes dispatch per value chunk into shared integer accumulators;
+ * the fixed-point scale is selected across every chunk before any sums are added. Moments
+ * scatter per-chunk terms into the same sorted positions and fixed tree as packed input, and
+ * z-scores write the original logical row order. These paths do not gather value chunks.
+ * Median, percentiles, mode and uniqueCount gather chunked values into one packed scratch
+ * binding before their global sort. Exact order statistics and z-scores retain that named
+ * packed row-scratch bound. Other statistics automatically use fixed-width tile sorts above
+ * the binding limit. Global integer accumulators retain the original unit and headroom; tile
+ * moment trees share the global shift mean and scale, then merge their centered partials.
+ * Moments can differ in their last float32 bits; counts, sums, means and extremes are identical. Chunk dispatch metadata and tree widths use runtime uniforms, so chunk count and
+ * tree depth do not multiply the analysis pipelines. Outputs and percentile fractions remain
+ * single packed views with disjoint logical ranges; fields bound together must also have
+ * disjoint aligned binding ranges. Results are bitwise
+ * identical to packed input on the packed scratch route. Not included: HyperLogLog-style approximate distinct counts.
  */
-export class GPUGroupStatistics implements GPUCommandNodeProducer {
+export class GPUGroupStatistics<
+  Props extends GPUGroupStatisticsProps<GroupKeyRows, GroupValueRows> = GPUGroupStatisticsProps
+> implements GPUCommandNodeProducer
+{
   /** Prefix for every node and transient ID. */
   readonly id: string;
+  readonly scratchTileSize: number;
+  readonly usesTiledScratch: boolean;
   /** Validated properties. */
-  readonly props: GPUGroupStatisticsProps;
+  readonly props: Props;
   /** Variance kind used by variance, standard deviation and z-scores. */
   readonly variance: 'sample' | 'population';
   /** Fixed-point scale of the `sums` words. */
@@ -301,7 +371,7 @@ export class GPUGroupStatistics implements GPUCommandNodeProducer {
   /** Upper bound including published primitive allowances and the row-dependent moment tree. */
   readonly estimatedCommandNodeCount: number;
 
-  constructor(props: GPUGroupStatisticsProps) {
+  constructor(props: Props) {
     this.id = props.id ?? 'group-statistics';
     this.props = props;
     const id = this.id;
@@ -316,15 +386,25 @@ export class GPUGroupStatistics implements GPUCommandNodeProducer {
     if (columns.length > MAXIMUM_COLUMN_COUNT) {
       throw new Error(`${id} supports at most ${MAXIMUM_COLUMN_COUNT} columns`);
     }
-    validateSinglePackedView(keys, ['uint32', 'uint32x2'], `${id} keys`);
+    for (const chunk of getGraphViewChunks(keys)) {
+      validateSinglePackedView(chunk, ['uint32', 'uint32x2'], `${id} keys`);
+    }
+    validateRequirement(
+      id,
+      keys.format === 'uint32' || keys.format === 'uint32x2',
+      'keys.format must be uint32 or uint32x2'
+    );
     const rowCount = keys.length;
     validateCapacity(id, 'keys.length', rowCount, 1, MAXIMUM_ROW_COUNT);
     if (mask) {
-      validateSinglePackedView(mask, ['uint32'], `${id} mask`);
+      for (const chunk of getGraphViewChunks(mask)) {
+        validateSinglePackedView(chunk, ['uint32'], `${id} mask`);
+      }
       if (mask.length !== rowCount) {
         throw new Error(`${id} mask must have the same length as keys`);
       }
     }
+    validateGraphViewTopology(id, 'mask', keys, mask);
     if (props.keyCount !== undefined) {
       if (!Number.isInteger(props.keyCount) || props.keyCount < 1 || props.keyCount >= 0xffffffff) {
         throw new Error(`${id} keyCount must be an integer in [1, 2^32 - 2]`);
@@ -342,9 +422,7 @@ export class GPUGroupStatistics implements GPUCommandNodeProducer {
       `${id} output.keys`
     );
     const capacity = output.keys.length;
-    if (capacity < 1) {
-      throw new Error(`${id} output.keys must hold at least one row`);
-    }
+    validateCapacity(id, 'output.keys.length', capacity, 1, MAXIMUM_GROUP_CAPACITY);
     validateSinglePackedView(output.counts, ['uint32'], `${id} output.counts`);
     if (output.counts.length !== capacity) {
       throw new Error(`${id} output.counts must have the same length as output.keys`);
@@ -363,10 +441,17 @@ export class GPUGroupStatistics implements GPUCommandNodeProducer {
     let percentileColumnCount = 0;
     for (const [columnIndex, column] of columns.entries()) {
       const name = `columns[${columnIndex}]`;
-      validateSinglePackedView(column.values, ['float32'], `${id} ${name}.values`);
+      for (const chunk of getGraphViewChunks(column.values)) {
+        validateSinglePackedView(chunk, ['float32'], `${id} ${name}.values`);
+      }
       if (column.values.length !== rowCount) {
         throw new Error(`${id} ${name}.values must have the same length as keys`);
       }
+      validateRequirement(
+        id,
+        column.values.format === 'float32',
+        `${name}.values.format must be float32`
+      );
       const requested = new Set(column.statistics);
       for (const statistic of requested) {
         if (!(statistic in STATISTIC_OUTPUTS)) {
@@ -459,20 +544,67 @@ export class GPUGroupStatistics implements GPUCommandNodeProducer {
     }
     if (props.percentiles) {
       validateSinglePackedView(props.percentiles, ['float32'], `${id} percentiles`);
-      if (props.percentiles.length < 1) {
-        throw new Error(`${id} percentiles must hold at least one fraction`);
-      }
+      validateCapacity(
+        id,
+        'percentiles.length',
+        props.percentiles.length,
+        1,
+        MAXIMUM_PERCENTILE_COUNT
+      );
+      validateCapacity(
+        id,
+        'output.keys.length * percentiles.length',
+        capacity * props.percentiles.length,
+        1,
+        MAXIMUM_PERCENTILE_TOTAL
+      );
       if (percentileColumnCount === 0) {
         throw new Error(`${id} percentiles is only used by the 'percentiles' statistic`);
       }
     }
     validateGraphOutputsDisjointFromInputs(id, this.getOutputViews(), this.getInputViews());
+    this.validateOutputViews();
     // Structure: at most two sorts, two gathers and one scan, plus 16 local nodes. A column's
     // order statistics add at most three sorts, four gathers and two scans. The other column
-    // passes need fewer than 32 nodes, plus the logarithmic moment merge levels.
+    // passes need fewer than 32 nodes, plus the logarithmic moment merge levels. Allow one
+    // prepare node per key chunk and five nodes per value chunk: scale, accumulate, moment
+    // terms, z-scores and (only for order statistics) a storage-only value gather.
+    validateRequirement(
+      id,
+      props.scratchMode === undefined ||
+        props.scratchMode === 'auto' ||
+        props.scratchMode === 'packed',
+      'scratchMode must be auto or packed'
+    );
+    const limits = (getGraphViewChunks(keys)[0].buffer.graph as GPUCommandGraph).device.limits;
+    const scratchByteLimit = Math.min(limits.maxStorageBufferBindingSize, limits.maxBufferSize);
+    this.scratchTileSize =
+      props.scratchTileSize ??
+      2 **
+        Math.floor(
+          Math.log2(Math.max(1, Math.min(GROUP_MAXIMUM_TILE_ROW_COUNT, scratchByteLimit / 16)))
+        );
+    validateCapacity(id, 'scratchTileSize', this.scratchTileSize, 1, GROUP_MAXIMUM_TILE_ROW_COUNT);
+    validatePowerOfTwo(id, 'scratchTileSize', this.scratchTileSize);
+    const boundedStatistics = columns.some(column =>
+      column.statistics.some(statistic =>
+        ['median', 'percentiles', 'mode', 'uniqueCount', 'zScore'].includes(statistic)
+      )
+    );
+    this.usesTiledScratch =
+      !boundedStatistics &&
+      props.scratchMode !== 'packed' &&
+      (props.scratchTileSize !== undefined
+        ? rowCount > this.scratchTileSize
+        : rowCount * 4 > scratchByteLimit);
+    const tileCount = Math.ceil(rowCount / this.scratchTileSize);
+    if (this.usesTiledScratch && props.keyCount === undefined) {
+      validateTiledKeyUnionRowCount(id, tileCount * this.scratchTileSize);
+    }
     this.estimatedCommandNodeCount =
       5 * PRIMITIVE_COMMAND_NODE_ALLOWANCE +
       16 +
+      getGraphViewChunks(keys).length +
       columns.reduce((total, column) => {
         const needsOrder = column.statistics.some(statistic =>
           ['median', 'percentiles', 'mode', 'uniqueCount'].includes(statistic)
@@ -483,14 +615,83 @@ export class GPUGroupStatistics implements GPUCommandNodeProducer {
         return (
           total +
           32 +
+          5 * getGraphViewChunks(column.values).length +
           (needsOrder ? 9 * PRIMITIVE_COMMAND_NODE_ALLOWANCE : 0) +
           (needsMoments ? Math.ceil(Math.log2(rowCount)) + 2 : 0)
         );
       }, 0);
+    if (this.usesTiledScratch)
+      this.estimatedCommandNodeCount =
+        (GROUP_TILE_COMMAND_NODE_ALLOWANCE +
+          GROUP_TILE_COLUMN_COMMAND_NODE_ALLOWANCE * columns.length) *
+          tileCount +
+        6 * tileCount * tileCount +
+        8 *
+          (getGraphViewChunks(keys).length +
+            columns.reduce((total, column) => total + getGraphViewChunks(column.values).length, 0));
     validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
   }
 
-  private getInputViews(): (GraphDataView | undefined)[] {
+  /** Checks logical separation globally and aligned ranges only for co-bound writable fields. */
+  private validateOutputViews(): void {
+    const {id, props} = this;
+    // Treat output fields as separate logical write chunks for the cross-dispatch check. The
+    // borrowed word views are metadata only; no resources or nodes are declared. This also lets
+    // the shared validator recognize two imported handles backed by the same physical buffer.
+    const chunks = this.getOutputViews().flatMap(view =>
+      view
+        ? [
+            (view.buffer.graph as GPUCommandGraph).createDataView(view.buffer, {
+              format: 'uint32',
+              length: (view.length * view.rowByteLength) / 4,
+              byteOffset: view.byteOffset
+            })
+          ]
+        : []
+    );
+    const length = chunks.reduce((total, chunk) => total + chunk.length, 0);
+    validateDisjointWritableViews(id, {
+      'output fields': new GraphVectorView({
+        id: `${id}-output-fields`,
+        name: 'output fields',
+        format: 'uint32',
+        length,
+        valueLength: length,
+        stride: 1,
+        byteStride: 4,
+        rowByteLength: 4,
+        data: chunks
+      })
+    });
+    // Keys and group counts share the group-table dispatch; status fields share publish.
+    validateDisjointWritableViews(id, {
+      'output.keys': props.output.keys,
+      'output.counts': props.output.counts
+    });
+    validateDisjointWritableViews(id, {
+      'output.status.count': props.output.status.count,
+      'output.status.overflow': props.output.status.overflow,
+      'output.status.requiredCount': props.output.status.requiredCount
+    });
+    for (const [columnIndex, column] of props.columns.entries()) {
+      const prefix = `columns[${columnIndex}].output`;
+      const output = column.output;
+      // These are the caller-owned writable subsets of finish-sums, finish-extremes and
+      // finish-moments respectively. Other column dispatches bind at most one output field.
+      for (const fields of [
+        ['counts', 'sumValues', 'means'],
+        ['minimums', 'maximums'],
+        ['variances', 'standardDeviations', 'skewness', 'kurtosis']
+      ] as const) {
+        validateDisjointWritableViews(
+          id,
+          Object.fromEntries(fields.map(field => [`${prefix}.${field}`, output[field]]))
+        );
+      }
+    }
+  }
+
+  private getInputViews(): (GraphDataView | GraphVectorView | undefined)[] {
     const {props} = this;
     return [
       props.keys,
@@ -517,16 +718,46 @@ export class GPUGroupStatistics implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
+    // Empty input chunks never produce prepare, gather or reduction dispatches. In particular,
+    // a trailing empty subview may sit exactly at its buffer's end and has no backing row to
+    // bind. Preflight only actual bindings, rather than inventing a one-row empty binding.
+    const bindingChunks = [...this.getInputViews(), ...this.getOutputViews()].flatMap(view =>
+      view ? getGraphViewChunks(view).filter(chunk => chunk.length > 0) : []
+    );
     // Every row-proportional scratch binding is a scalar array, including the four separate
     // moment-power arrays. Check before declaring any command nodes or transients.
     validateGPUStorageBindingByteLength(
       graph.device,
       id,
       'keys.length row scratch',
-      props.keys.length * 4,
-      'reduce keys.length'
+      (this.usesTiledScratch ? this.scratchTileSize : props.keys.length) * 4,
+      'reduce keys.length (exact order statistics and zScore retain the packed row-scratch limit)'
     );
+    // A 64-bit key column may exceed one binding in total, but every physical chunk must fit.
+    // Include the binding alignment prefix for nonzero view byte offsets.
+    for (const chunk of bindingChunks) {
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        'input/output chunk',
+        getViewBindingRange(chunk).size,
+        'reduce the chunk length or output capacity'
+      );
+    }
     validateGraphViewsBelongToGraph(id, graph, [...this.getInputViews(), ...this.getOutputViews()]);
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(bindingChunks.map((chunk, index) => [`bound field ${index}`, chunk]))
+    );
+    for (const chunk of bindingChunks)
+      validateCapacity(
+        id,
+        'input/output buffer byteLength',
+        chunk.buffer.byteLength,
+        0,
+        graph.device.limits.maxBufferSize
+      );
     const capacity = props.output.keys.length;
     validateMaximumCount(
       id,
@@ -542,6 +773,74 @@ export class GPUGroupStatistics implements GPUCommandNodeProducer {
         getGPUGroupStatisticsMaximumPercentileTotal(graph.device)
       );
     }
+    // All transient views start at byte offset zero. Published auto sorts use workgroup-local
+    // bitonic storage up to 256 rows; above that, radix histograms and scan summaries are
+    // smaller than a row-sized scalar binding. These bounds cover their internal scratch too.
+    const scratchLengths: [string, number][] = [
+      ['group offsets', capacity + 1],
+      ['group counts', capacity]
+    ];
+    for (const [columnIndex, column] of props.columns.entries()) {
+      const needsMoments = column.statistics.some(statistic =>
+        ['variance', 'standardDeviation', 'skewness', 'kurtosis', 'zScore'].includes(statistic)
+      );
+      const needsFloatSums =
+        Boolean(column.output.sumValues || column.output.means) || needsMoments;
+      if (needsFloatSums)
+        scratchLengths.push([`columns[${columnIndex}] fixed-point words`, 3 * capacity + 1]);
+      if (needsMoments) {
+        scratchLengths.push(
+          [`columns[${columnIndex}] mean scratch`, 2 * capacity],
+          [`columns[${columnIndex}] moment sums`, 4 * capacity]
+        );
+      }
+    }
+    for (const [name, length] of scratchLengths) {
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        name,
+        length * 4,
+        'reduce output capacity'
+      );
+      validateCapacity(id, `${name} byteLength`, length * 4, 0, graph.device.limits.maxBufferSize);
+    }
+    validateRequirement(
+      id,
+      GROUP_DISPATCH_PARAMETER_BYTE_LENGTH <= graph.device.limits.maxUniformBufferBindingSize,
+      'dispatch parameters must fit maxUniformBufferBindingSize'
+    );
+    if (this.usesTiledScratch) {
+      for (const [name, byteLength] of [
+        ['tile moment scratch', this.scratchTileSize * 16],
+        ['tile group offsets', (this.scratchTileSize + 1) * 4],
+        ['union keys', capacity * 8]
+      ] as const) {
+        validateGPUStorageBindingByteLength(
+          graph.device,
+          id,
+          name,
+          byteLength,
+          'reduce scratchTileSize or output capacity'
+        );
+        validateCapacity(
+          id,
+          `${name} byteLength`,
+          byteLength,
+          0,
+          graph.device.limits.maxBufferSize
+        );
+      }
+      validateTiledKeyUnionKernelSupport(graph, id);
+      return getTiledGroupStatisticsNodes(
+        graph,
+        props,
+        id,
+        this.scratchTileSize,
+        this.sumScale,
+        this.variance
+      );
+    }
     const {nodes, structure} = getGroupStructureNodes<Parameters>(graph, {
       id,
       operation: OPERATION,
@@ -555,26 +854,25 @@ export class GPUGroupStatistics implements GPUCommandNodeProducer {
       const columnId = `${id}-c${columnIndex}`;
       const requested = new Set(column.statistics);
       const columnOutput = column.output;
-      // Reductions and order statistics read raw f32 bits so NaN handling is bit-exact.
-      const valueBits = createTransientView(
-        graph,
-        `${columnId}-value-bits`,
-        'uint32',
-        structure.rowCount
-      );
-      result.push(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${columnId}-value-bits`,
-          operation: OPERATION,
-          variant: 'value-bits',
-          bindings: [
-            readBinding('values', column.values, 'f32'),
-            writeBinding('valueBits', valueBits)
-          ],
-          invocationCount: structure.rowCount,
-          body: 'valueBits[valueBitsOffset + index] = bitcast<u32>(values[valuesOffset + index]);'
-        })
-      );
+      // Reinterpret packed float32 storage as words without allocating or copying values.
+      // Columns may use chunk boundaries independent of the key column.
+      let rowOffset = 0;
+      const valueChunks = getGraphViewChunks(column.values).flatMap(chunk => {
+        const sourceRowOffset = rowOffset;
+        rowOffset += chunk.length;
+        return chunk.length === 0
+          ? []
+          : [
+              {
+                rowOffset: sourceRowOffset,
+                valueBits: graph.createDataView(chunk.buffer, {
+                  format: 'uint32',
+                  length: chunk.length,
+                  byteOffset: chunk.byteOffset
+                })
+              }
+            ];
+      });
       const hasMoments = ['variance', 'standardDeviation', 'skewness', 'kurtosis'].some(statistic =>
         requested.has(statistic as GPUGroupStatistic)
       );
@@ -582,7 +880,7 @@ export class GPUGroupStatistics implements GPUCommandNodeProducer {
         id: columnId,
         operation: OPERATION,
         structure,
-        valueBits,
+        valueChunks,
         needs: {
           sums: requested.has('sum') || requested.has('mean'),
           minimum: requested.has('minimum'),
@@ -601,6 +899,28 @@ export class GPUGroupStatistics implements GPUCommandNodeProducer {
         requested.has('mode') ||
         requested.has('uniqueCount')
       ) {
+        const valueBits =
+          valueChunks.length === 1
+            ? valueChunks[0].valueBits
+            : createTransientView(graph, `${columnId}-value-bits`, 'uint32', structure.rowCount);
+        if (valueChunks.length > 1) {
+          for (const [chunkIndex, chunk] of valueChunks.entries()) {
+            result.push(
+              createGroupStatisticsKernelNode<Parameters>(graph, {
+                id: `${columnId}-gather-value-bits-${chunkIndex}`,
+                operation: OPERATION,
+                variant: 'gather-value-bits',
+                bindings: [
+                  readBinding('source', chunk.valueBits),
+                  writeBinding('valueBits', valueBits)
+                ],
+                invocationCount: chunk.valueBits.length,
+                rowOffset: chunk.rowOffset,
+                body: `valueBits[valueBitsOffset + index + GROUP_ROW_OFFSET] = source[sourceOffset + index];`
+              })
+            );
+          }
+        }
         result.push(
           ...getColumnOrderNodes<Parameters>(graph, {
             id: columnId,

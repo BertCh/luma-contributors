@@ -705,3 +705,244 @@ describe('contributor contract checker', () => {
     expect(runChecker(directory, '--rule', 'unknown').exitCode).toBe(2);
   });
 });
+
+describe('storage binding preflight audit', () => {
+  const declaration = (body: string, extra = '') => `
+    import {createTransientView as scratch} from '@luma.gl/graph/gpu-core';
+    import {validateGPUStorageBindingByteLength as checkBytes} from '../kernels/gpu-contributor-utils';
+    export class GPUFixture implements GPUCommandNodeProducer {
+      getCommandNodes(graph) {${body}}
+      ${extra}
+    }
+  `;
+  const allocation = "const values = scratch(graph, 'rows', 'uint32', this.props.rows);";
+  const check = "checkBytes(graph.device, this.id, 'rows', this.props.rows * 4, 'reduce rows');";
+
+  it.each([
+    allocation,
+    `${allocation} ${check}`,
+    `if (enabled) {${check}} ${allocation}`,
+    `enabled && ${check} ${allocation}`,
+    `for (const view of views) {${check}} ${allocation}`,
+    `const later = () => {${check}}; ${allocation}`
+  ])('flags missing, late, conditional and deferred checks (%s)', body => {
+    const directory = createFixture({[CONTRIBUTOR_PATH]: declaration(body)});
+    const result = runChecker(directory, '--rule', 'storage-binding-preflight');
+    expect(result.exitCode, result.output).toBe(1);
+    expect(result.output).toContain(`storage-binding-preflight ${CONTRIBUTOR_PATH}:`);
+    expect(result.output).toContain(' GPUFixture');
+  });
+
+  it.each([
+    `${check} ${allocation}`,
+    `if (enabled) {${check}} else {${check}} ${allocation}`,
+    `if (empty) return []; ${check} ${allocation}`,
+    `this.preflight(graph); ${allocation}`
+  ])('accepts checks that precede declarations on every path (%s)', body => {
+    const directory = createFixture({
+      [CONTRIBUTOR_PATH]: declaration(body, `preflight(graph) {${check}}`)
+    });
+    const result = runChecker(directory, '--rule', 'storage-binding-preflight');
+    expect(result.exitCode, result.output).toBe(0);
+  });
+
+  it('checks row bindings even in a serial reference kernel', () => {
+    const directory = createFixture({
+      [CONTRIBUTOR_PATH]: declaration(`
+      return [createWGSLKernelNode(graph, {invocationCount: 1,
+        bindings: [{name: 'rows', view: this.props.rows, type: 'f32', access: 'read'}], body: ''})];
+    `)
+    });
+    const result = runChecker(directory, '--rule', 'storage-binding-preflight');
+    expect(result.exitCode, result.output).toBe(1);
+    expect(result.output).toContain(' GPUFixture');
+  });
+
+  it('follows imported preflight helpers and keeps fixed-size-only storage outside this rule', () => {
+    const directory = createFixture({
+      [`${SOURCE_ROOT}/analysis-core/fixture/preflight.ts`]: `
+        import {validateGraphChunkBindingRanges} from '../kernels/graph-chunk-dispatch';
+        export function preflight(graph, views) {validateGraphChunkBindingRanges(graph, 'rows', views);}
+      `,
+      [CONTRIBUTOR_PATH]: `import {preflight as verify} from './preflight';
+        ${declaration(`verify(graph, this.props); ${allocation}`)}
+        export class GPUFixed { getCommandNodes(graph) {
+          createTransientView(graph, 'scalar', 'uint32', 1);
+        }}
+      `
+    });
+    const result = runChecker(directory, '--rule', 'storage-binding-preflight');
+    expect(result.exitCode, result.output).toBe(0);
+  });
+
+  it('finds unchecked scratch in called helpers and inherited methods', () => {
+    const directory = createFixture({
+      [CONTRIBUTOR_PATH]: `
+        function allocate(graph, rows) {return createTransientView(graph, 'rows', 'uint32', rows);}
+        class Parent {getCommandNodes(graph) {return allocate(graph, this.props.rows);}}
+        export class GPUFixture extends Parent {}
+      `
+    });
+    const result = runChecker(directory, '--rule', 'storage-binding-preflight');
+    expect(result.exitCode, result.output).toBe(1);
+    expect(result.output).toContain(' GPUFixture');
+  });
+});
+
+it.each([
+  'for (let round = 0; round < this.props.rounds; round++)',
+  'for (const chunk of this.props.chunks)',
+  'while (this.props.hasRows)',
+  'do'
+])('finds unchecked row allocations in %s loop bodies', loop => {
+  const suffix = loop === 'do' ? 'while (this.props.hasRows);' : '';
+  const directory = createFixture({
+    [CONTRIBUTOR_PATH]: `export class GPUFixture {
+    getCommandNodes(graph) { ${loop} {
+      createTransientView(graph, 'rows', 'uint32', this.props.rows);
+    } ${suffix} }
+  }`
+  });
+  const result = runChecker(directory, '--all', '--rule', 'storage-binding-preflight');
+  expect(result.exitCode, result.output).toBe(1);
+  expect(result.output).toContain(' GPUFixture');
+});
+
+it('filters --all findings by exact file or directory, retaining shared helper resolution', () => {
+  const family = `${SOURCE_ROOT}/raster-analysis/fixture`;
+  const directory = createFixture({
+    [CONTRIBUTOR_PATH]:
+      'export class GPUOther {getCommandNodes(graph) {createTransientView(graph, "rows", "uint32", rows);}}',
+    [`${family}/gpu-fixture.ts`]:
+      'export class GPUFixture {getCommandNodes(graph) {createTransientView(graph, "rows", "uint32", rows);}}',
+    [`${family}-other/gpu-fixture.ts`]:
+      'export class GPUUnrelated {getCommandNodes(graph) {createTransientView(graph, "rows", "uint32", rows);}}'
+  });
+  for (const selected of [family, `${family}/gpu-fixture.ts`]) {
+    const result = runChecker(
+      directory,
+      '--all',
+      '--rule',
+      'storage-binding-preflight',
+      '--paths',
+      selected
+    );
+    expect(result.exitCode, result.output).toBe(1);
+    expect(result.output).toContain(' GPUFixture');
+    expect(result.output).not.toContain(' GPUOther');
+    expect(result.output).not.toContain(' GPUUnrelated');
+  }
+  expect(runChecker(directory, '--paths').exitCode).toBe(2);
+  expect(runChecker(directory, '--paths', family, '--update-baseline').exitCode).toBe(2);
+});
+
+it('recognises imported named device-capacity preflights through wrapper return chains', () => {
+  const directory = createFixture({
+    [`${SOURCE_ROOT}/analysis-core/fixture/preflight.ts`]: `
+      import {getStorageBindingElementLimit, validateCapacity} from '../kernels/gpu-contributor-utils';
+      function maximumRows(device) {return Math.min(getStorageBindingElementLimit(device, 16), 1000000);}
+      export function validateRows(id, device, rows) {validateCapacity(id, 'rows', rows, 0, maximumRows(device));}
+    `,
+    [CONTRIBUTOR_PATH]: `import {validateRows as check} from './preflight';
+      export class GPUFixture {getCommandNodes(graph) {
+        check(this.id, graph.device, this.props.rows);
+        createTransientView(graph, 'scratch', 'float32', this.props.rows);
+      }}`
+  });
+  const result = runChecker(
+    directory,
+    '--all',
+    '--rule',
+    'storage-binding-preflight',
+    '--paths',
+    CONTRIBUTOR_PATH
+  );
+  expect(result.exitCode, result.output).toBe(0);
+});
+
+it('recognises preflight loops over nonempty scratch lists and imported helper parameters', () => {
+  const directory = createFixture({
+    [`${SOURCE_ROOT}/analysis-core/fixture/preflight.ts`]: `
+      import {validateGPUStorageBindingByteLength} from '../kernels/gpu-contributor-utils';
+      export function validateBindings(graph, views) {
+        for (const view of views) {
+          validateGPUStorageBindingByteLength(graph.device, 'rows', 'input', view.length * 4, 'reduce rows');
+        }
+      }`,
+    [CONTRIBUTOR_PATH]: `import {validateBindings} from './preflight';
+      export class GPUFixture {getCommandNodes(graph) {
+        validateBindings(graph, [this.props.input]);
+        for (const bytes of [this.props.rows * 4, this.props.capacity * 8]) {
+          validateGPUStorageBindingByteLength(graph.device, 'rows', 'scratch', bytes, 'reduce rows');
+        }
+        createTransientView(graph, 'scratch', 'float32', this.props.rows);
+      }}`
+  });
+  const result = runChecker(directory, '--all', '--rule', 'storage-binding-preflight');
+  expect(result.exitCode, result.output).toBe(0);
+});
+
+it('recognises shared aligned-range preflight loops with optional-view guards', () => {
+  const directory = createFixture({
+    [`${SOURCE_ROOT}/analysis-core/fixture/preflight.ts`]: `
+      export function validateViews(graph, views) {
+        for (const view of views) {
+          if (view) validateGPUStorageBindingByteLength(graph.device, 'rows', 'view', getViewBindingRange(view).size, 'reduce rows');
+        }
+      }`,
+    [CONTRIBUTOR_PATH]: `import {validateViews} from './preflight';
+      export class GPUFixture {getCommandNodes(graph) {
+        validateViews(graph, this.props.views);
+        createTransientView(graph, 'scratch', 'float32', this.props.rows);
+      }}`
+  });
+  const result = runChecker(directory, '--all', '--rule', 'storage-binding-preflight');
+  expect(result.exitCode, result.output).toBe(0);
+});
+
+it('does not recognise an aligned-range loop guarded by an unrelated condition', () => {
+  const directory = createFixture({
+    [CONTRIBUTOR_PATH]: `
+    export class GPUFixture {getCommandNodes(graph) {
+      for (const view of this.props.views) {
+        if (enabled) validateGPUStorageBindingByteLength(graph.device, 'rows', 'view', getViewBindingRange(view).size, 'reduce rows');
+      }
+      createTransientView(graph, 'scratch', 'float32', this.props.rows);
+    }}`
+  });
+  const result = runChecker(directory, '--all', '--rule', 'storage-binding-preflight');
+  expect(result.exitCode, result.output).toBe(1);
+});
+
+it('follows a family metadata-visitor preflight without confusing Set.add with graph.add', () => {
+  const directory = createFixture({
+    [`${SOURCE_ROOT}/gpu-spatial-analysis/spatial-weights/spatial-statistics-bindings.ts`]: `
+      import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+      export function validateSpatialStatisticsBindings(graph, id, props) {
+        const seen = new Set();
+        const fields = {};
+        const visit = value => {
+          if (!value || seen.has(value)) return;
+          seen.add(value);
+          fields.input = value;
+        };
+        visit(props);
+        validateGraphChunkBindingRanges(graph, id, fields);
+      }`,
+    [`${SOURCE_ROOT}/gpu-spatial-analysis/spatial-autocorrelation/gpu-fixture.ts`]: `
+      import {validateSpatialStatisticsBindings} from '../spatial-weights/spatial-statistics-bindings';
+      export class GPUFixture {getCommandNodes(graph) {
+        validateSpatialStatisticsBindings(graph, this.id, this.props);
+        return [createWGSLKernelNode(graph, {invocationCount: rows, bindings: [], body: ''})];
+      }}`
+  });
+  const result = runChecker(
+    directory,
+    '--all',
+    '--rule',
+    'storage-binding-preflight',
+    '--paths',
+    `${SOURCE_ROOT}/gpu-spatial-analysis/spatial-autocorrelation`
+  );
+  expect(result.exitCode, result.output).toBe(0);
+});

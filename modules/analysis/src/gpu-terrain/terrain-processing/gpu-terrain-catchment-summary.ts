@@ -182,7 +182,24 @@ export class GPUTerrainCatchmentSummary implements GPUCommandNodeProducer {
         props.flowDirections,
         ...(props.validity ? [props.validity] : [])
       ],
-      getOutputViews(props.output)
+      getOutputViews(props.output),
+      [
+        {writes: [props.output.statistics]},
+        {writes: [props.output.hypsometry]},
+        {
+          reads: [
+            ...(!props.validity ? [props.elevation] : []),
+            props.basinIds,
+            props.streams,
+            props.flowDirections
+          ],
+          writes: [props.output.profiles, props.output.profileStatus]
+        },
+        ...getTerrainResolutionStatusViews(props.output.status).map(view => ({
+          reads: view === props.output.status?.invalidCount ? [props.output.profileStatus] : [],
+          writes: [view]
+        }))
+      ]
     );
   }
   getCommandNodes<Parameters>(

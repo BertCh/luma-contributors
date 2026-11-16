@@ -4,17 +4,21 @@
 
 import {
   createTransientView,
-  GPUReduction,
   type GPUCommandGraph,
   type GPUCommandGraphNodeCondition,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
   type GraphBufferUse,
-  type GraphDataView
+  type GraphDataView,
+  type GraphVectorView
 } from '@luma.gl/graph/gpu-core';
 import {
   getGPUGridIndexMaximumCellCount,
+  getGraphViewChunks,
+  validateGraphViewTopology,
   validateCapacity,
+  validateFiniteNumber,
+  validateCommandNodeBudget,
   validateMaximumCount,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
@@ -35,6 +39,7 @@ import {
   type GPUStudyWindow
 } from '../../analysis-core/contracts/study-window';
 import {getStudyWindowBinding} from '../../analysis-core/kernels/study-window-wgsl';
+import {FIXED_POINT_WORD_COUNT} from '../../analysis-core/kernels/fixed-point-accumulator';
 import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {validateRasterGrid} from '../../raster-analysis/raster-band-utils';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
@@ -56,6 +61,7 @@ import {
   createGPUKernelDensityBinnedNodes,
   getGPUKernelDensityBinnedSize,
   getGPUKernelDensityDefaultBinnedPadding,
+  GPU_KERNEL_DENSITY_BINNED_PLAN_BYTE_LENGTH,
   GPU_KERNEL_DENSITY_BINNED_MAXIMUM_CELL_COUNT
 } from './kernel-density-binned';
 import {
@@ -71,7 +77,38 @@ const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
   measure: 'area'
 } as const);
 
+import {
+  createDensityPointPass,
+  stageDensityOutputViews,
+  validateDensityScratchBindings,
+  validateDensityViewBindings,
+  validateDensityWritableViews
+} from './density-point-passes';
+
+import {
+  createDensityScalarScratch,
+  validateDensityPointScratch,
+  createDensityWeightSumNodes,
+  createDensityInvalidCountNodes,
+  needsDensitySplitScratch
+} from './density-scratch';
+
+/** Four point passes, seven fixed-point totals (two chunk passes each), scale and exclusion status. */
+const KERNEL_DENSITY_CHUNK_COMMAND_NODE_ALLOWANCE = 20;
+
 const OPERATION = 'GPUKernelDensity';
+
+/** Runtime row indices and the excluded-row counter are uint32, even with chunked input. */
+export const GPU_KERNEL_DENSITY_MAXIMUM_POINT_COUNT = 0xffffffff;
+
+/** Exact gather emits each index dimension as a WGSL uint32 literal. */
+const KERNEL_DENSITY_MAXIMUM_INDEX_DIMENSION = 0xffffffff;
+
+/**
+ * Binned fixed passes plus an allowance for eight published hierarchical reductions. Each
+ * packed u32-indexed reduction needs at most 32 levels; chunk point passes are counted separately.
+ */
+const KERNEL_DENSITY_BINNED_COMMAND_NODE_ALLOWANCE = 512;
 
 /** WGSL constants `DOMAIN_MIN` and `DOMAIN_MAX` of the index domain. */
 function getDomainConstantsWGSL(indexBounds: readonly [number, number, number, number]): string {
@@ -163,7 +200,10 @@ export function getGPUKernelDensityParameterValues(
   return target;
 }
 
-/** Caller-owned outputs of {@link GPUKernelDensity}. */
+/**
+ * Caller-owned packed outputs of {@link GPUKernelDensity}. Disjoint aligned fields may share a
+ * buffer; those fields use private working buffers and publish their result bits at the end.
+ */
 export type GPUKernelDensityOutput = {
   /**
    * Density per output cell, at least `grid.width * grid.height` float32 rows, row
@@ -212,8 +252,14 @@ export type GPUKernelDensityOutput = {
  * input buffer. Topology (needs a new graph): the `grid` size, point count, `indexGridSize`,
  * `indexBounds`, `kernel`, `edgeCorrection`, `normalization`, and which optional inputs and outputs
  * are present.
+ * Input view kinds are inferred with packed defaults; the output grid remains packed for chunked input.
  */
-export type GPUKernelDensityProps = {
+export type GPUKernelDensityProps<
+  Positions extends
+    | GraphDataView<'float32x2'>
+    | GraphVectorView<'float32x2'> = GraphDataView<'float32x2'>,
+  Weights extends GraphDataView<'float32'> | GraphVectorView<'float32'> = GraphDataView<'float32'>
+> = {
   /** Prefix for generated node and transient IDs. Defaults to `'kernel-density'`. */
   id?: string;
   /**
@@ -229,13 +275,17 @@ export type GPUKernelDensityProps = {
    * frame coordinates; outside points are excluded and outside cell centers produce NaN.
    */
   studyWindow?: GPUStudyWindow;
-  /** Packed point positions in the same units as the grid and bandwidth. */
-  positions: GraphDataView<'float32x2'>;
+  /**
+   * Packed point positions in the same units as the grid and bandwidth. `method: 'binned'`
+   * also accepts a chunked vector; view lengths and chunk boundaries are compile-time.
+   */
+  positions: Positions;
   /**
    * Optional per-point weights, for example populations or counts. Non-finite and negative
-   * weights exclude the point. Without weights every point has weight one.
+   * weights exclude the point. Without weights every point has weight one. Chunked weights
+   * must have the same chunk boundaries as positions (`method: 'binned'` only).
    */
-  weights?: GraphDataView<'float32'>;
+  weights?: Weights;
   /** Per-frame float32 view of at least 9 values written with {@link getGPUKernelDensityParameterValues}. */
   parameters: GraphDataView<'float32'>;
   /**
@@ -244,7 +294,7 @@ export type GPUKernelDensityProps = {
    */
   grid: GPURasterMetadata;
   /**
-   * Dimensions `[columns, rows]` of the internal `GPUGridIndex` over the points. Aim for a few
+   * Positive uint32 dimensions `[columns, rows]` of the internal `GPUGridIndex` over the points. Aim for a few
    * points per index cell, and index cells not much larger than the bandwidth. At most
    * {@link getGPUGridIndexMaximumCellCount} cells (2^25 - 1 on a default device).
    */
@@ -253,7 +303,7 @@ export type GPUKernelDensityProps = {
    * Inclusive point domain `[minX, minY, maxX, maxY]` of the internal grid index. It must cover the
    * output grid and every point you want counted: points outside it are ignored (counted in
    * `output.status.invalidCount`), so a point just outside the domain stops contributing to cells within one
-   * support radius of it.
+   * support radius of it. Bounds are compile-time literals and must be finite in float32.
    */
   indexBounds: readonly [number, number, number, number];
   /**
@@ -267,7 +317,7 @@ export type GPUKernelDensityProps = {
    * the compact `'quartic'` and `'epanechnikov'` kernels the Gaussian-scale value is multiplied by
    * their canonical-bandwidth ratio (`getGPUKernelDensityCanonicalBandwidthScale`) so that the
    * support radius smooths as much as the Gaussian rule. The
-   * moments use a two-stage hierarchical reduction (centered, relative to the grid start corner).
+   * moments use deterministic fixed-point totals in two centered passes, relative to the grid start corner.
    * Topology: changing it needs a new graph.
    */
   bandwidthRule?: GPUKernelDensityBandwidthRule;
@@ -372,8 +422,16 @@ export type GPUKernelDensityProps = {
  * Large bandwidths: the gather costs `(5 h / cell)^2` cells per point, which explodes when the
  * bandwidth spans many cells. `method: 'binned'` (or `'auto'`) replaces it with linear binning and
  * a separable almost-gaussian blur whose cost does not depend on the bandwidth, at the documented
- * error (see {@link GPUKernelDensityProps.method}). Edge correction, normalization and the NaN
- * rules are unchanged.
+ * error (see {@link GPUKernelDensityProps.method}). The binned route accepts chunked positions
+ * and aligned weights, dispatching each chunk into the same fixed-point grid. Its global scale
+ * and total row count make the cell accumulator bit-identical to packed input. The exact and
+ * auto routes require packed inputs for indexed random access. Edge correction, normalization and the NaN
+ * rules are unchanged. Corrected weights, exclusion flags and bandwidth moment terms follow
+ * the input chunks when global scalar scratch cannot fit, with four bytes per point per
+ * scratch binding. Packed scratch keeps its established reduction order; split totals use
+ * fixed-point accumulation and can differ in the last float32 bits. Totals may exceed one
+ * binding; individual input/scratch chunks and the packed grid scratch are checked against
+ * the device storage-binding limit before any nodes are created.
  *
  * Bandwidth: choose it in ground units for the question being asked, or set `bandwidthRule` to
  * have the GPU compute Scott's/Silverman's rule of thumb from the points with no read-back.
@@ -382,12 +440,22 @@ export type GPUKernelDensityProps = {
  * where `gridStart` is the outer corner of cell (0, 0) and `cellSize` is signed, so output rows
  * follow the grid's row order (row 0 at the top of a north-up grid, at `minY` when rows advance
  * north). The estimate is a cell-center sample, not a cell average.
+ *
+ * Per-frame: input buffer contents and parameter values. Compile-time: input lengths and
+ * chunk boundaries, grid dimensions, index bounds and dimensions, kernel, edge correction,
+ * normalization, method, padding, bandwidth rule, study window and optional output topology.
  */
-export class GPUKernelDensity implements GPUCommandNodeProducer {
+export class GPUKernelDensity<
+  Positions extends
+    | GraphDataView<'float32x2'>
+    | GraphVectorView<'float32x2'> = GraphDataView<'float32x2'>,
+  Weights extends GraphDataView<'float32'> | GraphVectorView<'float32'> = GraphDataView<'float32'>
+> implements GPUCommandNodeProducer
+{
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
-  readonly props: GPUKernelDensityProps;
+  readonly props: GPUKernelDensityProps<Positions, Weights>;
   /** Resolved coordinate and metric contract (planar/native). */
   readonly spatialContext: GPUSpatialContext;
   /** Resolved compile-time study window. */
@@ -403,10 +471,12 @@ export class GPUKernelDensity implements GPUCommandNodeProducer {
   readonly method: GPUKernelDensityMethod;
   /** Resolved `binnedPadding`. */
   readonly binnedPadding: number;
+  /** Conservative node bound for the chunk-capable binned route. */
+  readonly estimatedCommandNodeCount: number | undefined;
   /** `grid.width * grid.height`. */
   readonly cellCount: number;
 
-  constructor(props: GPUKernelDensityProps) {
+  constructor(props: GPUKernelDensityProps<Positions, Weights>) {
     this.id = props.id ?? 'kernel-density';
     this.props = props;
     const {id} = this;
@@ -449,6 +519,20 @@ export class GPUKernelDensity implements GPUCommandNodeProducer {
     }
     this.method =
       requestedMethod === 'auto' && this.kernel !== 'gaussian' ? 'exact' : requestedMethod;
+    validateMaximumCount(
+      id,
+      'positions.length',
+      props.positions.length,
+      GPU_KERNEL_DENSITY_MAXIMUM_POINT_COUNT
+    );
+    this.estimatedCommandNodeCount =
+      this.method === 'binned'
+        ? KERNEL_DENSITY_BINNED_COMMAND_NODE_ALLOWANCE +
+          KERNEL_DENSITY_CHUNK_COMMAND_NODE_ALLOWANCE * getGraphViewChunks(props.positions).length
+        : undefined;
+    if (this.estimatedCommandNodeCount !== undefined) {
+      validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
+    }
     if (
       props.bandwidthRule !== undefined &&
       !['scott', 'silverman'].includes(props.bandwidthRule)
@@ -478,7 +562,10 @@ export class GPUKernelDensity implements GPUCommandNodeProducer {
       ['indexGridSize[0]', props.indexGridSize[0]],
       ['indexGridSize[1]', props.indexGridSize[1]]
     ] as const) {
-      validateCapacity(id, name, size, 1, Number.MAX_SAFE_INTEGER);
+      validateCapacity(id, name, size, 1, KERNEL_DENSITY_MAXIMUM_INDEX_DIMENSION);
+    }
+    for (const [index, bound] of props.indexBounds.entries()) {
+      validateFiniteNumber(id, `indexBounds[${index}]`, bound);
     }
     const [minX, minY, maxX, maxY] = props.indexBounds;
     if (
@@ -489,15 +576,26 @@ export class GPUKernelDensity implements GPUCommandNodeProducer {
     ) {
       throw new Error(`${id} indexBounds must be finite and ordered`);
     }
-    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
+    for (const chunk of getGraphViewChunks(props.positions)) {
+      validateSinglePackedView(chunk, ['float32x2'], `${id} positions`);
+    }
+    if (this.method !== 'binned') {
+      validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
+      if (props.weights) {
+        validateSinglePackedView(props.weights, ['float32'], `${id} weights`);
+      }
+    }
     if (props.positions.length < 1) {
       throw new Error(`${id} needs at least one point`);
     }
     if (props.weights) {
-      validateSinglePackedView(props.weights, ['float32'], `${id} weights`);
+      for (const chunk of getGraphViewChunks(props.weights)) {
+        validateSinglePackedView(chunk, ['float32'], `${id} weights`);
+      }
       if (props.weights.length !== props.positions.length) {
         throw new Error(`${id} weights length must equal positions length`);
       }
+      validateGraphViewTopology(id, 'weights', props.positions, props.weights);
     }
     validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < GPU_KERNEL_DENSITY_PARAMETER_LENGTH) {
@@ -546,18 +644,13 @@ export class GPUKernelDensity implements GPUCommandNodeProducer {
         throw new Error(`${id} output.bandwidth must contain exactly one float32 row`);
       }
     }
-    const outputBuffers = [
-      props.output.values,
-      props.output.weightSum,
-      props.output.status?.invalidCount,
-      props.output.status?.insufficientPadding,
-      props.output.bandwidth
-    ]
-      .filter(view => view !== undefined)
-      .map(view => view.buffer);
-    if (new Set(outputBuffers).size !== outputBuffers.length) {
-      throw new Error(`${id} outputs must use separate buffers`);
-    }
+    validateDensityWritableViews(id, {
+      'output.values': props.output.values,
+      'output.weightSum': props.output.weightSum,
+      'output.status.invalidCount': props.output.status?.invalidCount,
+      'output.status.insufficientPadding': props.output.status?.insufficientPadding,
+      'output.bandwidth': props.output.bandwidth
+    });
     validateGraphOutputsDisjointFromInputs(
       id,
       [
@@ -572,9 +665,9 @@ export class GPUKernelDensity implements GPUCommandNodeProducer {
   }
 
   /**
-   * Two-stage moments for {@link GPUKernelDensityProps.bandwidthRule}: per-row terms, hierarchical
-   * `GPUReduction` sums (256 rows per workgroup partial, then further levels; never one workgroup
-   * over all rows), the weighted mean, centered second moments, and a one-invocation finalize that
+   * Two-stage moments for {@link GPUKernelDensityProps.bandwidthRule}: per-row terms,
+   * deterministic fixed-point totals (one accumulator across all chunks; workgroup-local
+   * pre-aggregation), the weighted mean, centered second moments, and a one-invocation finalize that
    * writes the bandwidth. Positions are taken relative to the grid start corner.
    */
   private getBandwidthRuleNodes<Parameters>(
@@ -582,23 +675,40 @@ export class GPUKernelDensity implements GPUCommandNodeProducer {
     bandwidthState: GraphDataView<'float32'>
   ): GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    const pointCount = props.positions.length;
+    const splitPointScratch = needsDensitySplitScratch(graph, props.positions.length);
     const terms = ['weight', 'weight-square', 'x', 'y'].map(name =>
-      createTransientView(graph, `${id}-bandwidth-term-${name}`, 'float32', pointCount)
+      createDensityScalarScratch(
+        graph,
+        `${id}-bandwidth-term-${name}`,
+        props.positions,
+        'float32',
+        !splitPointScratch
+      )
     );
     const [termWeight, termWeightSquare, termX, termY] = terms;
+    const termChunks = terms.map(term => getGraphViewChunks(term));
     const sums = ['weight', 'weight-square', 'x', 'y', 'spread-x', 'spread-y'].map(name =>
       createTransientView(graph, `${id}-bandwidth-sum-${name}`, 'float32', 1)
     );
     const [sumWeight, sumWeightSquare, sumX, sumY, sumSpreadX, sumSpreadY] = sums;
     const means = createTransientView(graph, `${id}-bandwidth-means`, 'float32', 2);
-    const inputBindings: WGSLKernelBinding[] = [
-      {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
-      ...(props.weights
-        ? [{name: 'inputWeights', view: props.weights, type: 'f32', access: 'read'} as const]
+    const positionChunks = getGraphViewChunks(props.positions);
+    const weightChunks = props.weights ? getGraphViewChunks(props.weights) : undefined;
+    const inputBindings = (chunkIndex: number): WGSLKernelBinding[] => [
+      {name: 'positions', view: positionChunks[chunkIndex], type: 'f32', access: 'read'},
+      ...(weightChunks
+        ? [
+            {
+              name: 'inputWeights',
+              view: weightChunks[chunkIndex],
+              type: 'f32',
+              access: 'read'
+            } as const
+          ]
         : []),
       {name: 'params', view: props.parameters, type: 'f32', access: 'read'}
     ];
+    let rowStart = 0;
     // Rows with a non-finite position or a non-finite or negative weight contribute nothing.
     const rowPrelude = `let origin = vec2f(params[paramsOffset], params[paramsOffset + 1u]);
   let position = vec2f(positions[positionsOffset + 2u * index], positions[positionsOffset + 2u * index + 1u]);
@@ -609,24 +719,53 @@ export class GPUKernelDensity implements GPUCommandNodeProducer {
   let relative = select(vec2f(0.0), position - origin, included);`;
     const variantSuffix = props.weights ? 'weighted' : 'unweighted';
     const nodes: GPUCommandNode<Parameters>[] = [
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-bandwidth-terms`,
-        operation: OPERATION,
-        variant: `bandwidth-terms-${variantSuffix}`,
-        bindings: [
-          ...inputBindings,
-          {name: 'termWeight', view: termWeight, type: 'f32', access: 'read_write'},
-          {name: 'termWeightSquare', view: termWeightSquare, type: 'f32', access: 'read_write'},
-          {name: 'termX', view: termX, type: 'f32', access: 'read_write'},
-          {name: 'termY', view: termY, type: 'f32', access: 'read_write'}
-        ],
-        invocationCount: pointCount,
-        declarations: IS_FINITE_VALUE_WGSL,
-        body: `${rowPrelude}
-  termWeight[termWeightOffset + index] = weight;
-  termWeightSquare[termWeightSquareOffset + index] = weight * weight;
-  termX[termXOffset + index] = weight * relative.x;
-  termY[termYOffset + index] = weight * relative.y;`
+      ...positionChunks.flatMap((chunk, chunkIndex) => {
+        const start = rowStart;
+        rowStart += chunk.length;
+        return chunk.length === 0
+          ? []
+          : [
+              createDensityPointPass<Parameters>(graph, {
+                id: `${id}-bandwidth-terms${positionChunks.length === 1 ? '' : `-${chunkIndex}`}`,
+                operation: OPERATION,
+                variant: `bandwidth-terms-${variantSuffix}`,
+                bindings: [
+                  ...inputBindings(chunkIndex),
+                  {
+                    name: 'termWeight',
+                    view: termChunks[0][splitPointScratch ? chunkIndex : 0],
+                    type: 'f32',
+                    access: 'read_write'
+                  },
+                  {
+                    name: 'termWeightSquare',
+                    view: termChunks[1][splitPointScratch ? chunkIndex : 0],
+                    type: 'f32',
+                    access: 'read_write'
+                  },
+                  {
+                    name: 'termX',
+                    view: termChunks[2][splitPointScratch ? chunkIndex : 0],
+                    type: 'f32',
+                    access: 'read_write'
+                  },
+                  {
+                    name: 'termY',
+                    view: termChunks[3][splitPointScratch ? chunkIndex : 0],
+                    type: 'f32',
+                    access: 'read_write'
+                  }
+                ],
+                invocationCount: chunk.length,
+                runtimeConstants: {ROW_START: splitPointScratch ? 0 : start},
+                declarations: IS_FINITE_VALUE_WGSL,
+                body: `${rowPrelude}
+  termWeight[termWeightOffset + ROW_START + index] = weight;
+  termWeightSquare[termWeightSquareOffset + ROW_START + index] = weight * weight;
+  termX[termXOffset + ROW_START + index] = weight * relative.x;
+  termY[termYOffset + ROW_START + index] = weight * relative.y;`
+              })
+            ];
       })
     ];
     for (const [name, input, output] of [
@@ -636,14 +775,10 @@ export class GPUKernelDensity implements GPUCommandNodeProducer {
       ['y', termY, sumY]
     ] as const) {
       nodes.push(
-        ...new GPUReduction({
-          id: `${id}-bandwidth-sum-${name}`,
-          input,
-          output,
-          operation: 'sum'
-        }).getCommandNodes(graph)
+        ...createDensityWeightSumNodes(graph, `${id}-bandwidth-sum-${name}`, input, output)
       );
     }
+    rowStart = 0;
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-bandwidth-means`,
@@ -663,22 +798,41 @@ export class GPUKernelDensity implements GPUCommandNodeProducer {
       }),
       // Second pass: centered terms overwrite the first-pass x and y term buffers, which the
       // reductions above have already consumed (nodes execute in order).
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-bandwidth-spread`,
-        operation: OPERATION,
-        variant: `bandwidth-spread-${variantSuffix}`,
-        bindings: [
-          ...inputBindings,
-          {name: 'means', view: means, type: 'f32', access: 'read'},
-          {name: 'termX', view: termX, type: 'f32', access: 'read_write'},
-          {name: 'termY', view: termY, type: 'f32', access: 'read_write'}
-        ],
-        invocationCount: pointCount,
-        declarations: IS_FINITE_VALUE_WGSL,
-        body: `${rowPrelude}
+      ...positionChunks.flatMap((chunk, chunkIndex) => {
+        const start = rowStart;
+        rowStart += chunk.length;
+        return chunk.length === 0
+          ? []
+          : [
+              createDensityPointPass<Parameters>(graph, {
+                id: `${id}-bandwidth-spread${positionChunks.length === 1 ? '' : `-${chunkIndex}`}`,
+                operation: OPERATION,
+                variant: `bandwidth-spread-${variantSuffix}`,
+                bindings: [
+                  ...inputBindings(chunkIndex),
+                  {name: 'means', view: means, type: 'f32', access: 'read'},
+                  {
+                    name: 'termX',
+                    view: termChunks[2][splitPointScratch ? chunkIndex : 0],
+                    type: 'f32',
+                    access: 'read_write'
+                  },
+                  {
+                    name: 'termY',
+                    view: termChunks[3][splitPointScratch ? chunkIndex : 0],
+                    type: 'f32',
+                    access: 'read_write'
+                  }
+                ],
+                invocationCount: chunk.length,
+                runtimeConstants: {ROW_START: splitPointScratch ? 0 : start},
+                declarations: IS_FINITE_VALUE_WGSL,
+                body: `${rowPrelude}
   let centered = relative - vec2f(means[meansOffset], means[meansOffset + 1u]);
-  termX[termXOffset + index] = select(0.0, weight * centered.x * centered.x, included);
-  termY[termYOffset + index] = select(0.0, weight * centered.y * centered.y, included);`
+  termX[termXOffset + ROW_START + index] = select(0.0, weight * centered.x * centered.x, included);
+  termY[termYOffset + ROW_START + index] = select(0.0, weight * centered.y * centered.y, included);`
+              })
+            ];
       })
     );
     for (const [name, input, output] of [
@@ -686,12 +840,7 @@ export class GPUKernelDensity implements GPUCommandNodeProducer {
       ['spread-y', termY, sumSpreadY]
     ] as const) {
       nodes.push(
-        ...new GPUReduction({
-          id: `${id}-bandwidth-sum-${name}`,
-          input,
-          output,
-          operation: 'sum'
-        }).getCommandNodes(graph)
+        ...createDensityWeightSumNodes(graph, `${id}-bandwidth-sum-${name}`, input, output)
       );
     }
     nodes.push(
@@ -735,12 +884,12 @@ export class GPUKernelDensity implements GPUCommandNodeProducer {
     sortedIds: GraphDataView<'uint32'>;
   } {
     const {id, props} = this;
-    const {indexGridSize, indexBounds} = props;
     const pointCount = props.positions.length;
+    const {indexGridSize, indexBounds} = props;
     const index = createPointNeighborGridIndexNodes<Parameters>(graph, {
       id,
       indexId: `${id}-index`,
-      positions: props.positions,
+      positions: props.positions as GraphDataView<'float32x2'>,
       gridSize: indexGridSize,
       bounds: indexBounds,
       rowCount: pointCount
@@ -773,13 +922,80 @@ export class GPUKernelDensity implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, kernel, edgeCorrection, normalization, method} = this;
-    const {output, grid, indexBounds} = props;
+    const {output: callerOutput, grid, indexBounds} = props;
+    let output = callerOutput;
+    // Preserve the named index capacity refusal before checking its (cellCount + 1) scratch.
+    validateMaximumCount(
+      id,
+      'indexGridSize cells',
+      props.indexGridSize[0] * props.indexGridSize[1],
+      getGPUGridIndexMaximumCellCount(graph.device)
+    );
+    validateDensityViewBindings(
+      graph,
+      id,
+      [
+        ['positions', props.positions],
+        ['weights', props.weights],
+        ['parameters', props.parameters],
+        ['output.values', output.values],
+        ['output.weightSum', output.weightSum],
+        ['output.bandwidth', output.bandwidth],
+        ['output.status.invalidCount', output.status?.invalidCount],
+        ['output.status.insufficientPadding', output.status?.insufficientPadding]
+      ],
+      {skipEmptyChunks: true}
+    );
+    if (method !== 'binned') {
+      validateDensityScratchBindings(graph, id, [
+        ['index offset scratch', (props.indexGridSize[0] * props.indexGridSize[1] + 1) * 4]
+      ]);
+    }
+    validateDensityPointScratch(graph, id, props.positions, 4);
+    validateDensityScratchBindings(graph, id, [['grid scratch', this.cellCount * 4]]);
+    validateCapacity(
+      id,
+      'grid scratch byteLength',
+      this.cellCount * 4,
+      0,
+      graph.device.limits.maxBufferSize
+    );
+    if (method !== 'exact') {
+      validateDensityScratchBindings(graph, id, [
+        ['binned blur plan scratch', GPU_KERNEL_DENSITY_BINNED_PLAN_BYTE_LENGTH]
+      ]);
+      const {paddedWidth, paddedHeight} = getGPUKernelDensityBinnedSize(
+        grid.width,
+        grid.height,
+        this.binnedPadding
+      );
+      validateDensityScratchBindings(graph, id, [
+        ['binned fixed-point grid scratch', paddedWidth * paddedHeight * 4 * FIXED_POINT_WORD_COUNT]
+      ]);
+      validateCapacity(
+        id,
+        'binned fixed-point grid scratch byteLength',
+        paddedWidth * paddedHeight * 4 * FIXED_POINT_WORD_COUNT,
+        0,
+        graph.device.limits.maxBufferSize
+      );
+    }
     // The handle only looks up graph identity; it never invokes parameter-dependent callbacks.
     const studyWindow =
       this.studyWindow === 'rectangle'
         ? undefined
         : this.studyWindow.getViews(graph as unknown as GPUCommandGraph<unknown>);
     if (studyWindow) {
+      validateDensityViewBindings(graph, id, [
+        ['studyWindow.edges', studyWindow.edges],
+        ['studyWindow.summary', studyWindow.summary],
+        ['studyWindow.slabs.params', studyWindow.slabs.params],
+        ['studyWindow.slabs.slabOffsets', studyWindow.slabs.slabOffsets],
+        ['studyWindow.slabs.slabEntries', studyWindow.slabs.slabEntries],
+        ['studyWindow.sampleCells', studyWindow.sampleCells],
+        ['studyWindow.sampleCellCount', studyWindow.sampleCellCount],
+        ['studyWindow.packed', studyWindow.packed]
+      ]);
       validateGraphViewsBelongToGraph(id, graph, [
         studyWindow.edges,
         studyWindow.summary,
@@ -803,13 +1019,29 @@ export class GPUKernelDensity implements GPUCommandNodeProducer {
       output.status?.insufficientPadding,
       output.bandwidth
     ]);
-    validateMaximumCount(
+    const staged = stageDensityOutputViews(
+      graph,
       id,
-      'indexGridSize cells',
-      props.indexGridSize[0] * props.indexGridSize[1],
-      getGPUGridIndexMaximumCellCount(graph.device)
+      OPERATION,
+      {
+        values: output.values,
+        weightSum: output.weightSum,
+        bandwidth: output.bandwidth,
+        invalidCount: output.status?.invalidCount,
+        insufficientPadding: output.status?.insufficientPadding
+      },
+      {values: this.cellCount}
     );
-    const pointCount = props.positions.length;
+    output = {
+      ...callerOutput,
+      ...staged.views,
+      status: callerOutput.status
+        ? {
+            invalidCount: staged.views.invalidCount,
+            insufficientPadding: staged.views.insufficientPadding
+          }
+        : undefined
+    };
     const nodes: GPUCommandNode<Parameters>[] = [];
     // The binned path never reads the index; only the exact gather does.
     const exactIndex = needsExact ? this.getIndexNodes(graph) : undefined;
@@ -836,42 +1068,100 @@ export class GPUKernelDensity implements GPUCommandNodeProducer {
     const needsRawWeights =
       edgeCorrection === 'diggle' && (normalization === 'probability' || Boolean(output.weightSum));
     const needsWeightSum = normalization === 'probability' || Boolean(output.weightSum);
-    const pointWeights = createTransientView(graph, `${id}-point-weights`, 'float32', pointCount);
+    const splitPointScratch = needsDensitySplitScratch(graph, props.positions.length);
+    const pointWeights = createDensityScalarScratch(
+      graph,
+      `${id}-point-weights`,
+      props.positions,
+      'float32',
+      !splitPointScratch
+    );
     const rawWeights = needsRawWeights
-      ? createTransientView(graph, `${id}-raw-weights`, 'float32', pointCount)
+      ? createDensityScalarScratch(
+          graph,
+          `${id}-raw-weights`,
+          props.positions,
+          'float32',
+          !splitPointScratch
+        )
       : pointWeights;
     const excluded = output.status?.invalidCount
-      ? createTransientView(graph, `${id}-excluded`, 'uint32', pointCount)
+      ? createDensityScalarScratch(
+          graph,
+          `${id}-excluded`,
+          props.positions,
+          'uint32',
+          !splitPointScratch
+        )
       : undefined;
+    const pointWeightChunks = getGraphViewChunks(pointWeights);
+    const rawWeightChunks = getGraphViewChunks(rawWeights);
+    const excludedChunks = excluded ? getGraphViewChunks(excluded) : undefined;
     const domainConstants = getDomainConstantsWGSL(indexBounds);
     const hasEdgeCorrection = edgeCorrection !== 'none';
-    const weightBindings: WGSLKernelBinding[] = [
-      ...(studyWindow ? [getStudyWindowBinding(studyWindow)] : []),
-      {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
-      ...(props.weights
-        ? [{name: 'inputWeights', view: props.weights, type: 'f32', access: 'read'} as const]
-        : []),
-      {name: 'params', view: props.parameters, type: 'f32', access: 'read'},
-      ...bandwidthBindings,
-      {name: 'pointWeights', view: pointWeights, type: 'f32', access: 'read_write'},
-      ...(needsRawWeights
-        ? [{name: 'rawWeights', view: rawWeights, type: 'f32', access: 'read_write'} as const]
-        : []),
-      ...(excluded
-        ? [{name: 'excluded', view: excluded, type: 'u32', access: 'read_write'} as const]
-        : [])
-    ];
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-point-weights`,
-        operation: OPERATION,
-        variant: `point-weights-${edgeCorrection}`,
-        bindings: weightBindings,
-        invocationCount: pointCount,
-        declarations: `${domainConstants}
+    const positionChunks = getGraphViewChunks(props.positions);
+    const weightChunks = props.weights ? getGraphViewChunks(props.weights) : undefined;
+    let rowStart = 0;
+    for (const [chunkIndex, positions] of positionChunks.entries()) {
+      const start = rowStart;
+      rowStart += positions.length;
+      if (positions.length === 0) {
+        continue;
+      }
+      const weightBindings: WGSLKernelBinding[] = [
+        ...(studyWindow ? [getStudyWindowBinding(studyWindow)] : []),
+        {name: 'positions', view: positions, type: 'f32', access: 'read'},
+        ...(props.weights
+          ? [
+              {
+                name: 'inputWeights',
+                view: weightChunks![chunkIndex],
+                type: 'f32',
+                access: 'read'
+              } as const
+            ]
+          : []),
+        {name: 'params', view: props.parameters, type: 'f32', access: 'read'},
+        ...bandwidthBindings,
+        {
+          name: 'pointWeights',
+          view: pointWeightChunks[splitPointScratch ? chunkIndex : 0],
+          type: 'f32',
+          access: 'read_write'
+        },
+        ...(needsRawWeights
+          ? [
+              {
+                name: 'rawWeights',
+                view: rawWeightChunks[splitPointScratch ? chunkIndex : 0],
+                type: 'f32',
+                access: 'read_write'
+              } as const
+            ]
+          : []),
+        ...(excluded
+          ? [
+              {
+                name: 'excluded',
+                view: excludedChunks![splitPointScratch ? chunkIndex : 0],
+                type: 'u32',
+                access: 'read_write'
+              } as const
+            ]
+          : [])
+      ];
+      nodes.push(
+        createDensityPointPass<Parameters>(graph, {
+          id: `${id}-point-weights${positionChunks.length === 1 ? '' : `-${chunkIndex}`}`,
+          operation: OPERATION,
+          variant: `point-weights-${edgeCorrection}`,
+          bindings: weightBindings,
+          invocationCount: positions.length,
+          runtimeConstants: {ROW_START: splitPointScratch ? 0 : start},
+          declarations: `${domainConstants}
 ${GRID_COORDINATE_WGSL}
 ${studyWindow ? getKernelDensityStudyWindowWGSL(studyWindow, edgeCorrection === 'diggle' ? kernel : undefined) : edgeCorrection === 'diggle' ? getWindowMassWGSL(kernel) : ''}`,
-        body: `let gridStart = vec2f(params[paramsOffset], params[paramsOffset + 1u]);
+          body: `let gridStart = vec2f(params[paramsOffset], params[paramsOffset + 1u]);
   let bandwidth = ${bandwidthExpression};
   let windowMin = vec2f(params[paramsOffset + 5u], params[paramsOffset + 6u]) - gridStart;
   let windowMax = vec2f(params[paramsOffset + 7u], params[paramsOffset + 8u]) - gridStart;
@@ -883,7 +1173,7 @@ ${studyWindow ? getKernelDensityStudyWindowWGSL(studyWindow, edgeCorrection === 
   let relative = position - gridStart;
   ${studyWindow ? 'included = included && isInsideStudyWindow(position);' : hasEdgeCorrection ? 'included = included && all(relative >= windowMin) && all(relative <= windowMax);' : ''}
   var corrected = select(0.0, weight, included);
-  ${rawWeights !== pointWeights ? 'rawWeights[rawWeightsOffset + index] = corrected;' : ''}
+  ${rawWeights !== pointWeights ? 'rawWeights[rawWeightsOffset + ROW_START + index] = corrected;' : ''}
   ${
     edgeCorrection === 'diggle'
       ? `if (included) {
@@ -892,31 +1182,25 @@ ${studyWindow ? getKernelDensityStudyWindowWGSL(studyWindow, edgeCorrection === 
   }`
       : ''
   }
-  pointWeights[pointWeightsOffset + index] = corrected;
-  ${excluded ? 'excluded[excludedOffset + index] = select(1u, 0u, included);' : ''}`
-      })
-    );
+  pointWeights[pointWeightsOffset + ROW_START + index] = corrected;
+  ${excluded ? 'excluded[excludedOffset + ROW_START + index] = select(1u, 0u, included);' : ''}`
+        })
+      );
+    }
     const weightSum = needsWeightSum
       ? (output.weightSum ?? createTransientView(graph, `${id}-weight-sum-scratch`, 'float32', 1))
       : undefined;
     if (weightSum) {
-      nodes.push(
-        ...new GPUReduction({
-          id: `${id}-weight-sum`,
-          input: rawWeights,
-          output: weightSum,
-          operation: 'sum'
-        }).getCommandNodes(graph)
-      );
+      nodes.push(...createDensityWeightSumNodes(graph, `${id}-weight-sum`, rawWeights, weightSum));
     }
     if (excluded && output.status?.invalidCount) {
       nodes.push(
-        ...new GPUReduction({
-          id: `${id}-invalid-count`,
-          input: excluded,
-          output: output.status?.invalidCount,
-          operation: 'sum'
-        }).getCommandNodes(graph)
+        ...createDensityInvalidCountNodes(
+          graph,
+          `${id}-invalid-count`,
+          excluded,
+          output.status.invalidCount
+        )
       );
     }
 
@@ -955,7 +1239,8 @@ ${studyWindow ? getKernelDensityStudyWindowWGSL(studyWindow, edgeCorrection === 
         this.getGatherNode(graph, {
           exactIndex,
           gathered,
-          pointWeights,
+          values: output.values,
+          pointWeights: pointWeightChunks[0],
           bandwidthBindings,
           bandwidthExpression,
           weightSum,
@@ -997,6 +1282,7 @@ ${studyWindow ? getKernelDensityStudyWindowWGSL(studyWindow, edgeCorrection === 
     if (binned) {
       nodes.push(...binned.bodyNodes);
     }
+    nodes.push(...staged.publishNodes);
     return nodes;
   }
 
@@ -1007,6 +1293,7 @@ ${studyWindow ? getKernelDensityStudyWindowWGSL(studyWindow, edgeCorrection === 
       exactIndex: {cellOffsets: GraphDataView<'uint32'>; sortedIds: GraphDataView<'uint32'>};
       pointWeights: GraphDataView<'float32'>;
       gathered?: GraphDataView<'float32'>;
+      values: GraphDataView<'float32'>;
       bandwidthBindings: WGSLKernelBinding[];
       bandwidthExpression: string;
       weightSum?: GraphDataView<'float32'>;
@@ -1019,13 +1306,18 @@ ${studyWindow ? getKernelDensityStudyWindowWGSL(studyWindow, edgeCorrection === 
     const {id, props, cellCount, kernel} = this;
     const edgeCorrection = inputs.gathered ? 'none' : this.edgeCorrection;
     const normalization = inputs.gathered ? 'intensity' : this.normalization;
-    const {output, grid, indexGridSize, indexBounds} = props;
+    const {grid, indexGridSize, indexBounds} = props;
     const {width, height} = grid;
     const {pointWeights, bandwidthBindings, bandwidthExpression, weightSum, gate} = inputs;
     const {cellOffsets, sortedIds} = inputs.exactIndex;
     const domainConstants = getDomainConstantsWGSL(indexBounds);
     const gatherBindings: WGSLKernelBinding[] = [
-      {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
+      {
+        name: 'positions',
+        view: props.positions as GraphDataView<'float32x2'>,
+        type: 'f32',
+        access: 'read'
+      },
       {name: 'pointWeights', view: pointWeights, type: 'f32', access: 'read'},
       {name: 'params', view: props.parameters, type: 'f32', access: 'read'},
       ...bandwidthBindings,
@@ -1034,7 +1326,7 @@ ${studyWindow ? getKernelDensityStudyWindowWGSL(studyWindow, edgeCorrection === 
       ...(normalization === 'probability' && weightSum
         ? [{name: 'weightSum', view: weightSum, type: 'f32', access: 'read'} as const]
         : []),
-      {name: 'valuesOut', view: inputs.gathered ?? output.values, type: 'f32', access: 'read_write'}
+      {name: 'valuesOut', view: inputs.gathered ?? inputs.values, type: 'f32', access: 'read_write'}
     ];
     const supportRadiusFactor = kernel === 'gaussian' ? GPU_KERNEL_DENSITY_GAUSSIAN_TRUNCATION : 1;
     const visit = `let pointWeight = pointWeights[pointWeightsOffset + sample];

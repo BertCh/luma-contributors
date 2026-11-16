@@ -3,6 +3,12 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  validateNetworkViewBindings,
+  validateNetworkOutputsDisjointFromInputs,
+  validateNetworkWritableViews,
+  getNetworkViews
+} from '../network-view-utils';
+import {
   createTransientView,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -16,13 +22,11 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
-  validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
   validateSinglePackedView,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GPUFlowAggregation, type GPUFlowAggregationOutput} from './gpu-flow-aggregation';
-import {GPU_FLOW_AGGREGATION_MAXIMUM_ZONE_COUNT} from './flow-aggregation-pairs';
+import {GPU_FLOW_AGGREGATION_MAXIMUM_PACKED_ZONE_COUNT} from './flow-aggregation-pairs';
 
 const OPERATION = 'GPUMapMatchedEdgeVolumes';
 
@@ -132,17 +136,41 @@ export class GPUMapMatchedEdgeVolumes implements GPUCommandNodeProducer {
         'edgeCount with output.transitions',
         props.edgeCount,
         1,
-        GPU_FLOW_AGGREGATION_MAXIMUM_ZONE_COUNT
+        GPU_FLOW_AGGREGATION_MAXIMUM_PACKED_ZONE_COUNT
       );
       if (props.transitionPairCapacity === undefined) {
         throw new Error(`${id} output.transitions requires transitionPairCapacity`);
       }
     }
-    validateGraphOutputsDisjointFromInputs(
-      id,
-      [props.output.edgeVolumes, props.output.truncated],
-      [props.traversedEdges.edges, props.traversedEdges.counts]
-    );
+    validateNetworkWritableViews(id, props.output, [
+      {outputs: {edgeVolumes: props.output.edgeVolumes, truncated: props.output.truncated}},
+      {
+        outputs: {
+          flowCounts: props.output.transitions?.flowCounts,
+          flowWeights: props.output.transitions?.flowWeights
+        }
+      },
+      {
+        outputs: {
+          origins: props.output.transitions?.flowOriginZoneIds,
+          destinations: props.output.transitions?.flowDestinationZoneIds
+        },
+        inputs: {ids: props.output.transitions?.ids}
+      },
+      {
+        outputs: {
+          count: props.output.transitions?.status.count,
+          overflow: props.output.transitions?.status.overflow,
+          requiredCount: props.output.transitions?.status.requiredCount,
+          draw: props.output.transitions?.drawInstanceCount
+        },
+        inputs: {pairOverflow: props.output.transitions?.status.pairOverflow}
+      }
+    ]);
+    validateNetworkOutputsDisjointFromInputs(id, getNetworkViews(props.output), [
+      props.traversedEdges.edges,
+      props.traversedEdges.counts
+    ]);
   }
 
   getCommandNodes<Parameters>(
@@ -150,12 +178,25 @@ export class GPUMapMatchedEdgeVolumes implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, rowCount} = this;
     const {edges, counts} = props.traversedEdges;
-    validateGraphViewsBelongToGraph(id, graph, [
-      edges,
-      counts,
-      props.output.edgeVolumes,
-      props.output.truncated
-    ]);
+    validateNetworkViewBindings(id, graph, [edges, counts, ...getNetworkViews(props.output)], {
+      truncated: 4,
+      transitionRows: props.output.transitions ? rowCount * 4 : 4
+    });
+    // Reuse the transition contributor's preflight before declaring the route-to-pair scratch.
+    // The traversed list is a metadata-only stand-in for both equal-length zone ID columns.
+    if (props.output.transitions) {
+      new GPUFlowAggregation({
+        id: `${id}-transitions`,
+        zones: {kind: 'ids', zoneCount: props.edgeCount},
+        originZoneIds: edges,
+        destinationZoneIds: edges,
+        pairCapacity: props.transitionPairCapacity!,
+        maximumProbeCount:
+          props.maximumProbeCount ??
+          Math.min(props.transitionPairCapacity!, Math.floor(0xffffffff / rowCount)),
+        output: props.output.transitions
+      }).validateBindings(graph);
+    }
     const capacity = props.traversedEdgeCapacity;
     const hasTransitions = Boolean(props.output.transitions);
     const truncated =

@@ -10,6 +10,7 @@ import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contribu
 import {getInt64TimeWords} from '../../../src/dataframe-analysis/time-window-filter/index';
 import {GPUTimeWordsRelative} from '../../../src/dataframe-analysis/time-words-relative/index';
 import {
+  createVectorView,
   createInputBuffer,
   createOutputBuffer,
   readFloat32,
@@ -23,18 +24,40 @@ const INT64_MAXIMUM = 2n ** 63n - 1n;
 async function convert(
   ticks: readonly bigint[],
   temporalContext: GPUTemporalContext,
-  origin: bigint
+  origin: bigint,
+  chunkLengths?: readonly number[]
 ): Promise<{relative: number[]; context: GPUTemporalContext}> {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const graph = new GPUCommandGraph(device, {id: 'time-words-relative'});
   const timestamps = createInputBuffer(device, getInt64TimeWords(BigInt64Array.from(ticks)));
   const output = createOutputBuffer(device, ticks.length);
+  const timestampView = importGraphBuffer(graph, 'times', timestamps, 'uint32x2', ticks.length);
+  const outputView = importGraphBuffer(graph, 'relative', output, 'float32', ticks.length);
+  const split = <Format extends 'uint32x2' | 'float32'>(
+    view: typeof timestampView | typeof outputView,
+    format: Format
+  ) => {
+    let rowBase = 0;
+    return createVectorView(
+      format,
+      format,
+      chunkLengths!.map(length => {
+        const chunk = graph.createDataView(view.buffer, {
+          format,
+          length,
+          byteOffset: rowBase * view.rowByteLength
+        });
+        rowBase += length;
+        return chunk;
+      })
+    );
+  };
   const node = new GPUTimeWordsRelative({
-    timestamps: importGraphBuffer(graph, 'times', timestamps, 'uint32x2', ticks.length),
+    timestamps: chunkLengths ? split(timestampView, 'uint32x2') : timestampView,
     temporalContext,
     origin,
-    output: importGraphBuffer(graph, 'relative', output, 'float32', ticks.length)
+    output: chunkLengths ? split(outputView, 'float32') : outputView
   });
   graph.add(node);
   const compiled = graph.compile();
@@ -118,4 +141,72 @@ describe('GPUTimeWordsRelative on the GPU', () => {
     expect(relative).toEqual([0, 10, -10]);
     expect(context.epoch).toBe(5_000n);
   });
+});
+
+it('GPUTimeWordsRelative matches packed and independent expected offsets for three uneven chunks', async () => {
+  const origin = 1_700_000_000_123_456_789n;
+  const offsets = [0n, 1n, -1n, 5n, -999n, 16_777_216n, -16_777_216n, 123_456n, -5_000_000n];
+  const ticks = offsets.map(offset => origin + offset);
+  for (const unit of ['second', 'millisecond', 'microsecond', 'nanosecond'] as const) {
+    const context = getContext(unit);
+    const packed = await convert(ticks, context, origin);
+    const chunked = await convert(ticks, context, origin, [1, 3, 5]);
+    expect(chunked).toEqual(packed);
+    expect(chunked.relative).toEqual(offsets.map(Number));
+  }
+});
+
+it('GPUTimeWordsRelative converts more than the former packed binding limit without repacking', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const graph = new GPUCommandGraph(device);
+  const lengths = [8_388_608, 8_388_607, 2]; // 2^24 + 1 rows, every individual binding fits 128 MiB.
+  const inputBuffers = lengths.map(length => createOutputBuffer(device, length * 2));
+  const outputBuffers = lengths.map(length => createOutputBuffer(device, length));
+  // Nine distinct marker positions (or fewer in a two-row chunk) reveal duplicated/misrouted chunks.
+  const markers = lengths.map(
+    (length, chunkIndex) =>
+      new Map(
+        [...new Set([0, Math.floor(length / 2), length - 1])].map((row, markerIndex) => {
+          const value = 100 + chunkIndex * 10 + markerIndex;
+          inputBuffers[chunkIndex].write(Uint32Array.of(value, 0), row * 8);
+          return [row, value + 1]; // origin -1, with zero timestamps elsewhere giving 1.
+        })
+      )
+  );
+  const timestamps = createVectorView(
+    'times',
+    'uint32x2',
+    lengths.map((length, index) =>
+      importGraphBuffer(graph, `times-${index}`, inputBuffers[index], 'uint32x2', length)
+    )
+  );
+  const output = createVectorView(
+    'relative',
+    'float32',
+    lengths.map((length, index) =>
+      importGraphBuffer(graph, `relative-${index}`, outputBuffers[index], 'float32', length)
+    )
+  );
+  graph.add(
+    new GPUTimeWordsRelative({
+      timestamps,
+      output,
+      temporalContext: getContext('millisecond'),
+      origin: -1n
+    })
+  );
+  const compiled = graph.compile();
+  try {
+    submitGraph(device, compiled, undefined);
+    for (const [index, buffer] of outputBuffers.entries()) {
+      for (const [row, expected] of markers[index]) {
+        const bytes = await buffer.readAsync(row * 4, 4);
+        expect(new Float32Array(bytes.buffer, bytes.byteOffset, 1)[0]).toBe(expected);
+      }
+    }
+  } finally {
+    compiled.destroy();
+    for (const buffer of [...inputBuffers, ...outputBuffers]) buffer.destroy();
+  }
 });

@@ -18,7 +18,7 @@ import {
   getRegressionBindings,
   getRegressionWGSL
 } from '../../../src/gpu-spatial-analysis/spatial-regression/gpu-generalized-geographically-weighted-regression';
-import {expect, it} from 'vitest';
+import {expect, it, vi} from 'vitest';
 import {GPUMultiscaleGeographicallyWeightedRegression} from '../../../src/gpu-spatial-analysis/spatial-regression/gpu-multiscale-geographically-weighted-regression';
 import {auditWGSLModule} from '../../analysis-core/kernel-audit/kernel-audit-wgsl';
 import {
@@ -71,7 +71,16 @@ for (const predictorCount of [1, 24]) {
         expect(kernel.source).not.toMatch(/for \(var row = 0u; row < 1048576u;/);
       }
       Object.assign(device.limits, {maxStorageBufferBindingSize: 4});
-      expect(() => contributor.getCommandNodes(graph)).toThrow(/globalFitPartial.*limit 4/);
+      const allocations = vi.spyOn(graph, 'createTransientBuffer');
+      const subviews = vi.spyOn(graph, 'createDataView');
+      const nodesAdded = vi.spyOn(graph, 'add');
+      // Caller bindings are now preflighted before any nested scratch or node is declared.
+      expect(() => contributor.getCommandNodes(graph)).toThrow(
+        /positions chunk 0 needs 8388608 bytes.*limit 4/
+      );
+      expect(allocations).not.toHaveBeenCalled();
+      expect(subviews).not.toHaveBeenCalled();
+      expect(nodesAdded).not.toHaveBeenCalled();
     } finally {
       device.destroy();
     }

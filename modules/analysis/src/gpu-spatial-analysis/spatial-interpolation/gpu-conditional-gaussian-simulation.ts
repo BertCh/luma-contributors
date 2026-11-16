@@ -2,6 +2,14 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  validateInterpolationPredictionViews,
+  validateInterpolationOutputPasses,
+  validateInterpolationOutputsDisjointFromInputs
+} from './interpolation-view-validation';
+
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+
 import {Buffer} from '@luma.gl/core';
 import {
   createTransientView,
@@ -26,20 +34,20 @@ import {
   validateCapacity,
   validateFiniteNumber,
   validateGPUStorageBindingByteLength,
-  validateGraphViewsBelongToGraph,
   validateMaximumCount,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {
-  getPackedPredictionAccessors,
-  validatePredictionViews
-} from '../../analysis-core/kernels/gpu-prediction-utils';
+import {getPackedPredictionAccessors} from '../../analysis-core/kernels/gpu-prediction-utils';
 import {
   getPredictionCovarianceWGSL,
   validatePredictionCovariance,
   type GPUPredictionCovariance
 } from './gpu-local-kriging';
 import {getBlockedConditionalSimulationNodes} from './conditional-simulation-blocked';
+import {validateGraphChunkGroupKernelSupport} from '../../analysis-core/kernels/graph-chunk-groups';
+
+/** Bounds the exact dense cubic factorization; 4096 squared float32 entries occupy 64 MiB. */
+export const GPU_CONDITIONAL_GAUSSIAN_SIMULATION_MAXIMUM_JOINT_ROW_COUNT = 4096;
 
 /** Distances are planar Euclidean in the native units of the positions. */
 const PLANAR_DISTANCE_SPATIAL_CONTEXT_SUPPORT = Object.freeze({
@@ -124,15 +132,29 @@ export class GPUConditionalGaussianSimulation implements GPUCommandNodeProducer 
       PLANAR_DISTANCE_SPATIAL_CONTEXT_SUPPORT
     );
     validatePredictionCovariance(props.covariance);
+    validateFiniteNumber(this.id, 'covariance.range', props.covariance.range, Number.MIN_VALUE);
+    validateFiniteNumber(this.id, 'covariance.sill', props.covariance.sill, 0);
+    validateFiniteNumber(this.id, 'covariance.nugget', props.covariance.nugget ?? 0, 0);
+    validateFiniteNumber(
+      this.id,
+      'covariance total sill',
+      props.covariance.sill + (props.covariance.nugget ?? 0),
+      Number.MIN_VALUE
+    );
     // Matern is validated for local kriging only; the dense Cholesky here has no pivot ratio check.
     if (props.covariance.model === 'matern') {
       throw new Error(`${this.id} does not support the Matern covariance`);
     }
     validateCapacity(this.id, 'replicateCount', props.replicateCount, 1);
     validateCapacity(this.id, 'replicateOffset', props.replicateOffset ?? 0, 0);
+    validateMaximumCount(
+      this.id,
+      'observations plus queries',
+      props.positions.length + props.queries.length,
+      GPU_CONDITIONAL_GAUSSIAN_SIMULATION_MAXIMUM_JOINT_ROW_COUNT
+    );
     if (
       props.queries.length < 1 ||
-      props.positions.length + props.queries.length > 4096 ||
       props.positions.length !== props.observations.length ||
       props.output.values.length < props.queries.length * props.replicateCount ||
       props.output.moments.length < props.queries.length ||
@@ -145,7 +167,32 @@ export class GPUConditionalGaussianSimulation implements GPUCommandNodeProducer 
     ) {
       throw new Error(`${this.id} invalid bounded simulation topology`);
     }
-    validatePredictionViews(
+    validateFiniteNumber(this.id, 'mean', props.mean ?? 0);
+    validateInterpolationOutputPasses(this.id, props.output, [
+      {
+        read: {
+          moments: props.reusePreparation ? undefined : props.output.moments
+        },
+        write: {
+          values: props.output.values,
+          status: props.output.status,
+          moments:
+            props.reusePreparation && props.positions.length <= 128 && props.queries.length <= 128
+              ? props.output.moments
+              : undefined
+        }
+      },
+      {write: {moments: props.output.moments}},
+      ...(props.positions.length > 128 || props.queries.length > 128
+        ? [{read: {status: props.output.status}, write: {values: props.output.values}}]
+        : [])
+    ]);
+    validateInterpolationOutputsDisjointFromInputs(this.id, Object.values(props.output), [
+      props.positions,
+      props.observations,
+      props.queries
+    ]);
+    validateInterpolationPredictionViews(
       this.id,
       [props.positions, props.observations, props.queries],
       Object.values(props.output)
@@ -283,12 +330,15 @@ export class GPUConditionalGaussianSimulation implements GPUCommandNodeProducer 
     const {id, props} = this;
     const capacity = Math.max(1, props.positions.length + props.queries.length);
     const queryCount = props.queries.length;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.positions,
-      props.observations,
-      props.queries,
-      ...Object.values(props.output)
-    ]);
+    validateGraphChunkBindingRanges(graph, id, {
+      positions: props.positions,
+      observations: props.observations,
+      queries: props.queries,
+      ...props.output
+    });
+    if (props.positions.length > 128 || queryCount > 128) {
+      validateGraphChunkGroupKernelSupport(graph, id, props.reusePreparation ? 8 : 6, 256);
+    }
     const factorSize = capacity * capacity;
     const scratchLength = 2 + factorSize + capacity * 5;
     // Capacity: the dense (n + q)^2 factor must fit one storage binding. The blocked variant
@@ -307,6 +357,13 @@ export class GPUConditionalGaussianSimulation implements GPUCommandNodeProducer 
       'realization batch',
       queryCount * props.replicateCount * 4,
       'reduce replicateCount and use replicateOffset for explicit batches'
+    );
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'blocked preparation dispatch',
+      (Math.ceil(capacity / 16) * 5 + 10) * 16,
+      'reduce observations plus queries'
     );
     const createPersistentView = <Format extends 'float32' | 'float32x2' | 'uint32'>(
       name: string,

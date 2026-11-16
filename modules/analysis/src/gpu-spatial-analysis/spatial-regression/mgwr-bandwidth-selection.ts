@@ -82,6 +82,32 @@ export function validateMultiscaleBandwidthSelection(
   }
 }
 
+/** Complete selection allocation plan; shared across all columns and sweeps. @internal */
+export function getMultiscaleBandwidthAllocationLengths(
+  rows: number,
+  candidateCount: number,
+  selection: Selection
+) {
+  const golden = selection?.searchMethod === 'golden-section';
+  const width = golden ? 3 : candidateCount;
+  const maximumIterations =
+    selection?.maximumSearchIterations ??
+    GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_DEFAULT_MAXIMUM_SEARCH_ITERATIONS;
+  const tableRows = golden ? maximumIterations + 2 : candidateCount;
+  return {
+    'bandwidth scores': rows * width * SCORE_STRIDE,
+    'bandwidth partials': getRegressionTileLayout(rows).tileCount * width * SCORE_STRIDE,
+    'bandwidth totals': width * SCORE_STRIDE,
+    'bandwidth table': tableRows * TABLE_STRIDE,
+    'bandwidth bounds': SEARCH_PARAMETER_LENGTH,
+    'bandwidth ladders': 1 + maximumIterations * SEARCH_PARAMETER_LENGTH,
+    'bandwidth state': GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SEARCH_STATE_LENGTH,
+    // Golden-section interval (8), result (7), score (4), value (1), and indirect gate (3 words/shape).
+    'bandwidth golden-section state': 8,
+    'bandwidth dispatch gate': 12
+  };
+}
+
 /** Shared across all columns and sweeps: selection never allocates scratch per iteration. @internal */
 export function createMultiscaleBandwidthWorkspace<Parameters>(
   graph: GPUCommandGraph<Parameters>,

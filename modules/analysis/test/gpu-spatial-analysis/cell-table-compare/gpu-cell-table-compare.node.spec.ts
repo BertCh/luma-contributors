@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {Buffer} from '@luma.gl/core';
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {expect, it} from 'vitest';
+import {expect, it, vi} from 'vitest';
 import type {GPUCellTable} from '../../../src/gpu-spatial-analysis/cell-aggregation/cell-table';
 import {
   GPUCellTableCompare,
@@ -22,6 +23,11 @@ import {
   sumFixedOrder,
   type CompareInputCell
 } from './cell-table-compare-oracle';
+import {
+  expectCellBarrierEntry,
+  expectCellStorageScopes
+} from '../cell-indexing/cell-dispatch-audit';
+import {auditWGSLModule} from '../../analysis-core/kernel-audit/kernel-audit-wgsl';
 
 let serial = 0;
 
@@ -248,4 +254,192 @@ it('compareCellTablesOnCPU standardizes deltas with the population standard devi
   });
   expect(same.rows.map(row => row.zScore)).toEqual([0, 0]);
   expect(sumFixedOrder(Array.from({length: 1000}, (_, i) => i))).toBe(499500);
+});
+
+it('GPUCellTableCompare rejects overlapping output bindings even for logically disjoint views', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const props = createProps(graph);
+    const backing = createTransientView(graph, 'shared-outputs', 'uint32', 256);
+    const view = (byteOffset: number) =>
+      graph.createDataView(backing.buffer, {format: 'float32', length: 8, byteOffset});
+    for (const byteOffset of [0, 32, 252]) {
+      expect(
+        () =>
+          new GPUCellTableCompare({
+            ...props,
+            output: {...props.output, before: view(0), after: view(byteOffset)}
+          })
+      ).toThrow(/overlap/);
+    }
+    expect(
+      () =>
+        new GPUCellTableCompare({
+          ...props,
+          output: {...props.output, before: view(0), after: view(256)}
+        })
+    ).not.toThrow();
+  } finally {
+    device.destroy();
+  }
+});
+
+it('GPUCellTableCompare rejects oversized aligned bindings and derived scratch without mutating the graph', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    for (const testCase of ['before', 'output', 'bounds'] as const) {
+      const graph = new GPUCommandGraph(device);
+      const props = createProps(graph);
+      const backing = createTransientView(graph, 'prefixed-keys', 'uint32', 128);
+      const oversized = graph.createDataView(backing.buffer, {
+        format: 'uint32x2',
+        length: 8,
+        byteOffset: 4
+      });
+      if (testCase === 'before') props.before = {...createTable(graph, 8), cells: oversized};
+      if (testCase === 'output') props.output.cells = oversized;
+      if (testCase === 'bounds') {
+        props.before = createTable(graph, 1);
+        props.after = createTable(graph, 1);
+        props.output = {
+          cells: createTransientView(graph, 'small-output', 'uint32x2', 1),
+          status: props.output.status
+        };
+      }
+      const contributor = new GPUCellTableCompare(props);
+      Object.defineProperty(device.limits, 'maxStorageBufferBindingSize', {
+        value: testCase === 'bounds' ? 12 : 64
+      });
+      const allocate = vi.spyOn(graph, 'createTransientBuffer');
+      const createView = vi.spyOn(graph, 'createDataView');
+      const add = vi.spyOn(graph, 'add');
+      expect(() => contributor.getCommandNodes(graph)).toThrow(
+        testCase === 'bounds' ? /match bounds scratch/ : /limit|byteLength/
+      );
+      expect(allocate).not.toHaveBeenCalled();
+      expect(createView).not.toHaveBeenCalled();
+      expect(add).not.toHaveBeenCalled();
+      vi.restoreAllMocks();
+    }
+  } finally {
+    vi.restoreAllMocks();
+    device.destroy();
+  }
+});
+
+it('GPUCellTableCompare bounds two-word row addressing and union counts at construction', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    expect(
+      () =>
+        new GPUCellTableCompare(
+          createProps(graph, {id: 'checked-compare', before: createTable(graph, 2 ** 31)})
+        )
+    ).toThrow(/^checked-compare before.cells.length must be an integer in/);
+    expect(
+      () =>
+        new GPUCellTableCompare(
+          createProps(graph, {id: 'checked-compare', after: createTable(graph, 2 ** 31)})
+        )
+    ).toThrow(/^checked-compare after.cells.length must be an integer in/);
+  } finally {
+    device.destroy();
+  }
+});
+
+it('allows disjoint packed bytes for table keys and measures written by separate dispatches', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const props = createProps(graph);
+    const backing = createTransientView(graph, 'packed-columns', 'uint32', 48);
+    const cells = graph.createDataView(backing.buffer, {
+      format: 'uint32x2',
+      length: 8,
+      byteOffset: 4
+    });
+    const delta = graph.createDataView(backing.buffer, {
+      format: 'float32',
+      length: 8,
+      byteOffset: 68
+    });
+    const contributor = new GPUCellTableCompare({
+      ...props,
+      output: {...props.output, cells, delta}
+    });
+    expect(() => contributor.getCommandNodes(graph)).not.toThrow();
+  } finally {
+    device.destroy();
+  }
+});
+
+it('stages packed measures before derived writes to satisfy physical storage usage scopes', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const props = createProps(graph);
+    const backing = createTransientView(graph, 'packed-numerics', 'float32', 200);
+    const column = (byteOffset: number) =>
+      graph.createDataView(backing.buffer, {
+        format: 'float32',
+        length: 8,
+        byteOffset
+      });
+    const nodes = new GPUCellTableCompare({
+      ...props,
+      measure: 'sum',
+      sumScale: 2 ** 126,
+      output: {
+        ...props.output,
+        before: column(4),
+        after: column(36),
+        delta: column(68),
+        // Each measure is published separately; the three derived outputs are co-bound.
+        ratio: column(100),
+        percentChange: column(356),
+        zScore: column(612)
+      }
+    }).getCommandNodes(graph);
+    expectCellStorageScopes(nodes);
+    expect(nodes.filter(node => /-publish-(before|after|delta)$/.test(node.id))).toHaveLength(3);
+    for (const kernel of getGPUCommandNodeKernelSources(nodes)) {
+      expectCellBarrierEntry(kernel.source);
+      expect(auditWGSLModule(kernel.source, kernel.constants)).toEqual([]);
+      if (kernel.source.includes('fn getComparePercent('))
+        expect(kernel.source).toContain(
+          'getScaledQuotient(parts.fract * 100.0, divisor, 1.0, parts.exp)'
+        );
+      if (kernel.source.includes('beforeOut[beforeOutOffset + index] ='))
+        expect(kernel.source).toContain(
+          'getScaledQuotient(cellI64ToF32(beforeValue), SUM_SCALE, 1.0, 0)'
+        );
+    }
+  } finally {
+    device.destroy();
+  }
+});
+
+it('count comparison ignores unused sum columns without storage usage', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const props = createProps(graph);
+    const unused = graph.createTransientBuffer({
+      id: 'unused-before-sums',
+      byteLength: 64,
+      usage: Buffer.COPY_DST
+    });
+    props.before.sums = graph.createDataView(unused, {
+      format: 'uint32x2',
+      length: props.before.cells.length,
+      byteOffset: 4
+    });
+    expect(() =>
+      new GPUCellTableCompare({...props, measure: 'count'}).getCommandNodes(graph)
+    ).not.toThrow();
+  } finally {
+    device.destroy();
+  }
 });

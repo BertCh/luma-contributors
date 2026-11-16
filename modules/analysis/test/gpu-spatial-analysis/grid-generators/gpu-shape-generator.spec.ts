@@ -491,3 +491,21 @@ it('GPUShapeGenerator geodesic arc-length ellipses apply spherical destination a
     }
   }
 });
+
+it('clamps finite segment counts above uint32 before converting the runtime parameter', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const fixture = createShapeFixture(device, 'circle', 'planar', [[0, 0]], [[1]], 8);
+  try {
+    const result = await fixture.run(getGPUShapeGeneratorParameterValues({segmentCount: 1e20}));
+    expect(result['offsets']).toEqual([0, 9]);
+    expect(result['vertexCount']).toEqual([9]);
+    for (let vertex = 0; vertex < 9; vertex++) {
+      const horizontal = result['positions'][2 * vertex];
+      const vertical = result['positions'][2 * vertex + 1];
+      expect(horizontal * horizontal + vertical * vertical).toBeCloseTo(1, 5);
+    }
+  } finally {
+    fixture.destroy();
+  }
+});

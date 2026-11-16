@@ -284,8 +284,12 @@ it('GPUPointHorizonProfile schedules canonicalization, pyramid levels and march 
   expect(ids.at(-1)).toBe('point-horizon-profile-skyline-angle');
   expect(ids.at(-2)).toBe('point-horizon-profile-march-0');
   expect(ids.at(-3)).toBe('point-horizon-profile-chunks');
-  expect(ids.slice(1, -3).length).toBeGreaterThanOrEqual(1);
-  expect(ids.slice(1, -3).every(id => id.includes('-pyramid-level'))).toBe(true);
+  // The fused reducer uploads its runtime level shapes before consuming them.
+  expect(ids.slice(1, -3)).toEqual([
+    'point-horizon-profile-pyramid-level-0',
+    'point-horizon-profile-pyramid-fused-parameters-upload',
+    'point-horizon-profile-pyramid-levels-1-4'
+  ]);
   // Every kernel binds at most 8 storage buffers. This pyramid march binds 7: values, pyramid,
   // settings, observers, tangent, distance and the chunk start word (review C-11 dropped the
   // never-read validity binding); with `samples` too it binds exactly 8.

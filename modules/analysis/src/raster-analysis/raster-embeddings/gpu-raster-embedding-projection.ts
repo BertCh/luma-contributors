@@ -8,23 +8,31 @@ import type {
   GPUCommandNode,
   GPUCommandNodeProducer
 } from '@luma.gl/graph/gpu-core';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
   validateFiniteNumber,
-  validateRequirement
+  validateRequirement,
+  validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {RASTER_FINITE_WGSL, rasterBinding} from '../remote-sensing/raster-kernel-utils';
 import {
-  RASTER_FINITE_WGSL,
-  rasterBinding,
-  validateRasterGraph,
-  validateRasterViews,
-  type RasterScalarView
-} from '../remote-sensing/raster-kernel-utils';
-import {
+  MAXIMUM_RASTER_EMBEDDING_DIMENSIONS,
   validateRasterEmbeddingShape,
   validateRasterEmbeddingVectors
 } from './raster-embedding-common';
+
+import {
+  createRasterEmbeddingKernelNodes,
+  getRasterEmbeddingChunkProps,
+  planRasterEmbeddingChunks,
+  validateRasterEmbeddingBindings,
+  validateRasterEmbeddingViews,
+  type PackedEmbeddingProps,
+  type RasterEmbeddingChunk,
+  type RasterEmbeddingKernel,
+  type RasterEmbeddingScalarView,
+  type RasterEmbeddingView
+} from './raster-embedding-chunks';
 
 /** Components projected per pixel, held in private memory. */
 export const MAXIMUM_RASTER_EMBEDDING_COMPONENT_COUNT = 16;
@@ -64,22 +72,27 @@ export function getGPURasterEmbeddingProjectionParameterValues(
 }
 
 /** Caller-owned outputs of {@link GPURasterEmbeddingProjection}; at least one is required. */
-export type GPURasterEmbeddingProjectionOutput = {
+export type GPURasterEmbeddingProjectionOutput<
+  FloatRows extends RasterEmbeddingView<'float32'> = GraphDataView<'float32'>
+> = {
   /** Scores on the components, `pixel * componentCount + component`; NaN for invalid pixels. */
-  projected?: GraphDataView<'float32'>;
+  projected?: FloatRows;
   /** The first three scores stretched to `[0, 1]`, `pixel * 3 + channel`; NaN for invalid pixels. Needs `parameters`. */
-  rgb?: GraphDataView<'float32'>;
+  rgb?: FloatRows;
 };
 
 /** Properties of {@link GPURasterEmbeddingProjection}. */
-export type GPURasterEmbeddingProjectionProps = {
+export type GPURasterEmbeddingProjectionProps<
+  FloatRows extends RasterEmbeddingView<'float32'> = GraphDataView<'float32'>,
+  UintRows extends RasterEmbeddingView<'uint32'> = GraphDataView<'uint32'>
+> = {
   id?: string;
   pixelCount: number;
-  /** Vector length, in `[1, 128]`. */
+  /** Vector length, in `[1, 1024]`. */
   dimensions: number;
-  vectors: GraphDataView<'float32'>;
+  vectors: FloatRows;
   /** Per-pixel QA; zero makes the pixel invalid. */
-  mask?: GraphDataView<'uint32'>;
+  mask?: UintRows;
   /** Components to project on, in `[1, 16]`; at least 3 with `output.rgb`. */
   componentCount: number;
   /** Mean vector subtracted first, `dimensions` entries (from {@link GPURasterEmbeddingCovariance}). */
@@ -88,7 +101,7 @@ export type GPURasterEmbeddingProjectionProps = {
   components: GraphDataView<'float32'>;
   /** Float32, see {@link getGPURasterEmbeddingProjectionParameterValues}. Needed with `output.rgb`. */
   parameters?: GraphDataView<'float32'>;
-  output: GPURasterEmbeddingProjectionOutput;
+  output: GPURasterEmbeddingProjectionOutput<FloatRows>;
 };
 
 /**
@@ -98,17 +111,32 @@ export type GPURasterEmbeddingProjectionProps = {
  * {@link GPURasterEmbeddingCovariance}, so the heavy pass is on the GPU and the eigenproblem
  * is not.
  *
+ * Pixel fields accept GraphVectorView chunks with matching complete-pixel boundaries; shared tables stay packed.
+ * Each chunk has its own workgroup count and uses the same pipeline.
+ *
  * Per-frame: `parameters`, `mean`, `components`. Compile-time: `pixelCount`, `dimensions`,
  * `componentCount` and which optional views exist.
  */
-export class GPURasterEmbeddingProjection implements GPUCommandNodeProducer {
+export class GPURasterEmbeddingProjection<
+  FloatRows extends RasterEmbeddingView<'float32'> = GraphDataView<'float32'>,
+  UintRows extends RasterEmbeddingView<'uint32'> = GraphDataView<'uint32'>
+> implements GPUCommandNodeProducer
+{
   readonly id: string;
+  private readonly chunks: readonly RasterEmbeddingChunk[];
+  readonly estimatedCommandNodeCount: number;
 
-  constructor(readonly props: GPURasterEmbeddingProjectionProps) {
+  constructor(readonly props: GPURasterEmbeddingProjectionProps<FloatRows, UintRows>) {
     const id = props.id ?? 'raster-embedding-projection';
     this.id = id;
     const {pixelCount, dimensions, output} = props;
-    validateRasterEmbeddingShape(id, pixelCount, dimensions);
+    validateRasterEmbeddingShape(
+      id,
+      pixelCount,
+      dimensions,
+      MAXIMUM_RASTER_EMBEDDING_DIMENSIONS,
+      false
+    );
     validateCapacity(
       id,
       'componentCount',
@@ -148,21 +176,44 @@ export class GPURasterEmbeddingProjection implements GPUCommandNodeProducer {
           props.parameters.length >= GPU_RASTER_EMBEDDING_PROJECTION_PARAMETER_LENGTH),
       'output.rgb needs parameters'
     );
-    validateRasterViews(id, this.getInputs(), this.getOutputs());
+    if (props.mean) validateSinglePackedView(props.mean, ['float32'], `${id} mean`);
+    if (props.components)
+      validateSinglePackedView(props.components, ['float32'], `${id} components`);
+    if (props.parameters)
+      validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
+    validateRasterEmbeddingViews(id, this.getInputs(), this.getOutputs());
+    this.chunks = planRasterEmbeddingChunks(
+      id,
+      pixelCount,
+      {
+        vectors: {view: props.vectors, format: 'float32', components: dimensions},
+        mask: {view: props.mask, format: 'uint32', components: 1},
+        'output.projected': {
+          view: props.output.projected,
+          format: 'float32',
+          components: props.componentCount
+        },
+        'output.rgb': {view: props.output.rgb, format: 'float32', components: 3}
+      },
+      'vectors',
+      1
+    );
+    this.estimatedCommandNodeCount =
+      1 + this.chunks.filter(chunk => chunk.pixelCount > 0).length * 1;
   }
 
-  private getInputs(): RasterScalarView[] {
+  private getInputs(): RasterEmbeddingScalarView[] {
     const {vectors, mask, mean, components, parameters} = this.props;
     return [
       vectors,
       mean,
       components,
       ...(mask ? [mask] : []),
-      ...(parameters ? [parameters] : [])
+      ...(parameters && this.props.output.rgb ? [parameters] : [])
     ];
   }
 
-  private getOutputs(): RasterScalarView[] {
+  private getOutputs(): RasterEmbeddingScalarView[] {
     const {projected, rgb} = this.props.output;
     return [...(projected ? [projected] : []), ...(rgb ? [rgb] : [])];
   }
@@ -170,36 +221,62 @@ export class GPURasterEmbeddingProjection implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {id, props} = this;
+    validateRasterEmbeddingBindings(
+      graph,
+      this.id,
+      this.getInputs(),
+      this.getOutputs(),
+      this.estimatedCommandNodeCount - 1,
+      this.props,
+      3 +
+        Number(Boolean(this.props.mask)) +
+        Number(Boolean(this.props.parameters && this.props.output.rgb)) +
+        Number(Boolean(this.props.output.projected)) +
+        Number(Boolean(this.props.output.rgb)),
+      this.chunks
+    );
+    const kernels = this.chunks.flatMap((chunk, chunkIndex) =>
+      chunk.pixelCount === 0
+        ? []
+        : this.getChunkKernels(graph, getRasterEmbeddingChunkProps(this.props, chunk), chunkIndex)
+    );
+    return createRasterEmbeddingKernelNodes(graph, this.id, kernels);
+  }
+
+  private getChunkKernels<Parameters>(
+    graph: GPUCommandGraph<Parameters>,
+    props: PackedEmbeddingProps<GPURasterEmbeddingProjectionProps>,
+    chunkIndex: number
+  ): RasterEmbeddingKernel[] {
+    const id = `${this.id}-chunk-${chunkIndex}`;
     const {pixelCount, dimensions, componentCount, output} = props;
-    validateRasterGraph(id, graph, this.getInputs(), this.getOutputs());
     return [
-      createWGSLKernelNode<Parameters>(graph, {
+      {
         id,
         operation: 'GPURasterEmbeddingProjection',
         invocationCount: pixelCount,
-        workgroupSize: 64,
+        pixelCount,
         bindings: [
           rasterBinding('vectors', props.vectors),
           rasterBinding('mean', props.mean),
           rasterBinding('components', props.components),
           ...(props.mask ? [rasterBinding('mask', props.mask)] : []),
-          ...(props.parameters ? [rasterBinding('parameters', props.parameters)] : []),
+          ...(props.parameters && output.rgb
+            ? [rasterBinding('parameters', props.parameters)]
+            : []),
           ...(output.projected ? [rasterBinding('projected', output.projected, true)] : []),
           ...(output.rgb ? [rasterBinding('rgb', output.rgb, true)] : [])
         ],
         declarations: RASTER_FINITE_WGSL,
-        body: `var centered: array<f32, ${dimensions}>;
-var isValid = ${props.mask ? 'mask[maskOffset + index] != 0u' : 'true'};
+        body: `var isValid = ${props.mask ? 'mask[maskOffset + index] != 0u' : 'true'};
 for (var band = 0u; band < ${dimensions}u; band++) {
   let value = vectors[vectorsOffset + index * ${dimensions}u + band];
   if (!finite(value)) { isValid = false; }
-  centered[band] = value - mean[meanOffset + band];
 }
 for (var component = 0u; component < ${componentCount}u; component++) {
   var score = 0.0;
   for (var band = 0u; band < ${dimensions}u; band++) {
-    score += centered[band] * components[componentsOffset + component * ${dimensions}u + band];
+    score += (vectors[vectorsOffset + index * ${dimensions}u + band] - mean[meanOffset + band]) * components[componentsOffset + component * ${dimensions}u + band];
   }
   score = select(missing(), score, isValid);
   ${output.projected ? `projected[projectedOffset + index * ${componentCount}u + component] = score;` : ''}
@@ -213,7 +290,7 @@ for (var component = 0u; component < ${componentCount}u; component++) {
       : ''
   }
 }`
-      })
+      }
     ];
   }
 }

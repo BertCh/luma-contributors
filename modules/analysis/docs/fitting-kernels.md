@@ -7,8 +7,9 @@ by the caller; no model, pretrained weights or dataset is included. These are GP
 without a CPU twin: their work is parallel and a CPU stage would force gradient/state readbacks.
 
 Compile-time shapes and loop bounds are validated at construction. Mutable values live in graph
-views. Each packed scalar binding is capped at 128 MiB and checked against the device at the start
-of `getCommandNodes`. Fitted models have at most 100,000 parameters. Use minibatches to bound
+views. Packed scalar bindings retain the 128 MiB fitting cap, except coordinate-encoder row chunks,
+which are bounded by the device storage-binding limit. Every binding is checked against the device
+at the start of `getCommandNodes`. Fitted models have at most 100,000 parameters. Use minibatches to bound
 row-gradient and encoded-feature storage. Encoder work is capped at 5 billion bounded operations.
 The limits are planning bounds, not throughput measurements on additional devices.
 

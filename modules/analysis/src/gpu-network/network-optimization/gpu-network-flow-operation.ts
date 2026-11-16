@@ -12,13 +12,23 @@ import {GPUNetworkFlow, type GPUNetworkFlowProps} from './gpu-network-flow';
 /** Shared operation properties, with graph value names replacing packed views. */
 export type NetworkFlowOperationProps = Pick<
   GPUNetworkFlowProps,
-  'id' | 'nodeCount' | 'maximumAugmentations'
+  | 'id'
+  | 'nodeCount'
+  | 'solver'
+  | 'mode'
+  | 'maximumCostPhases'
+  | 'maximumAugmentations'
+  | 'maximumRelaxationRounds'
+  | 'maximumRelabels'
 > & {
   /** At least one slot: mixed-executor output vectors cannot be empty. Zero capacity is allowed. */
   edgeCount: number;
   edges: string;
   capacities: string;
   costs?: string;
+  /** Optional CSR connectivity, aligned with the original edge order. Topology weights are
+   * unused by the solver; original integral costs remain in costs. */
+  topology?: {offsets: string; neighbors: string};
   /** uint32: source, sink, required flow (0xffffffff maximizes). */
   parameters: string;
   output: {
@@ -39,7 +49,10 @@ export class GPUNetworkFlowOperation extends GPUContributorOperation {
         edges: props.edges,
         capacities: props.capacities,
         parameters: props.parameters,
-        ...(props.costs === undefined ? {} : {costs: props.costs})
+        ...(props.costs === undefined ? {} : {costs: props.costs}),
+        ...(props.topology
+          ? {topologyOffsets: props.topology.offsets, topologyNeighbors: props.topology.neighbors}
+          : {})
       },
       outputs: {
         flow: {value: props.output.flow, format: 'uint32', length: props.edgeCount},
@@ -57,6 +70,12 @@ export class GPUNetworkFlowOperation extends GPUContributorOperation {
           capacities: getView<'uint32'>('capacities'),
           parameters: getView<'uint32'>('parameters'),
           costs: props.costs === undefined ? undefined : getView<'uint32'>('costs'),
+          topology: props.topology
+            ? {
+                offsets: getView<'uint32'>('topologyOffsets'),
+                neighbors: getView<'uint32'>('topologyNeighbors')
+              }
+            : undefined,
           output: {
             flow: getView<'uint32'>('flow'),
             cut: getView<'uint32'>('cut'),

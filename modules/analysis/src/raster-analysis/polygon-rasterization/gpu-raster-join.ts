@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRasterStorageBindings} from '../raster-grid/raster-storage-preflight';
 import {
   GPU_LINEAR_EDGE_MODELS,
   resolveGPUSpatialContext,
@@ -268,6 +269,37 @@ export class GPURasterJoin implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    // The sorted sums add one 256-invocation workgroup per zone, which lowers the maximum.
+    validateCapacity(
+      this.id,
+      'zoneCount',
+      this.props.zoneCount,
+      1,
+      this.props.output.sums
+        ? getGPURasterJoinMaximumSummedZoneCount(graph.device)
+        : getGPURasterJoinMaximumZoneCount(graph.device)
+    );
+    const storageProps = this.props;
+    validateRasterStorageBindings(
+      graph,
+      this.id,
+      [
+        storageProps.parameters,
+        storageProps.points,
+        storageProps.output.sums ? storageProps.values : undefined,
+        storageProps.zones,
+        storageProps.boundary,
+        ...Object.values(storageProps.output)
+      ],
+      {
+        'point scalar planes and sort scratch': storageProps.points.length * 4,
+        'zone aggregation counts': storageProps.zoneCount * 4,
+        'sorted zone offsets': storageProps.output.sums ? (storageProps.zoneCount + 1) * 4 : 0,
+        'boundary tallies':
+          storageProps.output.unassignedBoundaryCount || storageProps.output.outsideCount ? 8 : 0
+      }
+    );
+
     const {id, props} = this;
     const {zoneCount, output, boundary} = props;
     const {width, height} = props.grid;
@@ -279,16 +311,6 @@ export class GPURasterJoin implements GPUCommandNodeProducer {
       boundary,
       ...Object.values(output)
     ]);
-    // The sorted sums add one 256-invocation workgroup per zone, which lowers the maximum.
-    validateCapacity(
-      id,
-      'zoneCount',
-      zoneCount,
-      1,
-      output.sums
-        ? getGPURasterJoinMaximumSummedZoneCount(graph.device)
-        : getGPURasterJoinMaximumZoneCount(graph.device)
-    );
     const pointCount = props.points.length;
     const nodes: GPUCommandNode<Parameters>[] = [];
     const declarations = `const WIDTH: u32 = ${width}u;

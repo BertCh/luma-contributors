@@ -6,6 +6,7 @@ import type {Device} from '@luma.gl/core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {addDriveTimeCatchmentRecipe} from '../../../src/gpu-network/recipes/drive-time-catchment-recipe';
+import {getGPUNetworkIsochronesParameterValues} from '../../../src/gpu-network/network-isochrones/index';
 import {RecipeTestFixture} from '../../gpu-spatial-analysis/recipes/recipe-harness';
 import {requireTestDevice} from '../../utils/require-test-device';
 
@@ -33,6 +34,8 @@ type DriveTimeResult = {
   nodeCosts: number[];
   startNodes: number[];
   startCosts: number[];
+  converged: number;
+  rasterValues?: number[];
 };
 
 async function runDriveTimeCatchment(
@@ -40,7 +43,8 @@ async function runDriveTimeCatchment(
   network: SmallNetwork,
   facilities: number[],
   demand: number[],
-  costBreaks: number[]
+  costBreaks: number[],
+  rasterMode?: 'unlabelled' | 'labelled'
 ): Promise<DriveTimeResult> {
   const nodeCount = network.offsets.length - 1;
   const facilityCount = facilities.length / 2;
@@ -52,8 +56,12 @@ async function runDriveTimeCatchment(
       demandTimes: fixture.output('demand-times', 'float32', demandCount),
       demandBands: fixture.output('demand-bands', 'uint32', demandCount),
       startNodes: fixture.output('start-nodes', 'uint32', 2 * facilityCount),
-      startCosts: fixture.output('start-costs', 'float32', 2 * facilityCount)
+      startCosts: fixture.output('start-costs', 'float32', 2 * facilityCount),
+      converged: fixture.output('converged', 'uint32', 1)
     };
+    const rasterValues = rasterMode
+      ? fixture.output('raster-values', 'float32', 48 * 8)
+      : undefined;
     addDriveTimeCatchmentRecipe(fixture.graph, {
       topology: {
         offsets: fixture.input(
@@ -98,9 +106,42 @@ async function runDriveTimeCatchment(
       outputs: {
         nodeCosts: outputs.nodeCosts.view,
         demandTimes: outputs.demandTimes.view,
-        demandBands: outputs.demandBands.view
+        demandBands: outputs.demandBands.view,
+        status: {serviceAreaConverged: outputs.converged.view}
       },
-      scratch: {startNodes: outputs.startNodes.view, startCosts: outputs.startCosts.view}
+      scratch: {startNodes: outputs.startNodes.view, startCosts: outputs.startCosts.view},
+      ...(rasterValues
+        ? {
+            isochrones: {
+              costBreaks: fixture.input(
+                'isochrone-breaks',
+                Float32Array.from(costBreaks),
+                'float32',
+                costBreaks.length
+              ),
+              parameters: fixture.parameters(
+                'isochrone-parameters',
+                'float32',
+                getGPUNetworkIsochronesParameterValues({
+                  breakCount: costBreaks.length,
+                  extent: [-1, -1, 11, 1],
+                  bufferRadius: 0.4
+                })
+              ),
+              raster: {
+                width: 48,
+                height: 8,
+                output: {
+                  values: rasterValues.view,
+                  bandClasses: fixture.output('raster-band-classes', 'uint32', 48 * 8).view,
+                  ...(rasterMode === 'labelled'
+                    ? {pixelFacilities: fixture.output('pixel-facilities', 'uint32', 48 * 8).view}
+                    : {})
+                }
+              }
+            }
+          }
+        : {})
     });
     fixture.run();
     return {
@@ -108,7 +149,9 @@ async function runDriveTimeCatchment(
       demandBands: await fixture.readUint32(outputs.demandBands, demandCount),
       nodeCosts: await fixture.readFloat32(outputs.nodeCosts, nodeCount),
       startNodes: await fixture.readUint32(outputs.startNodes, 2 * facilityCount),
-      startCosts: await fixture.readFloat32(outputs.startCosts, 2 * facilityCount)
+      startCosts: await fixture.readFloat32(outputs.startCosts, 2 * facilityCount),
+      converged: (await fixture.readUint32(outputs.converged, 1))[0],
+      ...(rasterValues ? {rasterValues: await fixture.readFloat32(rasterValues, 48 * 8)} : {})
     };
   } finally {
     fixture.destroy();
@@ -121,6 +164,43 @@ function expectValuesClose(actual: ArrayLike<number>, expected: number[], label:
     expect(Math.abs(actual[row] - expected[row]), `${label} ${row}`).toBeLessThanOrEqual(1e-3);
   }
 }
+
+it('drive-time source rasters preserve routing costs and convergence in the same submission', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const rasterMode of [undefined, 'unlabelled', 'labelled'] as const) {
+    const result = await runDriveTimeCatchment(
+      device,
+      {
+        nodePositions: [0, 0, 10, 0],
+        offsets: [0, 1, 2],
+        neighbors: [1, 0],
+        weights: [10, 30]
+      },
+      [5, 0],
+      [2, 0, 5, 0, 8, 0],
+      [1, 10, 30],
+      rasterMode
+    );
+    // Closed form: the facility drives 5 toward B and 15 toward A; the demand rows cost
+    // 0.3 * 30, zero and 0.3 * 10. Enabling raster passes must preserve these outputs.
+    if (
+      result.converged !== 1 ||
+      result.nodeCosts.some(
+        (cost, row) => !Number.isFinite(cost) || Math.abs(cost - [15, 5][row]) > 1e-3
+      ) ||
+      result.demandTimes.some(
+        (cost, row) => !Number.isFinite(cost) || Math.abs(cost - [9, 0, 3][row]) > 1e-3
+      ) ||
+      result.demandBands.some((band, row) => band !== [1, 0, 1][row]) ||
+      (result.rasterValues && !result.rasterValues.some(cost => cost >= 0 && cost <= 1))
+    ) {
+      throw new Error(
+        `drive-time routing/raster submission failed (${rasterMode ?? 'no raster'}): ${JSON.stringify(result)}`
+      );
+    }
+  }
+});
 
 it('addDriveTimeCatchmentRecipe drives along the road when demand shares it with the facility', async () => {
   const device = await getWebGPUTestDevice();
@@ -241,4 +321,46 @@ it('addDriveTimeCatchmentRecipe finds every facility on the road of a demand poi
   expect(result.nodeCosts).toEqual([2, 4, 8]);
   // x = 3: 4; x = 5: 2; x = 7: 2; y = 1: 4 + 2 through B, or 6 along the road; y = 6: 4.
   expect(result.demandTimes).toEqual([4, 2, 2, 6, 4]);
+});
+
+it('drive-time junctions preserve coincident endpoint access on one-way roads', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // The facility coincides with a source that has two outgoing one-way branches. It can
+  // start down either branch without first driving an unavailable reverse edge.
+  const outward = await runDriveTimeCatchment(
+    device,
+    {
+      nodePositions: [0, 0, 10, 0, 0, 10],
+      offsets: [0, 2, 2, 2],
+      neighbors: [1, 2],
+      weights: [10, 10]
+    },
+    [0, 0],
+    [0, 5, 0, 0],
+    [5, 10]
+  );
+  expectValuesClose(outward.nodeCosts, [0, 10, 10], 'outward junction node cost');
+  expectValuesClose(outward.demandTimes, [5, 0], 'outward junction demand time');
+  expect(outward.demandBands).toEqual([0, 0]);
+  // A demand at the target of an unreachable incoming road is still reached through the other
+  // incoming road. It cannot drive backwards from the junction along the unreachable branch.
+  const inward = await runDriveTimeCatchment(
+    device,
+    {
+      nodePositions: [10, 0, 0, 0, 0, 10],
+      offsets: [0, 1, 1, 2],
+      neighbors: [1, 1],
+      weights: [10, 10]
+    },
+    [0, 5],
+    [0, 0, 5, 0],
+    [5, 10]
+  );
+  expectValuesClose([inward.demandTimes[0]], [5], 'inward junction demand time');
+  if (inward.demandTimes[1] !== Infinity)
+    throw new Error(
+      `drive-time inward junction must not enable reverse travel: ${JSON.stringify(inward)}`
+    );
+  expect(inward.demandBands).toEqual([0, NONE]);
 });

@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateRefinementScratchByteLengths} from './refinement-storage-validation';
+import {validateRefinementShaderNumber} from './refinement-storage-validation';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -12,8 +15,7 @@ import {
 import type {GPUPolygonGeometryFields} from '../../analysis-core/contracts/index';
 import {
   validateSinglePackedView,
-  validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createWGSLKernelNode,
@@ -37,6 +39,7 @@ export class GPUCanonicalPolygonEquality implements GPUCommandNodeProducer {
   constructor(props: GPUCanonicalPolygonEqualityProps) {
     this.id = props.id ?? 'canonical-polygon-equality';
     this.props = props;
+    validateRefinementShaderNumber(this.id, 'tolerance', props.tolerance ?? 0);
     if (!(Number.isFinite(props.tolerance ?? 0) && (props.tolerance ?? 0) >= 0)) {
       throw new Error('Invalid equality tolerance');
     }
@@ -67,11 +70,18 @@ export class GPUCanonicalPolygonEquality implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
-    validateGraphViewsBelongToGraph(id, graph, [
-      ...Object.values(props.left),
-      ...Object.values(props.right),
-      props.output
-    ]);
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(
+        [...Object.values(props.left), ...Object.values(props.right), props.output].map(
+          (view, index) => [`binding.${index}`, view]
+        )
+      )
+    );
+    validateRefinementScratchByteLengths(graph, id, {
+      spans: props.output.length * 16
+    });
     const spans = createTransientView(graph, `${id}-spans`, 'uint32x4', props.output.length);
     return [
       createWGSLKernelNode<Parameters>(graph, {

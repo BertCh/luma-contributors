@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {createClassificationKernelNode as createWGSLKernelNode} from './classification-kernel-node';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -9,31 +10,47 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
+import type {WGSLKernelBinding} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
-  createWGSLKernelNode,
-  type WGSLKernelBinding
-} from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {
+  getGraphViewChunks,
+  validateCommandNodeBudget,
+  validateMaximumCount,
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {COLUMN_ORDERED_KEY_WGSL} from './column-classification-shared';
 import {COLOR_SCALE_WGSL} from './color-scale-wgsl';
 import {GPU_COLOR_SCALE_PARAMETER_LENGTH} from './color-scale-parameters';
 
+import {
+  type ClassificationRows,
+  type ClassificationRowView,
+  validateClassificationScratch,
+  validateClassificationBindings,
+  validateClassificationRows,
+  validateClassificationOutput,
+  validateClassificationOutputs
+} from './column-classification-rows';
+
 const OPERATION = 'GPUColorScale';
+/** Class counts use u32 atomics and must not wrap even when every row has one class. */
+const MAXIMUM_COUNTED_ROW_COUNT = 2 ** 32 - 1;
 
 /** Caller-owned outputs of {@link GPUColorScale}. At least one is required. */
-export type GPUColorScaleOutput = {
+export type GPUColorScaleOutput<
+  Rows extends ClassificationRows<'float32' | 'uint32' | 'sint32'> =
+    | GraphDataView<'float32'>
+    | GraphDataView<'uint32'>
+    | GraphDataView<'sint32'>
+> = {
   /** Packed `rgba8` colour per row (`r | g << 8 | b << 16 | a << 24`). No-data rows get the no-data colour. */
-  colors?: GraphDataView<'uint32'>;
+  colors?: ClassificationRowView<'uint32', Rows>;
   /**
    * Palette class per row, `0xffffffff` for no-data rows. Classes are always clamped to
    * `[0, paletteCount - 1]`, so a class always indexes the palette.
    */
-  classIndices?: GraphDataView<'uint32'>;
+  classIndices?: ClassificationRowView<'uint32', Rows>;
   /** Rows per class, `maximumPaletteCount` rows. Rewritten every encoding; no-data rows are not counted. */
   classCounts?: GraphDataView<'uint32'>;
 };
@@ -44,16 +61,21 @@ export type GPUColorScaleOutput = {
  * Per-frame (no recompile): the contents of `parameters` (scale type, counts, interpolation,
  * clamp, no-data colour, log floor, exponent), `domain`, `palette`, `domainCount`, `mask` and
  * `values`. Topology (needs a new graph): view lengths, `maximumDomainCount`,
- * `maximumPaletteCount`, the `values` format, and which optional views and outputs are present.
+ * `maximumPaletteCount`, the `values` format, and which optional views and outputs are present, and the ordered row chunk lengths.
  */
-export type GPUColorScaleProps = {
+export type GPUColorScaleProps<
+  Rows extends ClassificationRows<'float32' | 'uint32' | 'sint32'> =
+    | GraphDataView<'float32'>
+    | GraphDataView<'uint32'>
+    | GraphDataView<'sint32'>
+> = {
   /** Prefix for generated node and transient IDs. Defaults to `'color-scale'`. */
   id?: string;
   /**
-   * Packed values. `float32` serves every scale except `ordinal`; `uint32` category codes select
+   * Packed or chunked values. `float32` serves every scale except `ordinal`; `uint32` category codes select
    * the `ordinal` scale at compile time (the `scale` parameter is then ignored).
    */
-  values: GraphDataView<'float32'> | GraphDataView<'uint32'> | GraphDataView<'sint32'>;
+  values: Rows;
   /**
    * How an integer `values` view is read. `'ordinal'` (default) treats `uint32` codes as
    * categories for the `ordinal` scale, as above. `'numeric'` converts the integers to f32 on
@@ -62,8 +84,8 @@ export type GPUColorScaleProps = {
    * always numeric. Ignored for `float32`. Topology.
    */
   integerValues?: 'ordinal' | 'numeric';
-  /** Optional packed `uint32` row mask; zero makes the row no-data. */
-  mask?: GraphDataView<'uint32'>;
+  /** Optional row-aligned packed or chunked `uint32` mask; zero makes the row no-data. */
+  mask?: ClassificationRowView<'uint32', Rows>;
   /**
    * Packed float32 domain, monotonic (continuous scales may descend), at least `maximumDomainCount` rows. Edges or stops, for
    * example the `breaks` of `GPUClassBreaks` or quantiles of `GPUColumnQuantiles`, used directly
@@ -86,7 +108,7 @@ export type GPUColorScaleProps = {
   /** Largest active palette length, compile-time. */
   maximumPaletteCount: number;
   /** Caller-owned outputs. */
-  output: GPUColorScaleOutput;
+  output: GPUColorScaleOutput<Rows>;
 };
 
 /**
@@ -123,15 +145,26 @@ export type GPUColorScaleProps = {
  * Class counts use integer atomics and are exact; the colours are a pure function of the inputs
  * and so are run-to-run identical.
  *
- * Inputs must be single packed views (chunked vectors are not supported).
+ * Row inputs and outputs accept GraphVectorView with identical ordered chunk lengths.
+ * Controls and class counts remain single packed views. Each nonempty chunk dispatches independently;
+ * counts are reset once and accumulated across all chunks, bitwise equal to packed input.
+ * With classCounts, at most 2^32 - 1 source rows are accepted to prevent counter overflow.
  */
-export class GPUColorScale implements GPUCommandNodeProducer {
+export class GPUColorScale<
+  Rows extends ClassificationRows<'float32' | 'uint32' | 'sint32'> =
+    | GraphDataView<'float32'>
+    | GraphDataView<'uint32'>
+    | GraphDataView<'sint32'>
+> implements GPUCommandNodeProducer
+{
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
-  readonly props: GPUColorScaleProps;
+  readonly props: GPUColorScaleProps<Rows>;
+  /** Upper bound for chunk dispatches, including the single counts reset. */
+  readonly estimatedCommandNodeCount: number;
 
-  constructor(props: GPUColorScaleProps) {
+  constructor(props: GPUColorScaleProps<Rows>) {
     this.id = props.id ?? 'color-scale';
     this.props = props;
     const id = this.id;
@@ -142,10 +175,17 @@ export class GPUColorScale implements GPUCommandNodeProducer {
       throw new Error(`${id} needs at least one output (colors, classIndices, or classCounts)`);
     }
     const rows = props.values.length;
+    if (output.classCounts)
+      validateMaximumCount(
+        id,
+        'values length with output.classCounts',
+        rows,
+        MAXIMUM_COUNTED_ROW_COUNT
+      );
     if (rows < 1) {
       throw new Error(`${id} needs at least one row`);
     }
-    validateSinglePackedView(props.values, ['float32', 'uint32', 'sint32'], `${id} values`);
+    validateClassificationRows(id, 'values', props.values, ['float32', 'uint32', 'sint32']);
     if (
       props.integerValues !== undefined &&
       !['ordinal', 'numeric'].includes(props.integerValues)
@@ -156,7 +196,7 @@ export class GPUColorScale implements GPUCommandNodeProducer {
     validateSinglePackedView(props.palette, ['uint32'], `${id} palette`);
     validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.mask) {
-      validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
+      validateClassificationRows(id, 'mask', props.mask, ['uint32'], props.values);
       if (props.mask.length !== rows) {
         throw new Error(`${id} mask length must equal values length`);
       }
@@ -181,7 +221,7 @@ export class GPUColorScale implements GPUCommandNodeProducer {
     for (const name of ['colors', 'classIndices'] as const) {
       const view = output[name];
       if (view) {
-        validateSinglePackedView(view, ['uint32'], `${id} output.${name}`);
+        validateClassificationOutput(id, `output.${name}`, view, 'uint32', props.values);
         if (view.length < rows) {
           throw new Error(`${id} output.${name} must hold one row per value`);
         }
@@ -193,12 +233,8 @@ export class GPUColorScale implements GPUCommandNodeProducer {
         throw new Error(`${id} output.classCounts must hold maximumPaletteCount rows`);
       }
     }
-    const outputs = [output.colors, output.classIndices, output.classCounts].filter(
-      (view): view is GraphDataView<'uint32'> => Boolean(view)
-    );
-    if (new Set(outputs.map(view => view.buffer)).size !== outputs.length) {
-      throw new Error(`${id} outputs must not share buffers with each other`);
-    }
+    const outputs = [output.colors, output.classIndices, output.classCounts];
+    validateClassificationOutputs(id, outputs);
     validateGraphOutputsDisjointFromInputs(id, outputs, [
       props.values,
       props.mask,
@@ -207,6 +243,11 @@ export class GPUColorScale implements GPUCommandNodeProducer {
       props.palette,
       props.parameters
     ]);
+    this.estimatedCommandNodeCount =
+      getGraphViewChunks(props.values).filter(chunk => chunk.length > 0).length *
+        (1 + Number(Boolean(output.colors || output.classCounts))) +
+      Number(Boolean(output.classCounts));
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
   }
 
   /** Returns the optional init, classify, and colorize nodes in order. */
@@ -214,29 +255,27 @@ export class GPUColorScale implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
+
     const {output, maximumDomainCount, maximumPaletteCount} = props;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.values,
-      props.mask,
-      props.domain,
-      props.domainCount,
-      props.palette,
-      props.parameters,
-      output.colors,
-      output.classIndices,
-      output.classCounts
-    ]);
-    const rows = props.values.length;
-    const isOrdinal = props.values.format === 'uint32' && props.integerValues !== 'numeric';
-    const integerType =
-      props.values.format === 'float32'
-        ? undefined
-        : props.values.format === 'uint32'
-          ? 'u32'
-          : 'i32';
-    const classes =
-      output.classIndices ?? createTransientView(graph, `${id}-classes`, 'uint32', rows);
-    const positions = createTransientView(graph, `${id}-positions`, 'float32', rows);
+    validateClassificationBindings(id, graph, {
+      values: props.values,
+      mask: props.mask,
+      domain: props.domain,
+      domainCount: props.domainCount,
+      palette: props.palette,
+      parameters: props.parameters,
+      'output.colors': output.colors,
+      'output.classIndices': output.classIndices,
+      'output.classCounts': output.classCounts
+    });
+    const maximumRows = getGraphViewChunks(props.values).reduce(
+      (maximum, chunk) => Math.max(maximum, chunk.length),
+      0
+    );
+    validateClassificationScratch(graph, id, {
+      'class scratch': maximumRows,
+      positions: maximumRows
+    });
     const read = (
       name: string,
       view: GraphDataView,
@@ -273,29 +312,62 @@ ${COLOR_SCALE_WGSL}`;
       );
     }
 
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-classify`,
-        operation: OPERATION,
-        variant: isOrdinal ? 'classify-ordinal' : integerType ? 'classify-integer' : 'classify',
-        bindings: [
-          read('values', props.values, integerType ?? 'f32'),
-          ...(props.mask ? [read('rowMask', props.mask, 'u32')] : []),
-          read('domain', props.domain, 'f32'),
-          ...(props.domainCount ? [read('domainCountIn', props.domainCount, 'u32')] : []),
-          read('params', props.parameters, 'f32'),
-          {name: 'classes', view: classes, type: 'u32', access: 'read_write'},
-          {
-            name: 'positions',
-            view: positions,
-            type: 'f32',
-            access: 'read_write'
-          }
-        ],
-        invocationCount: rows,
-        declarations: `const DOMAIN_LENGTH: u32 = ${props.domain.length}u;
-${declarations}`,
-        body: `classes[classesOffset + index] = NO_CLASS;
+    const valueChunks = getGraphViewChunks(this.props.values);
+    for (let chunkIndex = 0; chunkIndex < valueChunks.length; chunkIndex++) {
+      if (valueChunks[chunkIndex].length === 0) continue;
+      const props = {
+        ...this.props,
+        values: getGraphViewChunks(this.props.values)[chunkIndex],
+        mask: this.props.mask ? getGraphViewChunks(this.props.mask)[chunkIndex] : undefined,
+        output: {
+          ...this.props.output,
+          classIndices: this.props.output.classIndices
+            ? getGraphViewChunks(this.props.output.classIndices)[chunkIndex]
+            : undefined,
+          colors: this.props.output.colors
+            ? getGraphViewChunks(this.props.output.colors)[chunkIndex]
+            : undefined
+        }
+      };
+      const {output} = props;
+      const chunkId = valueChunks.length === 1 ? id : `${id}-chunk-${chunkIndex}`;
+      const rows = props.values.length;
+      const isOrdinal = props.values.format === 'uint32' && props.integerValues !== 'numeric';
+      const integerType =
+        props.values.format === 'float32'
+          ? undefined
+          : props.values.format === 'uint32'
+            ? 'u32'
+            : 'i32';
+      const classes =
+        output.classIndices ?? createTransientView(graph, `${chunkId}-classes`, 'uint32', rows);
+      const positions = createTransientView(graph, `${chunkId}-positions`, 'float32', rows);
+
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${chunkId}-classify`,
+          operation: OPERATION,
+          variant: isOrdinal ? 'classify-ordinal' : integerType ? 'classify-integer' : 'classify',
+          bindings: [
+            read('values', props.values, integerType ?? 'f32'),
+            ...(props.mask ? [read('rowMask', props.mask, 'u32')] : []),
+            // The ordinal body never reads the domain; an unused declared binding breaks the inferred layout.
+            ...(isOrdinal ? [] : [read('domain', props.domain, 'f32')]),
+            ...(!isOrdinal && props.domainCount
+              ? [read('domainCountIn', props.domainCount, 'u32')]
+              : []),
+            read('params', props.parameters, 'f32'),
+            {name: 'classes', view: classes, type: 'u32', access: 'read_write'},
+            {
+              name: 'positions',
+              view: positions,
+              type: 'f32',
+              access: 'read_write'
+            }
+          ],
+          invocationCount: rows,
+          declarations,
+          body: `classes[classesOffset + index] = NO_CLASS;
   positions[positionsOffset + index] = 0.0;
   ${props.mask ? 'if (rowMask[rowMaskOffset + index] == 0u) {\n    return;\n  }' : ''}
   let paletteCount = min(u32(max(params[paramsOffset + 2u], 0.0)), MAXIMUM_PALETTE_COUNT);
@@ -303,45 +375,45 @@ ${declarations}`,
     return;
   }
     ${isOrdinal ? ORDINAL_BODY : getFloatBody(props, integerType !== undefined)}`
-      })
-    );
+        })
+      );
 
-    if (output.colors || output.classCounts) {
-      nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-colorize`,
-          operation: OPERATION,
-          variant: 'colorize',
-          bindings: [
-            read('classes', classes, 'u32'),
-            read('positions', positions, 'f32'),
-            read('palette', props.palette, 'u32'),
-            read('params', props.parameters, 'f32'),
-            ...(output.colors
-              ? [
-                  {
-                    name: 'colors',
-                    view: output.colors,
-                    type: 'u32',
-                    access: 'read_write'
-                  } as WGSLKernelBinding
-                ]
-              : []),
-            ...(output.classCounts
-              ? [
-                  {
-                    name: 'counts',
-                    view: output.classCounts,
-                    type: 'atomic<u32>',
-                    access: 'read_write'
-                  } as WGSLKernelBinding
-                ]
-              : [])
-          ],
-          invocationCount: rows,
-          declarations: `const IS_ORDINAL: bool = ${isOrdinal};
+      if (output.colors || output.classCounts) {
+        nodes.push(
+          createWGSLKernelNode<Parameters>(graph, {
+            id: `${chunkId}-colorize`,
+            operation: OPERATION,
+            variant: 'colorize',
+            bindings: [
+              read('classes', classes, 'u32'),
+              read('positions', positions, 'f32'),
+              read('palette', props.palette, 'u32'),
+              read('params', props.parameters, 'f32'),
+              ...(output.colors
+                ? [
+                    {
+                      name: 'colors',
+                      view: output.colors,
+                      type: 'u32',
+                      access: 'read_write'
+                    } as WGSLKernelBinding
+                  ]
+                : []),
+              ...(output.classCounts
+                ? [
+                    {
+                      name: 'counts',
+                      view: output.classCounts,
+                      type: 'atomic<u32>',
+                      access: 'read_write'
+                    } as WGSLKernelBinding
+                  ]
+                : [])
+            ],
+            invocationCount: rows,
+            declarations: `const IS_ORDINAL: bool = ${isOrdinal};
 ${declarations}`,
-          body: `let classIndex = classes[classesOffset + index];
+            body: `let classIndex = classes[classesOffset + index];
   let paletteCount = min(u32(max(params[paramsOffset + 2u], 0.0)), MAXIMUM_PALETTE_COUNT);
   let isValid = classIndex != NO_CLASS && classIndex < paletteCount;
   ${output.classCounts ? 'if (isValid) {\n    atomicAdd(&counts[countsOffset + classIndex], 1u);\n  }' : ''}
@@ -366,8 +438,9 @@ ${declarations}`,
   colors[colorsOffset + index] = color;`
       : ''
   }`
-        })
-      );
+          })
+        );
+      }
     }
     return nodes;
   }
@@ -378,14 +451,17 @@ const ORDINAL_BODY = /* wgsl */ `let code = values[valuesOffset + index];
     classes[classesOffset + index] = code;
   }`;
 
-function getFloatBody(props: GPUColorScaleProps, isInteger: boolean): string {
+function getFloatBody(
+  props: GPUColorScaleProps<ClassificationRows<'float32' | 'uint32' | 'sint32'>>,
+  isInteger: boolean
+): string {
   const domainCountSource = props.domainCount
     ? `let classTotal = domainCountIn[domainCountInOffset];
   domainCount = select(0u, min(classTotal, MAXIMUM_DOMAIN_COUNT) + 1u, classTotal > 0u);`
     : '';
   return `var domainCount = u32(max(params[paramsOffset + 1u], 0.0));
   ${domainCountSource}
-  domainCount = min(domainCount, min(MAXIMUM_DOMAIN_COUNT, DOMAIN_LENGTH));
+  domainCount = min(domainCount, min(MAXIMUM_DOMAIN_COUNT, arrayLength(&domain) - domainOffset));
   if (domainCount == 0u) {
     return;
   }

@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  validateTerrainBindings,
+  getTerrainPyramidParameterScratch
+} from '../terrain-processing/terrain-binding-preflight';
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/graph/gpu-core';
 import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
@@ -177,6 +181,22 @@ export class GPUPointHorizonProfile implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateTerrainBindings(graph, this.id, this.props, {
+      'canonical elevation': 4 * this.props.grid.width * this.props.grid.height,
+      'pyramid fused parameters': getTerrainPyramidParameterScratch(
+        this.props.pyramid ? undefined : this.model.layout
+      ),
+      pyramid: this.model.layout && !this.props.pyramid ? 8 * this.model.layout.length : 0,
+      'chunk table':
+        256 *
+        Math.max(
+          1,
+          Math.ceil(
+            (this.props.observers.length * this.model.azimuthSpan) /
+              (this.props.raysPerDispatch ?? GPU_POINT_HORIZON_RAYS_PER_DISPATCH)
+          )
+        )
+    });
     const {id, props, model} = this;
     const {output} = props;
     validateRasterBandBelongsToGraph(id, graph, props.elevation, []);

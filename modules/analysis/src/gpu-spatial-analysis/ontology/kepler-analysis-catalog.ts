@@ -48,7 +48,7 @@ export const KEPLER_ANALYSIS_CAPABILITIES: readonly GPUSpatialAnalysisCapability
     outputBound: 'source-sized',
     operators: ['GPUDorlingCartogram'],
     limitation:
-      'Heuristic layout, at most 65536 rows and 256 iterations; neither the all-pairs scan nor the optional neighbor grid guarantees overlap removal or GeoDa coordinate parity.',
+      'Heuristic layout, indexed rows device-binding bound up to 1,073,741,822 (neighborGrid auto from 32,768); all-pairs retains 65,536 rows. At most 256 iterations; neither route guarantees overlap removal or GeoDa coordinate parity.',
     evidence: {
       representativeSourceRows: 4,
       transientMemory: 'linear-source',

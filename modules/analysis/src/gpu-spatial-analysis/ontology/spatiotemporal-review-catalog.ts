@@ -151,6 +151,43 @@ const TRAJECTORY_ROW_DESCRIPTOR = {
 const SPATIOTEMPORAL_REVIEW_OPERATOR_OVERRIDES: Readonly<
   Record<string, SpatiotemporalReviewOperatorOverride>
 > = {
+  GPUAnalysisContiguityStatistics: {
+    primaryCapability: 'spatial-neighborhoods',
+    inputs: ['polygons'],
+    outputs: ['spatial-weights', 'attributes', 'summary'],
+    coordinateModels: ['topological'],
+    dimensionality: '2d',
+    topology: 'fixed',
+    cardinality: 'source-sized',
+    semantics: 'exact',
+    deterministic: true,
+    status: ['overflow', 'candidateOverflow', 'requiredCount'],
+    summary:
+      'Feature-level queen or rook neighbor counts, islands, extrema and median, composed from the existing contiguity, weights summary and column quantiles contributors. Refuses an exact profile on capacity overflow.',
+    evidence: 'partial',
+    tests: `${TEST_ROOT}/spatial-weights/gpu-analysis-contiguity-statistics.spec.ts`,
+    documentation: 'modules/analysis/docs/gpu-analysis-contiguity-statistics.md',
+    contract: 'GPUAnalysisContiguityStatisticsProps'
+  },
+  GPUAnalysisSpacing: {
+    primaryCapability: 'spatial-neighborhoods',
+    inputs: ['points', 'attributes'],
+    outputs: ['summary'],
+    coordinateModels: ['planar', 'spherical'],
+    dimensionality: '2d',
+    topology: 'fixed',
+    cardinality: 'fixed-sized',
+    semantics: 'exact',
+    deterministic: true,
+    status: ['count', 'invalidCount', 'overflow', 'requiredCount', 'candidateOverflow'],
+    readback: 'explicit-adapter',
+    evidence: 'partial',
+    tests: `${TEST_ROOT}/analysis-spacing/gpu-analysis-spacing.spec.ts`,
+    documentation: `${DOCUMENTATION_ROOT}/analysis-experience.md`,
+    summary:
+      'Full-population indexed point spacing, distinct-location spacing, centre and spread, and a bounded k-distance curve through one summary readback.',
+    contract: 'GPUAnalysisSpacingProps'
+  },
   GPUGaussianRandomField: {
     primaryCapability: PREDICTION_FAMILY,
     inputs: ['points', 'attributes', 'parameters'],

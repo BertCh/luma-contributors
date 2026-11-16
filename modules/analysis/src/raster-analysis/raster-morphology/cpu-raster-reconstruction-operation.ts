@@ -5,6 +5,11 @@
 import {GPUCPUOperation, gpuGraph} from '@luma.gl/graph/gpu-core';
 import {validateRequirement} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getCPUOperationFloat32Rows} from '../../analysis-core/operations/cpu-operation-rows';
+import {
+  calibrateRasterOperationBand,
+  readRasterOperationBand,
+  validateRasterOperationBand
+} from '../raster-grid/raster-operation-band';
 import type {RasterReconstructionOperationProps} from './gpu-raster-reconstruction-operation';
 import {
   validateRasterMorphologyOptions,
@@ -102,9 +107,21 @@ export class CPURasterReconstructionOperation extends GPUCPUOperation {
       'method must be dilation or erosion'
     );
     const length = props.grid.width * props.grid.height;
+    for (const input of [props.marker, props.mask]) {
+      if (typeof input !== 'string') validateRasterOperationBand(id, input, props.grid);
+    }
     super({
       id,
-      inputs: {marker: props.marker, mask: props.mask},
+      inputs: {
+        marker: typeof props.marker === 'string' ? props.marker : props.marker.storage.values,
+        mask: typeof props.mask === 'string' ? props.mask : props.mask.storage.values,
+        ...(typeof props.marker !== 'string' && props.marker.validity
+          ? {markerValidity: props.marker.validity}
+          : {}),
+        ...(typeof props.mask !== 'string' && props.mask.validity
+          ? {maskValidity: props.mask.validity}
+          : {})
+      },
       outputs: {
         [props.output.values]: gpuGraph.vector('float32', {length}),
         [props.output.validity]: gpuGraph.vector('uint32', {length}),
@@ -116,8 +133,36 @@ export class CPURasterReconstructionOperation extends GPUCPUOperation {
       },
       execute({inputs}) {
         const result = computeRasterReconstructionOnCPU(
-          getCPUOperationFloat32Rows(id, inputs, 'marker'),
-          getCPUOperationFloat32Rows(id, inputs, 'mask'),
+          typeof props.marker === 'string'
+            ? getCPUOperationFloat32Rows(id, inputs, 'marker')
+            : Float32Array.from(
+                calibrateRasterOperationBand(
+                  readRasterOperationBand(
+                    id,
+                    {
+                      values: inputs['marker'],
+                      ...(props.marker.validity ? {validity: inputs['markerValidity']} : {})
+                    },
+                    props.marker
+                  ),
+                  length
+                )
+              ),
+          typeof props.mask === 'string'
+            ? getCPUOperationFloat32Rows(id, inputs, 'mask')
+            : Float32Array.from(
+                calibrateRasterOperationBand(
+                  readRasterOperationBand(
+                    id,
+                    {
+                      values: inputs['mask'],
+                      ...(props.mask.validity ? {validity: inputs['maskValidity']} : {})
+                    },
+                    props.mask
+                  ),
+                  length
+                )
+              ),
           props
         );
         return {

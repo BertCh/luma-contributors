@@ -24,6 +24,9 @@ import {
   validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateGPUStorageBindingByteLength} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateGeographicDistributionViews} from '../geographic-distribution/geographic-distribution-validation';
 import {
   createLinePrefixNode,
   createSegmentizeCountNode,
@@ -171,6 +174,34 @@ export class GPULonLatPolygonPreparation implements GPUCommandNodeProducer {
     }
     validateGPUStatusPort(id, props.output.status);
     validateGraphOutputsDisjointFromInputs(id, this.getOutputViews(), this.getInputViews());
+    const output = props.output;
+    validateGeographicDistributionViews(
+      id,
+      {},
+      Object.fromEntries(this.getOutputViews().map((view, index) => [`output.${index}`, view])),
+      [
+        {
+          reads: {},
+          writes: {featureOffsets: output.featureOffsets, polygonOffsets: output.polygonOffsets}
+        },
+        {
+          reads: {},
+          writes: {
+            ringFlags: output.ringFlags,
+            invalidCount: output.status.invalidCount,
+            approximation: output.status.approximation
+          }
+        },
+        {
+          reads: {},
+          writes: {
+            overflow: output.status.overflow,
+            count: output.status.count,
+            requiredCount: output.status.requiredCount
+          }
+        }
+      ]
+    );
   }
 
   /**
@@ -180,6 +211,32 @@ export class GPULonLatPolygonPreparation implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(graph: GPUCommandGraph<Parameters>): GPUCommandNode<Parameters>[] {
     const {id, props} = this;
     const {output} = props;
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(
+        [
+          ...this.getInputViews(),
+          ...this.getOutputViews().filter(view => view !== output.positions || view.length > 0)
+        ].map((view, index) => [`binding.${index}`, view])
+      )
+    );
+    // All position streams have the caller's capacity. Counts/turns/scans are scalar planes;
+    // per-ring metadata is the largest topology scratch, with one record of four words.
+    for (const [name, bytes] of [
+      ['preparation position streams', Math.max(output.positions.length * 8, 4)],
+      ['preparation row scan scratch', props.positions.length * 4],
+      ['preparation ring metadata', (props.ringOffsets.length - 1) * 16],
+      ['preparation ring scan scratch', Math.max(2 * (props.ringOffsets.length - 1), 1) * 4],
+      ['preparation stage totals', 24]
+    ] as const)
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        name,
+        bytes,
+        'reduce vertex capacity or ring count'
+      );
     validateGraphViewsBelongToGraph(id, graph, [...this.getInputViews(), ...this.getOutputViews()]);
     const maximumPieceCount = props.maximumPieceCount ?? 1024;
     const ringCount = props.ringOffsets.length - 1;

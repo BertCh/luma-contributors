@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRasterStorageBindings} from '../raster-grid/raster-storage-preflight';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -15,7 +16,8 @@ import {
   captureGraphCommandNodes,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validateSinglePackedView
+  validateSinglePackedView,
+  getGraphOutputViews as getRasterPreflightOutputViews
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {validateRasterGrid, validateRasterParameters} from '../raster-band-utils';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
@@ -25,7 +27,8 @@ import {
   createDistanceFieldJumpFloodNodes,
   createDistanceFieldRowNodes,
   getDistanceFieldBandLayout,
-  createDistanceFieldSeedNodes
+  createDistanceFieldSeedNodes,
+  getDistanceFieldJumpFloodSteps
 } from './distance-field-kernels';
 import {
   GPU_DISTANCE_FIELD_MAXIMUM_DIMENSION,
@@ -243,6 +246,39 @@ export class GPUDistanceField implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    const storageProps = this.props;
+    const storageBands = getDistanceFieldBandLayout(storageProps.grid);
+    validateRasterStorageBindings(
+      graph,
+      this.id,
+      [
+        storageProps.parameters,
+        storageProps.seedPositions,
+        storageProps.seedIds,
+        storageProps.seedCount,
+        storageProps.seedMask,
+        ...getRasterPreflightOutputViews(storageProps.output)
+      ],
+      {
+        'cell planes': this.cellCount * 4,
+        'column band seeds and carries':
+          this.mode === 'exact' ? 16 * storageBands.columnBandCount * storageProps.grid.width : 0,
+        'row block ends':
+          this.mode === 'exact' ? 8 * storageBands.rowBandCount * storageProps.grid.height : 0,
+        'merge round slot table':
+          this.mode === 'exact' && storageBands.mergeRoundCount > 0
+            ? (storageBands.mergeRoundCount + 1) * 256
+            : 0,
+        'jump flood step table':
+          this.mode === 'jump-flood'
+            ? getDistanceFieldJumpFloodSteps(
+                storageProps.grid,
+                this.jumpFloodRefinementIterationCount
+              ).length * 256
+            : 0
+      }
+    );
+
     const {id, props, cellCount} = this;
     const {output, parameters: settings} = props;
     const grid = {width: props.grid.width, height: props.grid.height};

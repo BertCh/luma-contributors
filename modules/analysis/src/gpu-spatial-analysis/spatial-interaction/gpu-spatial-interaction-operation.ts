@@ -9,6 +9,7 @@ import {GPUSpatialInteraction, type GPUSpatialInteractionProps} from './gpu-spat
 export type SpatialInteractionOperationProps = Pick<
   GPUSpatialInteractionProps,
   | 'id'
+  | 'method'
   | 'originCount'
   | 'destinationCount'
   | 'constraint'

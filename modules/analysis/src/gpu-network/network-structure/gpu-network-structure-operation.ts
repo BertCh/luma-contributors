@@ -6,7 +6,7 @@ import {
   GPUContributorOperation,
   type GPUContributorOperationOutput
 } from '../../analysis-core/operations/gpu-contributor-operation';
-import {GPUNetworkStructure} from './gpu-network-structure';
+import {GPUNetworkStructure, type GPUNetworkStructureProps} from './gpu-network-structure';
 
 /** Graph-value properties shared by the structure operations. Counts are compile-time. */
 export type NetworkStructureOperationProps = {
@@ -23,9 +23,21 @@ export type NetworkStructureOperationProps = {
   };
 };
 
+/** GPU-only execution controls extend the original props shared with the CPU twin. */
+export type GPUNetworkStructureOperationProps = NetworkStructureOperationProps & {
+  mode?: GPUNetworkStructureProps['mode'];
+  strongComponentsMaximumIterations?: number;
+  /** Caller-selected graph value names for the three uint32 SCC status scalars. */
+  strongComponentsStatus?: {
+    converged: string;
+    iterationCount: string;
+    iterationLimitReached: string;
+  };
+};
+
 /** Vector operation form; compile with GPU_CONTRIBUTOR_OPERATION_LOWERING. */
 export class GPUNetworkStructureOperation extends GPUContributorOperation {
-  constructor(props: NetworkStructureOperationProps) {
+  constructor(props: GPUNetworkStructureOperationProps) {
     const inputs: Record<string, string> = {
       offsets: props.topology.offsets,
       neighbors: props.topology.neighbors
@@ -46,6 +58,11 @@ export class GPUNetworkStructureOperation extends GPUContributorOperation {
               : props.edgeCount
         };
     }
+    if (props.strongComponentsStatus) {
+      for (const [port, value] of Object.entries(props.strongComponentsStatus)) {
+        outputs[port] = {value, format: 'uint32', length: 1};
+      }
+    }
     super({
       id: props.id ?? 'network-structure',
       inputs,
@@ -53,6 +70,15 @@ export class GPUNetworkStructureOperation extends GPUContributorOperation {
       createContributor: getView =>
         new GPUNetworkStructure({
           id: props.id,
+          mode: props.mode,
+          strongComponentsMaximumIterations: props.strongComponentsMaximumIterations,
+          strongComponentsStatus: props.strongComponentsStatus
+            ? {
+                converged: getView<'uint32'>('converged'),
+                iterationCount: getView<'uint32'>('iterationCount'),
+                iterationLimitReached: getView<'uint32'>('iterationLimitReached')
+              }
+            : undefined,
           topology: {
             offsets: getView<'uint32'>('offsets'),
             neighbors: getView<'uint32'>('neighbors'),

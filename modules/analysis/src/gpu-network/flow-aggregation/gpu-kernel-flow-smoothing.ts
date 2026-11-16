@@ -3,6 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  validateNetworkViewBindings,
+  validateNetworkOutputsDisjointFromInputs,
+  validateNetworkWritableViews
+} from '../network-view-utils';
+import {
   createTransientView,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -18,8 +23,6 @@ import {
 import {
   validateCapacity,
   validateFiniteNumber,
-  validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
   validateMaximumCount,
   validateSinglePackedView,
   validateRequirement,
@@ -222,7 +225,8 @@ export class GPUKernelFlowSmoothing implements GPUCommandNodeProducer {
       validateSinglePackedView(output.radii, ['float32'], `${id} output.radii`);
       validateViewLength(id, 'output.radii', output.radii, this.zoneCount);
     }
-    validateGraphOutputsDisjointFromInputs(
+    validateNetworkWritableViews(id, props.output, []);
+    validateNetworkOutputsDisjointFromInputs(
       id,
       [output.smoothed, output.radii],
       [
@@ -243,16 +247,26 @@ export class GPUKernelFlowSmoothing implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, zoneCount} = this;
     const {flows, output} = props;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.positions,
-      props.locationWeights,
-      props.parameters,
-      output.smoothed,
-      output.radii,
-      ...(flows.kind === 'matrix'
-        ? [flows.matrix]
-        : [flows.originZoneIds, flows.destinationZoneIds, flows.weights, flows.validPairCount])
-    ]);
+    validateNetworkViewBindings(
+      id,
+      graph,
+      [
+        props.positions,
+        props.locationWeights,
+        props.parameters,
+        output.smoothed,
+        output.radii,
+        ...(flows.kind === 'matrix'
+          ? [flows.matrix]
+          : [flows.originZoneIds, flows.destinationZoneIds, flows.weights, flows.validPairCount])
+      ],
+      {
+        radii: zoneCount * 4,
+        kernelWeights: zoneCount * zoneCount * 4,
+        rowSmoothed: zoneCount * zoneCount * 4,
+        denseMatrix: flows.kind === 'pairs' ? zoneCount * zoneCount * 4 : 4
+      }
+    );
     const matrixLength = zoneCount * zoneCount;
     const radii = output.radii ?? createTransientView(graph, `${id}-radii`, 'float32', zoneCount);
     const kernelWeights = createTransientView(graph, `${id}-kernel`, 'float32', matrixLength);

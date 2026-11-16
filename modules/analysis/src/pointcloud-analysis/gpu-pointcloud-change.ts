@@ -18,14 +18,21 @@ import {
 import {
   createPointCloudGridIndex,
   validatePointCloudSearchGrid,
+  validatePointCloudGridIndexBindings,
   type PointCloudGrid
 } from './pointcloud-grid-index';
-import {getPointCloudKernelNodes} from './pointcloud-kernel-nodes';
+import {
+  getPointCloudKernelNodes,
+  validatePointCloudPackedViews,
+  validatePointCloudScratchBindings
+} from './pointcloud-kernel-nodes';
 import {
   GPU_POINT_CLOUD_MAXIMUM_CHANGE_CELLS_PER_CORE,
   GPU_POINT_CLOUD_MAXIMUM_SAMPLING_COVARIANCE_POINTS,
   GPU_POINT_CLOUD_MAXIMUM_UNINDEXED_WORK
 } from './pointcloud-limits';
+
+import {validateGraphChunkBindingRanges} from '../analysis-core/kernels/graph-chunk-dispatch';
 
 export type GPUPointCloudChangeProps = {
   /** Per-frame support and uncertainty, packed by getGPUPointCloudChangeParameterValues. */
@@ -218,6 +225,44 @@ export class GPUPointCloudChange implements GPUCommandNodeProducer {
   readonly id: string;
   constructor(readonly props: GPUPointCloudChangeProps) {
     this.id = props.id ?? 'gpu-pointcloud-change';
+    validatePointCloudPackedViews(
+      this.id,
+      {
+        reference: props.reference,
+        comparison: props.comparison,
+        cores: props.cores,
+        normals: props.normals,
+        parameters: props.parameters,
+        transform: props.alignment === 'already-aligned' ? undefined : props.alignment.transform
+      },
+      {
+        changes: props.changes,
+        roughness: props.roughness,
+        counts: props.counts,
+        status: props.status
+      },
+      [
+        {
+          inputs: {
+            reference: props.reference,
+            comparison: props.comparison,
+            cores: props.cores,
+            normals: props.normals,
+            parameters: props.parameters
+          },
+          outputs: {counts: props.counts}
+        },
+        {
+          inputs: {
+            counts: props.counts,
+            ...(props.parameters
+              ? {parameters: props.parameters}
+              : {cores: props.cores, normals: props.normals})
+          },
+          outputs: {changes: props.changes, roughness: props.roughness, status: props.status}
+        }
+      ]
+    );
     validateRequirement(
       this.id,
       props.alignment === 'already-aligned' || props.alignment.transform.length === 16,
@@ -293,6 +338,27 @@ export class GPUPointCloudChange implements GPUCommandNodeProducer {
       grid,
       parameters
     } = this.props;
+    validateGraphChunkBindingRanges(graph, this.id, {
+      reference,
+      comparison,
+      cores,
+      normals,
+      changes,
+      roughness,
+      counts,
+      status,
+      parameters,
+      transform:
+        this.props.alignment === 'already-aligned' ? undefined : this.props.alignment.transform
+    });
+    validatePointCloudScratchBindings(graph, this.id, {
+      'M3C2 moments and settings': cores.length * 12,
+      'aligned comparison': this.props.alignment === 'already-aligned' ? 0 : comparison.length * 12
+    });
+    if (grid) {
+      validatePointCloudGridIndexBindings(graph, this.id, reference, grid.dimensions);
+      validatePointCloudGridIndexBindings(graph, this.id, comparison, grid.dimensions);
+    }
     const nodes: GPUCommandNode<Parameters>[] = [];
     let alignedComparison = comparison;
     if (this.props.alignment !== 'already-aligned') {
@@ -396,15 +462,15 @@ ${body}
 let halfExtent = vec3f(${halfDepth}) * abs(normal) + ${Math.fround(this.props.radius)} * sqrt(max(vec3f(1.0) - normal * normal, vec3f(0.0)));
 let displacement = core - vec3f(${grid.origin.map(Math.fround).join(',')});
 // Clamp in floating point before integer conversion so far-away cores cannot overflow cell coordinates.
-let lower = vec3i(clamp(floor((displacement - halfExtent) / ${Math.fround(grid.cellSize)}) - vec3f(1.0), vec3f(0.0), vec3f(${grid.dimensions.map(value => `${value}.0`).join(',')})));
-let upper = vec3i(clamp(floor((displacement + halfExtent) / ${Math.fround(grid.cellSize)}) + vec3f(1.0), vec3f(-1.0), vec3f(${grid.dimensions.map(value => `${value - 1}.0`).join(',')})));`
+let lower = vec3i(clamp(floor(getPointCloudQuotient3(displacement - halfExtent, ${Math.fround(grid.cellSize)})) - vec3f(1.0), vec3f(0.0), vec3f(${grid.dimensions.map(value => `${value}.0`).join(',')})));
+let upper = vec3i(clamp(floor(getPointCloudQuotient3(displacement + halfExtent, ${Math.fround(grid.cellSize)})) + vec3f(1.0), vec3f(-1.0), vec3f(${grid.dimensions.map(value => `${value - 1}.0`).join(',')})));`
         : '';
       const inCylinder = (prefix: string) =>
         `let ${prefix}Point=readPoints(${prefix});let ${prefix}Delta=${prefix}Point-core;let ${prefix}Normal=dot(${prefix}Delta,normal);let ${prefix}Radial=${prefix}Delta-normal*${prefix}Normal;
  if(!(abs(${prefix}Normal)<=${halfDepth})||!(dot(${prefix}Radial,${prefix}Radial)<=${radiusSquared})){continue;}`;
       let correlation = '';
       if (samplingCovariance) {
-        const kernel = `exp(-dot(separation,separation)/${parameters ? 'bitcast<f32>(readParameters(11u))' : Math.fround(2 * samplingCovariance.correlationLength ** 2)})`;
+        const kernel = `exp(-getScaledQuotient(dot(separation,separation),${parameters ? 'bitcast<f32>(readParameters(11u))' : Math.fround(2 * samplingCovariance.correlationLength ** 2)},1.0,0))`;
         // Unindexed: pairs (first, second > first) counted twice. Indexed: every ordered pair
         // (first, second != first) counted once, which is the same sum.
         const inner = grid
@@ -466,8 +532,8 @@ ${correlation}`
       ? `// Cells the cylinder needs (without the search margin) that lie outside the grid.
 let outsideHalfExtent = vec3f(${halfDepth}) * abs(normal) + ${Math.fround(this.props.radius)} * sqrt(max(vec3f(1.0) - normal * normal, vec3f(0.0)));
 let outsideDisplacement = core - vec3f(${grid.origin.map(Math.fround).join(',')});
-let outsideLower = floor((outsideDisplacement - outsideHalfExtent) / ${Math.fround(grid.cellSize)});
-let outsideUpper = floor((outsideDisplacement + outsideHalfExtent) / ${Math.fround(grid.cellSize)});
+let outsideLower = floor(getPointCloudQuotient3(outsideDisplacement - outsideHalfExtent, ${Math.fround(grid.cellSize)}));
+let outsideUpper = floor(getPointCloudQuotient3(outsideDisplacement + outsideHalfExtent, ${Math.fround(grid.cellSize)}));
 let outsideBit = select(0u, ${GPU_POINT_CLOUD_CHANGE_STATUS_GRID_INCOMPLETE}u, any(outsideLower < vec3f(0.0)) || any(outsideUpper > vec3f(${grid.dimensions.map(value => `${value - 1}.0`).join(',')})));`
       : 'let outsideBit = 0u;';
     const coreSettings = parameters

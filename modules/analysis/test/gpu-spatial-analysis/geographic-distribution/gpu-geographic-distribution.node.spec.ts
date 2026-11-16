@@ -116,7 +116,7 @@ it('GPUGeographicDistribution validates its props', () => {
   const positions = view(graph, 'aliased', 'float32x2', ROWS);
   expect(
     () => new GPUGeographicDistribution(createProps(graph, {positions}, {meanCenters: positions}))
-  ).toThrow('outputs must not share buffers with inputs');
+  ).toThrow('meanCenters and positions logical byte ranges must not overlap');
 });
 
 it('GPUGeographicDistribution returns deterministic node IDs within the binding limit', () => {

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {expect, it} from 'vitest';
+import {expect, it, vi} from 'vitest';
 import {GPUAlternativeRoutes} from '../../../src/gpu-network/alternative-routes/index';
 import {
   createNullWebGPUDevice,
@@ -11,6 +11,7 @@ import {
   getStorageBindingCount
 } from '../../utils/gpu-contributor-test-utils';
 import reference from '../../oracles/fixtures/alternative-routes.json';
+import {auditWGSLModule} from '../../analysis-core/kernel-audit/kernel-audit-wgsl';
 
 function setup(maximumFrontierSize = 1024, nodeCount = 256, queryCount = 1) {
   const graph = new GPUCommandGraph(createNullWebGPUDevice());
@@ -48,6 +49,7 @@ it('GPUAlternativeRoutes heap kernels fit core bindings and private memory at ma
     'alternative-routes-publish'
   ]);
   for (const [name, source] of getParsedKernelSources(nodes)) {
+    expect(auditWGSLModule(source), name).toEqual([]);
     expect(getStorageBindingCount(source), name).toBeLessThanOrEqual(8);
     expect(getPrivateMemoryBytes(source), name).toBeLessThanOrEqual(8192);
   }
@@ -63,6 +65,33 @@ it('GPUAlternativeRoutes rejects invalid capacities and device binding overflow'
   }
   const {graph, contributor} = setup(65536);
   expect(() => contributor.getCommandNodes(graph)).toThrow();
+});
+
+it('rejects heap overflow without mutating graph resources and permits a smaller retry', () => {
+  const {graph, contributor} = setup(65536);
+  const create = vi.spyOn(graph, 'createTransientBuffer');
+  expect(() => contributor.getCommandNodes(graph)).toThrow(/alternative-routes frontier.*limit/);
+  expect(create).not.toHaveBeenCalled();
+  expect(() =>
+    new GPUAlternativeRoutes({...contributor.props, maximumFrontierSize: 1}).getCommandNodes(graph)
+  ).not.toThrow();
+});
+
+it('checks uint32 scratch addressing at construction before query products can wrap', () => {
+  expect(() => setup(65536, 256, 128)).toThrow(/alternative-routes frontierWords.*4294967295/);
+});
+
+it('accepts disjoint aligned output ranges and rejects overlapping writable bindings', () => {
+  const {graph, contributor} = setup(1, 2);
+  const backing = createTransientView(graph, 'shared-path-storage', 'uint32', 128).buffer;
+  const vertices = graph.createDataView(backing, {format: 'uint32', length: 64});
+  const edges = graph.createDataView(backing, {format: 'uint32', byteOffset: 256, length: 64});
+  const props = {...contributor.props, output: {...contributor.props.output, vertices, edges}};
+  expect(() => new GPUAlternativeRoutes(props)).not.toThrow();
+  const overlapping = graph.createDataView(backing, {format: 'uint32', byteOffset: 4, length: 64});
+  expect(
+    () => new GPUAlternativeRoutes({...props, output: {...props.output, edges: overlapping}})
+  ).toThrow(/alternative-routes.*overlap/);
 });
 
 it('NetworkX edge-route oracle includes distinct multiedges, cycles, deterministic ties and identity', () => {

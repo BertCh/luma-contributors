@@ -9,18 +9,22 @@ import type {
   GPUCommandNode,
   GPUCommandNodeProducer
 } from '@luma.gl/graph/gpu-core';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  createRasterTimeSeriesNodes,
+  planRasterTimeSeriesChunks,
+  rasterTimeSeriesBinding as rasterBinding,
+  validateRasterTimeSeriesViews as validateRasterViews,
+  validateRasterTimeSeriesGraph as validateRasterGraph,
+  type RasterTimeSeriesView,
+  type RasterTimeSeriesScalarView,
+  type RasterTimeSeriesChunkPlan
+} from '../raster-time-series/raster-time-series-chunks-b';
 import {
   validateCapacity,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {
-  RASTER_FINITE_WGSL,
-  rasterBinding,
-  validateRasterViews,
-  validateRasterGraph,
-  getRasterLeastSquaresWGSL
-} from './raster-kernel-utils';
+import {getWGSLFloatLiteral} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {RASTER_FINITE_WGSL, getRasterLeastSquaresWGSL} from './raster-kernel-utils';
 import {
   getGPURasterDateAxisBinding,
   getGPURasterDateAxisDeclarations,
@@ -29,12 +33,12 @@ import {
   type GPURasterIrregularDateAxis
 } from '../raster-time-series/raster-irregular-date-axis';
 
-export type GPURasterSeasonalBreakProps = {
+export type GPURasterSeasonalBreakProps<Rows extends RasterTimeSeriesScalarView = GraphDataView> = {
   id?: string;
   cellCount: number;
   sliceCount: number;
-  values: GraphDataView<'float32'>;
-  mask?: GraphDataView<'uint32'>;
+  values: RasterTimeSeriesView<'float32', Rows>;
+  mask?: RasterTimeSeriesView<'uint32', Rows>;
   /** Seasonal period in slices on regular slots, or in fractional years with `dateAxis`. */
   period: number;
   /** Minimum elapsed slices and valid observations on each side; at least 3. */
@@ -59,17 +63,17 @@ export type GPURasterSeasonalBreakProps = {
   dateAxis?: GPURasterIrregularDateAxis;
   output: {
     /** Harmonic: five coefficients. Dummy: period+2 (intercept,slope,phases 1..period-1,jump). */
-    coefficients: GraphDataView<'float32'>;
+    coefficients: RasterTimeSeriesView<'float32', Rows>;
     /** Per observation interleaved trend (including jump), seasonality, residual. */
-    components: GraphDataView<'float32'>;
+    components: RasterTimeSeriesView<'float32', Rows>;
     /** Original acquisition index; 0xffffffff means no selected break or invalid model. */
-    breakIndex: GraphDataView<'uint32'>;
+    breakIndex: RasterTimeSeriesView<'uint32', Rows>;
     /** BIC(no break) - BIC(selected break), or zero when no break selected. */
-    improvement: GraphDataView<'float32'>;
+    improvement: RasterTimeSeriesView<'float32', Rows>;
     /** 0=fit, 1=insufficient support, 2=rank/nonfinite failure, 4=rejected gap, 8=iteration limit. */
-    status: GraphDataView<'uint32'>;
+    status: RasterTimeSeriesView<'uint32', Rows>;
     /** Six floats/cell: iterations, converged, training support, residual scale, alarm index (-1 absent), maximum absolute monitoring score. Required for iterative/monitoring modes. */
-    diagnostics?: GraphDataView<'float32'>;
+    diagnostics?: RasterTimeSeriesView<'float32', Rows>;
   };
 };
 /** Time slices: private arrays hold one value per slice and slice indices stay exact in float32. */
@@ -88,11 +92,18 @@ const ITERATIVE_FIT_WORK_BUDGET = 16777216;
  * boundary wins exact ties. Gaps are omitted without compressing time. This is a bounded
  * single-break model. Explicit extended options add dummy seasons, bounded cyclic decomposition
  * and fixed-history monitoring; no multi-break BFAST inference is claimed.
+ * Cell-major fields accept matching chunks of complete cell records; the date axis stays packed.
  */
-export class GPURasterSeasonalBreak implements GPUCommandNodeProducer {
+export class GPURasterSeasonalBreak<Rows extends RasterTimeSeriesScalarView = GraphDataView>
+  implements GPUCommandNodeProducer
+{
   readonly id: string;
+  readonly props: GPURasterSeasonalBreakProps<Rows>;
+  readonly chunkPlan: RasterTimeSeriesChunkPlan;
+  readonly estimatedCommandNodeCount: number;
   private readonly ticksPerYear: number;
-  constructor(readonly props: GPURasterSeasonalBreakProps) {
+  constructor(props: GPURasterSeasonalBreakProps<Rows> & {values: Rows}) {
+    this.props = props;
     this.id = props.id ?? 'raster-seasonal-break';
     this.ticksPerYear = props.dateAxis
       ? resolveGPURasterIrregularDateAxis(this.id, props.dateAxis, props.sliceCount)
@@ -196,7 +207,8 @@ export class GPURasterSeasonalBreak implements GPUCommandNodeProducer {
     );
     validateRequirement(
       this.id,
-      Number.isFinite(Math.fround(props.period)) && props.period > (props.dateAxis ? 0 : 2),
+      Number.isFinite(Math.fround(props.period)) &&
+        Math.fround(props.period) > (props.dateAxis ? 0 : 2),
       props.dateAxis
         ? 'period must be a positive finite number of fractional years with dateAxis'
         : 'period must be a finite float32 value above 2'
@@ -232,10 +244,32 @@ export class GPURasterSeasonalBreak implements GPUCommandNodeProducer {
       ),
       'output.breakIndex, output.improvement and output.status must hold cellCount entries'
     );
-    validateRasterViews(
-      this.id,
-      [props.values, ...(props.mask ? [props.mask] : [])],
-      Object.values(props.output)
+    this.chunkPlan = planRasterTimeSeriesChunks(this.id, props.cellCount, {
+      values: {view: props.values, entriesPerCell: props.sliceCount},
+      mask: {view: props.mask, entriesPerCell: props.sliceCount},
+      coefficients: {view: props.output.coefficients, entriesPerCell: coefficientCount},
+      components: {view: props.output.components, entriesPerCell: props.sliceCount * 3},
+      breakIndex: {view: props.output.breakIndex, entriesPerCell: 1},
+      improvement: {view: props.output.improvement, entriesPerCell: 1},
+      status: {view: props.output.status, entriesPerCell: 1},
+      diagnostics: {view: props.output.diagnostics, entriesPerCell: 6}
+    });
+    this.estimatedCommandNodeCount = this.chunkPlan.estimatedCommandNodeCount;
+    validateRasterViews(this.id, this.getInputs(), this.getOutputs(), this.chunkPlan);
+  }
+  private getInputs(): RasterTimeSeriesScalarView[] {
+    return [
+      this.props.values,
+      ...(this.props.mask ? [this.props.mask] : []),
+      ...(this.props.dateAxis ? [this.props.dateAxis.acquisitionTimes] : [])
+    ];
+  }
+  private getOutputs(): RasterTimeSeriesScalarView[] {
+    return Object.values(this.props.output).filter(
+      (
+        view
+      ): view is RasterTimeSeriesView<'float32', Rows> | RasterTimeSeriesView<'uint32', Rows> =>
+        view !== undefined
     );
   }
   getCommandNodes<Parameters>(
@@ -243,12 +277,7 @@ export class GPURasterSeasonalBreak implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
     const slices = props.sliceCount;
-    validateRasterGraph(
-      id,
-      graph,
-      [props.values, ...(props.mask ? [props.mask] : [])],
-      Object.values(props.output)
-    );
+    validateRasterGraph(id, graph, this.getInputs(), this.getOutputs());
     if (props.dateAxis) validateGPURasterDateAxisGraph(id, graph, props.dateAxis);
     const axisDeclarations = props.dateAxis
       ? `\n${getGPURasterDateAxisDeclarations(this.ticksPerYear, slices)}`
@@ -260,27 +289,28 @@ export class GPURasterSeasonalBreak implements GPUCommandNodeProducer {
       props.monitoring ||
       props.output.diagnostics
     ) {
-      return createExtendedSeasonalBreakNodes(graph, id, props, axisDeclarations);
+      return createExtendedSeasonalBreakNodes(graph, id, props, this.chunkPlan, axisDeclarations);
     }
     const sliceTime = props.dateAxis ? 'rasterSliceYears(slice)' : `f32(slice) / ${slices}.0`;
     const sliceAngle = props.dateAxis
-      ? `6.283185307179586 * rasterSliceYears(slice) / ${props.period}`
-      : `6.283185307179586 * f32(slice) / ${props.period}`;
-    return [
-      createWGSLKernelNode<Parameters>(graph, {
-        id,
-        operation: 'GPURasterSeasonalBreak',
-        invocationCount: props.cellCount,
-        workgroupSize: 32,
-        bindings: [
-          rasterBinding('values', props.values),
-          ...(props.mask ? [rasterBinding('mask', props.mask)] : []),
-          ...(props.dateAxis ? [getGPURasterDateAxisBinding(props.dateAxis)] : []),
-          ...Object.entries(props.output).map(([name, view]) => rasterBinding(name, view, true))
-        ],
-        declarations:
-          RASTER_FINITE_WGSL + getRasterLeastSquaresWGSL(slices, 5, true) + axisDeclarations,
-        body: `var design: array<f32, ${slices * 5}>; var response: array<f32, ${slices}>; var valid: array<bool, ${slices}>; var count = 0u; var energy = 0.0;
+      ? `6.283185307179586 * rasterSliceYears(slice) / ${getWGSLFloatLiteral(props.period)}`
+      : `6.283185307179586 * f32(slice) / ${getWGSLFloatLiteral(props.period)}`;
+    return createRasterTimeSeriesNodes<Parameters>(graph, this.chunkPlan, {
+      id,
+      operation: 'GPURasterSeasonalBreak',
+      invocationCount: props.cellCount,
+      workgroupSize: 32,
+      bindings: [
+        rasterBinding('values', props.values),
+        ...(props.mask ? [rasterBinding('mask', props.mask)] : []),
+        ...(props.dateAxis ? [getGPURasterDateAxisBinding(props.dateAxis)] : []),
+        ...Object.entries(props.output)
+          .filter(([, view]) => view !== undefined)
+          .map(([name, view]) => rasterBinding(name, view, true))
+      ],
+      declarations:
+        RASTER_FINITE_WGSL + getRasterLeastSquaresWGSL(slices, 5, true) + axisDeclarations,
+      body: `var design: array<f32, ${slices * 5}>; var response: array<f32, ${slices}>; var valid: array<bool, ${slices}>; var count = 0u; var energy = 0.0;
 for (var slice = 0u; slice < ${slices}u; slice++) {
   let source = index * ${slices}u + slice; let value = values[valuesOffset + source];
   valid[slice] = finite(value) ${props.mask ? '&& mask[maskOffset + source] != 0u' : ''};
@@ -304,7 +334,7 @@ else if (count >= ${Math.max(5, props.minimumSegmentLength * 2)}u) {
       if (before < ${props.minimumSegmentLength}u || after < ${props.minimumSegmentLength}u) { continue; }
       let fit = leastSquares(design, response, 5u); if (!fit.valid) { continue; }
       let candidateGain = baselineScore - (f32(count) * log(max(fit.residual, residualFloor) / f32(count)) + 6.0 * log(f32(count)));
-      if (candidateGain > max(gain, ${props.minimumBICGain ?? 0})) { gain = candidateGain; boundary = split; chosen = fit.coefficients; }
+      if (candidateGain > max(gain, ${getWGSLFloatLiteral(props.minimumBICGain ?? 0)})) { gain = candidateGain; boundary = split; chosen = fit.coefficients; }
     }
   }
 }
@@ -316,7 +346,6 @@ for (var slice = 0u; slice < ${slices}u; slice++) {
   components[componentsOffset + destination] = trend; components[componentsOffset + destination + 1u] = seasonal; components[componentsOffset + destination + 2u] = error;
 }
 breakIndex[breakIndexOffset + index] = boundary; improvement[improvementOffset + index] = select(missing(), gain, code == 0u); status[statusOffset + index] = code;`
-      })
-    ];
+    });
   }
 }

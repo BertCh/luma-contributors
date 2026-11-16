@@ -57,6 +57,7 @@ function createNodes(
   const rows = overrides.values ?? weights.rowCount;
   const suffix = serial++;
   return new GPUGlobalSpatialStatistics({
+    mode: 'reference',
     weights,
     symmetryStrategy: overrides.symmetryStrategy ?? 'pairwise',
     values: createTransientView(graph, `values-${suffix}`, 'float32', rows),
@@ -123,6 +124,7 @@ it('keeps the whole-weights WGSL free of chunk constants', () => {
   const view = (name: string, length: number) =>
     createTransientView(graph, name, 'float32', length);
   const nodes = new GPUGlobalSpatialStatistics({
+    mode: 'reference',
     weights: {
       offsets: createTransientView(graph, 'offsets', 'uint32', 61),
       neighbors: createTransientView(graph, 'neighbors', 'uint32', 240),

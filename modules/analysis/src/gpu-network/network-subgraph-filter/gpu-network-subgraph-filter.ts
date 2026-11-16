@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateNetworkViewBindings, validateNetworkWritableViews} from '../network-view-utils';
+
 import {
   createTransientView,
   GPUScan,
@@ -20,7 +22,6 @@ import {
 import {
   validateSinglePackedView,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
   validateCompactOutput
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPUNetworkAdjacency} from '../../analysis-core/network-topology';
@@ -182,6 +183,32 @@ export class GPUNetworkSubgraphFilter implements GPUCommandNodeProducer {
   constructor(props: GPUNetworkSubgraphFilterProps) {
     this.id = props.id ?? 'network-subgraph-filter';
     this.props = props;
+    const writable = props.output;
+    validateNetworkWritableViews(this.id, writable, [
+      {outputs: {edgeMask: writable.edgeMask}, inputs: {nodeMask: writable.nodeMask}},
+      {
+        outputs: {counts: writable.counts},
+        inputs: {nodeMask: writable.nodeMask, edgeMask: writable.edgeMask}
+      },
+      {outputs: {ids: writable.liveNodes?.ids}, inputs: {nodeMask: writable.nodeMask}},
+      {outputs: {ids: writable.liveEdgeSlots?.ids}, inputs: {edgeMask: writable.edgeMask}},
+      {outputs: {status: writable.liveNodes?.status}},
+      {outputs: {status: writable.liveEdgeSlots?.status}},
+      {
+        outputs: {
+          offsets: writable.inducedTopology?.offsets,
+          overflow: writable.inducedTopology?.status.overflow
+        },
+        inputs: {edgeMask: writable.edgeMask}
+      },
+      {
+        outputs: {
+          neighbors: writable.inducedTopology?.neighbors,
+          sourceSlots: writable.inducedTopology?.sourceSlots
+        },
+        inputs: {edgeMask: writable.edgeMask}
+      }
+    ]);
     const {id} = this;
     const shape = validateGPUNetworkTopology(id, props.topology);
     this.nodeCount = shape.nodeCount;
@@ -333,7 +360,11 @@ export class GPUNetworkSubgraphFilter implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, nodeCount, slotCount} = this;
-    validateGraphViewsBelongToGraph(id, graph, [...this.getInputViews(), ...this.getOutputViews()]);
+    validateNetworkViewBindings(id, graph, [...this.getInputViews(), ...this.getOutputViews()]);
+    validateNetworkViewBindings(id, graph, [], {
+      nodeScratch: nodeCount * 4,
+      slotScratch: slotCount * 4
+    });
     const {output} = props;
     const vertexColumns = props.nodeColumns ?? [];
     const edgeColumns = props.edgeColumns ?? [];

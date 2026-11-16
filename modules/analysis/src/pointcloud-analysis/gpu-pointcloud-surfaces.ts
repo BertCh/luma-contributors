@@ -2,9 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import type {GPUCommandGraph, GraphDataView, GraphVectorView} from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNode, GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
+  getGraphViewChunks,
+  validateCommandNodeBudget,
+  validateSinglePackedView,
   validateCapacity,
   validateFiniteNumber,
   validateMaximumCount,
@@ -12,12 +15,101 @@ import {
   validateViewLength
 } from '../analysis-core/kernels/gpu-contributor-utils';
 import {
+  GPU_POINT_CLOUD_MAXIMUM_GRID_AXIS_CELLS,
   GPU_POINT_CLOUD_MAXIMUM_GRID_CELLS,
   GPU_POINT_CLOUD_MAXIMUM_IDW_POWER,
   GPU_POINT_CLOUD_MAXIMUM_IDW_REACH_CELLS
 } from './pointcloud-limits';
-import {createPointCloudGridIndex, getPointCloudRowDirection} from './pointcloud-grid-index';
-import {getPointCloudKernelNodes} from './pointcloud-kernel-nodes';
+import {
+  createPointCloudGridIndex,
+  getPointCloudRowDirection,
+  validatePointCloudGridIndexBindings
+} from './pointcloud-grid-index';
+import {getPointCloudKernelNodes, validatePointCloudPackedViews} from './pointcloud-kernel-nodes';
+
+import {
+  planGraphChunkDispatch,
+  validateGraphChunkBindingRanges,
+  validateGraphChunkDispatchBindings,
+  type GraphChunkDispatchPlan
+} from '../analysis-core/kernels/graph-chunk-dispatch';
+import {
+  getPointCloudChunkKernelNodes,
+  validatePointCloudChunkViews
+} from './pointcloud-chunk-kernel-nodes';
+import type {PointCloudKernelProps} from './pointcloud-kernel-nodes';
+
+import {validatePointCloudGridParameters} from './pointcloud-grid-parameters';
+
+// One exact uint32 classification, read each encoding rather than specialized into the pipeline.
+export const GPU_POINT_CLOUD_SURFACES_PARAMETER_LENGTH = 1;
+// Exact coverage mask/support/loop reach and bitcast float32 radius squared/power divided by two.
+export const GPU_POINT_CLOUD_HEIGHT_PARAMETER_LENGTH = 5;
+
+export type GPUPointCloudSurfacesSettings = {groundClass?: number};
+
+/** Pack the per-frame ground classification. */
+export function getGPUPointCloudSurfacesParameterValues(
+  settings: GPUPointCloudSurfacesSettings = {}
+): Uint32Array {
+  validateCapacity('gpu-pointcloud-surfaces', 'groundClass', settings.groundClass ?? 2, 0);
+  return new Uint32Array([settings.groundClass ?? 2]);
+}
+
+export type GPUPointCloudHeightSettings = {
+  coverageBit?: number;
+  interpolation?: GPUPointCloudHeightProps['interpolation'];
+};
+
+/** Pack runtime sampling settings; interpolation method and grid stay compile-time. */
+export function getGPUPointCloudHeightParameterValues(
+  settings: GPUPointCloudHeightSettings,
+  grid: PointCloudRasterGrid
+): Uint32Array {
+  const identifier = 'gpu-pointcloud-height';
+  validatePointCloudGrid(grid, identifier);
+  validateCapacity(identifier, 'coverageBit', settings.coverageBit ?? 0xffffffff);
+  const interpolation = settings.interpolation;
+  const values = new Uint32Array(GPU_POINT_CLOUD_HEIGHT_PARAMETER_LENGTH);
+  values[0] = settings.coverageBit ?? 0xffffffff;
+  if (interpolation?.method === 'idw') {
+    validatePointCloudHeightInterpolation(identifier, interpolation, grid);
+    new Float32Array(values.buffer).set(
+      [interpolation.radius ** 2, (interpolation.power ?? 2) / 2],
+      1
+    );
+    values[3] = interpolation.minimumSupport ?? 1;
+    values[4] = Math.ceil(interpolation.radius / grid.cellSize) + 1;
+  }
+  return values;
+}
+
+function validatePointCloudHeightInterpolation(
+  identifier: string,
+  interpolation: Extract<NonNullable<GPUPointCloudHeightProps['interpolation']>, {method: 'idw'}>,
+  grid: PointCloudRasterGrid
+): void {
+  validateRequirement(
+    identifier,
+    interpolation.radius > 0 &&
+      Math.fround(interpolation.radius ** 2) > 0 &&
+      Number.isFinite(Math.fround(interpolation.radius ** 2)),
+    'interpolation.radius must be positive with a finite nonzero float32 square'
+  );
+  validateMaximumCount(
+    identifier,
+    'interpolation.radius in cells',
+    interpolation.radius / grid.cellSize,
+    GPU_POINT_CLOUD_MAXIMUM_IDW_REACH_CELLS
+  );
+  validateRequirement(
+    identifier,
+    Math.fround((interpolation.power ?? 2) / 2) > 0 &&
+      (interpolation.power ?? 2) <= GPU_POINT_CLOUD_MAXIMUM_IDW_POWER,
+    `interpolation.power must be positive in float32 and at most GPU_POINT_CLOUD_MAXIMUM_IDW_POWER (${GPU_POINT_CLOUD_MAXIMUM_IDW_POWER})`
+  );
+  validateCapacity(identifier, 'interpolation.minimumSupport', interpolation.minimumSupport ?? 1);
+}
 
 /**
  * Raster grid of the point-cloud contributors. `origin` is the lower-left corner (minimum x and y)
@@ -51,8 +143,8 @@ export type PointCloudRasterGrid = {
  * @internal
  */
 export function validatePointCloudGrid(grid: PointCloudRasterGrid, id = 'pointcloud'): void {
-  validateCapacity(id, 'grid.width', grid.width);
-  validateCapacity(id, 'grid.height', grid.height);
+  validateCapacity(id, 'grid.width', grid.width, 1, GPU_POINT_CLOUD_MAXIMUM_GRID_AXIS_CELLS);
+  validateCapacity(id, 'grid.height', grid.height, 1, GPU_POINT_CLOUD_MAXIMUM_GRID_AXIS_CELLS);
   validateMaximumCount(
     id,
     'grid cell count',
@@ -80,7 +172,15 @@ export function validatePointCloudGrid(grid: PointCloudRasterGrid, id = 'pointcl
 }
 
 /** @internal */
-export function getPointCloudCellSource(grid: PointCloudRasterGrid, point = 'position'): string {
+export function getPointCloudCellSource(
+  grid: PointCloudRasterGrid,
+  point = 'position',
+  runtimeGrid = false
+): string {
+  const origin = runtimeGrid
+    ? 'vec2f(readGridParameters(0u),readGridParameters(1u))'
+    : `vec2f(${grid.origin.map(Math.fround).join(',')})`;
+  const cellSize = runtimeGrid ? 'readGridParameters(3u)' : `${Math.fround(grid.cellSize)}`;
   // `coordinate` is in cell units with y in row units: for 'south' rows count down from the top edge.
   // Membership is decided on the offset from the origin, exactly as in the north case, so a point
   // on a cell boundary belongs to the cell above it (half-open) in both directions: the south row
@@ -88,20 +188,24 @@ export function getPointCloudCellSource(grid: PointCloudRasterGrid, point = 'pos
   // coordinate for interpolation; it rounds in float32 (up, when offset.y is just below a small
   // integer), so it must not decide the row or the edges.
   if (getPointCloudRowDirection(grid) === 'south') {
-    return `let southOffset = (${point}.xy - vec2f(${grid.origin.map(Math.fround).join(',')})) / ${Math.fround(grid.cellSize)};
+    return `let southOffset = getPointCloudQuotient2(${point}.xy - ${origin}, ${cellSize});
 let coordinate = vec2f(southOffset.x, ${grid.height}.0 - southOffset.y);
 let inside = all(southOffset >= vec2f(0.0)) && all(southOffset < vec2f(${grid.width}.0, ${grid.height}.0));
 let northCell = vec2u(clamp(floor(southOffset), vec2f(0.0), vec2f(${grid.width - 1}.0, ${grid.height - 1}.0)));
 let cell = vec2u(northCell.x, ${grid.height - 1}u - northCell.y);
 let cellIndex = cell.y * ${grid.width}u + cell.x;`;
   }
-  return `let coordinate = (${point}.xy - vec2f(${grid.origin.map(Math.fround).join(',')})) / ${Math.fround(grid.cellSize)};
+  return `let coordinate = getPointCloudQuotient2(${point}.xy - ${origin}, ${cellSize});
 let inside = all(coordinate >= vec2f(0.0)) && all(coordinate < vec2f(${grid.width}.0, ${grid.height}.0));
 let cell = vec2u(clamp(floor(coordinate), vec2f(0.0), vec2f(${grid.width - 1}.0, ${grid.height - 1}.0)));
 let cellIndex = cell.y * ${grid.width}u + cell.x;`;
 }
 
 export type GPUPointCloudSurfacesProps = {
+  /** Runtime origin/cellSize, packed by getGPUPointCloudGridParameterValues; grid dimensions stay fixed. */
+  gridParameters?: GraphDataView<'float32'>;
+  /** Runtime groundClass, packed by getGPUPointCloudSurfacesParameterValues. */
+  parameters?: GraphDataView<'uint32'>;
   id?: string;
   positions: GraphDataView<'float32x3'>;
   classifications: GraphDataView<'uint32'>;
@@ -125,12 +229,35 @@ export const GPU_POINT_CLOUD_COVERAGE_ANY_POINT = 1;
 /** `GPUPointCloudSurfaces` coverage bit: the cell holds at least one point of the ground class. */
 export const GPU_POINT_CLOUD_COVERAGE_GROUND = 2;
 
-/** Explicit cell-min DTM and cell-max DSM, with no interpolation or implicit datum conversion. */
+/**
+ * Explicit cell-min DTM and cell-max DSM, with no interpolation or implicit datum conversion.
+ * Per-frame: input contents, parameters (groundClass), and gridParameters (origin/cellSize).
+ * Compile-time: grid dimensions/row direction and view shapes.
+ * Without parameters, groundClass retains its constructor-time behavior.
+ */
 export class GPUPointCloudSurfaces implements GPUCommandNodeProducer {
   readonly id: string;
   constructor(readonly props: GPUPointCloudSurfacesProps) {
     this.id = props.id ?? 'gpu-pointcloud-surfaces';
     validatePointCloudGrid(props.grid, this.id);
+    validatePointCloudGridParameters(this.id, props.gridParameters);
+    for (const [name, view, format] of [
+      ['positions', props.positions, 'float32x3'],
+      ['classifications', props.classifications, 'uint32'],
+      ['terrain', props.terrain, 'float32'],
+      ['surface', props.surface, 'float32'],
+      ['canopy', props.canopy, 'float32'],
+      ['coverage', props.coverage, 'uint32'],
+      ['parameters', props.parameters, 'uint32']
+    ] as const)
+      if (view) validateSinglePackedView(view, [format], `${this.id} ${name}`);
+    if (props.parameters)
+      validateViewLength(
+        this.id,
+        'parameters',
+        props.parameters,
+        GPU_POINT_CLOUD_SURFACES_PARAMETER_LENGTH
+      );
     validateViewLength(this.id, 'classifications', props.classifications, props.positions.length);
     validateCapacity(this.id, 'groundClass', props.groundClass ?? 2, 0);
     const cells = props.grid.width * props.grid.height;
@@ -138,11 +265,59 @@ export class GPUPointCloudSurfaces implements GPUCommandNodeProducer {
     validateViewLength(this.id, 'surface', props.surface, cells);
     validateViewLength(this.id, 'canopy', props.canopy, cells);
     validateViewLength(this.id, 'coverage', props.coverage, cells);
+    const inputs = {
+      positions: props.positions,
+      classifications: props.classifications,
+      parameters: props.parameters,
+      gridParameters: props.gridParameters
+    };
+    const outputs = {
+      terrain: props.terrain,
+      surface: props.surface,
+      canopy: props.canopy,
+      coverage: props.coverage
+    };
+    validatePointCloudPackedViews(
+      this.id,
+      inputs,
+      outputs,
+      props.gridParameters
+        ? [{inputs, outputs: {terrain: props.terrain, surface: props.surface}}, {outputs}]
+        : props.parameters
+          ? [
+              {
+                inputs,
+                outputs: {terrain: props.terrain, surface: props.surface, coverage: props.coverage}
+              },
+              {
+                inputs: {terrain: props.terrain, surface: props.surface, coverage: props.coverage},
+                outputs: {canopy: props.canopy}
+              }
+            ]
+          : [{inputs, outputs}]
+    );
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {positions, classifications, grid, terrain, surface, canopy, coverage} = this.props;
+    validateGraphChunkBindingRanges(graph, this.id, {
+      positions,
+      classifications,
+      terrain,
+      surface,
+      canopy,
+      coverage,
+      parameters: this.props.parameters,
+      gridParameters: this.props.gridParameters
+    });
+    validatePointCloudGridIndexBindings(
+      graph,
+      this.id,
+      positions,
+      [grid.width, grid.height, 1],
+      this.props.gridParameters
+    );
     const indexed = createPointCloudGridIndex(
       graph,
       `${this.id}-index`,
@@ -153,7 +328,8 @@ export class GPUPointCloudSurfaces implements GPUCommandNodeProducer {
         cellSize: grid.cellSize
       },
       true,
-      getPointCloudRowDirection(grid)
+      getPointCloudRowDirection(grid),
+      this.props.gridParameters
     );
     return [
       ...indexed.nodes,
@@ -163,32 +339,66 @@ export class GPUPointCloudSurfaces implements GPUCommandNodeProducer {
         inputs: {
           positions,
           classifications,
+          ...(this.props.parameters ? {parameters: this.props.parameters} : {}),
+          ...(this.props.gridParameters ? {gridParameters: this.props.gridParameters} : {}),
           sortedIndices: indexed.sortedIndices,
           offsets: indexed.offsets
         },
-        outputs: {terrain, surface, canopy, coverage},
+        outputs: {
+          terrain,
+          surface,
+          ...(this.props.gridParameters
+            ? {}
+            : {coverage, ...(this.props.parameters ? {} : {canopy})})
+        },
         body: `var minimum = 3.402823e38; var maximum = -3.402823e38; var flags = 0u;
 for (var slot = readOffsets(index); slot < readOffsets(index+1u); slot++) {
   let point = readSortedIndices(slot);
   let position = readPositions(point);
   if (!all(abs(position) <= vec3f(3.402823e38))) { continue; }
-  ${getPointCloudCellSource(grid)}
+  ${getPointCloudCellSource(grid, 'position', Boolean(this.props.gridParameters))}
   if (!inside || cellIndex != index) { continue; }
   flags |= ${GPU_POINT_CLOUD_COVERAGE_ANY_POINT}u; maximum = max(maximum, position.z);
-  if (readClassifications(point) == ${this.props.groundClass ?? 2}u) { minimum = min(minimum, position.z); flags |= ${GPU_POINT_CLOUD_COVERAGE_GROUND}u; }
+  if (readClassifications(point) == ${this.props.parameters ? 'readParameters(0u)' : `${this.props.groundClass ?? 2}u`}) { minimum = min(minimum, position.z); flags |= ${GPU_POINT_CLOUD_COVERAGE_GROUND}u; }
 }
-writeTerrain(index, select(0.0, minimum, (flags & ${GPU_POINT_CLOUD_COVERAGE_GROUND}u) != 0u));
-writeSurface(index, select(0.0, maximum, (flags & ${GPU_POINT_CLOUD_COVERAGE_ANY_POINT}u) != 0u));
-writeCanopy(index, select(0.0, maximum - minimum, flags == ${GPU_POINT_CLOUD_COVERAGE_ANY_POINT | GPU_POINT_CLOUD_COVERAGE_GROUND}u));
-writeCoverage(index, flags);`
-      })
+writeTerrain(index, select(${this.props.gridParameters ? 'bitcast<f32>(0x7fc00000u | (index & 0u))' : '0.0'}, minimum, (flags & ${GPU_POINT_CLOUD_COVERAGE_GROUND}u) != 0u));
+writeSurface(index, select(${this.props.gridParameters ? 'bitcast<f32>(0x7fc00000u | (index & 0u))' : '0.0'}, maximum, (flags & ${GPU_POINT_CLOUD_COVERAGE_ANY_POINT}u) != 0u));
+${this.props.parameters || this.props.gridParameters ? '' : `writeCanopy(index, select(0.0, maximum - minimum, flags == ${GPU_POINT_CLOUD_COVERAGE_ANY_POINT | GPU_POINT_CLOUD_COVERAGE_GROUND}u));`}
+${this.props.gridParameters ? '' : 'writeCoverage(index, flags);'}`
+      }),
+      ...(this.props.parameters && !this.props.gridParameters
+        ? getPointCloudKernelNodes(graph, {
+            id: `${this.id}-canopy`,
+            length: terrain.length,
+            inputs: {terrain, surface, coverage},
+            outputs: {canopy},
+            body: `writeCanopy(index, select(0.0, readSurface(index) - readTerrain(index), readCoverage(index) == ${GPU_POINT_CLOUD_COVERAGE_ANY_POINT | GPU_POINT_CLOUD_COVERAGE_GROUND}u));`
+          })
+        : []),
+      ...(this.props.gridParameters
+        ? getPointCloudKernelNodes(graph, {
+            id: `${this.id}-finalize`,
+            length: terrain.length,
+            inputs: {},
+            outputs: {terrain, surface, canopy, coverage},
+            body: `let minimum = readTerrain(index); let maximum = readSurface(index);
+let hasGround = abs(minimum) <= 3.402823e38; let hasPoint = abs(maximum) <= 3.402823e38;
+writeCoverage(index, u32(hasPoint) | (u32(hasGround) * 2u));
+writeTerrain(index, select(0.0, minimum, hasGround)); writeSurface(index, select(0.0, maximum, hasPoint));
+writeCanopy(index, select(0.0, maximum - minimum, hasGround && hasPoint));`
+          })
+        : [])
     ];
   }
 }
 
 export type GPUPointCloudHeightProps = {
+  /** Runtime origin/cellSize, packed by getGPUPointCloudGridParameterValues; grid dimensions stay fixed. */
+  gridParameters?: GraphDataView<'float32'>;
+  /** Runtime coverageBit and IDW numeric settings, packed by getGPUPointCloudHeightParameterValues. */
+  parameters?: GraphDataView<'uint32'>;
   id?: string;
-  positions: GraphDataView<'float32x3'>;
+  positions: GraphDataView<'float32x3'> | GraphVectorView<'float32x3'>;
   grid: PointCloudRasterGrid;
   terrain: GraphDataView<'float32'>;
   /** Nonzero cells are supported. For Surfaces coverage pass coverageBit: 2. */
@@ -198,14 +408,14 @@ export type GPUPointCloudHeightProps = {
   interpolation?:
     | {method: 'bilinear'}
     | {method: 'idw'; radius: number; power?: number; minimumSupport?: number};
-  heights: GraphDataView<'float32'>;
+  heights: GraphDataView<'float32'> | GraphVectorView<'float32'>;
   /**
    * Per-point status code (a value, not a bit set): `GPU_POINT_CLOUD_HEIGHT_STATUS_VALID` (0)
    * valid sample, `..._INVALID_POINT` (1) the point is outside the grid or not finite,
    * `..._UNSUPPORTED_TERRAIN` (2) the terrain under the point is unsupported (or the interpolation
    * lacks support), `..._NONFINITE` (3) the elevation or height overflowed float32.
    */
-  status: GraphDataView<'uint32'>;
+  status: GraphDataView<'uint32'> | GraphVectorView<'uint32'>;
 };
 
 /** `GPUPointCloudHeight` status code: valid sample. */
@@ -217,38 +427,72 @@ export const GPU_POINT_CLOUD_HEIGHT_STATUS_UNSUPPORTED_TERRAIN = 2;
 /** `GPUPointCloudHeight` status code: the elevation or height is not finite in float32. */
 export const GPU_POINT_CLOUD_HEIGHT_STATUS_NONFINITE = 3;
 
-/** Height above ground using the containing terrain cell, explicitly preserving negative heights. */
+/**
+ * Height above ground, preserving negative heights. Positions, heights and status accept identical
+ * ordered chunk lengths; terrain/coverage stay resident. Per-frame: parameters, gridParameters
+ * (origin/cellSize) and input contents. Compile-time: grid dimensions/row direction, interpolation
+ * method and chunk topology. IDW reach remains bounded by
+ * GPU_POINT_CLOUD_MAXIMUM_IDW_REACH_CELLS when packing parameters.
+ */
 export class GPUPointCloudHeight implements GPUCommandNodeProducer {
   readonly id: string;
+  readonly estimatedCommandNodeCount: number;
+  private readonly chunkPlan: GraphChunkDispatchPlan;
   constructor(readonly props: GPUPointCloudHeightProps) {
     this.id = props.id ?? 'gpu-pointcloud-height';
     validatePointCloudGrid(props.grid, this.id);
-    if (props.interpolation?.method === 'idw') {
-      validateRequirement(
+    validatePointCloudGridParameters(this.id, props.gridParameters);
+    if (props.interpolation?.method === 'idw')
+      validatePointCloudHeightInterpolation(this.id, props.interpolation, props.grid);
+    if (props.parameters) {
+      validateSinglePackedView(props.parameters, ['uint32'], `${this.id} parameters`);
+      validateViewLength(
         this.id,
-        props.interpolation.radius > 0 &&
-          Math.fround(props.interpolation.radius ** 2) > 0 &&
-          Number.isFinite(Math.fround(props.interpolation.radius ** 2)),
-        'interpolation.radius must be positive with a finite nonzero float32 square'
-      );
-      validateMaximumCount(
-        this.id,
-        'interpolation.radius in cells',
-        props.interpolation.radius / props.grid.cellSize,
-        GPU_POINT_CLOUD_MAXIMUM_IDW_REACH_CELLS
-      );
-      validateRequirement(
-        this.id,
-        (props.interpolation.power ?? 2) > 0 &&
-          (props.interpolation.power ?? 2) <= GPU_POINT_CLOUD_MAXIMUM_IDW_POWER,
-        `interpolation.power must be in (0, ${GPU_POINT_CLOUD_MAXIMUM_IDW_POWER}]`
-      );
-      validateCapacity(
-        this.id,
-        'interpolation.minimumSupport',
-        props.interpolation.minimumSupport ?? 1
+        'parameters',
+        props.parameters,
+        GPU_POINT_CLOUD_HEIGHT_PARAMETER_LENGTH
       );
     }
+    validateSinglePackedView(props.terrain, ['float32'], `${this.id} terrain`);
+    validateSinglePackedView(props.coverage, ['uint32'], `${this.id} coverage`);
+    for (const [name, view, format] of [
+      ['positions', props.positions, 'float32x3'],
+      ['heights', props.heights, 'float32'],
+      ['status', props.status, 'uint32']
+    ] as const)
+      for (const chunk of getGraphViewChunks(view))
+        validateSinglePackedView(chunk, [format], `${this.id} ${name}`);
+    this.chunkPlan = planGraphChunkDispatch(this.id, {
+      positions: props.positions,
+      heights: props.heights,
+      status: props.status
+    });
+    validatePointCloudChunkViews(
+      this.id,
+      this.chunkPlan,
+      ['positions'],
+      ['heights', 'status'],
+      {
+        terrain: props.terrain,
+        coverage: props.coverage,
+        parameters: props.parameters,
+        gridParameters: props.gridParameters
+      },
+      [
+        {
+          inputNames: ['positions'],
+          outputNames: ['heights', 'status'],
+          inputs: {
+            terrain: props.terrain,
+            coverage: props.coverage,
+            parameters: props.parameters,
+            gridParameters: props.gridParameters
+          }
+        }
+      ]
+    );
+    this.estimatedCommandNodeCount = 1 + this.chunkPlan.nonemptyChunkCount;
+    validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
     const cells = props.grid.width * props.grid.height;
     validateViewLength(this.id, 'terrain', props.terrain, cells);
     validateViewLength(this.id, 'coverage', props.coverage, cells);
@@ -260,8 +504,19 @@ export class GPUPointCloudHeight implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {positions, grid, terrain, coverage, heights, status, interpolation} = this.props;
-    const supported = `(readCoverage(sampleIndex)&${this.props.coverageBit ?? 0xffffffff}u)!=0u && abs(readTerrain(sampleIndex))<=3.402823e38`;
-    let sample = `if ((readCoverage(cellIndex) & ${this.props.coverageBit ?? 0xffffffff}u) == 0u || !(abs(readTerrain(cellIndex)) <= 3.402823e38)) { writeStatus(index, ${GPU_POINT_CLOUD_HEIGHT_STATUS_UNSUPPORTED_TERRAIN}u); return; }
+    if (!this.chunkPlan.nonemptyChunkCount) return [];
+    validateGraphChunkDispatchBindings(graph, this.id, this.chunkPlan);
+    validateGraphChunkBindingRanges(graph, this.id, {
+      terrain,
+      coverage,
+      parameters: this.props.parameters,
+      gridParameters: this.props.gridParameters
+    });
+    const coverageMask = this.props.parameters
+      ? 'readParameters(0u)'
+      : `${this.props.coverageBit ?? 0xffffffff}u`;
+    const supported = `(readCoverage(sampleIndex)&${coverageMask})!=0u && abs(readTerrain(sampleIndex))<=3.402823e38`;
+    let sample = `if ((readCoverage(cellIndex) & ${coverageMask}) == 0u || !(abs(readTerrain(cellIndex)) <= 3.402823e38)) { writeStatus(index, ${GPU_POINT_CLOUD_HEIGHT_STATUS_UNSUPPORTED_TERRAIN}u); return; }
 elevation = readTerrain(cellIndex);`;
     if (interpolation?.method === 'bilinear')
       sample = `
@@ -276,35 +531,59 @@ for(var vertical=0;vertical<2;vertical++){for(var horizontal=0;horizontal<2;hori
 }}
 if(!valid){writeStatus(index, ${GPU_POINT_CLOUD_HEIGHT_STATUS_UNSUPPORTED_TERRAIN}u);return;}`;
     if (interpolation?.method === 'idw') {
-      const reach = Math.ceil(interpolation.radius / grid.cellSize) + 1;
-      sample = `
+      const reach = this.props.gridParameters
+        ? '(i32(ceil(getScaledQuotient(sqrt(radiusSquared), readGridParameters(3u), 1.0, 0))) + 1)'
+        : this.props.parameters
+          ? 'i32(readParameters(4u))'
+          : Math.ceil(interpolation.radius / grid.cellSize) + 1;
+      const radiusSquared = this.props.parameters
+        ? 'bitcast<f32>(readParameters(1u))'
+        : Math.fround(interpolation.radius ** 2);
+      const halfPower = this.props.parameters
+        ? 'bitcast<f32>(readParameters(2u))'
+        : Math.fround((interpolation.power ?? 2) / 2);
+      const minimumSupport = this.props.parameters
+        ? 'readParameters(3u)'
+        : `${interpolation.minimumSupport ?? 1}u`;
+      sample = `${
+        this.props.gridParameters
+          ? `let radiusSquared = ${radiusSquared};
+if (!(getScaledQuotient(sqrt(radiusSquared), readGridParameters(3u), 1.0, 0) <= ${GPU_POINT_CLOUD_MAXIMUM_IDW_REACH_CELLS}.0)) { writeStatus(index, ${GPU_POINT_CLOUD_HEIGHT_STATUS_UNSUPPORTED_TERRAIN}u); return; }`
+          : ''
+      }
 let center=vec2i(floor(coordinate));var meanElevation=0.0;var totalWeight=0.0;var minimumSquaredDistance=3.402823e38;var support=0u;var exact=false;
 for(var row=max(0,center.y-${reach});row<=min(${grid.height - 1},center.y+${reach});row++){
  for(var column=max(0,center.x-${reach});column<=min(${grid.width - 1},center.x+${reach});column++){
   let sampleIndex=u32(row)*${grid.width}u+u32(column);if(!(${supported})){continue;}
-  let difference=(vec2f(f32(column),f32(row))+vec2f(0.5)-coordinate)*${Math.fround(grid.cellSize)};
-  let distanceSquared=dot(difference,difference);if(distanceSquared>${Math.fround(interpolation.radius ** 2)}){continue;}
+  let difference=(vec2f(f32(column),f32(row))+vec2f(0.5)-coordinate)*${this.props.gridParameters ? 'readGridParameters(3u)' : Math.fround(grid.cellSize)};
+  let distanceSquared=dot(difference,difference);if(distanceSquared>${radiusSquared}){continue;}
   support++;if(distanceSquared==0.0){exact=true;elevation=readTerrain(sampleIndex);continue;}
   // Normalize to the closest sample so near-centre queries cannot overflow inverse powers.
   if(distanceSquared<minimumSquaredDistance){
-   totalWeight*=pow(distanceSquared/minimumSquaredDistance,${Math.fround((interpolation.power ?? 2) / 2)});
+   totalWeight*=pow(getScaledQuotient(distanceSquared,minimumSquaredDistance,1.0,0),${halfPower});
    minimumSquaredDistance=distanceSquared;
   }
-  let weight=pow(minimumSquaredDistance/distanceSquared,${Math.fround((interpolation.power ?? 2) / 2)});
+  let weight=pow(getScaledQuotient(minimumSquaredDistance,distanceSquared,1.0,0),${halfPower});
   let combinedWeight=totalWeight+weight;
   meanElevation=meanElevation*(totalWeight/combinedWeight)+readTerrain(sampleIndex)*(weight/combinedWeight);
   totalWeight=combinedWeight;
  }}
-let valid=exact||(support>=${interpolation.minimumSupport ?? 1}u&&totalWeight>0.0);
+let valid=exact||(support>=${minimumSupport}&&totalWeight>0.0);
 if(!exact&&totalWeight>0.0){elevation=meanElevation;}if(!valid){writeStatus(index, ${GPU_POINT_CLOUD_HEIGHT_STATUS_UNSUPPORTED_TERRAIN}u);return;}`;
     }
-    return getPointCloudKernelNodes(graph, {
+    const kernelProps: PointCloudKernelProps = {
       id: this.id,
       length: positions.length,
-      inputs: {positions, terrain, coverage},
-      outputs: {heights, status},
+      inputs: {
+        positions: getGraphViewChunks(positions)[0],
+        terrain,
+        coverage,
+        ...(this.props.parameters ? {parameters: this.props.parameters} : {}),
+        ...(this.props.gridParameters ? {gridParameters: this.props.gridParameters} : {})
+      },
+      outputs: {heights: getGraphViewChunks(heights)[0], status: getGraphViewChunks(status)[0]},
       body: `let position = readPositions(index);
-${getPointCloudCellSource(grid)}
+${getPointCloudCellSource(grid, 'position', Boolean(this.props.gridParameters))}
 writeHeights(index, 0.0);
 if (!inside || !all(abs(position) <= vec3f(3.402823e38))) { writeStatus(index, ${GPU_POINT_CLOUD_HEIGHT_STATUS_INVALID_POINT}u); return; }
 var elevation=0.0;
@@ -313,6 +592,7 @@ let height=position.z-elevation;
 // Finite observations can still overflow interpolation or the final signed difference.
 if(any((bitcast<vec2u>(vec2f(elevation,height))&vec2u(0x7f800000u))==vec2u(0x7f800000u))){writeStatus(index, ${GPU_POINT_CLOUD_HEIGHT_STATUS_NONFINITE}u);return;}
 writeHeights(index,height);writeStatus(index, ${GPU_POINT_CLOUD_HEIGHT_STATUS_VALID}u);`
-    });
+    };
+    return getPointCloudChunkKernelNodes(graph, {...kernelProps, plan: this.chunkPlan});
   }
 }

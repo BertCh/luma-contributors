@@ -13,8 +13,7 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {
-  createWGSLKernelNode,
-  createPublishNode,
+  type WGSLKernelProps,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {validateSinglePackedView} from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -24,6 +23,7 @@ import type {
   GPUOverflowStatusPort
 } from '../../analysis-core/contracts/index';
 import {CELL_KEY_WGSL, type CellKeyLayout} from './cell-keys';
+import {createCellLevelKernelNode} from './cell-level-kernel';
 import {getFixedPointWGSL, ORDERED_KEY_WGSL} from '../../analysis-core/cell-key-wgsl';
 
 /** Key word written to every word of an unused cell table row. */
@@ -175,8 +175,8 @@ export function hasCellKeyHighWord(layout: CellKeyLayout): boolean {
 /** WGSL statement assigning `isInvalid` for the compact key `(high, low)`. */
 function getInvalidKeyExpression(layout: CellKeyLayout, high: string, low: string): string {
   return hasCellKeyHighWord(layout)
-    ? `(${high} >> ${layout.width - 32}u) != 0u`
-    : `(${low} >> ${layout.width}u) != 0u`;
+    ? `(${high} >> (CELL_WIDTH - 32u)) != 0u`
+    : `(${low} >> CELL_WIDTH) != 0u`;
 }
 
 /**
@@ -203,6 +203,20 @@ export function getCellTableNodes<Parameters>(
   const write = (name: string, view: GraphDataView, type: 'u32' | 'f32' = 'u32') =>
     ({name, view, type, access: 'read_write'}) as WGSLKernelBinding;
   const nodes: GPUCommandNode<Parameters>[] = [];
+  const createTableKernel = (
+    kernelProps: WGSLKernelProps<Parameters>
+  ): GPUCommandNode<Parameters> => {
+    const result = createCellLevelKernelNode(graph, kernelProps, {
+      ROW_COUNT: rowCount,
+      CAPACITY: capacity,
+      CELL_WIDTH: layout.width,
+      CELL_LOW_BIT: layout.lowBit,
+      CELL_HEADER: layout.headerHigh,
+      CELL_RESOLUTION: layout.resolution
+    });
+    nodes.push(...result.uploads);
+    return result.node;
+  };
 
   // 1. Ascending (high, low) order by two stable LSD sorts, or one when the key fits a word.
   let sortedLow = props.keyLow;
@@ -276,14 +290,13 @@ export function getCellTableNodes<Parameters>(
   const heads = u32('heads', rowCount);
   const validCount = u32('valid-count', 1);
   nodes.push(
-    createWGSLKernelNode<Parameters>(graph, {
+    createTableKernel({
       id: `${id}-heads`,
       operation,
       variant: 'heads',
       bindings: [...sortedKeyBindings(), write('heads', heads), write('validCount', validCount)],
       invocationCount: rowCount,
-      declarations: `const ROW_COUNT: u32 = ${rowCount}u;
-fn isInvalidKey(key: vec2u) -> bool {
+      declarations: `fn isInvalidKey(key: vec2u) -> bool {
   return ${getInvalidKeyExpression(layout, 'key.x', 'key.y')};
 }`,
       body: `let key = ${keyAt('index')};
@@ -319,7 +332,7 @@ fn isInvalidKey(key: vec2u) -> bool {
   const cellTotal = u32('cell-total', 1);
   const rowCells = u32('row-cells', rowCount);
   nodes.push(
-    createWGSLKernelNode<Parameters>(graph, {
+    createTableKernel({
       id: `${id}-offsets`,
       operation,
       variant: 'offsets',
@@ -332,8 +345,6 @@ fn isInvalidKey(key: vec2u) -> bool {
         write('rowCells', rowCells)
       ],
       invocationCount: rowCount,
-      declarations: `const ROW_COUNT: u32 = ${rowCount}u;
-const CAPACITY: u32 = ${capacity}u;`,
       body: `let isHead = heads[headsOffset + index] != 0u;
   let cell = cellIndices[cellIndicesOffset + index] + select(0u, 1u, isHead) - 1u;
   let isValid = index < validCount[validCountOffset];
@@ -352,15 +363,14 @@ const CAPACITY: u32 = ${capacity}u;`,
     })
   );
 
-  const offsetsDeclarations = `const CAPACITY: u32 = ${capacity}u;
-fn getCellCount() -> u32 {
+  const offsetsDeclarations = `fn getCellCount() -> u32 {
   return min(cellTotal[cellTotalOffset], CAPACITY);
 }`;
 
   // 5. Keys, and counts of raw rows, one invocation per table row.
   const childTable = source.kind === 'cells' ? source.table : undefined;
   nodes.push(
-    createWGSLKernelNode<Parameters>(graph, {
+    createTableKernel({
       id: `${id}-cells`,
       operation,
       variant: 'cells',
@@ -381,7 +391,7 @@ ${CELL_KEY_WGSL}`,
     return;
   }
   let begin = offsets[offsetsOffset + index];
-  let key = cellGetKey(${keyAt('begin')}, ${layout.headerHigh}u, ${layout.resolution}u, ${layout.lowBit}u);
+  let key = cellGetKey(${keyAt('begin')}, CELL_HEADER, CELL_RESOLUTION, CELL_LOW_BIT);
   cellsOut[cellsOutOffset + 2u * index] = key.y;
   cellsOut[cellsOutOffset + 2u * index + 1u] = key.x;
   // Roll-ups sum the child counts in the accumulation pass.
@@ -423,7 +433,7 @@ ${CELL_KEY_WGSL}`,
   // 6. Clear the accumulators.
   if (sums || minimumKeys || maximumKeys) {
     nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
+      createTableKernel({
         id: `${id}-clear`,
         operation,
         variant: 'clear',
@@ -446,7 +456,7 @@ ${CELL_KEY_WGSL}`,
       ? `cellScaleValue(values[valuesOffset + ${sourceRow}])`
       : 'vec2u(childSums[childSumsOffset + 2u * index + 1u], childSums[childSumsOffset + 2u * index])';
     nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
+      createTableKernel({
         id: `${id}-accumulate-sums`,
         operation,
         variant: 'accumulate-sums',
@@ -535,7 +545,7 @@ ${childTable ? `var<workgroup> tileCounts: array<u32, ${ACCUMULATE_TILE_SIZE}>;`
       ? `values[valuesOffset + ${sourceRow}]`
       : 'childMaximums[childMaximumsOffset + index]';
     nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
+      createTableKernel({
         id: `${id}-accumulate-extremes`,
         operation,
         variant: 'accumulate-extremes',
@@ -619,7 +629,7 @@ ${maximumKeys ? `var<workgroup> tileMaximums: array<u32, ${ACCUMULATE_TILE_SIZE}
   // 8. Finish: f32 sums and decoded extremes (NaN for empty rows).
   if (output.sumValues || minimumKeys || maximumKeys) {
     nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
+      createTableKernel({
         id: `${id}-finish`,
         operation,
         variant: 'finish',
@@ -658,22 +668,29 @@ ${getFixedPointWGSL(props.sumScale)}`,
     );
   }
 
-  // 9. Clamped count, overflow and total.
+  // 9. Publish with runtime capacity; each level keeps the same pipeline for this binding shape.
+  const overflowSources = props.overflowSources ?? [];
+  const extraCounts = props.extraCounts ?? [];
   nodes.push(
-    createPublishNode<Parameters>(graph, {
+    createTableKernel({
       id: `${id}-publish`,
       operation,
-      requiredCount: cellTotal,
-      output: {
-        ids: output.counts,
-        status: {
-          count: output.status.count,
-          overflow: output.status.overflow,
-          requiredCount: output.status.requiredCount
-        }
-      },
-      overflowSources: props.overflowSources,
-      extraCounts: props.extraCounts
+      variant: 'publish',
+      invocationCount: 1,
+      bindings: [
+        read('cellTotal', cellTotal),
+        write('countOut', output.status.count),
+        write('overflowOut', output.status.overflow),
+        ...(output.status.requiredCount ? [write('totalOut', output.status.requiredCount)] : []),
+        ...overflowSources.map((view, index) => read(`overflowIn${index}`, view)),
+        ...extraCounts.map((view, index) => write(`extraOut${index}`, view))
+      ],
+      body: `let total = cellTotal[cellTotalOffset];
+  let count = min(total, CAPACITY);
+  countOut[countOutOffset] = count;
+  overflowOut[overflowOutOffset] = select(0u, 1u, total > CAPACITY${overflowSources.map((_, index) => ` || overflowIn${index}[overflowIn${index}Offset] != 0u`).join('')});
+  ${output.status.requiredCount ? 'totalOut[totalOutOffset] = total;' : ''}
+  ${extraCounts.map((_, index) => `extraOut${index}[extraOut${index}Offset] = count;`).join('\n  ')}`
     })
   );
   return nodes;

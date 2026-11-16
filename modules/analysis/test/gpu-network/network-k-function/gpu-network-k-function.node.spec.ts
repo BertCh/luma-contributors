@@ -4,6 +4,12 @@
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
+import {WgslExec, WgslParser} from 'wgsl_reflect';
+import {
+  recordWGSLKernelNodes,
+  getWGSLKernelNodeRecord
+} from '../../../src/analysis-core/kernels/wgsl-kernel-nodes';
+import {auditWGSLModule} from '../../analysis-core/kernel-audit/kernel-audit-wgsl';
 import {
   getGPUNetworkKFunctionParameterValues,
   GPUNetworkKFunction
@@ -12,6 +18,56 @@ import {GPU_NETWORK_SNAPPING_MAXIMUM_UNINDEXED_WORK} from '../../../src/gpu-netw
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 
 let serial = 0;
+
+it('publishes the iteration-limit complement with or without the converged port', () => {
+  for (const hasConverged of [false, true]) {
+    const graph = new GPUCommandGraph(createNullWebGPUDevice());
+    const flag = createTransientView(graph, 'iteration-limit', 'uint32', 1);
+    const converged = hasConverged
+      ? createTransientView(graph, 'finished', 'uint32', 1)
+      : undefined;
+    recordWGSLKernelNodes(graph);
+    const contributor = new GPUNetworkKFunction(
+      createProps(graph, {maximumIterations: 2}, {status: {iterationLimitReached: flag, converged}})
+    );
+    const nodes = contributor.getCommandNodes(graph);
+    expect(nodes.length).toBeLessThanOrEqual(contributor.estimatedCommandNodeCount);
+    for (const done of [
+      [1, 0, 1],
+      [1, 1, 1]
+    ]) {
+      const iterationLimitReached = Uint32Array.of(99);
+      const finished = Uint32Array.of(99);
+      const batches = new Uint32Array(3 * 64);
+      done.forEach((value, index) => {
+        batches[index * 64] = value;
+      });
+      for (const name of ['k-converged-initialize', 'k-converged']) {
+        const record = getWGSLKernelNodeRecord(graph, name)!;
+        expect(auditWGSLModule(record.source)).toEqual([]);
+        const storage: Record<string, Uint32Array> = {
+          iterationLimitReached,
+          converged: finished,
+          batchConverged: batches
+        };
+        const bindings = Object.fromEntries(
+          record.bindings.map((binding, index) => [index, storage[binding.name]])
+        );
+        const interpreter = new WgslExec(
+          new WgslParser().parse(record.source.replace(/^\s*_\s*=[^;]*;/gm, ''))
+        );
+        interpreter.dispatchWorkgroups(
+          'main',
+          [1, 1, 1],
+          {0: bindings},
+          {constants: record.constants}
+        );
+      }
+      expect(iterationLimitReached[0]).toBe(done.includes(0) ? 1 : 0);
+      if (hasConverged) expect(finished[0]).toBe(done.includes(0) ? 0 : 1);
+    }
+  }
+});
 
 function createProps(
   graph: GPUCommandGraph,
@@ -65,7 +121,12 @@ it('GPUNetworkKFunction schedules snapping, simulation, one search block per row
   ]);
   expect(ids).toContain('k-simulate');
   expect(ids).toContain('k-quantize');
-  expect(ids.slice(-3)).toEqual(['k-finalize', 'k-envelope', 'k-converged']);
+  expect(ids.slice(-4)).toEqual([
+    'k-finalize',
+    'k-envelope',
+    'k-converged-initialize',
+    'k-converged'
+  ]);
 });
 
 it('GPUNetworkKFunction skips the simulation nodes without simulations', () => {

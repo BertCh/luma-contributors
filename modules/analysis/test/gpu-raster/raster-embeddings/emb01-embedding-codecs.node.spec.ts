@@ -49,11 +49,11 @@ it('EMB-01 validates formats, view lengths, optional scales, masks and named dim
       () =>
         new GPURasterEmbeddingQuantize({
           pixelCount: 1,
-          dimensions: 129,
-          vectors: view('float32', 129),
-          output: {quantized: view('uint32', 33)}
+          dimensions: 1025,
+          vectors: view('float32', 1025),
+          output: {quantized: view('uint32', 257)}
         })
-    ).toThrow(/raster-embedding-quantize dimensions.*\[1, 128\]/);
+    ).toThrow(/raster-embedding-quantize dimensions.*\[1, 1024\]/);
     expect(
       () =>
         new GPURasterEmbeddingQuantize({

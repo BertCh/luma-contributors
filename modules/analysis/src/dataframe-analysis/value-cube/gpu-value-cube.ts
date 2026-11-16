@@ -7,7 +7,8 @@ import {
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
-  type GraphDataView
+  GraphDataView,
+  GraphVectorView
 } from '@luma.gl/graph/gpu-core';
 import type {Device} from '@luma.gl/core';
 import type {GPUInvalidStatusPort} from '../../analysis-core/contracts/status';
@@ -25,11 +26,11 @@ import {
   validateCapacity,
   validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
   validateMaximumCount,
   validateSinglePackedView,
   validateRequirement,
-  validateViewLength
+  validateViewLength,
+  getGraphViewChunks
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GET_NAN_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
@@ -38,9 +39,16 @@ import {
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 
+import {
+  validateGraphChunkBindingRanges,
+  validateDisjointWritableViews
+} from '../../analysis-core/kernels/graph-chunk-dispatch';
+
 const OPERATION = 'GPUValueCube';
 /** Cell and period indices are `uint32`, and the bin index `cell * periodCount + period` must not wrap. */
 const MAXIMUM_INDEX = 0xfffffffe;
+/** Row invocations and exact per-bin counters use uint32. */
+const MAXIMUM_ROW_COUNT = 0xffffffff;
 /** Threads of the cooperative scale pass. */
 const SCALE_WORKGROUP_SIZE = 256;
 
@@ -159,7 +167,7 @@ export class GPUValueCube implements GPUCommandNodeProducer {
     validateSinglePackedView(periods, ['uint32'], `${id} periods`);
     validateSinglePackedView(values, ['float32'], `${id} values`);
     this.rowCount = cells.length;
-    validateRequirement(id, this.rowCount >= 1, 'needs at least one row');
+    validateCapacity(id, 'cells length', this.rowCount, 1, MAXIMUM_ROW_COUNT);
     validateViewLength(id, 'periods', periods, this.rowCount);
     validateViewLength(id, 'values', values, this.rowCount);
     if (mask) {
@@ -184,11 +192,59 @@ export class GPUValueCube implements GPUCommandNodeProducer {
     validateGPUStatusPort(id, {invalidCount: output.status?.invalidCount});
     const outputs = this.getOutputViews();
     validateGraphOutputsDisjointFromInputs(id, outputs, this.getInputViews());
-    validateRequirement(
-      id,
-      new Set(outputs.map(view => view.buffer)).size === outputs.length,
-      'outputs must not share buffers with each other'
-    );
+    {
+      const writableOutputs: Readonly<Record<string, GraphDataView | GraphVectorView | undefined>> =
+        {
+          counts: output.counts,
+          sums: output.sums,
+          means: output.means,
+          invalidCount: output.status?.invalidCount
+        };
+      const publicationPasses: readonly (readonly (
+        | GraphDataView
+        | GraphVectorView
+        | undefined
+      )[])[] = [
+        [output.counts, output.status?.invalidCount],
+        ...(output.means ? [[output.counts, output.sums, output.means]] : [])
+      ];
+      // Model all logical writes as separate chunks; only the explicit publication groups coexist.
+      const writableWordChunks = Object.values(writableOutputs)
+        .flatMap(view => (view ? getGraphViewChunks(view) : []))
+        .map(
+          view =>
+            new GraphDataView(view.buffer, {
+              format: 'uint32',
+              length: (view.length * view.rowByteLength) / 4,
+              byteOffset: view.byteOffset,
+              byteStride: 4,
+              rowByteLength: 4
+            })
+        );
+      const writableWordCount = writableWordChunks.reduce(
+        (total, chunk) => total + chunk.length,
+        0
+      );
+      validateDisjointWritableViews(id, {
+        outputs: new GraphVectorView({
+          id: `${id}-writable-ranges`,
+          name: 'outputs',
+          format: 'uint32',
+          length: writableWordCount,
+          valueLength: writableWordCount,
+          stride: 1,
+          byteStride: 4,
+          rowByteLength: 4,
+          data: writableWordChunks
+        })
+      });
+      for (const fields of publicationPasses) {
+        validateDisjointWritableViews(
+          id,
+          Object.fromEntries(fields.map((view, index) => [String(index), view]))
+        );
+      }
+    }
   }
 
   /**
@@ -199,7 +255,22 @@ export class GPUValueCube implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id, rowCount, binCount} = this;
     const {cells, periods, values, mask, output, cellCount, periodCount} = props;
-    validateGraphViewsBelongToGraph(id, graph, [...this.getInputViews(), ...this.getOutputViews()]);
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(
+        [...this.getInputViews(), ...this.getOutputViews()].map((view, index) => [
+          `view[${index}]`,
+          view
+        ])
+      )
+    );
+    validateMaximumCount(
+      id,
+      'fixed-point scratch byteLength',
+      binCount * FIXED_POINT_WORD_COUNT * 4,
+      graph.device.limits.maxBufferSize
+    );
     validateGPUStorageBindingByteLength(
       graph.device,
       id,
@@ -377,9 +448,10 @@ ${getFixedPointAtomicAddWGSL('fixedWords')}`,
           id: `${id}-means`,
           operation: OPERATION,
           variant: 'means',
+          // Retained outputs may share one buffer with means; all co-bound ranges are writable.
           bindings: [
-            read('countsIn', counts, 'u32'),
-            read('sumsIn', sums, 'f32'),
+            {name: 'countsIn', view: counts, type: 'u32', access: 'read_write'},
+            {name: 'sumsIn', view: sums, type: 'f32', access: 'read_write'},
             {name: 'meansOut', view: output.means, type: 'f32', access: 'read_write'}
           ],
           invocationCount: binCount,

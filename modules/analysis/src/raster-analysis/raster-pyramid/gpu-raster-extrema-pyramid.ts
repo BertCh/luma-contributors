@@ -4,6 +4,7 @@
 
 import {
   validatePackedView,
+  getViewBindingRange,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -15,12 +16,25 @@ import {
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
-import {validateGraphViewsBelongToGraph} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  validateGraphViewsBelongToGraph,
+  validateCapacity,
+  validateMaximumCount,
+  validateCommandNodeBudget
+} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {createSpatialStatisticsParameterNodes} from '../../analysis-core/kernels/spatial-statistics-parameter-nodes';
+import {validateRasterAlgebraInput} from '../raster-algebra/raster-algebra-input';
+import {RASTER_BAND_CANONICALIZATION_NODE_COUNT} from '../raster-expansion-utils';
+import {
+  createRasterFractionalTileNode,
+  validateRasterFractionalBindingByteLength,
+  validateRasterFractionalWritableViews
+} from '../fractional-coverage/raster-fractional-tile-kernel';
 import {
   getRasterBandViews,
   getRasterBufferBandNodes,
   validateRasterBandBelongsToGraph,
-  validateRasterBuffersDistinct,
   validateRasterGrid
 } from '../raster-band-utils';
 
@@ -42,6 +56,12 @@ const FUSED_TILE_SIZE = 16;
 
 /** Largest supported `firstBlockSize`. */
 const MAXIMUM_FIRST_BLOCK_SIZE = 256;
+/** Every fused dispatch reads eighteen words from its own aligned 256-byte slot. */
+const FUSED_PARAMETER_SLOT_WORDS = 64;
+/** Base shape and count (six words), followed by four (width, height, offset) records. */
+const FUSED_PARAMETER_WORDS = 18;
+/** Packed pyramid offsets and block sizes are uint32 shader addresses. */
+const MAXIMUM_PYRAMID_WORD_OFFSET = 0xffffffff;
 
 /**
  * Cell footprint model of a pyramid.
@@ -137,8 +157,21 @@ export function getGPURasterExtremaPyramidLayout(
     const blockSize = firstBlockSize * 2 ** level;
     const levelWidth = Math.ceil(width / blockSize);
     const levelHeight = Math.ceil(height / blockSize);
+    validateCapacity(
+      'GPURasterExtremaPyramid',
+      'level blockSize',
+      blockSize,
+      1,
+      MAXIMUM_PYRAMID_WORD_OFFSET
+    );
     levels.push({level, blockSize, width: levelWidth, height: levelHeight, offset});
     offset += levelWidth * levelHeight;
+    validateMaximumCount(
+      'GPURasterExtremaPyramid',
+      'packed level cells',
+      offset,
+      MAXIMUM_PYRAMID_WORD_OFFSET
+    );
     if (levelWidth === 1 && levelHeight === 1) {
       break;
     }
@@ -242,6 +275,47 @@ function validateViewLength(id: string, name: string, view: GraphDataView, lengt
 }
 
 // Not GPURasterOverview (mean/mode only) or GPUReduction extent (single global extent): neither yields a min/max pyramid.
+/** Validates all aligned caller ranges and derived canonicalization/parameter allocations. */
+function validateRasterPyramidBindings<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  id: string,
+  layout: GPURasterExtremaPyramidLayout,
+  views: readonly (GraphDataView | undefined)[]
+): void {
+  validateGraphChunkBindingRanges(
+    graph,
+    id,
+    Object.fromEntries(views.map((view, index) => [`view.${index}`, view]))
+  );
+  for (const view of views)
+    if (view)
+      validateRasterFractionalBindingByteLength(
+        graph.device,
+        id,
+        view.buffer.id,
+        getViewBindingRange(view).size,
+        'reduce the packed pyramid size',
+        view.buffer.byteLength
+      );
+  validateRasterFractionalBindingByteLength(
+    graph.device,
+    id,
+    'canonical band',
+    layout.width * layout.height * 4,
+    'reduce grid dimensions'
+  );
+  const dispatchCount = Math.ceil((layout.levels.length - 1) / FUSED_LEVELS_PER_DISPATCH);
+  if (dispatchCount > 0)
+    validateRasterFractionalBindingByteLength(
+      graph.device,
+      id,
+      'fused parameter slot',
+      FUSED_PARAMETER_WORDS * 4,
+      'reduce the number of pyramid levels',
+      dispatchCount * FUSED_PARAMETER_SLOT_WORDS * 4
+    );
+}
+
 /**
  * Builds a min/max pyramid ("maximum mipmap", Tevs, Ihrke and Seidel 2008) of a raster band.
  *
@@ -264,6 +338,7 @@ function validateViewLength(id: string, name: string, view: GraphDataView, lengt
  * because `cS < size`. Rows and columns are independent, so the 2D union is the parent rectangle.
  */
 export class GPURasterExtremaPyramid implements GPUCommandNodeProducer {
+  readonly estimatedCommandNodeCount: number;
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
@@ -282,6 +357,12 @@ export class GPURasterExtremaPyramid implements GPUCommandNodeProducer {
     const {id} = this;
     validateRasterGrid(id, props.grid);
     this.layout = getGPURasterExtremaPyramidLayout(props.grid, props);
+    validateRasterAlgebraInput(id, 'input', props.input, props.grid);
+    this.estimatedCommandNodeCount =
+      RASTER_BAND_CANONICALIZATION_NODE_COUNT +
+      2 +
+      Math.ceil((this.layout.levels.length - 1) / FUSED_LEVELS_PER_DISPATCH);
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     const {maximum, minimum, combined} = props.output;
     if (combined && (maximum || minimum)) {
       throw new Error(`${id} output.combined cannot be used together with maximum or minimum`);
@@ -300,11 +381,19 @@ export class GPURasterExtremaPyramid implements GPUCommandNodeProducer {
     if (combined) {
       validateViewLength(id, 'output.combined', combined, 2 * this.layout.length);
     }
-    validateRasterBuffersDistinct(
-      id,
-      [maximum, minimum, combined],
-      getRasterBandViews(props.input)
-    );
+    const input = props.input;
+    const reusedBandViews =
+      input.storage.kind === 'buffer' &&
+      input.format === 'float32' &&
+      input.validity &&
+      input.scale === undefined &&
+      input.offset === undefined &&
+      input.noDataValue === undefined
+        ? getRasterBandViews(input)
+        : [];
+    validateRasterFractionalWritableViews(id, props.output, getRasterBandViews(input), [
+      {writes: [maximum, minimum, combined], reads: reusedBandViews}
+    ]);
     if (combined) {
       this.output = {layout: this.layout, combined};
     }
@@ -317,6 +406,12 @@ export class GPURasterExtremaPyramid implements GPUCommandNodeProducer {
     const {id, props, layout} = this;
     validateRasterBandBelongsToGraph(id, graph, props.input, []);
     const {maximum, minimum, combined} = props.output;
+    validateRasterPyramidBindings(graph, id, layout, [
+      ...getRasterBandViews(props.input),
+      maximum,
+      minimum,
+      combined
+    ]);
     validateGraphViewsBelongToGraph(id, graph, [maximum, minimum, combined]);
     const source = getRasterBufferBandNodes(graph, id, props.input, props.grid, 'reuse-canonical');
     return [
@@ -361,6 +456,8 @@ export function createRasterExtremaPyramidNodes<Parameters>(
   }
 ): GPUCommandNode<Parameters>[] {
   const {id, layout, values, validity, maximum, minimum, combined} = props;
+  validateRasterPyramidBindings(graph, id, layout, [values, validity, maximum, minimum, combined]);
+  validateRasterFractionalWritableViews(id, {maximum, minimum, combined}, [values, validity]);
   if (combined) {
     if (maximum || minimum) {
       throw new Error(`${id} combined cannot be used together with maximum or minimum`);
@@ -459,17 +556,12 @@ ${IS_FINITE_VALUE_WGSL}`,
     }
   }
 
-  // Levels above 0 are built several per dispatch. A workgroup loads a 16 x 16 tile of an already
-  // written base level into workgroup memory and reduces it 16 -> 8 -> 4 -> 2 -> 1, writing each
-  // level's cells as it goes, so `L` levels cost ceil(L / 4) dispatches (and one read of the base
-  // level) instead of `L` dispatches that each re-read the level below. The reduction is the same
-  // 2 x 2 tree in the same child order as before; children outside the level read as the empty
-  // sentinel, which never wins a strict comparison, so results are bit-identical.
-  for (
-    let baseIndex = 0;
-    baseIndex < layout.levels.length - 1;
-    baseIndex += FUSED_LEVELS_PER_DISPATCH
-  ) {
+  // One fixed shader reduces up to four levels. Every changing shape/offset comes from an
+  // aligned parameter slot; each command node retains its own exact dispatch dimensions.
+  const dispatchCount = Math.ceil((layout.levels.length - 1) / FUSED_LEVELS_PER_DISPATCH);
+  const parameterValues = new Uint32Array(dispatchCount * FUSED_PARAMETER_SLOT_WORDS);
+  for (let dispatchIndex = 0; dispatchIndex < dispatchCount; dispatchIndex++) {
+    const baseIndex = dispatchIndex * FUSED_LEVELS_PER_DISPATCH;
     const base = layout.levels[baseIndex];
     const stageLevels = layout.levels.slice(
       baseIndex + 1,
@@ -477,25 +569,35 @@ ${IS_FINITE_VALUE_WGSL}`,
     );
     const tilesX = Math.ceil(base.width / FUSED_TILE_SIZE);
     const tilesY = Math.ceil(base.height / FUSED_TILE_SIZE);
-    const stages = stageLevels.map((stageLevel, stageIndex) => {
-      const inputSize = FUSED_TILE_SIZE >> stageIndex;
-      const outputSize = inputSize >> 1;
-      const reduce = (
-        array: string,
-        comparison: '>' | '<',
-        name: string
-      ) => `for (var child = 0u; child < 4u; child++) {
-      let value = ${array}[(2u * stageY + (child >> 1u)) * ${inputSize}u + 2u * stageX + (child & 1u)];
+    const slot = dispatchIndex * FUSED_PARAMETER_SLOT_WORDS;
+    parameterValues.set(
+      [base.width, base.height, base.offset, tilesX, stageLevels.length, tilesX * tilesY],
+      slot
+    );
+    for (const [stageIndex, level] of stageLevels.entries())
+      parameterValues.set([level.width, level.height, level.offset], slot + 6 + stageIndex * 3);
+  }
+  const parameters =
+    dispatchCount > 0
+      ? createSpatialStatisticsParameterNodes(graph, `${id}-fused-parameters`, parameterValues)
+      : undefined;
+  if (parameters) nodes.push(...parameters.nodes);
+  const stages = Array.from({length: FUSED_LEVELS_PER_DISPATCH}, (_, stageIndex) => {
+    const inputSize = FUSED_TILE_SIZE >> stageIndex;
+    const outputSize = inputSize >> 1;
+    const slot = 6 + stageIndex * 3;
+    const reduce = (
+      array: string,
+      comparison: '>' | '<',
+      name: string
+    ) => `for (var child = 0u; child < 4u; child++) {
+      let value = ${array}[(2u * stageRow + (child >> 1u)) * ${inputSize}u + 2u * stageColumn + (child & 1u)];
       if (value ${comparison} ${name}) { ${name} = value; }
     }`;
-      const isLast = stageIndex === stageLevels.length - 1;
-      const levelCell = `LEVEL_OFFSET_${stageIndex}`;
-      return `
-  // Level ${stageLevel.level}: ${outputSize} x ${outputSize} cells per tile.
-  {
+    return `{
     let isStageThread = localInvocationIndex < ${outputSize * outputSize}u;
-    let stageX = localInvocationIndex % ${outputSize}u;
-    let stageY = localInvocationIndex / ${outputSize}u;
+    let stageColumn = localInvocationIndex % ${outputSize}u;
+    let stageRow = localInvocationIndex / ${outputSize}u;
     var maximumValue = EMPTY_MAXIMUM;
     var minimumValue = EMPTY_MINIMUM;
     if (isStageThread) {
@@ -504,56 +606,69 @@ ${IS_FINITE_VALUE_WGSL}`,
     }
     workgroupBarrier();
     if (isStageThread) {
-      ${hasMaximum ? `tileMaximum[localInvocationIndex] = maximumValue;` : ''}
-      ${hasMinimum ? `tileMinimum[localInvocationIndex] = minimumValue;` : ''}
-      let cellColumn = tileX * ${outputSize}u + stageX;
-      let cellRow = tileY * ${outputSize}u + stageY;
-      if (cellColumn < ${stageLevel.width}u && cellRow < ${stageLevel.height}u) {
-        let cellIndex = ${levelCell} + cellRow * ${stageLevel.width}u + cellColumn;
+      ${hasMaximum ? 'tileMaximum[localInvocationIndex] = maximumValue;' : ''}
+      ${hasMinimum ? 'tileMinimum[localInvocationIndex] = minimumValue;' : ''}
+      let cellColumn = tileColumn * ${outputSize}u + stageColumn;
+      let cellRow = tileRow * ${outputSize}u + stageRow;
+      let levelWidth = parameters[parametersOffset + ${slot}u];
+      let levelHeight = parameters[parametersOffset + ${slot + 1}u];
+      if (${stageIndex}u < parameters[parametersOffset + 4u] && cellColumn < levelWidth && cellRow < levelHeight) {
+        let cellIndex = parameters[parametersOffset + ${slot + 2}u] + cellRow * levelWidth + cellColumn;
         ${hasMaximum ? `${maximumArray}[${maximumBase} + cellIndex] = maximumValue;` : ''}
         ${hasMinimum ? `${minimumArray}[${minimumBase} + cellIndex] = minimumValue;` : ''}
       }
     }
-    ${isLast ? '' : 'workgroupBarrier();'}
+    workgroupBarrier();
   }`;
+  }).join('\n');
+  for (let dispatchIndex = 0; dispatchIndex < dispatchCount; dispatchIndex++) {
+    const baseIndex = dispatchIndex * FUSED_LEVELS_PER_DISPATCH;
+    const base = layout.levels[baseIndex];
+    const lastLevel = Math.min(baseIndex + FUSED_LEVELS_PER_DISPATCH, layout.levels.length - 1);
+    const tileCount =
+      Math.ceil(base.width / FUSED_TILE_SIZE) * Math.ceil(base.height / FUSED_TILE_SIZE);
+    const slot = graph.createDataView(parameters!.parameters.buffer, {
+      format: 'uint32',
+      byteOffset:
+        parameters!.parameters.byteOffset + dispatchIndex * FUSED_PARAMETER_SLOT_WORDS * 4,
+      length: FUSED_PARAMETER_WORDS
     });
     nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-levels-${stageLevels[0].level}-${stageLevels[stageLevels.length - 1].level}`,
+      createRasterFractionalTileNode(graph, {
+        id: `${id}-levels-${baseIndex + 1}-${lastLevel}`,
         operation: 'GPURasterExtremaPyramid',
-        variant: 'reduce-fused',
-        workgroupSize: FUSED_TILE_SIZE * FUSED_TILE_SIZE,
-        bindings: outputBindings,
-        invocationCount: tilesX * tilesY * FUSED_TILE_SIZE * FUSED_TILE_SIZE,
-        guardIndex: false,
+        bindings: [
+          ...outputBindings,
+          {name: 'parameters', view: slot, type: 'u32', access: 'read'}
+        ],
+        invocationCount: tileCount * FUSED_TILE_SIZE * FUSED_TILE_SIZE,
+        rowCount: '0u',
+        workgroupCount: 'parameters[parametersOffset + 5u]',
         declarations: `const EMPTY_MAXIMUM: f32 = ${emptyMaximum};
 const EMPTY_MINIMUM: f32 = ${emptyMinimum};
-const BASE_WIDTH: u32 = ${base.width}u;
-const BASE_HEIGHT: u32 = ${base.height}u;
-const BASE_OFFSET: u32 = ${base.offset}u;
-const TILES_X: u32 = ${tilesX}u;
-${stageLevels.map((stageLevel, stageIndex) => `const LEVEL_OFFSET_${stageIndex}: u32 = ${stageLevel.offset}u;`).join('\n')}
 ${hasMaximum ? `var<workgroup> tileMaximum: array<f32, ${FUSED_TILE_SIZE * FUSED_TILE_SIZE}>;` : ''}
 ${hasMinimum ? `var<workgroup> tileMinimum: array<f32, ${FUSED_TILE_SIZE * FUSED_TILE_SIZE}>;` : ''}`,
-        body: `let tileIndex = (index - localInvocationIndex) / ${FUSED_TILE_SIZE * FUSED_TILE_SIZE}u;
-  let tileX = tileIndex % TILES_X;
-  let tileY = tileIndex / TILES_X;
-  let baseColumn = tileX * ${FUSED_TILE_SIZE}u + localInvocationIndex % ${FUSED_TILE_SIZE}u;
-  let baseRow = tileY * ${FUSED_TILE_SIZE}u + localInvocationIndex / ${FUSED_TILE_SIZE}u;
+        body: `let tilesX = parameters[parametersOffset + 3u];
+  let tileColumn = workgroupIndex % tilesX;
+  let tileRow = workgroupIndex / tilesX;
+  let baseColumn = tileColumn * ${FUSED_TILE_SIZE}u + localInvocationIndex % ${FUSED_TILE_SIZE}u;
+  let baseRow = tileRow * ${FUSED_TILE_SIZE}u + localInvocationIndex / ${FUSED_TILE_SIZE}u;
   var baseMaximum = EMPTY_MAXIMUM;
   var baseMinimum = EMPTY_MINIMUM;
-  if (baseColumn < BASE_WIDTH && baseRow < BASE_HEIGHT) {
-    let baseCell = BASE_OFFSET + baseRow * BASE_WIDTH + baseColumn;
+  let baseWidth = parameters[parametersOffset];
+  if (baseColumn < baseWidth && baseRow < parameters[parametersOffset + 1u]) {
+    let baseCell = parameters[parametersOffset + 2u] + baseRow * baseWidth + baseColumn;
     ${hasMaximum ? `baseMaximum = ${maximumArray}[${maximumBase} + baseCell];` : ''}
     ${hasMinimum ? `baseMinimum = ${minimumArray}[${minimumBase} + baseCell];` : ''}
   }
   ${hasMaximum ? 'tileMaximum[localInvocationIndex] = baseMaximum;' : '_ = baseMaximum;'}
   ${hasMinimum ? 'tileMinimum[localInvocationIndex] = baseMinimum;' : '_ = baseMinimum;'}
   workgroupBarrier();
-  ${stages.join('\n')}`
+  ${stages}`
       })
     );
   }
+
   return nodes;
 }
 

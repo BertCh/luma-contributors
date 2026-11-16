@@ -20,20 +20,32 @@ import {
   type GPUCommandNode,
   type GPUCommandNodeProducer
 } from '@luma.gl/graph/gpu-core';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  createWGSLKernelNode,
+  getWGSLFloatLiteral
+} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
+  validateSinglePackedView,
+  validateCommandNodeBudget,
+  validateGPUStorageBindingByteLength,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {
-  RASTER_FINITE_WGSL,
-  rasterBinding,
-  validateRasterViews,
-  validateRasterGraph
-} from './raster-kernel-utils';
+  validateRasterWritableDispatches,
+  type RasterWritableDispatch
+} from '../raster-time-series/raster-time-series-chunks-b';
+import {
+  createRasterRegionBoruvkaNodes,
+  getRasterRegionBoruvkaRoundCount
+} from './raster-region-boruvka';
+import {RASTER_FINITE_WGSL, rasterBinding, validateRasterGraph} from './raster-kernel-utils';
 
 /** Regions: adjacency and weights are dense regionCount squared matrices and the merge scans a whole matrix row per round in one invocation (reference tier). */
 export const MAXIMUM_REGION_GRAPH_REGION_COUNT = 256;
+/** Dense public matrix offsets must fit uint32; actual matrix and sparse scratch bindings must also fit the device. */
+export const MAXIMUM_BORUVKA_REGION_GRAPH_REGION_COUNT = 65535;
 /** Merge rounds: every round is an unrolled command node (adaptive rounds merge one pair each), so the count bounds the node total. */
 export const MAXIMUM_REGION_GRAPH_ITERATIONS = 256;
 /** Cells: labels index cells with 30 bits so the boundary pass can count neighbour pairs in a u32 atomic without overflow. */
@@ -48,8 +60,11 @@ export type GPURasterRegionGraphProps = {
   regionCount: number;
   /** Fixed single linkage (default) or one globally closest mean-updating merge per round. */
   mergeMode?: 'fixed' | 'adaptive';
+  /** Boruvka applies only to fixed linkage. Auto preserves bounded dense propagation for small unfinished runs; otherwise uses Boruvka. Dense retains the 256-region reference route. */
+  searchStructure?: 'auto' | 'dense' | 'boruvka';
   /** Merge mean-difference edges at or below this nonnegative threshold. */
   mergeThreshold: number;
+  /** Dense propagation/adaptive rounds, or Boruvka phases (at most ceil(log2(regionCount))). */
   maximumIterations: number;
   output: {
     /** Symmetric dense regionCount squared matrix; four-neighbor shared-edge count. */
@@ -67,12 +82,14 @@ export type GPURasterRegionGraphProps = {
 };
 /** Four-neighbor region adjacency with bounded fixed or adaptive mean-difference merging. Explicit rounds use ping-pong graph scratch; no cross-workgroup barrier.
  *
- * Reference tier: the adjacency and weight matrices are dense regionCount squared, and the
- * adaptive merge (and the final pending check of fixed mode) runs in one invocation that scans
- * the whole matrix, one merge per round. The size is enforced at construction:
- * `regionCount <= MAXIMUM_REGION_GRAPH_REGION_COUNT` (256) and
- * `maximumIterations <= MAXIMUM_REGION_GRAPH_ITERATIONS` (256). Use it for oracles, small
- * segmentations and tests, not for production-scale region counts.
+ * Fixed linkage can use raster-boundary edge-list Boruvka: each component chooses its minimum
+ * outgoing eligible edge, parallel atomic union-find merges the choices, and at most
+ * ceil(log2(regionCount)) phases reach closure. The public dense matrices are preserved and
+ * remain subject to device binding limits. `searchStructure: 'dense'` keeps the 256-region
+ * reference route, including its bounded propagation semantics. Auto uses Boruvka for larger
+ * inputs and for small runs whose dense iteration budget guarantees closure (regionCount - 1).
+ * Auto also falls back to dense for small runs when boundary scratch exceeds the device binding
+ * limit. Adaptive mode keeps its dense, one-pair-at-a-time reference route.
  *
  * Labels remain source IDs; missing observations exclude only mean contributions. Complete
  * domains are required: tile seams must be reconciled before this contributor.
@@ -81,8 +98,29 @@ export type GPURasterRegionGraphProps = {
  */
 export class GPURasterRegionGraph implements GPUCommandNodeProducer {
   readonly id: string;
+  readonly searchStructure: 'dense' | 'boruvka';
+  /** Upper bound: auto may fall back to dense on devices whose bindings cannot hold the boundary list. */
+  readonly estimatedCommandNodeCount: number;
   constructor(readonly props: GPURasterRegionGraphProps) {
     this.id = props.id ?? 'raster-region-graph';
+    validateRequirement(
+      this.id,
+      ['auto', 'dense', 'boruvka'].includes(props.searchStructure ?? 'auto'),
+      "searchStructure must be 'auto', 'dense' or 'boruvka'"
+    );
+    validateRequirement(
+      this.id,
+      props.mergeMode !== 'adaptive' || props.searchStructure !== 'boruvka',
+      "searchStructure 'boruvka' requires mergeMode 'fixed'"
+    );
+    this.searchStructure =
+      props.searchStructure === 'dense' ||
+      props.mergeMode === 'adaptive' ||
+      ((props.searchStructure ?? 'auto') === 'auto' &&
+        props.regionCount <= MAXIMUM_REGION_GRAPH_REGION_COUNT &&
+        props.maximumIterations < props.regionCount - 1)
+        ? 'dense'
+        : 'boruvka';
     validateRasterGrid(this.id, props.grid);
     validateCapacity(this.id, 'grid.width', props.grid.width);
     validateCapacity(this.id, 'grid.height', props.grid.height);
@@ -98,7 +136,9 @@ export class GPURasterRegionGraph implements GPUCommandNodeProducer {
       'regionCount',
       props.regionCount,
       1,
-      MAXIMUM_REGION_GRAPH_REGION_COUNT
+      this.searchStructure === 'dense'
+        ? MAXIMUM_REGION_GRAPH_REGION_COUNT
+        : MAXIMUM_BORUVKA_REGION_GRAPH_REGION_COUNT
     );
     validateCapacity(
       this.id,
@@ -131,24 +171,90 @@ export class GPURasterRegionGraph implements GPUCommandNodeProducer {
         props.output.status.iterationLimitReached.length >= 1,
       'output.adjacency and output.weights must hold regionCount squared entries, output.mapping regionCount entries and output.status.iterationLimitReached one'
     );
+    this.estimatedCommandNodeCount =
+      props.mergeMode === 'adaptive'
+        ? 8 + 2 * (props.maximumIterations + 1)
+        : this.searchStructure === 'boruvka'
+          ? 13 + 4 * getRasterRegionBoruvkaRoundCount(props.regionCount, props.maximumIterations)
+          : 10 + props.maximumIterations;
+    if (
+      this.searchStructure === 'boruvka' &&
+      props.searchStructure !== 'boruvka' &&
+      props.regionCount <= MAXIMUM_REGION_GRAPH_REGION_COUNT
+    ) {
+      this.estimatedCommandNodeCount = Math.max(
+        this.estimatedCommandNodeCount,
+        10 + props.maximumIterations
+      );
+    }
+    validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
     validateGPUStatusPort(this.id, props.output.status);
-    validateRasterViews(
+    const inputs = [props.labels, props.values];
+    const outputs = [
+      props.output.adjacency,
+      props.output.weights,
+      props.output.mapping,
+      props.output.status.iterationLimitReached
+    ];
+    for (const view of [...inputs, ...outputs])
+      validateSinglePackedView(view, [view.format], this.id);
+    validateRasterWritableDispatches(
       this.id,
-      [props.labels, props.values],
-      [
-        props.output.adjacency,
-        props.output.weights,
-        props.output.mapping,
-        props.output.status.iterationLimitReached
-      ]
+      inputs,
+      outputs,
+      this.getDispatches(this.searchStructure)
     );
   }
+
+  private getDispatches(searchStructure: 'dense' | 'boruvka'): RasterWritableDispatch[] {
+    const {props} = this;
+    const {adjacency, weights, mapping, status} = props.output;
+    const boundary = {inputs: [props.labels], outputs: [adjacency]};
+    if (props.mergeMode === 'adaptive')
+      return [
+        boundary,
+        {inputs: [adjacency], outputs: [weights, mapping, status.iterationLimitReached]}
+      ];
+    return [
+      boundary,
+      {inputs: [adjacency], outputs: [weights]},
+      ...(searchStructure === 'boruvka'
+        ? [
+            {inputs: [weights], outputs: [status.iterationLimitReached]},
+            {inputs: [], outputs: [mapping]}
+          ]
+        : [{inputs: [weights], outputs: [mapping, status.iterationLimitReached]}])
+    ];
+  }
+
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
     const count = props.grid.width * props.grid.height;
     const regions = props.regionCount;
+    // Auto must not reject an existing small dense workload merely because sparse edge scratch
+    // needs twice the input binding size. Explicit Boruvka keeps its predictable scratch contract.
+    const searchStructure =
+      this.searchStructure === 'boruvka' &&
+      props.searchStructure !== 'boruvka' &&
+      regions <= MAXIMUM_REGION_GRAPH_REGION_COUNT &&
+      count * 2 * 4 >
+        Math.min(graph.device.limits.maxStorageBufferBindingSize, graph.device.limits.maxBufferSize)
+        ? 'dense'
+        : this.searchStructure;
+    if (searchStructure !== this.searchStructure)
+      validateRasterWritableDispatches(
+        id,
+        [props.labels, props.values],
+        [
+          props.output.adjacency,
+          props.output.weights,
+          props.output.mapping,
+          props.output.status.iterationLimitReached
+        ],
+        this.getDispatches(searchStructure)
+      );
     validateRasterGraph(
       id,
       graph,
@@ -160,6 +266,41 @@ export class GPURasterRegionGraph implements GPUCommandNodeProducer {
         props.output.status.iterationLimitReached
       ]
     );
+    validateGraphChunkBindingRanges(graph, id, {
+      labels: props.labels,
+      values: props.values,
+      adjacency: props.output.adjacency,
+      weights: props.output.weights,
+      mapping: props.output.mapping,
+      iterationLimitReached: props.output.status.iterationLimitReached
+    });
+    // Check every derived allocation before declaring any graph resource or node.
+    for (const [name, entries] of [
+      ['means, counts, mapping, other and component means', regions],
+      ['fixed-point scale', 1],
+      ['fixed-point sums', regions * FIXED_POINT_WORD_COUNT],
+      ...(searchStructure === 'boruvka'
+        ? ([
+            ['edge endpoints', count * 2],
+            ['component minima', regions]
+          ] as const)
+        : [])
+    ] as const) {
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        name,
+        entries * 4,
+        'reduce grid dimensions or regionCount'
+      );
+      validateCapacity(
+        id,
+        `${name} scratch byteLength (maxBufferSize)`,
+        entries * 4,
+        0,
+        graph.device.limits.maxBufferSize
+      );
+    }
     const means = createTransientView(graph, `${id}-means`, 'float32', regions);
     const counts = createTransientView(graph, `${id}-counts`, 'uint32', regions);
     const mapping = createTransientView(graph, `${id}-mapping`, 'uint32', regions);
@@ -276,6 +417,8 @@ means[meansOffset + index] = select(missing(), mean, count > 0u && finite(mean))
         body: `let first = means[meansOffset + index / ${regions}u]; let second = means[meansOffset + index % ${regions}u]; weights[weightsOffset + index] = select(missing(), abs(first - second), adjacency[adjacencyOffset + index] > 0u && finite(first) && finite(second));`
       })
     );
+    if (searchStructure === 'boruvka')
+      return [...nodes, ...createRasterRegionBoruvkaNodes(graph, props, id, mapping)];
     let source = mapping;
     let destination = other;
     for (let round = 0; round < props.maximumIterations; round++) {
@@ -290,7 +433,7 @@ means[meansOffset + index] = select(missing(), mean, count > 0u && finite(mean))
             rasterBinding('destination', destination, true)
           ],
           declarations: RASTER_FINITE_WGSL,
-          body: `var selected = source[sourceOffset + index]; for (var neighbor = 0u; neighbor < ${regions}u; neighbor++) { let weight = weights[weightsOffset + index * ${regions}u + neighbor]; if (finite(weight) && weight <= ${props.mergeThreshold}) { selected = min(selected, source[sourceOffset + neighbor]); } } destination[destinationOffset + index] = selected;`
+          body: `var selected = source[sourceOffset + index]; for (var neighbor = 0u; neighbor < ${regions}u; neighbor++) { let weight = weights[weightsOffset + index * ${regions}u + neighbor]; if (finite(weight) && weight <= ${getWGSLFloatLiteral(props.mergeThreshold)}) { selected = min(selected, source[sourceOffset + neighbor]); } } destination[destinationOffset + index] = selected;`
         })
       );
       [source, destination] = [destination, source];
@@ -299,6 +442,7 @@ means[meansOffset + index] = select(missing(), mean, count > 0u && finite(mean))
       createWGSLKernelNode(graph, {
         id: `${id}-finish`,
         operation: 'GPURasterRegionGraph',
+        // contract-allow: single-invocation dense reference diagnostic scans at most MAXIMUM_REGION_GRAPH_REGION_COUNT squared pairs.
         invocationCount: 1,
         bindings: [
           rasterBinding('weights', props.output.weights),
@@ -307,7 +451,7 @@ means[meansOffset + index] = select(missing(), mean, count > 0u && finite(mean))
           rasterBinding('iterationLimitReached', props.output.status.iterationLimitReached, true)
         ],
         declarations: RASTER_FINITE_WGSL,
-        body: `var pending = 0u; for (var region = 0u; region < ${regions}u; region++) { let current = source[sourceOffset + region]; mapping[mappingOffset + region] = current; for (var neighbor = 0u; neighbor < ${regions}u; neighbor++) { let weight = weights[weightsOffset + region * ${regions}u + neighbor]; if (finite(weight) && weight <= ${props.mergeThreshold} && source[sourceOffset + neighbor] < current) { pending = 1u; } } } iterationLimitReached[iterationLimitReachedOffset] = pending;`
+        body: `var pending = 0u; for (var region = 0u; region < ${regions}u; region++) { let current = source[sourceOffset + region]; mapping[mappingOffset + region] = current; for (var neighbor = 0u; neighbor < ${regions}u; neighbor++) { let weight = weights[weightsOffset + region * ${regions}u + neighbor]; if (finite(weight) && weight <= ${getWGSLFloatLiteral(props.mergeThreshold)} && source[sourceOffset + neighbor] < current) { pending = 1u; } } } iterationLimitReached[iterationLimitReachedOffset] = pending;`
       })
     );
     return nodes;
@@ -357,6 +501,7 @@ componentMeans[componentMeansOffset + index] = select(missing(), mean, count > 0
       createWGSLKernelNode(graph, {
         id: `${id}-adaptive-merge-${round}`,
         operation: 'GPURasterRegionGraph',
+        // contract-allow: single-invocation adaptive reference selects one edge from at most MAXIMUM_REGION_GRAPH_REGION_COUNT squared pairs.
         invocationCount: 1,
         bindings: [
           rasterBinding('source', source),
@@ -375,7 +520,7 @@ componentMeans[componentMeansOffset + index] = select(missing(), mean, count > 0
             : [])
         ],
         declarations: RASTER_FINITE_WGSL,
-        body: `var selectedFirst = 0xffffffffu; var selectedSecond = 0xffffffffu; var selectedWeight: f32 = ${props.mergeThreshold};
+        body: `var selectedFirst = 0xffffffffu; var selectedSecond = 0xffffffffu; var selectedWeight: f32 = ${getWGSLFloatLiteral(props.mergeThreshold)};
 for (var first = 0u; first < ${regions}u; first++) {
   let firstRoot = source[sourceOffset + first];
   for (var second = 0u; second < ${regions}u; second++) {
@@ -384,7 +529,7 @@ for (var first = 0u; first < ${regions}u; first++) {
     if (firstRoot != secondRoot && adjacency[adjacencyOffset + edge] > 0u) { weight = abs(componentMeans[componentMeansOffset + firstRoot] - componentMeans[componentMeansOffset + secondRoot]); }
     ${finalRound ? 'weights[weightsOffset + edge] = weight;' : ''}
     let lower = min(firstRoot, secondRoot); let upper = max(firstRoot, secondRoot);
-    if (finite(weight) && weight <= ${props.mergeThreshold} && (weight < selectedWeight || (weight == selectedWeight && (lower < selectedFirst || (lower == selectedFirst && upper < selectedSecond))))) { selectedWeight = weight; selectedFirst = lower; selectedSecond = upper; }
+    if (finite(weight) && weight <= ${getWGSLFloatLiteral(props.mergeThreshold)} && (weight < selectedWeight || (weight == selectedWeight && (lower < selectedFirst || (lower == selectedFirst && upper < selectedSecond))))) { selectedWeight = weight; selectedFirst = lower; selectedSecond = upper; }
   }
 }
 for (var region = 0u; region < ${regions}u; region++) { let root = source[sourceOffset + region]; destination[destinationOffset + region] = ${finalRound ? 'root' : 'select(root, selectedFirst, root == selectedSecond)'}; }

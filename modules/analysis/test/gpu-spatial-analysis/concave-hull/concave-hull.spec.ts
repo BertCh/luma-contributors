@@ -1,7 +1,7 @@
 // luma.gl
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
-import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {createTransientView, GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {
@@ -12,11 +12,13 @@ import {getDelaunayMaximumTriangleCount} from '../../../src/gpu-spatial-analysis
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {
   createInputBuffer,
+  createNullWebGPUDevice,
   createOutputBuffer,
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
+import {createConcaveHullValidationProps} from './concave-hull-validation-cases';
 
 async function setup() {
   const testDevice = await getWebGPUTestDevice();
@@ -164,22 +166,18 @@ it('alpha hull boundary matches the reference on random points, including holes'
 });
 
 it('alpha hull rejects a radius beyond f32 and degenerate collinear input retains nothing', async () => {
-  expect(
-    () =>
-      new GPUConcaveHull({
-        positions: {length: 3} as GraphDataView<'float32x2'>,
-        maximumCircumradius: 1e39,
-        output: {} as never
-      })
-  ).toThrow(/^concave-hull maximumCircumradius must be a finite number in \[0, Infinity\]/);
-  expect(
-    () =>
-      new GPUConcaveHull({
-        positions: {length: 3} as GraphDataView<'float32x2'>,
-        maximumCircumradius: 0,
-        output: {} as never
-      })
-  ).toThrow(/^concave-hull maximumCircumradius must be greater than 0/);
+  const device = createNullWebGPUDevice();
+  try {
+    const props = createConcaveHullValidationProps(new GPUCommandGraph(device), 3);
+    expect(() => new GPUConcaveHull({...props, maximumCircumradius: 1e39})).toThrow(
+      /^concave-hull maximumCircumradius must be a finite number in \[0, Infinity\]/
+    );
+    expect(() => new GPUConcaveHull({...props, maximumCircumradius: 0})).toThrow(
+      /^concave-hull maximumCircumradius must be greater than 0/
+    );
+  } finally {
+    device.destroy();
+  }
   const result = await runHull(3, [0, 0, 1, 1, 2, 2], 100);
   expect(result.triangleValidity.reduce((sum, value) => sum + value, 0)).toBe(0);
   expect(result.edgeValidity.reduce((sum, value) => sum + value, 0)).toBe(0);
@@ -295,38 +293,38 @@ it('group alpha hulls of spatially interleaved groups equal the hull of each gro
 });
 
 it('alpha hulls reject undersized outputs and invalid group counts with named limits', () => {
-  const view = (length: number) => ({length, buffer: {}}) as unknown as GraphDataView<'uint32'>;
-  const capacity = getDelaunayMaximumTriangleCount(6);
-  const createOutput = (triangleCapacity: number) => ({
-    triangles: view(triangleCapacity) as unknown as GraphDataView<'uint32x3'>,
-    triangleValidity: view(triangleCapacity),
-    boundaryEdges: view(3 * triangleCapacity) as unknown as GraphDataView<'uint32x2'>,
-    edgeValidity: view(3 * triangleCapacity),
-    status: {converged: view(1)}
-  });
-  const positions = {length: 6} as GraphDataView<'float32x2'>;
-  expect(
-    () =>
-      new GPUConcaveHull({positions, maximumCircumradius: 1, output: createOutput(capacity - 1)})
-  ).toThrow(new RegExp(`^concave-hull output.triangles must have ${capacity} rows`));
-  expect(
-    () =>
-      new GPUGroupConcaveHull({
-        positions,
-        groupIds: view(6),
-        groupCount: 0,
-        maximumCircumradius: 1,
-        output: createOutput(capacity)
-      })
-  ).toThrow(/^group-concave-hull groupCount must be an integer in \[1, 4294967295\]/);
-  expect(
-    () =>
-      new GPUGroupConcaveHull({
-        positions,
-        groupIds: view(6),
-        groupCount: 2,
-        maximumCircumradius: 1,
-        output: createOutput(2 * capacity)
-      })
-  ).toThrow(/^group-concave-hull output.status.converged must have at least 2 rows/);
+  const device = createNullWebGPUDevice();
+  try {
+    const capacity = getDelaunayMaximumTriangleCount(6);
+    const undersized = createConcaveHullValidationProps(
+      new GPUCommandGraph(device),
+      6,
+      1,
+      capacity - 1
+    );
+    expect(() => new GPUConcaveHull(undersized)).toThrow(
+      new RegExp(`^concave-hull output.triangles must have ${capacity} rows`)
+    );
+    const graph = new GPUCommandGraph(device);
+    const props = createConcaveHullValidationProps(graph, 6, 2);
+    const groupIds = createTransientView(graph, 'groups', 'uint32', 6);
+    expect(() => new GPUGroupConcaveHull({...props, groupIds, groupCount: 0})).toThrow(
+      /^group-concave-hull groupCount must be an integer in \[1, 4294967295\]/
+    );
+    const converged = graph.createDataView(props.output.status.converged.buffer, {
+      format: 'uint32',
+      length: 1
+    });
+    expect(
+      () =>
+        new GPUGroupConcaveHull({
+          ...props,
+          groupIds,
+          groupCount: 2,
+          output: {...props.output, status: {converged}}
+        })
+    ).toThrow(/^group-concave-hull output.status.converged must have at least 2 rows/);
+  } finally {
+    device.destroy();
+  }
 });

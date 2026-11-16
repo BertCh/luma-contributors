@@ -4,23 +4,26 @@
 
 import type {
   GraphDataView,
+  GraphVectorView,
   GPUCommandGraph,
   GPUCommandNode,
   GPUCommandNodeProducer
 } from '@luma.gl/graph/gpu-core';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  createRasterTimeSeriesKernelNode,
+  planRasterTimeSeriesChunks,
+  validateRasterTimeSeriesBindings,
+  validateRasterTimeSeriesViews,
+  type RasterTimeSeriesField,
+  type RasterTimeSeriesScalarView
+} from './raster-time-series-chunks';
 import {
   validateCapacity,
+  validateCommandNodeBudget,
   validateFiniteNumber,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {
-  RASTER_FINITE_WGSL,
-  rasterBinding,
-  validateRasterGraph,
-  validateRasterViews,
-  type RasterScalarView
-} from '../remote-sensing/raster-kernel-utils';
+import {RASTER_FINITE_WGSL, rasterBinding} from '../remote-sensing/raster-kernel-utils';
 
 /** Slices per cell: each Weiszfeld iteration is one pass over the slices on one invocation. */
 export const MAXIMUM_GEOMETRIC_MEDIAN_SLICE_COUNT = 256;
@@ -58,7 +61,9 @@ export function getGPURasterGeometricMedianCompositeParameterValues(
 }
 
 /** Properties of {@link GPURasterGeometricMedianComposite}. */
-export type GPURasterGeometricMedianCompositeProps = {
+export type GPURasterGeometricMedianCompositeProps<
+  Rows extends GraphDataView<'float32'> | GraphVectorView<'float32'> = GraphDataView<'float32'>
+> = {
   id?: string;
   cellCount: number;
   /** Slices in `[1, 256]`. */
@@ -68,18 +73,18 @@ export type GPURasterGeometricMedianCompositeProps = {
   /** Weiszfeld iterations in `[1, 64]`; all of them run. */
   iterationCount: number;
   /** Observations `(cell * sliceCount + slice) * bandCount + band`; an observation with any non-finite band is missing. */
-  values: GraphDataView<'float32'>;
+  values: Rows;
   /** Per-observation QA `cell * sliceCount + slice`; zero rejects the observation. */
-  mask?: GraphDataView<'uint32'>;
+  mask?: RasterTimeSeriesField<'uint32', Rows>;
   /** Float32, see {@link getGPURasterGeometricMedianCompositeParameterValues}. */
   parameters: GraphDataView<'float32'>;
   output: {
     /** Geometric median `cell * bandCount + band`; NaN when status is nonzero. */
-    composite: GraphDataView<'float32'>;
+    composite: RasterTimeSeriesField<'float32', Rows>;
     /** Per cell: 0 composite, 1 no valid observation. */
-    status: GraphDataView<'uint32'>;
+    status: RasterTimeSeriesField<'uint32', Rows>;
     /** Optional per cell: Euclidean length of the last Weiszfeld step, a convergence indicator. */
-    lastStep?: GraphDataView<'float32'>;
+    lastStep?: RasterTimeSeriesField<'float32', Rows>;
   };
 };
 
@@ -93,12 +98,20 @@ export type GPURasterGeometricMedianCompositeProps = {
  * started at the mean of the valid observations, for exactly `iterationCount` iterations (no data
  * dependent exit). With few observations or a skewed cloud convergence can be slow: read `lastStep`.
  *
+ * Cell-major fields accept packed views or matching vector chunks of complete cell records.
+ * Shared date, model and parameter tables remain packed.
+ *
  * Per-frame: `parameters` and the contents of the views. Compile-time: `cellCount`, `sliceCount`,
  * `bandCount`, `iterationCount` and which optional views exist.
  */
-export class GPURasterGeometricMedianComposite implements GPUCommandNodeProducer {
+export class GPURasterGeometricMedianComposite<
+  Rows extends GraphDataView<'float32'> | GraphVectorView<'float32'> = GraphDataView<'float32'>
+> implements GPUCommandNodeProducer
+{
   readonly id: string;
-  constructor(readonly props: GPURasterGeometricMedianCompositeProps) {
+  readonly estimatedCommandNodeCount: number;
+  private readonly chunkProps: readonly GPURasterGeometricMedianCompositeProps<Rows>[];
+  constructor(readonly props: GPURasterGeometricMedianCompositeProps<Rows>) {
     const id = props.id ?? 'raster-geometric-median-composite';
     this.id = id;
     validateCapacity(id, 'cellCount', props.cellCount);
@@ -131,15 +144,24 @@ export class GPURasterGeometricMedianComposite implements GPUCommandNodeProducer
       props.parameters.length >= GPU_RASTER_GEOMETRIC_MEDIAN_COMPOSITE_PARAMETER_LENGTH,
       `parameters must hold ${GPU_RASTER_GEOMETRIC_MEDIAN_COMPOSITE_PARAMETER_LENGTH} entries`
     );
-    validateRasterViews(id, this.getInputs(), this.getOutputs());
+    this.chunkProps = planRasterTimeSeriesChunks(id, props, {
+      values: props.sliceCount * props.bandCount,
+      mask: props.sliceCount,
+      'output.composite': props.bandCount,
+      'output.status': 1,
+      'output.lastStep': 1
+    });
+    this.estimatedCommandNodeCount = this.chunkProps.length * 1;
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
+    validateRasterTimeSeriesViews(id, this.getInputs(), this.getOutputs());
   }
 
-  private getInputs(): RasterScalarView[] {
+  private getInputs(): RasterTimeSeriesScalarView[] {
     const {values, mask, parameters} = this.props;
     return [values, parameters, ...(mask ? [mask] : [])];
   }
 
-  private getOutputs(): RasterScalarView[] {
+  private getOutputs(): RasterTimeSeriesScalarView[] {
     const {composite, status, lastStep} = this.props.output;
     return [composite, status, ...(lastStep ? [lastStep] : [])];
   }
@@ -147,7 +169,20 @@ export class GPURasterGeometricMedianComposite implements GPUCommandNodeProducer
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {props, id} = this;
+    validateRasterTimeSeriesBindings(graph, this.id, [...this.getInputs(), ...this.getOutputs()]);
+    return this.chunkProps.flatMap((props, chunkIndex) =>
+      this.getChunkCommandNodes(graph, {
+        ...props,
+        id: `${this.id}-chunk-${chunkIndex}`
+      } as unknown as GPURasterGeometricMedianCompositeProps)
+    );
+  }
+
+  private getChunkCommandNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>,
+    props: GPURasterGeometricMedianCompositeProps
+  ): readonly GPUCommandNode<Parameters>[] {
+    const id = props.id!;
     const {
       sliceCount: slices,
       bandCount: bands,
@@ -157,9 +192,8 @@ export class GPURasterGeometricMedianComposite implements GPUCommandNodeProducer
       parameters,
       output
     } = props;
-    validateRasterGraph(id, graph, this.getInputs(), this.getOutputs());
     return [
-      createWGSLKernelNode<Parameters>(graph, {
+      createRasterTimeSeriesKernelNode<Parameters>(graph, {
         id,
         operation: 'GPURasterGeometricMedianComposite',
         invocationCount: props.cellCount,

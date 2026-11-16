@@ -4,6 +4,10 @@
 
 import {GPUContributorOperation} from '../../analysis-core/operations/gpu-contributor-operation';
 import {
+  resolveRasterOperationBand,
+  type RasterOperationBand
+} from '../raster-grid/raster-operation-band';
+import {
   GPURasterReconstruction,
   type GPURasterReconstructionProps
 } from '../gpu-raster-reconstruction';
@@ -13,8 +17,8 @@ export type RasterReconstructionOperationProps = Pick<
   GPURasterReconstructionProps,
   'id' | 'grid' | 'method' | 'connectivity' | 'maximumIterations'
 > & {
-  marker: string;
-  mask: string;
+  marker: string | RasterOperationBand;
+  mask: string | RasterOperationBand;
   output: {
     values: string;
     validity: string;
@@ -28,7 +32,16 @@ export class GPURasterReconstructionOperation extends GPUContributorOperation {
     const length = props.grid.width * props.grid.height;
     super({
       id: props.id ?? 'raster-reconstruction',
-      inputs: {marker: props.marker, mask: props.mask},
+      inputs: {
+        marker: typeof props.marker === 'string' ? props.marker : props.marker.storage.values,
+        mask: typeof props.mask === 'string' ? props.mask : props.mask.storage.values,
+        ...(typeof props.marker !== 'string' && props.marker.validity
+          ? {markerValidity: props.marker.validity}
+          : {}),
+        ...(typeof props.mask !== 'string' && props.mask.validity
+          ? {maskValidity: props.mask.validity}
+          : {})
+      },
       outputs: {
         values: {value: props.output.values, format: 'float32', length},
         validity: {value: props.output.validity, format: 'uint32', length},
@@ -55,8 +68,18 @@ export class GPURasterReconstructionOperation extends GPUContributorOperation {
       createContributor: getView =>
         new GPURasterReconstruction({
           ...props,
-          marker: getView<'float32'>('marker'),
-          mask: getView<'float32'>('mask'),
+          marker:
+            typeof props.marker === 'string'
+              ? getView<'float32'>('marker')
+              : resolveRasterOperationBand(props.marker, name =>
+                  getView(name === 'values' ? 'marker' : 'markerValidity')
+                ),
+          mask:
+            typeof props.mask === 'string'
+              ? getView<'float32'>('mask')
+              : resolveRasterOperationBand(props.mask, name =>
+                  getView(name === 'values' ? 'mask' : 'maskValidity')
+                ),
           output: {
             values: getView<'float32'>('values'),
             validity: getView<'uint32'>('validity'),

@@ -20,6 +20,7 @@ import {
   getGPUCommandNodePipelineKeys,
   getStorageBindingCount
 } from '../../utils/gpu-contributor-test-utils';
+import {getNamedRuntimeBindingSource} from './chunk-dispatch-test-utils';
 import {HALF_OPEN_SCENES} from './half-open-fixtures';
 import {createRandom, type OraclePolygonFeature} from './spatial-join-oracle';
 
@@ -308,7 +309,9 @@ it('edgeSlabs builds slab and layout nodes, eight bindings in the classify kerne
   expect(classify.source).not.toContain('candidatePoints');
   const probeWrite = sources.find(kernel => kernel.id === 'pip-probe-write')!;
   expect(probeWrite.source).not.toContain('candidatePoints');
-  expect(probeWrite.source).toContain('candidatePairsOffset + slot * 4u + 3u');
+  expect(getNamedRuntimeBindingSource(probeWrite.source)).toContain(
+    'candidatePairs[candidatePairsOffset + slot * 4u + 3u] = bitcast<u32>(point.y);'
+  );
   const resolve = sources.find(kernel => kernel.id === 'pip-resolve')!;
   expect(resolve.source).toContain('candidatePairsOffset + index * 4u + 1u');
   device.destroy();

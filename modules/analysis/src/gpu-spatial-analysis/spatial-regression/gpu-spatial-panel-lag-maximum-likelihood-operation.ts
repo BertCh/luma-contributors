@@ -12,6 +12,7 @@ import {
 export type SpatialPanelLagMaximumLikelihoodOperationProps = Pick<
   GPUSpatialPanelLagMaximumLikelihoodProps,
   | 'id'
+  | 'fitMode'
   | 'periodCount'
   | 'predictorCount'
   | 'effects'
@@ -20,6 +21,7 @@ export type SpatialPanelLagMaximumLikelihoodOperationProps = Pick<
   | 'tolerance'
 > & {
   entityCount: number;
+  eigenvalues?: string;
   weights: Omit<
     GPUSpatialPanelLagMaximumLikelihoodProps['weights'],
     'offsets' | 'neighbors' | 'weights' | 'distances' | 'status'
@@ -61,6 +63,7 @@ export class GPUSpatialPanelLagMaximumLikelihoodOperation extends GPUContributor
     super({
       id,
       inputs: {
+        ...(props.eigenvalues !== undefined ? {eigenvalues: props.eigenvalues} : {}),
         predictors: props.predictors,
         response: props.response,
         offsets: props.weights.offsets,
@@ -102,6 +105,8 @@ export class GPUSpatialPanelLagMaximumLikelihoodOperation extends GPUContributor
         new GPUSpatialPanelLagMaximumLikelihood({
           ...props,
           id,
+          eigenvalues:
+            props.eigenvalues !== undefined ? getView<'float32'>('eigenvalues') : undefined,
           predictors: getView<'float32'>('predictors'),
           response: getView<'float32'>('response'),
           weights: {

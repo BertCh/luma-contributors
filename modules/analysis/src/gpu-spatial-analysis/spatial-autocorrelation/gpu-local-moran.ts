@@ -27,21 +27,22 @@ import {
   GPUMultipleTestingAdjustment,
   resolveGPUMultipleTestingMethod
 } from '../multiple-testing/index';
+import {createSpatialStatisticsRowNode} from '../spatial-weights/spatial-statistics-row-dispatch';
+import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {
-  getSpatialAutocorrelationConstantsWGSL,
   getSpatialAutocorrelationInputNodes,
   getSpatialAutocorrelationSharedWGSL,
   getSpatialWeightsNeighborLoopWGSL,
   resolveSpatialAutocorrelationMinimumNeighbors,
   SPATIAL_AUTOCORRELATION_FLOAT_WGSL,
-  validateSpatialAutocorrelationInputs
+  validateSpatialAutocorrelationInputs,
+  validateSpatialAutocorrelationBindings
 } from './spatial-autocorrelation-kernels';
 import {
   getGPUSpatialWeightsChunkDispatches,
   getGPUSpatialWeightsOrChunksViews,
   isGPUSpatialWeightsRowStandardized,
   resolveGPUIslandPolicy,
-  wrapGPUSpatialWeightsChunkBody,
   type GPUChunkedSpatialWeights,
   type GPUIslandPolicy,
   type GPUSpatialWeights
@@ -112,6 +113,8 @@ export type GPULocalMoranOutput = {
   neighborCounts?: GraphDataView<'uint32'>;
   /** Optional caller-owned `[n, mean, variance, standardDeviation, islandCount]` actually used this frame. */
   globalStatistics?: GraphDataView<'float32'>;
+  /** Exact uint32 [populationCount, islandCount]; populationCount uses fixedMoments.count when supplied. */
+  globalCounts?: GraphDataView<'uint32'>;
 };
 
 /**
@@ -130,7 +133,7 @@ export type GPULocalMoranProps = {
    * `weights.information.transform` is `'row'` each row's weights are re-standardized over the neighbors
    * that remain after masking, so a row still sums to 1 instead of shrinking toward 0. Row-standardized
    * weights reproduce esda's default `Moran_Local(transform='r')`; binary weights give the `'b'`
-   * variant. Fewer than 2^24 rows. A neighbor is a slot with a positive weight that points at
+   * variant. Each packed row view and CSR chunk must fit a device storage binding. A neighbor is a slot with a positive weight that points at
    * another included row. If `weights.status.overflow` is nonzero every output is NaN.
    */
   weights: GPUSpatialWeights | GPUChunkedSpatialWeights;
@@ -228,6 +231,9 @@ export type GPULocalMoranProps = {
  *
  * Determinism and the viewport caveat are as in `GPUHotSpotAnalysis`: fixed-order sums only, and
  * moments follow the included rows unless `fixedMoments` pins them.
+ *
+ * Row counts stay uint32 through statistical arithmetic; globalCounts publishes exact counts.
+ * The compatible globalStatistics float32 summary rounds counts above 2^24. Packed row views and each CSR chunk must fit device bindings.
  */
 export class GPULocalMoran implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -254,6 +260,7 @@ export class GPULocalMoran implements GPUCommandNodeProducer {
     const rows = validateSpatialAutocorrelationInputs({
       ...props,
       id,
+      globalCounts: props.output.globalCounts,
       globalStatistics: props.output.globalStatistics
     });
     for (const [name, view] of [
@@ -297,6 +304,7 @@ export class GPULocalMoran implements GPUCommandNodeProducer {
       props.output.adjustedPValues,
       props.output.neighborCounts,
       props.output.globalStatistics,
+      props.output.globalCounts,
       props.output.localI,
       props.output.spatialLag,
       props.output.quadrants
@@ -312,6 +320,7 @@ export class GPULocalMoran implements GPUCommandNodeProducer {
         props.output.adjustedPValues,
         props.output.neighborCounts,
         props.output.globalStatistics,
+        props.output.globalCounts,
         ...Object.values(props.output.status ?? {})
       ],
       [
@@ -322,6 +331,21 @@ export class GPULocalMoran implements GPUCommandNodeProducer {
         props.mask
       ]
     );
+    validateDisjointWritableViews(id, {
+      zScores: props.output.zScores,
+      localI: props.output.localI,
+      spatialLag: props.output.spatialLag,
+      quadrants: props.output.quadrants,
+      pValues: props.output.pValues,
+      adjustedPValues: props.output.adjustedPValues,
+      neighborCounts: props.output.neighborCounts,
+      globalCounts: props.output.globalCounts,
+      globalStatistics: props.output.globalStatistics,
+      ...Object.fromEntries(
+        Object.entries(props.output.status ?? {}).map(([name, view]) => [`status.${name}`, view])
+      ),
+      status: undefined
+    });
   }
 
   /**
@@ -369,37 +393,49 @@ export class GPULocalMoran implements GPUCommandNodeProducer {
       props.output.adjustedPValues,
       props.output.neighborCounts,
       props.output.globalStatistics,
+      props.output.globalCounts,
+      ...Object.values(props.output.status ?? {})
+    ]);
+    validateSpatialAutocorrelationBindings(graph, {...props, id}, [
+      props.output.zScores,
+      props.output.pValues,
+      props.output.adjustedPValues,
+      props.output.neighborCounts,
+      props.output.globalStatistics,
+      props.output.globalCounts,
+      props.output.localI,
+      props.output.spatialLag,
+      props.output.quadrants,
       ...Object.values(props.output.status ?? {})
     ]);
     const statusNodes = getSpatialAutocorrelationStatusNodes(graph, id, OPERATION, props);
     const rows = props.values.length;
     const inputs = getSpatialAutocorrelationInputNodes<Parameters>(graph, {
       ...props,
+      globalCounts: props.output.globalCounts,
       globalStatistics: props.output.globalStatistics,
       id,
       islands: this.islands,
       operation: OPERATION
     });
     const nodes = [...statusNodes, ...inputs.nodes];
-    const getConstantsWGSL = (capacity: number, rowStart?: number) =>
-      `${getSpatialAutocorrelationConstantsWGSL(rows, capacity, rowStart)}
+    // `readParameter` needs the `parameters` binding, so only kernels that bind it include it.
+    const neighborConstantsWGSL = `const ROWS: u32 = ${rows}u;
+const MOMENTS: u32 = ${rows}u;
 const MINIMUM_NEIGHBORS: u32 = ${this.minimumNeighbors}u;
 const STANDARDIZE: bool = ${isGPUSpatialWeightsRowStandardized(weights)};`;
-    const floatWGSL = `${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}
-${getConstantsWGSL(dispatches[0].weights.neighbors.length)}`;
-    // `readParameter` needs the `parameters` binding, so only kernels that bind it include it.
-    const getParameterWGSL = (dispatch: (typeof dispatches)[number]) =>
-      `${getSpatialAutocorrelationSharedWGSL()}
-${getConstantsWGSL(dispatch.weights.neighbors.length, dispatch.isWhole ? undefined : dispatch.rowStart)}`;
-    const getNeighborFloatWGSL = (dispatch: (typeof dispatches)[number]) =>
-      `${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}
-${getConstantsWGSL(dispatch.weights.neighbors.length, dispatch.isWhole ? undefined : dispatch.rowStart)}`;
+    const parameterWGSL = `${getSpatialAutocorrelationSharedWGSL()}\n${neighborConstantsWGSL}`;
+    const neighborFloatWGSL = `${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}\n${neighborConstantsWGSL}`;
     const {HIGH_HIGH, LOW_HIGH, LOW_LOW, HIGH_LOW, NOT_SIGNIFICANT} = GPU_LOCAL_MORAN_QUADRANT;
     const hasCorrection = this.multipleTesting !== 'none';
     // Quadrant gating 'none' is rejected with a correction, so a correction implies analytic gating.
     const wantsClassify = Boolean(
       props.output.quadrants || props.output.pValues || props.output.adjustedPValues
     );
+    // Only analytically gated quadrants read the significance threshold. Ungated quadrants
+    // and p-value-only epilogues must not bind parameters absent from WebGPU's inferred layout.
+    const classifyUsesParameters =
+      Boolean(props.output.quadrants) && props.quadrantGating !== 'none';
     const isAdjusting =
       hasCorrection &&
       Boolean(props.output.adjustedPValues || props.output.quadrants) &&
@@ -428,13 +464,12 @@ ${getConstantsWGSL(dispatch.weights.neighbors.length, dispatch.isWhole ? undefin
         (Boolean(props.output.localI) && !fuseLocalI) ||
         needsClassifyKernel(fuseClassify);
       return (
-        5 +
+        6 +
         (storesLag ? 1 : 0) +
         (props.output.neighborCounts ? 1 : 0) +
         (props.output.localI && fuseLocalI ? 1 : 0) +
-        (isAdjusting ? 1 : 0) +
         (fuseClassify
-          ? 1 +
+          ? Number(classifyUsesParameters) +
             (props.output.quadrants ? 1 : 0) +
             (props.output.pValues ? 1 : 0) +
             (props.output.adjustedPValues ? 1 : 0)
@@ -496,6 +531,7 @@ ${getConstantsWGSL(dispatch.weights.neighbors.length, dispatch.isWhole ? undefin
 
     const neighborBindings: WGSLKernelBinding[] = [
       {name: 'statistics', view: inputs.statistics, type: 'f32', access: 'read'},
+      {name: 'counts', view: inputs.counts, type: 'u32', access: 'read'},
       {name: 'zScores', view: zScores, type: 'f32', access: 'read_write'}
     ];
     if (spatialLag) {
@@ -522,16 +558,11 @@ ${getConstantsWGSL(dispatch.weights.neighbors.length, dispatch.isWhole ? undefin
         access: 'read_write'
       });
     }
-    if (unadjustedPValues) {
-      neighborBindings.push({
-        name: 'pValues',
-        view: unadjustedPValues,
-        type: 'f32',
-        access: 'read_write'
-      });
-    }
+
     if (fuseClassify) {
-      neighborBindings.push({name: 'parameters', view: parameters, type: 'f32', access: 'read'});
+      if (classifyUsesParameters) {
+        neighborBindings.push({name: 'parameters', view: parameters, type: 'f32', access: 'read'});
+      }
       if (props.output.quadrants) {
         neighborBindings.push({
           name: 'quadrants',
@@ -560,7 +591,8 @@ ${getConstantsWGSL(dispatch.weights.neighbors.length, dispatch.isWhole ? undefin
 
     nodes.push(
       ...dispatches.map(dispatch =>
-        createWGSLKernelNode<Parameters>(graph, {
+        createSpatialStatisticsRowNode<Parameters>(graph, {
+          rowBase: dispatch.rowStart,
           id: `${id}-neighbors${dispatch.idSuffix}`,
           operation: OPERATION,
           variant: `local-moran${props.output.localI && fuseLocalI ? '-local-i' : ''}${fuseClassify ? '-classify' : ''}${isAdjusting ? '-p-value' : ''}`,
@@ -571,10 +603,8 @@ ${getConstantsWGSL(dispatch.weights.neighbors.length, dispatch.isWhole ? undefin
             ...neighborBindings
           ],
           invocationCount: dispatch.rowCount,
-          declarations: fuseClassify ? getParameterWGSL(dispatch) : getNeighborFloatWGSL(dispatch),
-          body: wrapGPUSpatialWeightsChunkBody(
-            dispatch,
-            `let centered = statistics[statisticsOffset + index];
+          declarations: fuseClassify && classifyUsesParameters ? parameterWGSL : neighborFloatWGSL,
+          body: `let centered = statistics[statisticsOffset + index];
   var zScore = getQuietNaN(index);
   var lag = getQuietNaN(index);
   var neighborCount = 0u;
@@ -587,7 +617,7 @@ ${getConstantsWGSL(dispatch.weights.neighbors.length, dispatch.isWhole ? undefin
       weightSum += weight;
       squareSum += weight * weight;
       neighborCount++;`,
-      dispatch.rowStartWGSL
+      'WEIGHTS_ROW_START'
     )}
     if (STANDARDIZE && weightSum > 0.0) {
       // Row-standardized weights are divided by what remains of their row sum.
@@ -596,11 +626,12 @@ ${getConstantsWGSL(dispatch.weights.neighbors.length, dispatch.isWhole ? undefin
       weightSum = 1.0;
     }
     lag = neighborSum;
-    let others = statistics[statisticsOffset + MOMENTS] - 1.0;
+    let othersCount = max(counts[countsOffset], 1u) - 1u;
+    let others = f32(othersCount);
     let sumOfSquares = statistics[statisticsOffset + MOMENTS + 3u];
-    let otherMean = -centered / others;
-    let otherVariance = (sumOfSquares - centered * centered) / others - otherMean * otherMean;
-    let lagVariance = otherVariance * (others * squareSum - weightSum * weightSum) / (others - 1.0);
+    let otherMean = divideBySpatialCount(-centered, othersCount);
+    let otherVariance = divideBySpatialCount(sumOfSquares - centered * centered, othersCount) - otherMean * otherMean;
+    let lagVariance = otherVariance * divideBySpatialCount(multiplyBySpatialCount(squareSum, othersCount) - weightSum * weightSum, max(othersCount, 1u) - 1u);
     if (others >= 2.0 && centered != 0.0 && neighborCount >= MINIMUM_NEIGHBORS &&
         lagVariance > 0.0 && isFiniteFloat(lagVariance)) {
       let lagZ = (neighborSum - weightSum * otherMean) / sqrt(lagVariance);
@@ -610,20 +641,19 @@ ${getConstantsWGSL(dispatch.weights.neighbors.length, dispatch.isWhole ? undefin
   zScores[zScoresOffset + index] = zScore;
   ${spatialLag ? 'spatialLag[spatialLagOffset + index] = lag;' : ''}
   ${props.output.neighborCounts ? 'neighborCounts[neighborCountsOffset + index] = neighborCount;' : ''}
-  ${unadjustedPValues ? 'pValues[pValuesOffset + index] = select(getQuietNaN(index), getTwoSidedPValue(zScore), isFiniteFloat(zScore));' : ''}
+  
   ${
     props.output.localI && fuseLocalI
       ? `{
     let sumOfSquares = statistics[statisticsOffset + MOMENTS + 3u];
     // Constant values (M2 = 0) leave I undefined: NaN, not the 0 of a kept island.
-    let scale = select(getQuietNaN(index), (statistics[statisticsOffset + MOMENTS] - 1.0) / sumOfSquares, sumOfSquares > 0.0);
+    let scale = select(getQuietNaN(index), divideSpatialCountByValue(max(counts[countsOffset], 1u) - 1u, sumOfSquares), sumOfSquares > 0.0);
     // Excluded rows keep their NaN centered value; kept islands have a zero lag and so I = 0.
     localI[localIOffset + index] = select(select(centered * lag * scale, 0.0, lag == 0.0 && isFiniteFloat(scale)), getQuietNaN(index), !isFiniteFloat(centered));
   }`
       : ''
   }
   ${fuseClassify ? classifyWGSL('zScore', 'centered', 'lag') : ''}`
-          )
         })
       )
     );
@@ -636,22 +666,38 @@ ${getConstantsWGSL(dispatch.weights.neighbors.length, dispatch.isWhole ? undefin
           variant: 'local-i',
           bindings: [
             {name: 'statistics', view: inputs.statistics, type: 'f32', access: 'read'},
+            {name: 'counts', view: inputs.counts, type: 'u32', access: 'read'},
             {name: 'spatialLag', view: spatialLag!, type: 'f32', access: 'read'},
             {name: 'localI', view: props.output.localI, type: 'f32', access: 'read_write'}
           ],
           invocationCount: rows,
-          declarations: floatWGSL,
+          declarations: neighborFloatWGSL,
           body: `let centered = statistics[statisticsOffset + index];
   let lag = spatialLag[spatialLagOffset + index];
   let sumOfSquares = statistics[statisticsOffset + MOMENTS + 3u];
   // Constant values (M2 = 0) leave I undefined: NaN, not the 0 of a kept island.
-  let scale = select(getQuietNaN(index), (statistics[statisticsOffset + MOMENTS] - 1.0) / sumOfSquares, sumOfSquares > 0.0);
+  let scale = select(getQuietNaN(index), divideSpatialCountByValue(max(counts[countsOffset], 1u) - 1u, sumOfSquares), sumOfSquares > 0.0);
   // Excluded rows keep their NaN centered value; kept islands have a zero lag and so I = 0.
   localI[localIOffset + index] = select(select(centered * lag * scale, 0.0, lag == 0.0 && isFiniteFloat(scale)), getQuietNaN(index), !isFiniteFloat(centered));`
         })
       );
     }
 
+    if (unadjustedPValues)
+      nodes.push(
+        createWGSLKernelNode(graph, {
+          id: `${id}-analytic-p-values`,
+          operation: OPERATION,
+          invocationCount: rows,
+          bindings: [
+            {name: 'zScores', view: zScores, type: 'f32', access: 'read'},
+            {name: 'pValues', view: unadjustedPValues, type: 'f32', access: 'read_write'}
+          ],
+          declarations: SPATIAL_AUTOCORRELATION_FLOAT_WGSL,
+          body: `let score = zScores[zScoresOffset + index];
+  pValues[pValuesOffset + index] = select(getQuietNaN(index), getTwoSidedPValue(score), isFiniteFloat(score));`
+        })
+      );
     if (isAdjusting) {
       nodes.push(
         ...new GPUMultipleTestingAdjustment({
@@ -666,7 +712,9 @@ ${getConstantsWGSL(dispatch.weights.neighbors.length, dispatch.isWhole ? undefin
       return nodes;
     }
     const classifyBindings: WGSLKernelBinding[] = [
-      {name: 'parameters', view: parameters, type: 'f32', access: 'read'},
+      ...(classifyUsesParameters
+        ? [{name: 'parameters', view: parameters, type: 'f32' as const, access: 'read' as const}]
+        : []),
       {name: 'statistics', view: inputs.statistics, type: 'f32', access: 'read'},
       {name: 'zScores', view: zScores, type: 'f32', access: 'read'},
       {name: 'spatialLag', view: spatialLag!, type: 'f32', access: 'read'}
@@ -710,7 +758,9 @@ ${getConstantsWGSL(dispatch.weights.neighbors.length, dispatch.isWhole ? undefin
         variant: isAdjusting ? 'classify-adjusted' : 'classify',
         bindings: classifyBindings,
         invocationCount: rows,
-        declarations: getSpatialAutocorrelationSharedWGSL(),
+        declarations: classifyUsesParameters
+          ? getSpatialAutocorrelationSharedWGSL()
+          : SPATIAL_AUTOCORRELATION_FLOAT_WGSL,
         body: `let zScore = zScores[zScoresOffset + index];
   let centered = statistics[statisticsOffset + index];
   let lag = spatialLag[spatialLagOffset + index];

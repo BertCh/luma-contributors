@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRasterStorageBindings} from '../raster-grid/raster-storage-preflight';
 import {clamp} from '@math.gl/core';
 import type {Device} from '@luma.gl/core';
 import {
@@ -20,7 +21,8 @@ import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   getStorageBindingElementLimit,
   validateGraphViewsBelongToGraph,
-  validateMaximumCount
+  validateMaximumCount,
+  getGraphOutputViews as getRasterPreflightOutputViews
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {
   GPUCardinalityPort,
@@ -30,7 +32,8 @@ import {
   getRasterAlgebraInputNodes,
   getRasterAlgebraInputViews,
   isRasterAlgebraBand,
-  validateRasterAlgebraInput
+  validateRasterAlgebraInput,
+  validateRasterAlgebraInputBindings
 } from '../raster-algebra/raster-algebra-input';
 import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {GPU_RASTER_PROFILE_PARAMETER_LENGTH} from './raster-sampling-parameters';
@@ -294,6 +297,44 @@ export class GPURasterProfile implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateMaximumCount(
+      this.id,
+      'line count (lineOffsets.length - 1)',
+      this.lineCount,
+      getGPURasterProfileMaximumLineCount(graph.device)
+    );
+    const storageProps = this.props;
+    validateRasterAlgebraInputBindings(graph, this.id, [storageProps.values], storageProps.grid);
+    validateRasterStorageBindings(
+      graph,
+      this.id,
+      [
+        storageProps.mask,
+        storageProps.positions,
+        storageProps.lineOffsets,
+        storageProps.parameters,
+        ...getRasterPreflightOutputViews(storageProps.output)
+      ],
+      {
+        'vertex distances': storageProps.positions.length * 4,
+        'sample counts and offsets': (this.lineCount + 1) * 4,
+        'sample positions': storageProps.output.samplePositions ? 0 : this.sampleCapacity * 8,
+        'sample values': storageProps.output.sampleValues ? 0 : this.sampleCapacity * 4,
+        'vertex scan states':
+          getSegmentedScanBlockCount(storageProps.positions.length) * DISTANCE_SCAN_STATE_WORDS * 4,
+        'sample scan states':
+          getSegmentedScanBlockCount(this.sampleCapacity) * PROFILE_SCAN_STATE_WORDS * 4,
+        'line summaries':
+          storageProps.output.lineGains ||
+          storageProps.output.lineLosses ||
+          storageProps.output.lineMinimums ||
+          storageProps.output.lineMaximums
+            ? this.lineCount * 16
+            : 0,
+        'truncation status': 4
+      }
+    );
+
     const {id, props, lineCount, sampleCapacity} = this;
     const {output} = props;
     validateGraphViewsBelongToGraph(id, graph, [
@@ -305,12 +346,6 @@ export class GPURasterProfile implements GPUCommandNodeProducer {
       ...Object.values({...output, status: undefined}),
       ...Object.values(output.status)
     ]);
-    validateMaximumCount(
-      id,
-      'line count (lineOffsets.length - 1)',
-      lineCount,
-      getGPURasterProfileMaximumLineCount(graph.device)
-    );
     const vertexCount = props.positions.length;
     const maximumPerLine = clamp(
       Math.floor(0xffffffff / (lineCount + 1)),

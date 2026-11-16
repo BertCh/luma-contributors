@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {expect, it} from 'vitest';
+import {expect, it, vi} from 'vitest';
 import {
   createCPUGraphMemory,
   executeCommandNodesOnCPU
@@ -163,7 +163,14 @@ it('schedules domain edge publication after local stitching and checks scratch l
     Object.defineProperty(device, 'limits', {
       value: {...device.limits, maxStorageBufferBindingSize: 16}
     });
-    expect(() => contributor.getCommandNodes(graph)).toThrow(/isolines.*cell scratch.*limit 16/);
+    // Caller bindings are checked before scratch: this tile's 30 float32 samples need 120 bytes.
+    const buffers = vi.spyOn(graph, 'createTransientBuffer');
+    const views = vi.spyOn(graph, 'createDataView');
+    const passes = vi.spyOn(graph, 'addComputePass');
+    expect(() => contributor.getCommandNodes(graph)).toThrow(/isolines.*needs 120 bytes.*limit 16/);
+    expect(buffers).not.toHaveBeenCalled();
+    expect(views).not.toHaveBeenCalled();
+    expect(passes).not.toHaveBeenCalled();
   } finally {
     device.destroy();
   }

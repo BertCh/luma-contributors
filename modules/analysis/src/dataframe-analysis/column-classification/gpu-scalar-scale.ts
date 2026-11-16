@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {createClassificationKernelNode as createWGSLKernelNode} from './classification-kernel-node';
 import type {
   GPUCommandGraph,
   GPUCommandNode,
@@ -9,34 +10,45 @@ import type {
   GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {
+  getGraphViewChunks,
+  validateCommandNodeBudget,
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
   validateSinglePackedView,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {
-  createWGSLKernelNode,
-  type WGSLKernelBinding
-} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import type {WGSLKernelBinding} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   GPU_SCALAR_SCALE_MAXIMUM_DOMAIN_COUNT,
   GPU_SCALAR_SCALE_PARAMETER_LENGTH
 } from './scalar-scale-parameters';
 import {SCALAR_SCALE_WGSL} from './scalar-scale-wgsl';
 
-export type GPUScalarScaleProps = {
+import {
+  type ClassificationRows,
+  type ClassificationRowView,
+  validateClassificationBindings,
+  validateClassificationRows,
+  validateClassificationOutput,
+  validateClassificationOutputs
+} from './column-classification-rows';
+
+export type GPUScalarScaleProps<
+  Rows extends ClassificationRows<'float32' | 'uint32'> =
+    | GraphDataView<'float32'>
+    | GraphDataView<'uint32'>
+> = {
   id?: string;
-  /** Prepared scalar f32 values, or exact uint32 category codes for point mode only. */
-  values: GraphDataView<'float32'> | GraphDataView<'uint32'>;
+  /** Packed or chunked scalar f32 values, or exact uint32 category codes for point mode only. */
+  values: Rows;
   /**
-   * Optional packed `uint32` row mask, one entry per source row; nonzero keeps the row, zero maps
+   * Optional row-aligned packed or chunked `uint32` mask, one entry per source row; nonzero keeps the row, zero maps
    * it to `nullValue` with output validity 0. Source validity only; display filtering is a separate
    * renderer selection mask.
    */
-  mask?: GraphDataView<'uint32'>;
+  mask?: ClassificationRowView<'uint32', Rows>;
   /** @deprecated Use `mask`; same meaning (nonzero keeps the row). `mask` wins when both are set. */
-  validity?: GraphDataView<'uint32'>;
+  validity?: ClassificationRowView<'uint32', Rows>;
   /** Numeric endpoint pair, or unique ordered finite point-domain entries. */
   domain: GraphDataView<'float32'>;
   /** Exactly the first two entries supply the output endpoints, including descending ranges. */
@@ -46,9 +58,9 @@ export type GPUScalarScaleProps = {
   /** Capacity, at least two and no greater than 256; point lookup is O(capacity) per row. */
   maximumDomainCount: number;
   output: {
-    values: GraphDataView<'float32'>;
+    values: ClassificationRowView<'float32', Rows>;
     /** One for a finite mapped result; zero for null/unknown/unsupported numerical results. */
-    validity?: GraphDataView<'uint32'>;
+    validity?: ClassificationRowView<'uint32', Rows>;
   };
 };
 
@@ -76,18 +88,26 @@ export type GPUScalarScaleProps = {
  * Infinity-producing d3 extrapolation and subnormal-sensitive arithmetic are outside parity.
  * Consumers requiring a strict diagnostic should reduce output validity against source validity.
  *
- * Inputs are packed single views; a chunk-preserving runtime adds one contributor per source
- * chunk and shares domain/range controls. Empty chunks generate no command. Borrowed resources
- * are never allocated/destroyed here. Writable outputs must use separate buffers from each
- * other and all inputs, including disjoint ranges in the same buffer. Only view topology/capacity
+ * Row inputs and outputs accept GraphVectorView with identical ordered chunk lengths.
+ * Domain, range and parameters remain packed and are shared by every chunk. Results are bitwise
+ * equal to packed input. Empty chunks generate no command. Borrowed resources
+ * are never allocated/destroyed here. Writable outputs must have disjoint aligned bindings within each dispatch and disjoint logical
+ * writes across chunks. Outputs must use separate buffers from inputs. Only view topology/capacity
  * changes require recompilation.
  */
-export class GPUScalarScale implements GPUCommandNodeProducer {
+export class GPUScalarScale<
+  Rows extends ClassificationRows<'float32' | 'uint32'> =
+    | GraphDataView<'float32'>
+    | GraphDataView<'uint32'>
+> implements GPUCommandNodeProducer
+{
   readonly id: string;
-  readonly props: GPUScalarScaleProps;
+  readonly props: GPUScalarScaleProps<Rows>;
+  /** One command per nonempty source chunk. */
+  readonly estimatedCommandNodeCount: number;
   /** Resolved row mask: `props.mask`, else the deprecated `props.validity`. */
-  readonly mask: GraphDataView<'uint32'> | undefined;
-  constructor(props: GPUScalarScaleProps) {
+  readonly mask: ClassificationRowView<'uint32', Rows> | undefined;
+  constructor(props: GPUScalarScaleProps<Rows>) {
     this.id = props.id ?? 'scalar-scale';
     this.props = props;
     this.mask = props.mask ?? props.validity;
@@ -99,11 +119,11 @@ export class GPUScalarScale implements GPUCommandNodeProducer {
       2,
       GPU_SCALAR_SCALE_MAXIMUM_DOMAIN_COUNT
     );
-    validateSinglePackedView(props.values, ['float32', 'uint32'], `${id} values`);
+    validateClassificationRows(id, 'values', props.values, ['float32', 'uint32']);
     validateSinglePackedView(props.domain, ['float32'], `${id} domain`);
     validateSinglePackedView(props.range, ['float32'], `${id} range`);
     validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
-    validateSinglePackedView(props.output.values, ['float32'], `${id} output.values`);
+    validateClassificationOutput(id, 'output.values', props.output.values, 'float32', props.values);
     // Controls cover their declared capacity; output storage covers every source row.
     validateRequirement(
       id,
@@ -122,7 +142,7 @@ export class GPUScalarScale implements GPUCommandNodeProducer {
       'output.values must hold at least one value per source row'
     );
     if (this.mask) {
-      validateSinglePackedView(this.mask, ['uint32'], `${id} mask`);
+      validateClassificationRows(id, 'mask', this.mask, ['uint32'], props.values);
       // The row mask follows the exact source row topology.
       validateRequirement(
         id,
@@ -131,7 +151,13 @@ export class GPUScalarScale implements GPUCommandNodeProducer {
       );
     }
     if (props.output.validity) {
-      validateSinglePackedView(props.output.validity, ['uint32'], `${id} output.validity`);
+      validateClassificationOutput(
+        id,
+        'output.validity',
+        props.output.validity,
+        'uint32',
+        props.values
+      );
       // Every source row receives an output validity value.
       validateRequirement(
         id,
@@ -139,15 +165,8 @@ export class GPUScalarScale implements GPUCommandNodeProducer {
         'output.validity must hold at least one value per source row'
       );
     }
-    const outputs = [props.output.values, props.output.validity].filter(
-      (view): view is GraphDataView<'float32'> | GraphDataView<'uint32'> => Boolean(view)
-    );
-    // Writable bindings use distinct buffers, including when byte ranges would be disjoint.
-    validateRequirement(
-      id,
-      new Set(outputs.map(view => view.buffer)).size === outputs.length,
-      'output.values and output.validity must use separate buffers'
-    );
+    const outputs = [props.output.values, props.output.validity];
+    validateClassificationOutputs(id, outputs);
     validateGraphOutputsDisjointFromInputs(id, outputs, [
       props.values,
       this.mask,
@@ -155,56 +174,77 @@ export class GPUScalarScale implements GPUCommandNodeProducer {
       props.range,
       props.parameters
     ]);
+    this.estimatedCommandNodeCount = getGraphViewChunks(props.values).filter(
+      chunk => chunk.length > 0
+    ).length;
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.values,
-      this.mask,
-      props.domain,
-      props.range,
-      props.parameters,
-      props.output.values,
-      props.output.validity
-    ]);
-    if (props.values.length === 0) return [];
-    const read = (name: string, view: GraphDataView, type: 'u32' | 'f32'): WGSLKernelBinding => ({
-      name,
-      view,
-      type,
-      access: 'read'
+
+    validateClassificationBindings(id, graph, {
+      values: props.values,
+      mask: this.mask,
+      domain: props.domain,
+      range: props.range,
+      parameters: props.parameters,
+      'output.values': props.output.values,
+      'output.validity': props.output.validity
     });
-    return [
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-map`,
-        operation: 'GPUScalarScale',
-        variant: 'finite-float32',
-        invocationCount: props.values.length,
-        bindings: [
-          read('values', props.values, props.values.format === 'uint32' ? 'u32' : 'f32'),
-          ...(this.mask ? [read('sourceMask', this.mask, 'u32')] : []),
-          read('domain', props.domain, 'f32'),
-          read('range', props.range, 'f32'),
-          read('parameters', props.parameters, 'f32'),
-          {name: 'outputValues', view: props.output.values, type: 'f32', access: 'read_write'},
-          ...(props.output.validity
-            ? [
-                {
-                  name: 'outputValidity',
-                  view: props.output.validity,
-                  type: 'u32',
-                  access: 'read_write'
-                } satisfies WGSLKernelBinding
-              ]
-            : [])
-        ],
-        declarations: `const MAXIMUM_DOMAIN_COUNT: u32 = ${props.maximumDomainCount}u;\n${SCALAR_SCALE_WGSL}`,
-        body: `let nullValue = parameters[parametersOffset + 2u];
+    const nodes: GPUCommandNode<Parameters>[] = [];
+    const valueChunks = getGraphViewChunks(props.values);
+    for (let chunkIndex = 0; chunkIndex < valueChunks.length; chunkIndex++) {
+      const values = valueChunks[chunkIndex];
+      if (values.length === 0) continue;
+      const props = {
+        ...this.props,
+        values,
+        output: {
+          values: getGraphViewChunks(this.props.output.values)[chunkIndex],
+          validity: this.props.output.validity
+            ? getGraphViewChunks(this.props.output.validity)[chunkIndex]
+            : undefined
+        }
+      };
+      const mask = this.mask ? getGraphViewChunks(this.mask)[chunkIndex] : undefined;
+      const chunkId = valueChunks.length === 1 ? id : `${id}-chunk-${chunkIndex}`;
+      const read = (name: string, view: GraphDataView, type: 'u32' | 'f32'): WGSLKernelBinding => ({
+        name,
+        view,
+        type,
+        access: 'read'
+      });
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${chunkId}-map`,
+          operation: 'GPUScalarScale',
+          variant: 'finite-float32',
+          invocationCount: props.values.length,
+          bindings: [
+            read('values', props.values, props.values.format === 'uint32' ? 'u32' : 'f32'),
+            ...(mask ? [read('sourceMask', mask, 'u32')] : []),
+            read('domain', props.domain, 'f32'),
+            read('range', props.range, 'f32'),
+            read('parameters', props.parameters, 'f32'),
+            {name: 'outputValues', view: props.output.values, type: 'f32', access: 'read_write'},
+            ...(props.output.validity
+              ? [
+                  {
+                    name: 'outputValidity',
+                    view: props.output.validity,
+                    type: 'u32',
+                    access: 'read_write'
+                  } satisfies WGSLKernelBinding
+                ]
+              : [])
+          ],
+          declarations: `const MAXIMUM_DOMAIN_COUNT: u32 = ${props.maximumDomainCount}u;\n${SCALAR_SCALE_WGSL}`,
+          body: `let nullValue = parameters[parametersOffset + 2u];
   outputValues[outputValuesOffset + index] = select(0.0, nullValue, isFiniteValue(nullValue));
   ${props.output.validity ? 'outputValidity[outputValidityOffset + index] = 0u;' : ''}
-  ${this.mask ? 'if (sourceMask[sourceMaskOffset + index] == 0u) { return; }' : ''}
+  ${mask ? 'if (sourceMask[sourceMaskOffset + index] == 0u) { return; }' : ''}
   let scaleParameter = parameters[parametersOffset];
   let domainCountParameter = parameters[parametersOffset + 1u];
   if (!isFiniteValue(scaleParameter) || !isFiniteValue(domainCountParameter) || !isFiniteValue(nullValue)) { return; }
@@ -278,7 +318,9 @@ export class GPUScalarScale implements GPUCommandNodeProducer {
   if (!isFiniteValue(mapped)) { return; }
   outputValues[outputValuesOffset + index] = mapped;
   ${props.output.validity ? 'outputValidity[outputValidityOffset + index] = 1u;' : ''}`
-      })
-    ];
+        })
+      );
+    }
+    return nodes;
   }
 }

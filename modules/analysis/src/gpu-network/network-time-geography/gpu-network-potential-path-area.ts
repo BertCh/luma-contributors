@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateNetworkViewBindings, validateNetworkWritableViews} from '../network-view-utils';
+
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -16,7 +18,6 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
   validateSinglePackedView,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -95,6 +96,7 @@ export class GPUNetworkPotentialPathArea implements GPUCommandNodeProducer {
   constructor(props: GPUNetworkPotentialPathAreaProps) {
     this.id = props.id ?? 'network-potential-path-area';
     this.props = props;
+    validateNetworkWritableViews(this.id, props.output);
     const {id} = this;
     const topology = validateGPUNetworkTopology(id, props.topology, {weights: true});
     this.nodeCount = topology.nodeCount;
@@ -143,7 +145,7 @@ export class GPUNetworkPotentialPathArea implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, nodeCount} = this;
     const {topology, output} = props;
-    validateGraphViewsBelongToGraph(id, graph, [
+    validateNetworkViewBindings(id, graph, [
       topology.offsets,
       topology.neighbors,
       topology.weights,
@@ -152,6 +154,9 @@ export class GPUNetworkPotentialPathArea implements GPUCommandNodeProducer {
       props.budget,
       ...Object.values(output)
     ]);
+    validateNetworkViewBindings(id, graph, [], {
+      summary: GPU_NETWORK_POTENTIAL_PATH_AREA_SUMMARY_LENGTH * 4
+    });
     const summary =
       output.summary ??
       createTransientView(

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRasterStorageBindings} from '../raster-grid/raster-storage-preflight';
 import {
   createTransientView,
   GPUScan,
@@ -17,7 +18,8 @@ import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validateCompactOutput
+  validateCompactOutput,
+  getGraphOutputViews as getRasterPreflightOutputViews
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createRasterGateSlotTable,
@@ -157,8 +159,9 @@ export type GPUStreamlinesProps = {
  * The pruning is exact given the traced points: grid cells use one subtraction and one
  * multiplication by a host-rounded reciprocal, both correctly rounded.
  *
- * Row direction: every field raster places row 0 at the smallest y (`originY` of its extent) and
- * rows advance toward larger y; `v` is the velocity toward larger y. No grid affine is read and
+ * Row direction: with positive cellHeight, row zero is on the smallest-y side of the field extent and
+ * rows advance toward larger y; `v` is the velocity toward larger y. Signed cell sizes explicitly
+ * reverse the corresponding index direction; sample centers are origin + (index + 0.5) * cell size. No grid affine is read and
  * nothing is checked at construction. A north-up field (row 0 at the top, the usual raster order)
  * must have its row order reversed by the caller before upload, or the flow is mirrored north to
  * south. Following a grid affine is deferred (roadmap 12.4).
@@ -276,6 +279,29 @@ export class GPUStreamlines implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    const storageProps = this.props;
+    validateRasterStorageBindings(
+      graph,
+      this.id,
+      [
+        storageProps.velocities,
+        storageProps.parameters,
+        storageProps.uint32Parameters,
+        ...getRasterPreflightOutputViews(storageProps.output),
+        ...getRasterPreflightOutputViews(storageProps.output.lines),
+        ...Object.values(storageProps.output.candidates ?? {})
+      ],
+      {
+        'candidate positions': storageProps.output.candidates?.positions
+          ? 0
+          : this.seedCount * (2 * storageProps.stepsPerDirection + 1) * 8,
+        'candidate spans': storageProps.output.candidates?.spans ? 0 : this.seedCount * 16,
+        'seed scalar planes': this.seedCount * 4,
+        'occupancy planes': storageProps.gridWidth * storageProps.gridHeight * 4,
+        'iteration state': 8
+      }
+    );
+
     const {id, props, seedCount, maximumIterations} = this;
     const {output} = props;
     validateGraphViewsBelongToGraph(id, graph, [

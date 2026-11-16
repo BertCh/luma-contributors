@@ -3,6 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  validateTrajectoryBindings,
+  validateTrajectoryOutputRanges
+} from '../trajectory-analysis/trajectory-binding-validation';
+import {
   createTransientView,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -201,6 +205,7 @@ export class GPUBrownianBridgeUtilization implements GPUCommandNodeProducer {
     );
     validateSinglePackedView(output.density, ['float32'], `${id} output.density`);
     validateViewLength(id, 'output.density', output.density, gridSize[0] * gridSize[1]);
+    validateTrajectoryOutputRanges(id, props.output);
     validateGraphOutputsDisjointFromInputs(
       id,
       [output.density],
@@ -220,6 +225,7 @@ export class GPUBrownianBridgeUtilization implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateTrajectoryBindings(graph, this.id, this.props);
     const {id, props, rowCount, subStepCount} = this;
     const {positions, timestamps, trackOffsets, gridSize, output} = props;
     validateGraphViewsBelongToGraph(id, graph, [

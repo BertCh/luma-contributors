@@ -2,23 +2,25 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {createClassificationKernelNode as createWGSLKernelNode} from './classification-kernel-node';
 import {Buffer} from '@luma.gl/core';
 import {
   createTransientView,
+  getBoundedDispatchLayout,
   GPUSort,
+  GraphVectorView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
+import type {WGSLKernelBinding} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
-  createWGSLKernelNode,
-  type WGSLKernelBinding
-} from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {
+  getGraphViewChunks,
+  validateCommandNodeBudget,
+  validateGPUStorageBindingByteLength,
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
   validateSinglePackedView,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -27,10 +29,11 @@ import {
   CLASS_BREAKS_HEAD_TAIL,
   CLASS_BREAKS_STATE,
   CLASS_BREAKS_STATE_LENGTH,
-  getClassBreaksDispatchWGSL,
   getClassBreaksIndirectGate,
   getClassBreaksMomentNodes,
   getClassBreaksMomentTileCount,
+  NATURAL_BREAKS_CELL_COUNT,
+  NATURAL_BREAKS_ELEMENT_STRIDE,
   MOMENT_STRIDE,
   MOMENT_WORKGROUP_SIZE
 } from './class-breaks-kernels';
@@ -44,15 +47,35 @@ import {
 } from './class-breaks-parameters';
 import {COLUMN_ORDERED_KEY_WGSL} from './column-classification-shared';
 import {getColumnQuantileNodes} from './column-quantiles-nodes';
-import {getNaturalBreaksNodes} from './natural-breaks-nodes';
+import {getNaturalBreaksNodes, getNaturalBreaksDispatchWordCount} from './natural-breaks-nodes';
 import {getExactNaturalBreaksNodes} from './exact-natural-breaks-nodes';
 import {getMonotoneNaturalBreaksNodes} from './monotone-natural-breaks-nodes';
+
+import {
+  type ClassificationRows,
+  validateClassificationOutputs,
+  validateClassificationScratch,
+  validateClassificationBindings,
+  validateClassificationRows
+} from './column-classification-rows';
+
+import {
+  NATURAL_BREAKS_MAXIMUM_EXACT_ROWS,
+  NATURAL_BREAKS_MAXIMUM_MATERIALIZED_ROWS,
+  NATURAL_BREAKS_MAXIMUM_MONOTONE_ROWS
+} from './natural-breaks-limits';
 
 const OPERATION = 'GPUClassBreaks';
 /** Largest supported class count; the quantile pass refines at most 64 targets. */
 const MAXIMUM_CLASS_COUNT = 64;
 /** Largest row count: moment counts are f32 and quantile ranks are exact up to 2^24. */
 const MAXIMUM_ROW_COUNT = 2 ** 24;
+/** Per compiled full-data sort, allowance for radix stages and primitive setup nodes. */
+const SORT_COMMAND_NODE_ALLOWANCE = 1024;
+/** Shared natural-breaks preparation, prefix, DP and solve nodes per class capacity. */
+const NATURAL_BREAKS_COMMAND_NODE_ALLOWANCE = 128;
+/** Twenty row passes and eighteen runtime dispatch-arm nodes per nonempty chunk. */
+const NATURAL_BREAKS_CHUNK_COMMAND_NODE_ALLOWANCE = 38;
 const DEFAULT_NATURAL_BREAKS_BIN_COUNT = 2048;
 const MAXIMUM_NATURAL_BREAKS_BIN_COUNT = 2048;
 /** Quantile parameter code for linear (R-7) interpolation, as numpy and mapclassify use. */
@@ -89,14 +112,14 @@ export type GPUClassBreaksProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'class-breaks'`. */
   id?: string;
   /**
-   * Packed float32 column. NaN rows are skipped; infinities count only toward the end classes.
+   * Packed or chunked float32 column. NaN rows are skipped; infinities count only toward the end classes.
    * A `uint32` or `sint32` column (for example point counts) is also accepted: one internal pass
    * converts it to f32 (exact up to 2^24 in magnitude, rounded to nearest beyond) before the
    * classification, which then behaves as for the converted float column. Topology: the format.
    */
-  values: GraphDataView<'float32'> | GraphDataView<'uint32'> | GraphDataView<'sint32'>;
-  /** Optional packed `uint32` row mask; zero skips the row. */
-  mask?: GraphDataView<'uint32'>;
+  values: ClassificationRows<'float32' | 'uint32' | 'sint32'>;
+  /** Optional row-aligned packed or chunked `uint32` mask; zero skips the row. */
+  mask?: ClassificationRows<'uint32'>;
   /**
    * Float32 parameter view of `getGPUClassBreaksParameterLength(maximumClassCount)` elements
    * written with `getGPUClassBreaksParameterValues`.
@@ -195,6 +218,16 @@ const HEAD_TAIL_BREAKS_OFFSET = 4;
  * histogram), so `e[0]` and `e[k]` bound every inner edge; they still classify into the end
  * classes in `classCounts`.
  *
+ * Chunked input: values and mask may be GraphVectorView with matching ordered chunk lengths.
+ * Compile `methods` without maximum-breaks; exact and monotone natural-breaks remain packed-only
+ * because they sort all rows. The default method set includes maximum-breaks and therefore also
+ * remains packed-only. Approximate natural-breaks histograms/refinement, extrema, quantiles and
+ * class counts accumulate all chunks before consuming each reduction, bitwise equal to packed
+ * input. Standard-deviation and head-tail materialize packed GPU scratch to preserve the exact
+ * global moment tile/tree order across arbitrary chunk boundaries. Integer input also uses the
+ * existing packed f32 conversion. Total row limits are unchanged; controls/outputs remain packed.
+ * Chunk topology is compile-time; buffer contents remain per-frame.
+ *
  * Exact mode uses normalized f32 interval costs and exhaustive DP; see the API reference for
  * arithmetic and tie semantics. It is globally optimal for that recurrence, not f64 arithmetic.
  *
@@ -215,6 +248,8 @@ export class GPUClassBreaks implements GPUCommandNodeProducer {
   readonly naturalBreaksBinCount: number;
   /** Number of quantile targets refined per frame. */
   readonly quantileCount: number;
+  /** Conservative upper bound including chunk passes, refinement and published sort nodes. */
+  readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPUClassBreaksProps) {
     this.id = props.id ?? 'class-breaks';
@@ -246,7 +281,20 @@ export class GPUClassBreaks implements GPUCommandNodeProducer {
       MAXIMUM_NATURAL_BREAKS_BIN_COUNT
     );
     this.quantileCount = Math.max(maximumClassCount - 1, 3);
-    validateSinglePackedView(props.values, ['float32', 'uint32', 'sint32'], `${id} values`);
+    // Full-row sorts retain their packed-only contract, including when compiled but inactive.
+    if (
+      this.methods.includes('maximum-breaks') ||
+      (this.methods.includes('natural-breaks') &&
+        props.naturalBreaksMode &&
+        props.naturalBreaksMode !== 'approximate')
+    ) {
+      validateSinglePackedView(
+        props.values,
+        ['float32', 'uint32', 'sint32'],
+        `${id} values (compiled sort methods)`
+      );
+    }
+    validateClassificationRows(id, 'values', props.values, ['float32', 'uint32', 'sint32']);
     const rowCount = props.values.length;
     if (
       props.naturalBreaksMode !== undefined &&
@@ -269,11 +317,19 @@ export class GPUClassBreaks implements GPUCommandNodeProducer {
         'exact natural breaks values length',
         rowCount,
         1,
-        props.naturalBreaksExactStorage === 'materialized' ? 1024 : 8192
+        props.naturalBreaksExactStorage === 'materialized'
+          ? NATURAL_BREAKS_MAXIMUM_MATERIALIZED_ROWS
+          : NATURAL_BREAKS_MAXIMUM_EXACT_ROWS
       );
     }
     if (props.naturalBreaksMode === 'monotone') {
-      validateCapacity(id, 'monotone natural breaks values length', rowCount, 1, 262144);
+      validateCapacity(
+        id,
+        'monotone natural breaks values length',
+        rowCount,
+        1,
+        NATURAL_BREAKS_MAXIMUM_MONOTONE_ROWS
+      );
     }
     validateRequirement(
       id,
@@ -281,7 +337,7 @@ export class GPUClassBreaks implements GPUCommandNodeProducer {
       `values length must be in [1, ${MAXIMUM_ROW_COUNT}] (2^24): moment counts and quantile ranks are held in float32 and are exact only up to 2^24`
     );
     if (props.mask) {
-      validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
+      validateClassificationRows(id, 'mask', props.mask, ['uint32'], props.values);
       if (props.mask.length !== rowCount) {
         throw new Error(`${id} mask length must equal values length`);
       }
@@ -305,11 +361,26 @@ export class GPUClassBreaks implements GPUCommandNodeProducer {
         throw new Error(`${id} output.classCounts must hold maximumClassCount rows`);
       }
     }
+    validateClassificationOutputs(id, [output.breaks, output.classCount, output.classCounts]);
     validateGraphOutputsDisjointFromInputs(
       id,
       [output.breaks, output.classCount, output.classCounts],
       [props.values, props.mask, props.parameters]
     );
+    const chunkCount = getGraphViewChunks(props.values).filter(chunk => chunk.length > 0).length;
+    this.estimatedCommandNodeCount =
+      32 +
+      8 * chunkCount +
+      4 * maximumClassCount +
+      (this.methods.includes('natural-breaks')
+        ? NATURAL_BREAKS_COMMAND_NODE_ALLOWANCE * maximumClassCount +
+          NATURAL_BREAKS_CHUNK_COMMAND_NODE_ALLOWANCE * chunkCount
+        : 0) +
+      (this.methods.includes('maximum-breaks') ? 2 * SORT_COMMAND_NODE_ALLOWANCE : 0) +
+      (props.naturalBreaksMode && props.naturalBreaksMode !== 'approximate'
+        ? SORT_COMMAND_NODE_ALLOWANCE + 4 * maximumClassCount
+        : 0);
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
   }
 
   /** Returns prepare, extremes, per-method, finish, publish, and class-count nodes in order. */
@@ -317,20 +388,163 @@ export class GPUClassBreaks implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, methods, quantileCount} = this;
-    const {mask, parameters, output, maximumClassCount} = props;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.values,
-      mask,
+    const {parameters, output, maximumClassCount} = props;
+    const nodes: GPUCommandNode<Parameters>[] = [];
+
+    if (
+      methods.includes('natural-breaks') &&
+      (!props.naturalBreaksMode || props.naturalBreaksMode === 'approximate')
+    ) {
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        'natural-breaks refinement dispatch scratch',
+        getNaturalBreaksDispatchWordCount(getGraphViewChunks(props.values).length) * 4,
+        'use fewer source chunks'
+      );
+    }
+    const needsMoments = methods.includes('standard-deviation') || methods.includes('head-tail');
+    if (needsMoments || props.values.format !== 'float32') {
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        'packed conversion/moment scratch',
+        props.values.length * 4,
+        'use fewer rows or omit moment methods'
+      );
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        'moment-partials',
+        getClassBreaksMomentTileCount(props.values.length) * MOMENT_STRIDE * 4,
+        'use fewer rows'
+      );
+    }
+    validateClassificationBindings(id, graph, {
+      values: props.values,
+      mask: props.mask,
       parameters,
-      output.breaks,
-      output.classCount,
-      output.classCounts
-    ]);
+      'output.breaks': output.breaks,
+      'output.classCount': output.classCount,
+      'output.classCounts': output.classCounts
+    });
+    const count = props.values.length;
+    const classCapacity = maximumClassCount;
+    const usesQuantile = methods.includes('quantile') || methods.includes('box-plot');
+    const usesNatural = methods.includes('natural-breaks');
+    const binCapacity = this.naturalBreaksBinCount;
+    const exact = props.naturalBreaksMode === 'exact';
+    const approximate =
+      usesNatural && (!props.naturalBreaksMode || props.naturalBreaksMode === 'approximate');
+    const materialized =
+      exact &&
+      (props.naturalBreaksExactStorage === 'materialized' ||
+        (props.naturalBreaksExactStorage !== 'recompute' &&
+          count <= NATURAL_BREAKS_MAXIMUM_MATERIALIZED_ROWS));
+    validateClassificationScratch(graph, id, {
+      state: CLASS_BREAKS_STATE_LENGTH,
+      'packed value conversion/moment input':
+        needsMoments || props.values.format !== 'float32' ? count : 0,
+      'packed mask conversion/moment input':
+        props.mask && (needsMoments || props.values.format !== 'float32') ? count : 0,
+      'natural refinement dispatch': approximate
+        ? getNaturalBreaksDispatchWordCount(getGraphViewChunks(props.values).length)
+        : 0,
+      extremes: 4,
+      edges: classCapacity + 1,
+      'quantile histogram': usesQuantile ? 2 * quantileCount * 256 : 0,
+      'quantile state': usesQuantile ? 8 * quantileCount + 2 : 0,
+      'quantile parameters': usesQuantile ? 4 + quantileCount : 0,
+      'head-tail state': methods.includes('head-tail')
+        ? HEAD_TAIL_BREAKS_OFFSET + Math.max(classCapacity - 1, 1)
+        : 0,
+      moments: needsMoments ? 2 * MOMENT_STRIDE : 0,
+      'head-tail dispatch': methods.includes('head-tail') ? 6 : 0,
+      'moment partials': needsMoments ? getClassBreaksMomentTileCount(count) * MOMENT_STRIDE : 0,
+      'natural histogram': approximate ? 5 * (binCapacity + 1) : 0,
+      'natural DP': approximate ? classCapacity * binCapacity : 0,
+      'natural refinement cells': approximate
+        ? Math.max(classCapacity - 1, 1) *
+          (NATURAL_BREAKS_CELL_COUNT + 2) *
+          NATURAL_BREAKS_ELEMENT_STRIDE
+        : 0,
+      'sorted row scratch':
+        methods.includes('maximum-breaks') ||
+        (usesNatural && (exact || props.naturalBreaksMode === 'monotone'))
+          ? count
+          : 0,
+      'exact partitions': usesNatural && exact ? (classCapacity + 1) * (count + 1) : 0,
+      'exact scores':
+        usesNatural && exact ? (materialized ? classCapacity + 1 : 2) * (count + 1) : 0,
+      'exact costs': usesNatural && materialized ? count * count : 0,
+      'monotone partitions':
+        usesNatural && props.naturalBreaksMode === 'monotone'
+          ? (classCapacity + 1) * (count + 1)
+          : 0,
+      'monotone tasks': usesNatural && props.naturalBreaksMode === 'monotone' ? count * 8 : 0,
+      'monotone task dispatch': usesNatural && props.naturalBreaksMode === 'monotone' ? 3 : 0
+    });
     const rowCount = props.values.length;
     const integerFormat = props.values.format === 'float32' ? undefined : props.values.format;
-    const values: GraphDataView<'float32'> = integerFormat
-      ? createTransientView(graph, `${id}-float-values`, 'float32', rowCount)
-      : (props.values as GraphDataView<'float32'>);
+    // Moment tiles must preserve the packed tree's global row positions, including chunks that
+    // split a tile. Materialize only for those methods (and the existing integer conversion).
+    const materialize = (
+      name: string,
+      source: ClassificationRows<'float32' | 'uint32' | 'sint32'>,
+      format: 'float32' | 'uint32'
+    ) => {
+      if (!(source instanceof GraphVectorView) && source.format === format)
+        return source as GraphDataView<typeof format>;
+      const packed = createTransientView(graph, `${id}-${name}`, format, source.length);
+      let rowOffset = 0;
+      for (const [chunkIndex, chunk] of getGraphViewChunks(source).entries()) {
+        if (chunk.length > 0) {
+          const destination = graph.createDataView(packed.buffer, {
+            format,
+            length: chunk.length,
+            byteOffset: rowOffset * 4
+          });
+          nodes.push(
+            createWGSLKernelNode<Parameters>(graph, {
+              id: `${id}-${name}-${chunkIndex}`,
+              operation: OPERATION,
+              variant: 'pack-convert',
+              invocationCount: chunk.length,
+              bindings: [
+                {
+                  name: 'source',
+                  view: chunk,
+                  type:
+                    chunk.format === 'float32' ? 'f32' : chunk.format === 'uint32' ? 'u32' : 'i32',
+                  access: 'read'
+                },
+                {
+                  name: 'destination',
+                  view: destination,
+                  type: format === 'float32' ? 'f32' : 'u32',
+                  access: 'read_write'
+                }
+              ],
+              body: `destination[destinationOffset + index] = ${format === 'float32' ? 'f32' : 'u32'}(source[sourceOffset + index]);`
+            })
+          );
+        }
+        rowOffset += chunk.length;
+      }
+      return packed;
+    };
+    const packedValues =
+      needsMoments || integerFormat
+        ? (materialize('float-values', props.values, 'float32') as GraphDataView<'float32'>)
+        : undefined;
+    const packedMask =
+      props.mask && (needsMoments || integerFormat)
+        ? (materialize('packed-mask', props.mask, 'uint32') as GraphDataView<'uint32'>)
+        : undefined;
+    const values = integerFormat ? packedValues! : (props.values as ClassificationRows<'float32'>);
+    const mask = integerFormat ? packedMask : props.mask;
+    const valueChunks = getGraphViewChunks(values);
+    const maskChunks = mask ? getGraphViewChunks(mask) : undefined;
     const has = (method: GPUClassBreaksMethod) => methods.includes(method);
     const usesQuantiles = has('quantile') || has('box-plot');
     const usesStandardDeviation = has('standard-deviation');
@@ -351,7 +565,6 @@ export class GPUClassBreaks implements GPUCommandNodeProducer {
       view: GraphDataView,
       type: 'u32' | 'f32' | 'atomic<u32>' = 'u32'
     ): WGSLKernelBinding => ({name, view, type, access: 'read_write'});
-    const maskBinding = mask ? [read('rowMask', mask, 'u32')] : [];
     const maskTest = mask ? 'rowMask[rowMaskOffset + index] != 0u' : 'true';
 
     const state = u32('state', CLASS_BREAKS_STATE_LENGTH);
@@ -388,46 +601,34 @@ export class GPUClassBreaks implements GPUCommandNodeProducer {
           Buffer.STORAGE | Buffer.INDIRECT
         )
       : undefined;
+    const headTailLayouts = [
+      getClassBreaksMomentTileCount(rowCount) * MOMENT_WORKGROUP_SIZE,
+      MOMENT_WORKGROUP_SIZE
+    ].map(invocationCount =>
+      getBoundedDispatchLayout(
+        OPERATION,
+        invocationCount,
+        MOMENT_WORKGROUP_SIZE,
+        graph.device.limits.maxComputeWorkgroupsPerDimension
+      )
+    );
+    const headTailDispatchValues = headTailLayouts.flatMap(layout => [
+      layout.x,
+      layout.y,
+      layout.z
+    ]);
     const headTailDispatchWGSL = (activeExpression: string) =>
-      [
-        getClassBreaksDispatchWGSL(graph, {
-          operation: OPERATION,
-          slot: 0,
-          invocationCount: getClassBreaksMomentTileCount(rowCount) * MOMENT_WORKGROUP_SIZE,
-          workgroupSize: MOMENT_WORKGROUP_SIZE,
-          activeExpression
-        }),
-        getClassBreaksDispatchWGSL(graph, {
-          operation: OPERATION,
-          slot: 1,
-          invocationCount: MOMENT_WORKGROUP_SIZE,
-          workgroupSize: MOMENT_WORKGROUP_SIZE,
-          activeExpression
-        })
-      ].join('\n  ');
+      [0, 1]
+        .map(
+          slot => `
+  dispatch[dispatchOffset + ${slot * 3}u] = select(0u, getChunkParameter(${36 + slot * 3}u), ${activeExpression});
+  dispatch[dispatchOffset + ${slot * 3 + 1}u] = getChunkParameter(${37 + slot * 3}u);
+  dispatch[dispatchOffset + ${slot * 3 + 2}u] = getChunkParameter(${38 + slot * 3}u);`
+        )
+        .join('\n');
     const compiledMask = methods.reduce((bits, method) => bits | (1 << CODES[method]), 0);
     const methodRead = `state[stateOffset + ${CLASS_BREAKS_STATE.method}u]`;
     const classCountRead = `state[stateOffset + ${CLASS_BREAKS_STATE.classCount}u]`;
-    const nodes: GPUCommandNode<Parameters>[] = [];
-
-    // 0. Integer columns are converted to f32 once; every later stage reads the float view.
-    if (integerFormat) {
-      const integerType = integerFormat === 'uint32' ? 'u32' : 'i32';
-      nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-integer-values`,
-          operation: OPERATION,
-          variant: 'integer-values',
-          bindings: [
-            {name: 'integers', view: props.values, type: integerType, access: 'read'},
-            {name: 'floats', view: values, type: 'f32', access: 'read_write'}
-          ],
-          invocationCount: rowCount,
-          body: 'floats[floatsOffset + index] = f32(integers[integersOffset + index]);'
-        })
-      );
-    }
-
     // 1. Decode the per-frame method and class count, and reset every accumulator.
     const prepareBindings: WGSLKernelBinding[] = [
       read('params', parameters, 'f32'),
@@ -448,6 +649,7 @@ export class GPUClassBreaks implements GPUCommandNodeProducer {
         id: `${id}-prepare`,
         operation: OPERATION,
         variant: 'prepare',
+        parameterValues: headTailDispatchValues,
         bindings: prepareBindings,
         invocationCount: 1,
         declarations: `const COMPILED_METHODS: u32 = ${compiledMask}u;
@@ -506,19 +708,24 @@ const HEADER: u32 = ${GPU_CLASS_BREAKS_PARAMETER_HEADER_LENGTH}u;`,
     );
 
     // 2. Exact extremes of the finite values and counts, on ordered keys.
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-extremes`,
-        operation: OPERATION,
-        variant: 'extremes',
-        bindings: [
-          read('values', values, 'f32'),
-          ...maskBinding,
-          write('extremes', extremes, 'atomic<u32>')
-        ],
-        invocationCount: rowCount,
-        declarations: COLUMN_ORDERED_KEY_WGSL,
-        body: `let value = values[valuesOffset + index];
+    for (const [chunkIndex, values] of valueChunks.entries()) {
+      if (values.length === 0) continue;
+      const mask = maskChunks?.[chunkIndex];
+      const maskBinding = mask ? [read('rowMask', mask, 'u32')] : [];
+      const rowCount = values.length;
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: valueChunks.length === 1 ? `${id}-extremes` : `${id}-extremes-chunk-${chunkIndex}`,
+          operation: OPERATION,
+          variant: 'extremes',
+          bindings: [
+            read('values', values, 'f32'),
+            ...maskBinding,
+            write('extremes', extremes, 'atomic<u32>')
+          ],
+          invocationCount: rowCount,
+          declarations: COLUMN_ORDERED_KEY_WGSL,
+          body: `let value = values[valuesOffset + index];
   if (isNanBits(value) || !(${maskTest})) {
     return;
   }
@@ -530,8 +737,9 @@ const HEADER: u32 = ${GPU_CLASS_BREAKS_PARAMETER_HEADER_LENGTH}u;`,
   atomicAdd(&extremes[extremesOffset + ${CLASS_BREAKS_EXTREMES.finiteCount}u], 1u);
   atomicMin(&extremes[extremesOffset + ${CLASS_BREAKS_EXTREMES.minimumKey}u], key);
   atomicMax(&extremes[extremesOffset + ${CLASS_BREAKS_EXTREMES.maximumKey}u], key);`
-      })
-    );
+        })
+      );
+    }
 
     // 3. Exact linear quantiles for 'quantile' and 'box-plot', gated per frame.
     if (quantileGate && quantileParameters && quantileValues) {
@@ -555,8 +763,8 @@ const HEADER: u32 = ${GPU_CLASS_BREAKS_PARAMETER_HEADER_LENGTH}u;`,
         ...getClassBreaksMomentNodes<Parameters>(graph, {
           id: `${id}-moments`,
           operation: OPERATION,
-          values,
-          mask,
+          values: packedValues!,
+          mask: packedMask,
           state,
           partials,
           moments,
@@ -576,8 +784,8 @@ const HEADER: u32 = ${GPU_CLASS_BREAKS_PARAMETER_HEADER_LENGTH}u;`,
           ...getClassBreaksMomentNodes<Parameters>(graph, {
             id: roundId,
             operation: OPERATION,
-            values,
-            mask,
+            values: packedValues!,
+            mask: packedMask,
             state,
             partials,
             moments,
@@ -594,6 +802,7 @@ const HEADER: u32 = ${GPU_CLASS_BREAKS_PARAMETER_HEADER_LENGTH}u;`,
             id: `${roundId}-split`,
             operation: OPERATION,
             variant: 'head-tail-split',
+            parameterValues: headTailDispatchValues,
             bindings: [
               read('params', parameters, 'f32'),
               read('state', state, 'u32'),
@@ -611,30 +820,45 @@ const HEADER: u32 = ${GPU_CLASS_BREAKS_PARAMETER_HEADER_LENGTH}u;`,
 
     // 6. Maximum breaks: sort the finite keys, sort the gaps between distinct neighbours.
     if (has('maximum-breaks')) {
-      nodes.push(...this.getMaximumBreaksNodes(graph, {values, state, extremes, edges, edgeState}));
-    }
-
-    // 7. Natural breaks: histogram, prefix sums, monotone dynamic program, refinement.
-    if (has('natural-breaks')) {
       nodes.push(
-        ...(props.naturalBreaksMode === 'exact'
-          ? getExactNaturalBreaksNodes<Parameters>
-          : props.naturalBreaksMode === 'monotone'
-            ? getMonotoneNaturalBreaksNodes<Parameters>
-            : getNaturalBreaksNodes<Parameters>)(graph, {
-          id,
-          operation: OPERATION,
-          values,
-          mask,
+        ...this.getMaximumBreaksNodes(graph, {
+          values: values as GraphDataView<'float32'>,
           state,
           extremes,
           edges,
-          edgeState,
-          maximumClassCount,
-          binCount: this.naturalBreaksBinCount,
-          exactStorage: props.naturalBreaksExactStorage
+          edgeState
         })
       );
+    }
+
+    // 7. Sort-based methods remain packed; approximate histograms/refinement stream chunks.
+    if (has('natural-breaks')) {
+      const shared = {
+        id,
+        operation: OPERATION,
+        state,
+        extremes,
+        edges,
+        edgeState,
+        maximumClassCount,
+        binCount: this.naturalBreaksBinCount
+      };
+      if (props.naturalBreaksMode === 'exact' || props.naturalBreaksMode === 'monotone') {
+        const getNodes =
+          props.naturalBreaksMode === 'exact'
+            ? getExactNaturalBreaksNodes<Parameters>
+            : getMonotoneNaturalBreaksNodes<Parameters>;
+        nodes.push(
+          ...getNodes(graph, {
+            ...shared,
+            values: values as GraphDataView<'float32'>,
+            mask: mask as GraphDataView<'uint32'> | undefined,
+            exactStorage: props.naturalBreaksExactStorage
+          })
+        );
+      } else {
+        nodes.push(...getNaturalBreaksNodes(graph, {...shared, values, mask}));
+      }
     }
 
     // 8. Closed-form edges for equal interval, quantile, standard deviation, box plot, custom.
@@ -643,7 +867,9 @@ const HEADER: u32 = ${GPU_CLASS_BREAKS_PARAMETER_HEADER_LENGTH}u;`,
       read('state', state, 'u32'),
       read('extremes', extremes, 'u32'),
       ...(quantileValues ? [read('quantileValues', quantileValues, 'f32')] : []),
-      ...(moments ? [read('moments', moments, 'f32')] : []),
+      // Head/tail rounds use moments as scratch, but finish reads their edges from headTail.
+      // Supplying an unused moments binding disagrees with WebGPU's inferred shader layout.
+      ...(usesStandardDeviation && moments ? [read('moments', moments, 'f32')] : []),
       ...(headTail ? [read('headTail', headTail, 'u32')] : []),
       write('edges', edges, 'f32')
     ];
@@ -738,21 +964,29 @@ const MAXIMUM_CLASS_COUNT: u32 = ${maximumClassCount}u;`,
           body: 'classCounts[classCountsOffset + index] = 0u;'
         })
       );
-      nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-class-counts`,
-          operation: OPERATION,
-          variant: 'class-counts',
-          bindings: [
-            read('values', values, 'f32'),
-            ...maskBinding,
-            read('breaks', output.breaks, 'f32'),
-            read('classCountIn', output.classCount, 'u32'),
-            write('classCounts', output.classCounts, 'atomic<u32>')
-          ],
-          invocationCount: rowCount,
-          declarations: COLUMN_ORDERED_KEY_WGSL,
-          body: `let value = values[valuesOffset + index];
+      for (const [chunkIndex, values] of valueChunks.entries()) {
+        if (values.length === 0) continue;
+        const mask = maskChunks?.[chunkIndex];
+        const maskBinding = mask ? [read('rowMask', mask, 'u32')] : [];
+        const rowCount = values.length;
+        nodes.push(
+          createWGSLKernelNode<Parameters>(graph, {
+            id:
+              valueChunks.length === 1
+                ? `${id}-class-counts`
+                : `${id}-class-counts-chunk-${chunkIndex}`,
+            operation: OPERATION,
+            variant: 'class-counts',
+            bindings: [
+              read('values', values, 'f32'),
+              ...maskBinding,
+              read('breaks', output.breaks, 'f32'),
+              read('classCountIn', output.classCount, 'u32'),
+              write('classCounts', output.classCounts, 'atomic<u32>')
+            ],
+            invocationCount: rowCount,
+            declarations: COLUMN_ORDERED_KEY_WGSL,
+            body: `let value = values[valuesOffset + index];
   let classes = classCountIn[classCountInOffset];
   if (classes == 0u || isNanBits(value) || !(${maskTest})) {
     return;
@@ -770,8 +1004,9 @@ const MAXIMUM_CLASS_COUNT: u32 = ${maximumClassCount}u;`,
     }
   }
   atomicAdd(&classCounts[classCountsOffset + low - 1u], 1u);`
-        })
-      );
+          })
+        );
+      }
     }
     return nodes;
   }
@@ -873,7 +1108,8 @@ const MAXIMUM_CLASS_COUNT: u32 = ${maximumClassCount}u;`,
   ): GPUCommandNode<Parameters>[] {
     const {id, props} = this;
     const {values} = shared;
-    const {mask, maximumClassCount} = props;
+    const {maximumClassCount} = props;
+    const mask = props.mask as GraphDataView<'uint32'> | undefined;
     const rowCount = values.length;
     const prefix = `${id}-maximum-breaks`;
     const u32 = (name: string) =>
@@ -980,7 +1216,6 @@ const MAXIMUM_CLASS_COUNT: u32 = ${maximumClassCount}u;`,
         ],
         invocationCount: 1,
         declarations: `${COLUMN_ORDERED_KEY_WGSL}
-const ROW_COUNT: u32 = ${rowCount}u;
 const MAXIMUM_CLASS_COUNT: u32 = ${maximumClassCount}u;`,
         body: `if (${gate}) {
     return;
@@ -988,7 +1223,7 @@ const MAXIMUM_CLASS_COUNT: u32 = ${maximumClassCount}u;`,
   let classCount = state[stateOffset + ${CLASS_BREAKS_STATE.classCount}u];
   var midpoints: array<f32, ${maximumClassCount}>;
   var found = 0u;
-  for (var rank = 0u; rank + 1u < classCount && rank < ROW_COUNT; rank = rank + 1u) {
+  for (var rank = 0u; rank + 1u < classCount && rank < arrayLength(&sortedGapKeys) - sortedGapKeysOffset; rank = rank + 1u) {
     if (sortedGapKeys[sortedGapKeysOffset + rank] == 0xffffffffu) {
       break;
     }

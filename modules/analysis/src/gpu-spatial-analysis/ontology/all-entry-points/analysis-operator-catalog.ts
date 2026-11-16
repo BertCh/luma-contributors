@@ -15,6 +15,8 @@ import {ENTRY_POINT_OPERATOR_DETAILS} from './entry-point-operator-details';
 import {OPERATOR_ANNOTATIONS} from './operator-annotations';
 import {SPATIOTEMPORAL_REVIEW_OPERATORS} from '../spatiotemporal-review-catalog';
 
+import {GPU_ANALYSIS_OPERATOR_KIND_RECORDS} from '../analysis-experience/analysis-operator-kind-records';
+
 import {REUSED_ANALYSIS_OPERATORS} from '../reused-analysis-catalog';
 
 const DOCUMENTATION_FALLBACK = 'docs/api/analysis-catalog.md';
@@ -25,15 +27,17 @@ function makeEntryPointOperator(
 ): GPUAnalysisOperator {
   const detail = ENTRY_POINT_OPERATOR_DETAILS[exportName];
   if (!detail) throw new Error(`${exportName} has no entry in ENTRY_POINT_OPERATOR_DETAILS`);
+  const kinds = GPU_ANALYSIS_OPERATOR_KIND_RECORDS[exportName];
+  if (!kinds) throw new Error(`${exportName} has no per-operator kind record`);
   const annotation = OPERATOR_ANNOTATIONS[exportName] ?? {};
   return {
     exportName,
     primaryCapability: capability.id,
     tags: [],
     package: detail.package,
-    // Inputs, outputs and coordinate models are described once per family.
-    inputs: capability.inputs,
-    outputs: capability.outputs,
+    // Family kinds are a union of contracts, never the ports of an individual operator.
+    inputs: kinds.inputs,
+    outputs: kinds.outputs,
     dimensionality: detail.dimensionality ?? 'unspecified',
     coordinateModels: capability.coordinateModels,
     topology: 'unspecified',

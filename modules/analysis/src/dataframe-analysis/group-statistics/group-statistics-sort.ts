@@ -8,17 +8,17 @@ import {
   GPUUint32Gather,
   type GPUCommandGraph,
   type GPUCommandNode,
-  type GraphDataView
+  type GraphDataView,
+  type GraphVectorView
 } from '@luma.gl/graph/gpu-core';
 import {createStableLexicographicIndexSortNodes} from '../../analysis-core/kernels/stable-lexicographic-index-sort';
 import type {
   GPUCardinalityPort,
   GPUOverflowStatusPort
 } from '../../analysis-core/kernels/gpu-contributor-types';
-import {
-  createWGSLKernelNode,
-  createPublishNode
-} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {createPublishNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {createGroupStatisticsKernelNode} from './group-statistics-kernel';
+import {getGraphViewChunks} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GROUP_NONE, readBinding, writeBinding} from './group-statistics-common';
 
 /**
@@ -105,12 +105,12 @@ export function getGroupStructureNodes<Parameters>(
   props: {
     id: string;
     operation: string;
-    keys: GraphDataView<'uint32'> | GraphDataView<'uint32x2'>;
-    mask?: GraphDataView<'uint32'>;
+    keys: GraphDataView<'uint32' | 'uint32x2'> | GraphVectorView<'uint32' | 'uint32x2'>;
+    mask?: GraphDataView<'uint32'> | GraphVectorView<'uint32'>;
     /** Dense mode: `uint32` keys in `[0, keyCount)` index the groups directly. */
     keyCount?: number;
     output: {
-      keys: GraphDataView<'uint32'> | GraphDataView<'uint32x2'>;
+      keys: GraphDataView<'uint32' | 'uint32x2'>;
       counts: GraphDataView<'uint32'>;
       status: GPUCardinalityPort & GPUOverflowStatusPort;
     };
@@ -135,38 +135,49 @@ export function getGroupStructureNodes<Parameters>(
   const keyLow = u32('key-low', rowCount);
   const keyHigh = twoWords ? u32('key-high', rowCount) : undefined;
   const rowIds = u32('row-ids', rowCount);
-  nodes.push(
-    createWGSLKernelNode<Parameters>(graph, {
-      id: `${id}-prepare`,
-      operation,
-      variant: 'prepare',
-      bindings: [
-        readBinding('keys', props.keys),
-        ...(props.mask ? [readBinding('mask', props.mask)] : []),
-        writeBinding('keyLow', keyLow),
-        ...(keyHigh ? [writeBinding('keyHigh', keyHigh)] : []),
-        writeBinding('rowIds', rowIds)
-      ],
-      invocationCount: rowCount,
-      body: `${
-        twoWords
-          ? `var low = keys[keysOffset + 2u * index];
+  let rowOffset = 0;
+  const keyChunks = getGraphViewChunks(props.keys);
+  const maskChunks = props.mask ? getGraphViewChunks(props.mask) : undefined;
+  for (const [chunkIndex, keys] of keyChunks.entries()) {
+    const mask = maskChunks?.[chunkIndex];
+    if (keys.length === 0) continue;
+    nodes.push(
+      createGroupStatisticsKernelNode<Parameters>(graph, {
+        id: keyChunks.length === 1 ? `${id}-prepare` : `${id}-prepare-${chunkIndex}`,
+        operation,
+        variant: 'prepare',
+        bindings: [
+          readBinding('keys', keys),
+          ...(mask ? [readBinding('mask', mask)] : []),
+          writeBinding('keyLow', keyLow),
+          ...(keyHigh ? [writeBinding('keyHigh', keyHigh)] : []),
+          writeBinding('rowIds', rowIds)
+        ],
+        invocationCount: keys.length,
+        rowOffset,
+        body: `let sourceRow = index + GROUP_ROW_OFFSET;
+  ${
+    twoWords
+      ? `var low = keys[keysOffset + 2u * index];
   var high = keys[keysOffset + 2u * index + 1u];
   var isValid = !(low == 0xffffffffu && high == 0xffffffffu);`
-          : `var low = keys[keysOffset + index];
+      : `var low = keys[keysOffset + index];
   var isValid = low != 0xffffffffu;`
-      }
-  ${props.mask ? 'if (mask[maskOffset + index] == 0u) {\n    isValid = false;\n  }' : ''}
+  }
+  ${mask ? 'if (mask[maskOffset + index] == 0u) {\n    isValid = false;\n  }' : ''}
   ${dense ? `if (low >= ${keyCount}u) {\n    isValid = false;\n  }` : ''}
   if (!isValid) {
     low = ${invalidLowKey}u;
     ${twoWords ? 'high = 0xffffffffu;' : ''}
   }
-  keyLow[keyLowOffset + index] = low;
-  ${twoWords ? 'keyHigh[keyHighOffset + index] = high;' : ''}
-  rowIds[rowIdsOffset + index] = index;`
-    })
-  );
+  keyLow[keyLowOffset + sourceRow] = low;
+  ${twoWords ? 'keyHigh[keyHighOffset + sourceRow] = high;' : ''}
+  rowIds[rowIdsOffset + sourceRow] = sourceRow;`
+      })
+    );
+
+    rowOffset += keys.length;
+  }
 
   // 2. Stable sort by key.
   const order = getKeyOrderNodes<Parameters>(graph, {
@@ -218,7 +229,7 @@ fn isInvalidKey(key: vec2u) -> bool {
   const heads = u32('heads', rowCount);
   const validCount = u32('valid-count', 1);
   nodes.push(
-    createWGSLKernelNode<Parameters>(graph, {
+    createGroupStatisticsKernelNode<Parameters>(graph, {
       id: `${id}-heads`,
       operation,
       variant: 'heads',
@@ -253,7 +264,7 @@ ${keyDeclarations}`,
     // 4-5 (dense). The group of a position is its key; offsets are binary-searched lower bounds,
     // so keys without rows get empty ranges.
     nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
+      createGroupStatisticsKernelNode<Parameters>(graph, {
         id: `${id}-dense-offsets`,
         operation,
         variant: 'dense-offsets',
@@ -279,7 +290,7 @@ ${keyDeclarations}`,
     groupTotal[groupTotalOffset] = ${capacity}u;
   }`
       }),
-      createWGSLKernelNode<Parameters>(graph, {
+      createGroupStatisticsKernelNode<Parameters>(graph, {
         id: `${id}-dense-position-groups`,
         operation,
         variant: 'dense-position-groups',
@@ -307,7 +318,7 @@ ${keyDeclarations}`,
 
     // 5. Offsets of the first `capacity + 1` groups, the unclamped total, and per-position groups.
     nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
+      createGroupStatisticsKernelNode<Parameters>(graph, {
         id: `${id}-offsets`,
         operation,
         variant: 'offsets',
@@ -344,7 +355,7 @@ const CAPACITY: u32 = ${capacity}u;`,
   // 6. Group index per source row (every row appears once in the permutation).
   const rowGroups = u32('row-groups', rowCount);
   nodes.push(
-    createWGSLKernelNode<Parameters>(graph, {
+    createGroupStatisticsKernelNode<Parameters>(graph, {
       id: `${id}-row-groups`,
       operation,
       variant: 'row-groups',
@@ -362,7 +373,7 @@ const CAPACITY: u32 = ${capacity}u;`,
   // 7. Output keys and counts, one invocation per output row.
   if (dense) {
     nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
+      createGroupStatisticsKernelNode<Parameters>(graph, {
         id: `${id}-groups`,
         operation,
         variant: 'dense-groups',
@@ -378,7 +389,7 @@ const CAPACITY: u32 = ${capacity}u;`,
     );
   } else {
     nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
+      createGroupStatisticsKernelNode<Parameters>(graph, {
         id: `${id}-groups`,
         operation,
         variant: 'groups',

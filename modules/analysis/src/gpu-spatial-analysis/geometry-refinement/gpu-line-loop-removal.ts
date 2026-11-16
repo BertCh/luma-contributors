@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateOutlineOutputPasses} from '../outline-geometry/validate-outline-output-passes';
+import {
+  validateRefinementScratchByteLengths,
+  validateRefinementLineNodingScratch
+} from './refinement-storage-validation';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -10,13 +16,15 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import type {GPULineGeometryPort, GPUPackedGeometryPort} from '../../analysis-core/contracts/index';
-import type {GPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
 import {GPULineSplit} from '../line-split/gpu-line-split';
 import {
   validateCapacity,
   validateSinglePackedView,
-  validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 
@@ -49,6 +57,10 @@ export class GPULineLoopRemoval implements GPUCommandNodeProducer {
   constructor(props: GPULineLoopRemovalProps) {
     this.id = props.id ?? 'line-loop-removal';
     this.props = props;
+    resolveGPUSpatialContext(this.id, props.spatialContext);
+    validateSinglePackedView(props.lines.positions, ['float32x2'], this.id);
+    validateSinglePackedView(props.lines.lineOffsets, ['uint32'], this.id);
+    validateCapacity(this.id, 'lines.lineOffsets.length', props.lines.lineOffsets.length, 2);
     validateCapacity(this.id, 'intersectionCapacity', props.intersectionCapacity, 1);
     validateSinglePackedView(props.output.positions, ['float32x2'], this.id);
     validateSinglePackedView(props.output.lineOffsets, ['uint32'], this.id);
@@ -61,6 +73,10 @@ export class GPULineLoopRemoval implements GPUCommandNodeProducer {
     ) {
       throw new Error('Loop output capacity mismatch');
     }
+    validateOutlineOutputPasses(this.id, props.output, [
+      ['positions', 'sourceEdges'],
+      ['lineOffsets', 'status']
+    ]);
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
       props.lines.positions,
       props.lines.lineOffsets
@@ -70,11 +86,26 @@ export class GPULineLoopRemoval implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.lines.positions,
-      props.lines.lineOffsets,
-      ...Object.values(props.output)
-    ]);
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(
+        [props.lines.positions, props.lines.lineOffsets, ...Object.values(props.output)].map(
+          (view, index) => [`binding.${index}`, view]
+        )
+      )
+    );
+    validateRefinementLineNodingScratch(
+      graph,
+      id,
+      props.lines.positions.length,
+      props.lines.lineOffsets.length - 1,
+      props.intersectionCapacity
+    );
+    validateRefinementScratchByteLengths(graph, id, {
+      stack: (props.lines.positions.length + props.intersectionCapacity * 8) * 16,
+      lineState: (props.lines.lineOffsets.length - 1) * 8
+    });
     const lineCount = props.lines.lineOffsets.length - 1;
     const pieceCapacity = lineCount + 4 * props.intersectionCapacity;
     const vertexCapacity = props.lines.positions.length + 8 * props.intersectionCapacity;

@@ -22,6 +22,16 @@ import {
   validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateCapacity} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  validateCellDispatchBindings,
+  validateCellDispatchOutputs,
+  validateCellReadWriteDispatch,
+  getCellPackedFields
+} from '../cell-indexing/cell-dispatch-validation';
+import type {GPUCellFamily} from '../cell-indexing/cell-index-families';
+import {S2_GEOMETRY_WGSL} from '../cell-indexing/gpu-cell-geometry';
+import {S2_NEIGHBORS_WGSL} from '../cell-topology/s2-neighbor-wgsl';
 import {CELL_KEY_WGSL} from '../cell-aggregation/cell-keys';
 import {H3_BOUNDARY_WGSL} from '../cell-indexing/h3-boundary-wgsl';
 import {H3_NEIGHBOR_WGSL} from '../cell-topology/h3-neighbor-wgsl';
@@ -38,16 +48,18 @@ import type {
 } from '../../analysis-core/ring-assembly/index';
 
 const OPERATION = 'GPUCellSetOutline';
+/** Candidate endpoint and output scalar indices use uint32 arithmetic. */
+const MAXIMUM_OUTLINE_COMPONENT_COUNT = 0xffffffff;
 
 /** Cell families {@link GPUCellSetOutline} supports. */
-export type GPUCellSetOutlineFamily = 'h3' | 'quadbin';
+export type GPUCellSetOutlineFamily = GPUCellFamily;
 
 /**
  * Most boundary edges one cell contributes: 10 for H3 (a hexagon has 6, a cell that crosses an
  * icosahedron edge up to 10 with distortion vertices) and 4 for Quadbin.
  */
 export const GPU_CELL_SET_OUTLINE_MAXIMUM_EDGES: Readonly<Record<GPUCellSetOutlineFamily, number>> =
-  {h3: 10, quadbin: 4};
+  {h3: 10, quadbin: 4, s2: 4};
 
 /**
  * Caller-owned, capacity-bounded boundary segments of {@link GPUCellSetOutline}.
@@ -63,7 +75,8 @@ export type GPUCellSetOutlineOutput = {
   /**
    * Edge index within the owning cell's boundary: the segment runs from boundary vertex `e` to
    * vertex `e + 1`. Quadbin: 0 north, 1 east, 2 south, 3 west. H3: the `e`-th edge of
-   * `cellToBoundary`, so distortion vertices split an edge in two segments.
+   * `cellToBoundary`, so distortion vertices split an edge in two segments. S2 uses the clockwise
+   * (00, 01, 11, 10) face-corner order of GPUCellGeometry.
    */
   edgeIndices: GraphDataView<'uint32'>;
   /** Segment endpoints `(lng0, lat0, lng1, lat1)` in degrees. */
@@ -90,7 +103,7 @@ export type GPUCellSetOutlineOutput = {
 export type GPUCellSetOutlineProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'cell-set-outline'`. */
   id?: string;
-  /** Cell family. */
+  /** Cell family. S2 rows must be at one level; neighbors use exact integer face transitions. */
   family: GPUCellSetOutlineFamily;
   /**
    * Cell keys as little-endian `(low, high)` words, sorted ascending by the 64-bit key with
@@ -146,7 +159,7 @@ export type GPUCellSetOutlineRings = {
 };
 
 /**
- * Boundary edges of a set of H3 or Quadbin cells, the `cellsToMultiPolygon` outline without ring
+ * Boundary edges of a set of H3, S2 or Quadbin cells, the `cellsToMultiPolygon` outline without ring
  * assembly.
  *
  * One thread per cell decodes the cell boundary, finds the neighbor across each edge, looks it up
@@ -169,7 +182,7 @@ export type GPUCellSetOutlineRings = {
  * rings (`GPUSegmentRingAssembly`).
  *
  * Consumes H3 or Quadbin cell keys only, so it takes no `spatialContext`. Its output segments are
- * longitude/latitude degrees, with great-circle edges for H3 and linear edges for Quadbin,
+ * longitude/latitude degrees, with great-circle edges for H3/S2 and linear edges for Quadbin,
  * declared by `edgeModel` and `outputSpatialContext`. Prepare global or antimeridian-crossing
  * rings with `GPULonLatPolygonPreparation` before linear consumers. The cells are not positions,
  * so there is nothing to validate or project.
@@ -191,15 +204,17 @@ export class GPUCellSetOutline implements GPUCommandNodeProducer {
    */
   readonly interiorSide: GPUSegmentRingAssemblyInteriorSide;
 
+  private readonly ringAssembly?: GPUSegmentRingAssembly;
+
   constructor(props: GPUCellSetOutlineProps) {
     this.id = props.id ?? 'cell-set-outline';
     this.props = props;
     const id = this.id;
-    if (props.family !== 'h3' && props.family !== 'quadbin') {
-      throw new Error(`${id} family must be 'h3' or 'quadbin'`);
+    if (!['h3', 'quadbin', 's2'].includes(props.family)) {
+      throw new Error(`${id} family must be 'h3', 'quadbin' or 's2'`);
     }
     this.edgeSlots = GPU_CELL_SET_OUTLINE_MAXIMUM_EDGES[props.family];
-    this.edgeModel = props.family === 'h3' ? 'great-circle' : 'linear';
+    this.edgeModel = props.family === 'quadbin' ? 'linear' : 'great-circle';
     this.outputSpatialContext = {
       ...GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT,
       edgeModel: this.edgeModel
@@ -211,9 +226,13 @@ export class GPUCellSetOutline implements GPUCommandNodeProducer {
     if (rows < 1) {
       throw new Error(`${id} needs at least one cell row`);
     }
-    if (rows * this.edgeSlots >= 0xffffffff) {
-      throw new Error(`${id} cells length times ${this.edgeSlots} must stay below 2^32`);
-    }
+    validateCapacity(
+      id,
+      'cells.length times edgeSlots times endpoint components',
+      rows * this.edgeSlots * 4,
+      1,
+      MAXIMUM_OUTLINE_COMPONENT_COUNT
+    );
     for (const [name, view] of [
       ['count', props.count],
       ['output.status.count', output.status.count],
@@ -241,6 +260,13 @@ export class GPUCellSetOutline implements GPUCommandNodeProducer {
     validateSinglePackedView(output.cells, ['uint32x2'], `${id} output.cells`);
     validatePackedUint32View(output.edgeIndices, `${id} output.edgeIndices`);
     validateSinglePackedView(output.endpoints, ['float32x4'], `${id} output.endpoints`);
+    validateCapacity(
+      id,
+      'output capacity times endpoint components',
+      capacity * 4,
+      1,
+      MAXIMUM_OUTLINE_COMPONENT_COUNT
+    );
     for (const [name, length] of [
       ['cells', output.cells.length],
       ['edgeIndices', output.edgeIndices.length],
@@ -259,11 +285,40 @@ export class GPUCellSetOutline implements GPUCommandNodeProducer {
         throw new Error(`${id} output.groups must have the same length as output.rows`);
       }
     }
+    validateCellDispatchOutputs(
+      id,
+      {...getCellPackedFields(output), ...getCellPackedFields(props.rings?.output ?? {}, 'rings')},
+      [
+        {
+          rows: output.rows,
+          cells: output.cells,
+          edgeIndices: output.edgeIndices,
+          endpoints: output.endpoints
+        },
+        {...output.status}
+      ]
+    );
+    // The optional group gather reads emitted row indices while writing the group column.
+    validateCellReadWriteDispatch(id, {rows: output.rows}, {groups: output.groups});
     validateGraphOutputsDisjointFromInputs(id, getOutputViews(output), [
       props.cells,
       props.count,
       props.groups
     ]);
+    this.ringAssembly = props.rings
+      ? new GPUSegmentRingAssembly({
+          id: `${id}-rings`,
+          endpoints: output.endpoints,
+          count: output.status.count,
+          groups: output.groups,
+          vertexTolerance: props.rings.vertexTolerance ?? GPU_CELL_SET_OUTLINE_VERTEX_TOLERANCE,
+          normalizeWinding: props.rings.normalizeWinding,
+          interiorSide: this.interiorSide,
+          // Outline segments are longitude/latitude degrees: compare turns with cos(latitude).
+          spatialContext: this.outputSpatialContext,
+          output: props.rings.output
+        })
+      : undefined;
   }
 
   /** Returns the edge classification, accept scan, write, total and publish nodes. */
@@ -272,6 +327,40 @@ export class GPUCellSetOutline implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, edgeSlots} = this;
     const {output, family} = props;
+    const scratch: [string, number][] = [
+      ['candidate endpoint scratch', props.cells.length * edgeSlots * 16],
+      ['outline scan scratch', props.cells.length * 4],
+      ['outline total scratch', 4]
+    ];
+    if (props.rings) {
+      const rings = props.rings.output;
+      const ringCapacity = rings.ringOffsets.length - 1;
+      scratch.push(
+        ['ring segment sort scratch', 2 ** Math.ceil(Math.log2(output.rows.length)) * 4],
+        ['ring counter scratch', 24],
+        ['ring statistics scratch', ringCapacity * 4]
+      );
+      if (rings.ringShells || rings.polygons) {
+        const leaves = 2 ** Math.ceil(Math.log2(ringCapacity));
+        scratch.push(
+          ['ring shell records', ringCapacity * 12],
+          ['ring bounds', ringCapacity * 16],
+          ['ring shell BVH', (2 * leaves - 1) * 8]
+        );
+      }
+    }
+    validateCellDispatchBindings(
+      graph,
+      id,
+      {
+        cells: props.cells,
+        count: props.count,
+        groups: props.groups,
+        ...getCellPackedFields(output, 'output'),
+        ...getCellPackedFields(props.rings?.output ?? {}, 'rings')
+      },
+      scratch
+    );
     validateGraphViewsBelongToGraph(id, graph, [
       props.cells,
       props.count,
@@ -330,7 +419,7 @@ ${CLASSIFY_COMMON_WGSL.replace(
     ? 'return groups[groupsOffset + neighborRow] == groups[groupsOffset + row];'
     : 'return true;'
 )}
-${isH3 ? H3_CLASSIFY_WGSL : QUADBIN_CLASSIFY_WGSL}`,
+${isH3 ? H3_CLASSIFY_WGSL : family === 's2' ? `${S2_GEOMETRY_WGSL}\n${S2_NEIGHBORS_WGSL}\n${S2_CLASSIFY_WGSL}` : QUADBIN_CLASSIFY_WGSL}`,
       body: `let validRows = ${props.count ? 'min(rowCount[rowCountOffset], ROWS)' : 'ROWS'};
   masks[masksOffset + index] = 0u;
   if (index < validRows) {
@@ -420,20 +509,7 @@ const OUTPUT_CAPACITY: u32 = ${capacity}u;`,
       body: 'total[totalOffset] = accepted[acceptedOffset + ROW_COUNT - 1u];'
     });
 
-    const ringNodes = props.rings
-      ? new GPUSegmentRingAssembly({
-          id: `${id}-rings`,
-          endpoints: output.endpoints,
-          count: output.status.count,
-          groups: output.groups,
-          vertexTolerance: props.rings.vertexTolerance ?? GPU_CELL_SET_OUTLINE_VERTEX_TOLERANCE,
-          normalizeWinding: props.rings.normalizeWinding,
-          interiorSide: this.interiorSide,
-          // Outline segments are longitude/latitude degrees: compare turns with cos(latitude).
-          spatialContext: this.outputSpatialContext,
-          output: props.rings.output
-        }).getCommandNodes(graph)
-      : [];
+    const ringNodes = this.ringAssembly?.getCommandNodes(graph) ?? [];
     return [
       classify,
       // Why not `GPUFlagOffsets`: it yields exclusive offsets, while the write kernel indexes the
@@ -606,6 +682,21 @@ fn outlineClassifyRow(row: u32, validRows: u32) {
     }
     if (!outlineHasSameSideNeighbor(row, neighbor, validRows)) {
       outlineEmit(row, edge, corners[edge], corners[(edge + 1u) % 4u]);
+    }
+  }
+}
+`;
+
+const S2_CLASSIFY_WGSL = /* wgsl */ `
+fn outlineClassifyRow(row: u32, validRows: u32) {
+  let key = outlineGetKey(row);
+  if (!dggs_s2_is_valid_cell_id(key)) { return; }
+  // Match GPUCellGeometry's clockwise (00, 01, 11, 10) corner order.
+  let neighborSlots = array<u32, 4>(0u, 3u, 1u, 2u);
+  for (var edge = 0u; edge < 4u; edge++) {
+    let neighbor = s2Neighbor(key, neighborSlots[edge]);
+    if (!outlineHasSameSideNeighbor(row, neighbor, validRows)) {
+      outlineEmit(row, edge, geometryGetVertex(key, edge), geometryGetVertex(key, (edge + 1u) % 4u));
     }
   }
 }

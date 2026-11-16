@@ -10,6 +10,7 @@ import {GPU_INEQUALITY_GLOBAL_SUMMARY_LENGTH} from './inequality-parameters';
 /** Packed graph values shared by both inequality operations; no oversized output tails. */
 export type InequalityOperationProps = {
   id?: string;
+  mode?: 'parallel' | 'reference';
   values: string;
   zoneIds: string;
   zoneCount: number;
@@ -61,6 +62,7 @@ export class GPUInequalityOperation extends GPUContributorOperation {
       createContributor: getView =>
         new GPUInequality({
           id,
+          mode: props.mode,
           values: getView<'float32'>('values'),
           zoneIds: getView<'uint32'>('zoneIds'),
           parameters: getView<'float32'>('parameters'),

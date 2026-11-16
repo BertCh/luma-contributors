@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateOutlineOutputPasses} from '../outline-geometry/validate-outline-output-passes';
+import {validateRefinementScratchByteLengths} from './refinement-storage-validation';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -13,8 +16,8 @@ import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-node
 import {EXACT_ORIENTATION_WGSL} from '../../analysis-core/kernels/exact-orientation-wgsl';
 import {
   validateSinglePackedView,
-  validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateCapacity,
+  validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getReadPointWGSL} from '../shared/spatial-wgsl-point-helpers';
 
@@ -99,12 +102,22 @@ fn compareNodes(leftRoot: u32, rightRoot: u32) -> i32 {
 }`;
 
 /** Normalizes points, lines, rings, polygons, multis and nested collections without flattening their structure. */
+/** Canonical comparisons use 64-entry private traversal stacks. */
+const MAXIMUM_NESTING_DEPTH = 64;
+
 export class GPUNormalizeGeometry implements GPUCommandNodeProducer {
   readonly id: string;
   readonly props: GPUNormalizeGeometryProps;
   constructor(props: GPUNormalizeGeometryProps) {
     this.id = props.id ?? 'normalize-geometry';
     this.props = props;
+    validateCapacity(
+      this.id,
+      'maximumNestingDepth',
+      props.maximumNestingDepth ?? MAXIMUM_NESTING_DEPTH,
+      1,
+      MAXIMUM_NESTING_DEPTH
+    );
     validateSinglePackedView(props.positions, ['float32x2'], this.id);
     validateSinglePackedView(props.nodes, ['uint32x4'], this.id);
     validateSinglePackedView(props.children, ['uint32'], this.id);
@@ -117,6 +130,10 @@ export class GPUNormalizeGeometry implements GPUCommandNodeProducer {
       props.nodes.length !== props.output.status.length
     )
       throw new Error('Canonical tree output size mismatch');
+    validateOutlineOutputPasses(this.id, props.output, [
+      ['positions', 'status'],
+      ['children', 'status']
+    ]);
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
       props.positions,
       props.nodes,
@@ -127,12 +144,19 @@ export class GPUNormalizeGeometry implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.positions,
-      props.nodes,
-      props.children,
-      ...Object.values(props.output)
-    ]);
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(
+        [props.positions, props.nodes, props.children, ...Object.values(props.output)].map(
+          (view, index) => [`binding.${index}`, view]
+        )
+      )
+    );
+    validateRefinementScratchByteLengths(graph, id, {
+      nodeScratch: props.nodes.length * 4,
+      childScratch: props.children.length * 4
+    });
     const holeFlags = createTransientView(
       graph,
       `${id}-hole-flags`,
@@ -266,10 +290,6 @@ status[statusOffset + node] = 0u;
   ): GPUCommandNode<Parameters>[] {
     const {props, id} = this;
     const maximumDepth = props.maximumNestingDepth ?? 64;
-    if (!Number.isInteger(maximumDepth) || maximumDepth < 1 || maximumDepth > 64) {
-      // maximumNestingDepth must be an integer from 1 to 64 (the comparison stacks hold 64 nodes).
-      throw new Error(`${id} maximumNestingDepth must be an integer from 1 to 64`);
-    }
     const nodeCount = props.nodes.length;
     const childCount = props.children.length;
     const view = (name: string, length: number) =>
@@ -278,6 +298,7 @@ status[statusOffset + node] = 0u;
     const heights = view('heights', nodeCount);
     const scratchChildren = view('scratch-children', childCount);
     const slotParents = view('slot-parents', childCount);
+    const roundState = view('round-state', 1);
     const nodeFields = `fn field(node: u32, component: u32) -> u32 { return nodes[nodesOffset + node * 4u + component]; }
 fn isLeaf(kind: u32) -> bool { return kind == 0u || kind == 2u || kind == 3u; }`;
     const nodes: GPUCommandNode<Parameters>[] = [
@@ -289,11 +310,13 @@ fn isLeaf(kind: u32) -> bool { return kind == 0u || kind == 2u || kind == 3u; }`
         bindings: [
           {name: 'nodes', view: props.nodes, type: 'u32', access: 'read'},
           {name: 'rounds', view: rounds, type: 'u32', access: 'read_write'},
-          {name: 'heights', view: heights, type: 'u32', access: 'read_write'}
+          {name: 'heights', view: heights, type: 'u32', access: 'read_write'},
+          {name: 'roundState', view: roundState, type: 'u32', access: 'read_write'}
         ],
         declarations: nodeFields,
         // Leaves (and unknown kinds, which the leaf pass failed) are finished in round 1.
-        body: `let kind = field(index, 0u);
+        body: `if (index == 0u) { roundState[roundStateOffset] = 2u; }
+let kind = field(index, 0u);
 let finished = kind > 7u || isLeaf(kind);
 rounds[roundsOffset + index] = select(0u, 1u, finished);
 heights[heightsOffset + index] = select(0u, 1u, finished);`
@@ -340,18 +363,19 @@ for (var child = 0u; child < count; child++) { slotParents[slotParentsOffset + f
             {name: 'nodes', view: props.nodes, type: 'u32', access: 'read'},
             {name: 'ordered', view: props.output.children, type: 'u32', access: 'read_write'},
             {name: 'scratch', view: scratchChildren, type: 'u32', access: 'read'},
-            {name: 'rounds', view: rounds, type: 'u32', access: 'read_write'},
+            {name: 'rounds', view: rounds, type: 'atomic<u32>', access: 'read_write'},
+            {name: 'roundState', view: roundState, type: 'u32', access: 'read'},
             {name: 'heights', view: heights, type: 'u32', access: 'read_write'},
             {name: 'status', view: props.output.status, type: 'u32', access: 'read_write'}
           ],
           declarations: `${nodeFields}
-const ROUND: u32 = ${round}u;
 const MAXIMUM_DEPTH: u32 = ${maximumDepth}u;`,
           // A node sorted in the previous round copies its ranked children back; a pending node
           // whose children all finished in earlier rounds computes its status and height.
-          body: `let kind = field(index, 0u); let first = field(index, 1u); let count = field(index, 2u);
+          body: `let ROUND = roundState[roundStateOffset];
+let kind = field(index, 0u); let first = field(index, 1u); let count = field(index, 2u);
 if (kind > 7u || isLeaf(kind)) { return; }
-let finishedRound = rounds[roundsOffset + index];
+let finishedRound = atomicLoad(&rounds[roundsOffset + index]);
 if (finishedRound != 0u) {
   if (finishedRound == ROUND - 1u && status[statusOffset + index] == 0u) {
     for (var child = select(0u, 1u, kind == 5u); child < count; child++) {
@@ -366,7 +390,7 @@ if (valid) {
   for (var child = 0u; child < count; child++) {
     let childNode = ordered[orderedOffset + first + child];
     if (childNode < index) {
-      let childRound = rounds[roundsOffset + childNode];
+      let childRound = atomicLoad(&rounds[roundsOffset + childNode]);
       if (childRound == 0u || childRound >= ROUND) { ready = false; }
     }
   }
@@ -383,7 +407,7 @@ if (valid) {
 if (height > MAXIMUM_DEPTH) { failed = true; }
 status[statusOffset + index] = select(0u, 2u, failed);
 heights[heightsOffset + index] = height;
-rounds[roundsOffset + index] = ROUND;`
+atomicStore(&rounds[roundsOffset + index], ROUND);`
         })
       );
       if (childCount > 0) {
@@ -400,14 +424,15 @@ rounds[roundsOffset + index] = ROUND;`
               {name: 'scratch', view: scratchChildren, type: 'u32', access: 'read_write'},
               {name: 'slotParents', view: slotParents, type: 'u32', access: 'read'},
               {name: 'rounds', view: rounds, type: 'u32', access: 'read'},
+              {name: 'roundState', view: roundState, type: 'u32', access: 'read'},
               {name: 'status', view: props.output.status, type: 'u32', access: 'read'}
             ],
             declarations: `${nodeFields}
-const ROUND: u32 = ${round}u;
 ${COMPARE_NODES_WGSL}`,
             // Descending order, ties kept in source order: a child's rank is the number of
             // siblings that compare greater, or equal with a smaller position.
-            body: `let parent = slotParents[slotParentsOffset + index];
+            body: `let ROUND = roundState[roundStateOffset];
+let parent = slotParents[slotParentsOffset + index];
 if (parent == 0xffffffffu || rounds[roundsOffset + parent] != ROUND || status[statusOffset + parent] != 0u) { return; }
 let first = field(parent, 1u); let count = field(parent, 2u);
 let start = select(0u, 1u, field(parent, 0u) == 5u);
@@ -424,6 +449,16 @@ scratch[scratchOffset + first + start + rank] = selected;`
           })
         );
       }
+      nodes.push(
+        createWGSLKernelNode(graph, {
+          id: `${id}-round-${round}-advance`,
+          operation: 'GPUNormalizeGeometry',
+          variant: 'collection-round-advance',
+          invocationCount: 1,
+          bindings: [{name: 'roundState', view: roundState, type: 'u32', access: 'read_write'}],
+          body: 'roundState[roundStateOffset] += 1u;'
+        })
+      );
     }
     // Collections that never finished (cycles or chains deeper than the bound) are invalid, and
     // the last round's ranked children are copied back.
@@ -438,6 +473,7 @@ scratch[scratchOffset + first + start + rank] = selected;`
           {name: 'ordered', view: props.output.children, type: 'u32', access: 'read_write'},
           {name: 'scratch', view: scratchChildren, type: 'u32', access: 'read'},
           {name: 'rounds', view: rounds, type: 'u32', access: 'read'},
+          {name: 'roundState', view: roundState, type: 'u32', access: 'read'},
           {name: 'status', view: props.output.status, type: 'u32', access: 'read_write'}
         ],
         declarations: nodeFields,
@@ -445,7 +481,7 @@ scratch[scratchOffset + first + start + rank] = selected;`
 if (kind > 7u || isLeaf(kind)) { return; }
 let finishedRound = rounds[roundsOffset + index];
 if (finishedRound == 0u) { status[statusOffset + index] = 2u; return; }
-if (finishedRound == ${lastRound}u && status[statusOffset + index] == 0u) {
+if (finishedRound + 1u == roundState[roundStateOffset] && status[statusOffset + index] == 0u) {
   for (var child = select(0u, 1u, kind == 5u); child < count; child++) {
     ordered[orderedOffset + first + child] = scratch[scratchOffset + first + child];
   }

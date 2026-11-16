@@ -15,21 +15,41 @@ import {
   type GPUForestInferenceModel
 } from '../../../src/dataframe-analysis/forest-inference/index';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
-import {readFloat32, readUint32, submitGraph} from '../../utils/gpu-contributor-test-utils';
+import {
+  createVectorView,
+  readFloat32,
+  readUint32,
+  submitGraph
+} from '../../utils/gpu-contributor-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
 import sklearnFixtures from './sklearn-fixtures.json';
 import handwrittenFixtures from './handwritten-fixtures.json';
 import {getNativeForestCases} from './native-model-cases';
+import {getZeroLeafReplayExpectation} from './forest-replay-expectations.test-utils';
 const {xgboostBinary, lightgbmBinary, tiedSklearn} = handwrittenFixtures;
 
 type ExpectedRow = {prediction: number; scores: number[]; leaves: number[]; valid?: boolean};
+
+it('preserves every output guard when empty forest input emits no commands', async () => {
+  const result = await runForest(readScikitLearnForestModel(tiedSklearn), [], []);
+  expect(result.predictions).toEqual([-777, -777]);
+  expect(result.validity).toEqual([777, 777]);
+  expect(result.scores).toEqual([-777, -777]);
+  expect(result.leaves).toEqual([777, 777]);
+});
 
 /** Builds with nonzero offsets and sentinel guards around EVERY input and output. */
 async function runForest(
   model: GPUForestInferenceModel,
   features: (number | null)[][],
   expected: ExpectedRow[],
-  options: {raster?: boolean; featureMajor?: boolean; replay?: boolean; minimal?: boolean} = {}
+  options: {
+    raster?: boolean;
+    featureMajor?: boolean;
+    replay?: boolean;
+    minimal?: boolean;
+    chunkLengths?: readonly number[];
+  } = {}
 ) {
   const testDevice = await getWebGPUTestDevice();
   requireTestDevice(testDevice);
@@ -73,11 +93,16 @@ async function runForest(
   const leaves = options.minimal
     ? undefined
     : upload(new Uint32Array(rowCount * model.treeCount).fill(777), 'uint32');
-  const packed = options.featureMajor
-    ? Array.from({length: model.featureCount}, (_, channel) =>
-        features.map(row => row[channel] ?? NaN)
-      ).flat()
-    : features.flatMap(row => row.map(value => value ?? NaN));
+  let rowBase = 0;
+  const packed = (options.chunkLengths ?? [rowCount]).flatMap(length => {
+    const batch = features.slice(rowBase, rowBase + length);
+    rowBase += length;
+    return options.featureMajor
+      ? Array.from({length: model.featureCount}, (_, channel) =>
+          batch.map(row => row[channel] ?? NaN)
+        ).flat()
+      : batch.flatMap(row => row.map(value => value ?? NaN));
+  });
   const source = upload(Float32Array.from(packed), 'float32');
   const bands = Array.from({length: model.featureCount}, (_, channel) => ({
     id: `band-${channel}`,
@@ -89,6 +114,26 @@ async function runForest(
     validity: upload(Uint32Array.from(features.map(row => Number(row[channel] !== null))), 'uint32')
       .view
   }));
+  const split = <Format extends 'float32' | 'uint32'>(
+    view: GraphDataView<Format>,
+    width: number
+  ) => {
+    if (!options.chunkLengths) return view;
+    let firstRow = 0;
+    return createVectorView(
+      view.buffer.id,
+      view.format,
+      options.chunkLengths.map(rows => {
+        const chunk = graph.createDataView(view.buffer, {
+          format: view.format,
+          byteOffset: view.byteOffset + firstRow * width * 4,
+          length: rows * width
+        });
+        firstRow += rows;
+        return chunk;
+      })
+    );
+  };
   const contributor = new GPUForestInference({
     model,
     rowCount,
@@ -109,15 +154,15 @@ async function runForest(
           }
         }
       : {
-          features: source.view,
+          features: split(source.view, model.featureCount),
           featureLayout: options.featureMajor ? 'feature-major' : 'row-major'
         }),
-    mask: mask.view,
+    mask: split(mask.view, 1),
     output: {
-      predictions: predictions.view,
-      validity: validity.view,
-      scores: scores?.view,
-      leafIndices: leaves?.view
+      predictions: split(predictions.view, 1),
+      validity: split(validity.view, 1),
+      scores: scores ? split(scores.view, model.outputCount) : undefined,
+      leafIndices: leaves ? split(leaves.view, model.treeCount) : undefined
     }
   });
   graph.add(contributor);
@@ -127,7 +172,7 @@ async function runForest(
   const sourceReads = [source.buffer, modelNodes.buffer, modelTrees.buffer, modelLeaves.buffer].map(
     buffer => vi.spyOn(buffer, 'readAsync')
   );
-  async function check(rows: ExpectedRow[]) {
+  async function check(rows: ExpectedRow[], phase: string) {
     submitGraph(device, compiled, undefined);
     const actualPredictions = await readFloat32(predictions.buffer, rowCount + 2);
     const actualValidity = await readUint32(validity.buffer, rowCount + 2);
@@ -158,9 +203,10 @@ async function runForest(
         row.scores.forEach((score, channel) => {
           const actual = actualScores[1 + index * model.outputCount + channel];
           if (valid)
-            expect(Math.abs(actual - score)).toBeLessThanOrEqual(
-              2e-5 * Math.max(1, Math.abs(score))
-            );
+            expect(
+              Math.abs(actual - score),
+              `${phase}, ${model.transform}, row ${index}, channel ${channel}: ${actual} vs ${score}`
+            ).toBeLessThanOrEqual(2e-5 * Math.max(1, Math.abs(score)));
           else expect(Number.isNaN(actual)).toBe(true);
         });
       if (actualLeaves)
@@ -168,9 +214,15 @@ async function runForest(
           actualLeaves.slice(1 + index * model.treeCount, 1 + (index + 1) * model.treeCount)
         ).toEqual(valid ? row.leaves : new Array(model.treeCount).fill(0xffffffff));
     });
+    return {
+      predictions: actualPredictions,
+      validity: actualValidity,
+      scores: actualScores,
+      leaves: actualLeaves
+    };
   }
   try {
-    await check(expected);
+    const result = await check(expected, 'initial inference');
     if (options.replay) {
       // Rewrite controls and the mask in place; a masked padding row cannot retain old leaves/scores.
       const controls = getGPUForestInferenceParameterValues({
@@ -184,27 +236,32 @@ async function runForest(
       changedMask[rowCount] = 0;
       mask.buffer.write(changedMask);
       await check(
-        expected.map((row, index) => (index === rowCount - 1 ? {...row, valid: false} : row))
+        expected.map((row, index) => (index === rowCount - 1 ? {...row, valid: false} : row)),
+        'changed mask replay'
       );
       // The same compiled traversal can consume changed caller-owned leaf weights and parameters.
       const changedLeaves = new Float32Array(model.leafValues.length + 2).fill(-777);
       changedLeaves.set(new Float32Array(model.leafValues.length), 1);
       modelLeaves.buffer.write(changedLeaves);
-      const baseScores = new Array<number>(model.outputCount).fill(0);
-      baseScores[0] = 1;
-      guardedControls.set(getGPUForestInferenceParameterValues({baseScores}), 1);
+      const replayExpected = getZeroLeafReplayExpectation(model);
+      guardedControls.set(
+        getGPUForestInferenceParameterValues({baseScores: replayExpected.baseScores}),
+        1
+      );
       parameters.buffer.write(guardedControls);
       await check(
         expected.map((row, index) => ({
           ...row,
           valid: index === rowCount - 1 ? false : row.valid,
-          prediction: 0,
-          scores: baseScores
-        }))
+          prediction: replayExpected.prediction,
+          scores: replayExpected.scores
+        })),
+        'zero leaves and changed base scores replay'
       );
     }
     expect(pipelineCreation.mock.calls.length).toBe(pipelineCount);
     for (const read of sourceReads) expect(read).not.toHaveBeenCalled();
+    return result;
   } finally {
     for (const read of sourceReads) read.mockRestore();
     pipelineCreation.mockRestore();
@@ -341,3 +398,27 @@ it('invalidates a visited infinity and a caller-shortened traversal bound', asyn
   model.maximumDepth = 0;
   await runForest(model, [[0]], [invalid]);
 });
+
+for (const mode of ['row-major', 'feature-major', 'raster'] as const) {
+  for (const fixture of sklearnFixtures.cases.filter(item => item.features.length >= 7)) {
+    it(`GPUForestInference ${mode} ${fixture.name} matches packed, uneven chunks and linked replay expectations`, async () => {
+      const model = readScikitLearnForestModel(fixture.model);
+      const expected = fixture.predictions.map((prediction, row) => ({
+        prediction,
+        scores: fixture.scores[row],
+        leaves: fixture.leafIndices[row]
+      }));
+      const options = {
+        raster: mode === 'raster',
+        featureMajor: mode === 'feature-major',
+        replay: true
+      };
+      const packed = await runForest(model, fixture.features, expected, options);
+      const chunked = await runForest(model, fixture.features, expected, {
+        ...options,
+        chunkLengths: [1, 3, fixture.features.length - 4]
+      });
+      expect(chunked).toEqual(packed);
+    });
+  }
+}

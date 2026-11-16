@@ -6,9 +6,11 @@ import type {
   GPUCommandGraph,
   GPUCommandNode,
   GPUCommandNodeProducer,
-  GraphDataView
+  GraphDataView,
+  GraphVectorView
 } from '@luma.gl/graph/gpu-core';
 import {
+  validateCommandNodeBudget,
   validateCapacity,
   validateFiniteNumber,
   validateRequirement,
@@ -19,9 +21,29 @@ import {
   GPU_POINT_CLOUD_MAXIMUM_GROUND_RADIUS_COUNT
 } from './pointcloud-limits';
 import {createTransientView} from '@luma.gl/graph/gpu-core';
-import {getPointCloudKernelNodes} from './pointcloud-kernel-nodes';
+import {validatePointCloudScratchBindings} from './pointcloud-kernel-nodes';
 import {getPointCloudCellSource, validatePointCloudGrid} from './gpu-pointcloud-surfaces';
 import type {PointCloudRasterGrid} from './gpu-pointcloud-surfaces';
+
+import {
+  planGraphChunkDispatch,
+  validateGraphChunkDispatchBindings,
+  validateGraphChunkBindingRanges,
+  type GraphChunkDispatchPlan
+} from '../analysis-core/kernels/graph-chunk-dispatch';
+import {
+  getPointCloudChunkKernelNodes,
+  getPointCloudRuntimeKernelNodes,
+  validatePointCloudChunkViews,
+  validatePointCloudDispatchParameterBindings
+} from './pointcloud-chunk-kernel-nodes';
+
+import {validatePointCloudGridParameters} from './pointcloud-grid-parameters';
+
+// Internal raster scratch bit: a cell has no original support; never published directly.
+const POINT_CLOUD_GROUND_UNSUPPORTED_CELL = 4;
+// Bounded morphology and classification need at most nine uint32 dispatch words.
+const POINT_CLOUD_GROUND_MAXIMUM_DISPATCH_WORD_COUNT = 9;
 
 export type GPUPointCloudGroundSettings = {
   /** Nonnegative elevation threshold added at every stage, in z units. */
@@ -68,11 +90,13 @@ export function getGPUPointCloudGroundParameterValues(
 }
 
 export type GPUPointCloudGroundProps = {
+  /** Runtime origin/cellSize; supplied stage parameters still override threshold defaults. */
+  gridParameters?: GraphDataView<'float32'>;
   /** Per-frame stage thresholds; overrides initialThreshold, slope and maximumThreshold. */
   parameters?: GraphDataView<'float32'>;
   id?: string;
-  positions: GraphDataView<'float32x3'>;
-  classifications: GraphDataView<'uint32'>;
+  positions: GraphDataView<'float32x3'> | GraphVectorView<'float32x3'>;
+  classifications: GraphDataView<'uint32'> | GraphVectorView<'uint32'>;
   grid: PointCloudRasterGrid;
   /** Minimum elevation per occupied cell, before classification. */
   minimumSurface: GraphDataView<'float32'>;
@@ -97,16 +121,16 @@ export type GPUPointCloudGroundProps = {
   slope: number;
   /** Upper limit of every stage's threshold. */
   maximumThreshold: number;
-  groundMask: GraphDataView<'uint32'>;
+  groundMask: GraphDataView<'uint32'> | GraphVectorView<'uint32'>;
   /** Ground becomes LAS class 2; rejected existing class 2 becomes class 1; other classes survive. */
-  outputClassifications: GraphDataView<'uint32'>;
+  outputClassifications: GraphDataView<'uint32'> | GraphVectorView<'uint32'>;
   /**
    * Per-point bit set, zero when clean. Bit 1 (`GPU_POINT_CLOUD_GROUND_STATUS_UNSUPPORTED`): the
    * point is outside the grid, not finite, or in a cell with no coverage. Bit 2
    * (`..._INCOMPLETE_WINDOW`): the final morphology window around the point's cell reached past the
    * covered cells. Bit 1 excludes bit 2. Bits above 2 are zero.
    */
-  status: GraphDataView<'uint32'>;
+  status: GraphDataView<'uint32'> | GraphVectorView<'uint32'>;
 };
 
 /** `GPUPointCloudGround` status bit 1: outside the grid, not finite, or an uncovered cell. */
@@ -119,13 +143,16 @@ export const GPU_POINT_CLOUD_GROUND_STATUS_INCOMPLETE_WINDOW = 2;
  * threshold grows with the radius increment, not with the window-width increment of Zhang et al.
  * (2003): see the `slope` prop. Per-frame: input contents and parameters (stage thresholds).
  * Compile-time: grid, radii and view shapes. Without parameters, threshold props retain their
- * constructor-time behavior.
+ * constructor-time behavior. Point rows and outputs accept identical aligned chunks; the raster stays packed.
  */
 export class GPUPointCloudGround implements GPUCommandNodeProducer {
   readonly id: string;
+  readonly estimatedCommandNodeCount: number;
+  private readonly chunkPlan: GraphChunkDispatchPlan;
   constructor(readonly props: GPUPointCloudGroundProps) {
     this.id = props.id ?? 'gpu-pointcloud-ground';
     validatePointCloudGrid(props.grid, this.id);
+    validatePointCloudGridParameters(this.id, props.gridParameters);
     validateCapacity(
       this.id,
       'radii.length',
@@ -179,22 +206,59 @@ export class GPUPointCloudGround implements GPUCommandNodeProducer {
       props.positions.length
     );
     validateViewLength(this.id, 'status', props.status, props.positions.length);
+    this.chunkPlan = planGraphChunkDispatch(this.id, {
+      positions: props.positions,
+      classifications: props.classifications,
+      groundMask: props.groundMask,
+      outputClassifications: props.outputClassifications,
+      status: props.status
+    });
+    validatePointCloudChunkViews(
+      this.id,
+      this.chunkPlan,
+      ['positions', 'classifications'],
+      ['groundMask', 'outputClassifications', 'status'],
+      {
+        minimumSurface: props.minimumSurface,
+        coverage: props.coverage,
+        parameters: props.parameters,
+        gridParameters: props.gridParameters
+      },
+      [
+        {
+          inputNames: ['positions'],
+          outputNames: ['groundMask', 'status'],
+          inputs: {parameters: props.parameters, gridParameters: props.gridParameters}
+        },
+        {inputNames: ['classifications', 'groundMask'], outputNames: ['outputClassifications']}
+      ]
+    );
+    this.estimatedCommandNodeCount =
+      4 * props.radii.length + (props.radii.length + 2) * (1 + this.chunkPlan.nonemptyChunkCount);
+    validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {
-      positions,
-      classifications,
-      grid,
+    const {grid, minimumSurface, coverage, radii, parameters, gridParameters} = this.props;
+    if (!this.chunkPlan.nonemptyChunkCount) return [];
+    validateGraphChunkDispatchBindings(graph, this.id, this.chunkPlan);
+    validateGraphChunkBindingRanges(graph, this.id, {
       minimumSurface,
       coverage,
-      radii,
-      groundMask,
-      outputClassifications,
-      status,
-      parameters
-    } = this.props;
+      parameters,
+      gridParameters
+    });
+    validatePointCloudScratchBindings(graph, this.id, {
+      'raster morphology scratch': minimumSurface.length * 4
+    });
+    validatePointCloudDispatchParameterBindings(
+      graph,
+      this.id,
+      POINT_CLOUD_GROUND_MAXIMUM_DISPATCH_WORD_COUNT,
+      1
+    );
+    const rowViews = this.chunkPlan.chunks[0].views;
     const erosion = createTransientView(
       graph,
       `${this.id}-erosion`,
@@ -219,23 +283,23 @@ export class GPUPointCloudGround implements GPUCommandNodeProducer {
       'uint32',
       minimumSurface.length
     );
-    const masks = [0, 1].map(value =>
-      createTransientView(graph, `${this.id}-mask-${value}`, 'uint32', positions.length)
-    );
-    const nodes = getPointCloudKernelNodes(graph, {
+    const groundMask = rowViews['groundMask'] as GraphDataView<'uint32'>;
+    const status = rowViews['status'] as GraphDataView<'uint32'>;
+    const nodes = getPointCloudChunkKernelNodes(graph, {
       id: `${this.id}-initialize`,
-      length: positions.length,
+      length: this.props.positions.length,
+      plan: this.chunkPlan,
       inputs: {},
-      outputs: {mask: masks[0]},
-      body: 'writeMask(index, 1u);'
+      outputs: {groundMask},
+      body: 'writeGroundMask(index, 1u);'
     });
-    for (let iteration = 0; iteration < radii.length; iteration++) {
-      const radius = radii[iteration];
-      for (const operation of ['erode', 'dilate'] as const) {
+    for (const [iteration, radius] of radii.entries()) {
+      for (const operation of ['erode', 'dilate'] as const)
         nodes.push(
-          ...getPointCloudKernelNodes(graph, {
+          ...getPointCloudRuntimeKernelNodes(graph, {
             id: `${this.id}-${operation}-${iteration}`,
             length: minimumSurface.length,
+            runtimeWords: [radius],
             inputs: {
               surface: operation === 'erode' ? minimumSurface : erosion,
               coverage,
@@ -246,9 +310,10 @@ export class GPUPointCloudGround implements GPUCommandNodeProducer {
                 ? {result: erosion, support: erosionSupport}
                 : {result: opening, support},
             body: `let column = i32(index % ${grid.width}u); let row = i32(index / ${grid.width}u);
+let radius = i32(readDispatchParameter(0u));
 var value = ${operation === 'erode' ? '' : '-'}3.402823e38; var count = 0u; var complete = true;
-for (var vertical = -${radius}; vertical <= ${radius}; vertical++) {
-  for (var horizontal = -${radius}; horizontal <= ${radius}; horizontal++) {
+for (var vertical = -radius; vertical <= radius; vertical++) {
+  for (var horizontal = -radius; horizontal <= radius; horizontal++) {
     let otherColumn = column + horizontal; let otherRow = row + vertical;
     if (otherColumn < 0 || otherColumn >= ${grid.width} || otherRow < 0 || otherRow >= ${grid.height}) { continue; }
     let other = u32(otherRow) * ${grid.width}u + u32(otherColumn);
@@ -257,49 +322,59 @@ for (var vertical = -${radius}; vertical <= ${radius}; vertical++) {
     value = ${operation === 'erode' ? 'min' : 'max'}(value, readSurface(other)); count++;
   }
 }
+let fullSupport = (2u * u32(radius) + 1u) * (2u * u32(radius) + 1u);
 writeResult(index, select(0.0, value, count > 0u));
-writeSupport(index, select(${GPU_POINT_CLOUD_GROUND_STATUS_INCOMPLETE_WINDOW}u, 0u, count == ${(2 * radius + 1) ** 2}u && complete));`
+writeSupport(index, select(${GPU_POINT_CLOUD_GROUND_STATUS_INCOMPLETE_WINDOW}u, 0u, count == fullSupport && complete) | select(0u, ${POINT_CLOUD_GROUND_UNSUPPORTED_CELL}u, readCoverage(index) == 0u));`
           })
         );
-      }
       const threshold = Math.min(
         this.props.maximumThreshold,
         this.props.initialThreshold +
           this.props.slope * grid.cellSize * (radius - (radii[iteration - 1] ?? 0))
       );
-      const final = iteration === radii.length - 1;
+      const thresholdWord = new Uint32Array(new Float32Array([threshold]).buffer)[0];
       nodes.push(
-        ...getPointCloudKernelNodes(graph, {
+        ...getPointCloudChunkKernelNodes(graph, {
           id: `${this.id}-classify-${iteration}`,
-          length: positions.length,
+          length: this.props.positions.length,
+          plan: this.chunkPlan,
+          runtimeWords: [
+            iteration,
+            thresholdWord,
+            ...[this.props.initialThreshold, this.props.slope, this.props.maximumThreshold].map(
+              value => new Uint32Array(new Float32Array([value]).buffer)[0]
+            ),
+            radius - (radii[iteration - 1] ?? 0)
+          ],
           inputs: {
-            positions,
+            positions: rowViews['positions'] as GraphDataView<'float32x3'>,
             opening,
-            coverage,
-            previous: masks[iteration % 2],
+            support,
             ...(parameters ? {parameters} : {}),
-            ...(final ? {support} : {})
+            ...(gridParameters ? {gridParameters} : {})
           },
-          outputs: final ? {groundMask, status} : {next: masks[(iteration + 1) % 2]},
+          outputs: {groundMask, status},
           body: `let position = readPositions(index);
-${getPointCloudCellSource(grid)}
-let valid = inside && all(abs(position) <= vec3f(3.402823e38)) && readCoverage(cellIndex) != 0u;
-let ground = valid && readPrevious(index) != 0u && position.z - readOpening(cellIndex) <= ${parameters ? `readParameters(${iteration}u)` : Math.fround(threshold)};
-${
-  final
-    ? `writeGroundMask(index, u32(ground));
-writeStatus(index, select(${GPU_POINT_CLOUD_GROUND_STATUS_UNSUPPORTED}u, readSupport(cellIndex), valid));`
-    : 'writeNext(index, u32(ground));'
-}`
+${getPointCloudCellSource(grid, 'position', Boolean(gridParameters))}
+let valid = inside && all(abs(position) <= vec3f(3.402823e38)) && (readSupport(cellIndex) & ${POINT_CLOUD_GROUND_UNSUPPORTED_CELL}u) == 0u;
+let ground = valid && readGroundMask(index) != 0u && position.z - readOpening(cellIndex) <= ${parameters ? 'readParameters(readDispatchParameter(0u))' : gridParameters ? 'min(bitcast<f32>(readDispatchParameter(4u)), bitcast<f32>(readDispatchParameter(2u)) + bitcast<f32>(readDispatchParameter(3u)) * readGridParameters(3u) * f32(readDispatchParameter(5u)))' : 'bitcast<f32>(readDispatchParameter(1u))'};
+writeGroundMask(index, u32(ground));
+writeStatus(index, select(${GPU_POINT_CLOUD_GROUND_STATUS_UNSUPPORTED}u, readSupport(cellIndex) & ${GPU_POINT_CLOUD_GROUND_STATUS_INCOMPLETE_WINDOW}u, valid));`
         })
       );
     }
     nodes.push(
-      ...getPointCloudKernelNodes(graph, {
+      ...getPointCloudChunkKernelNodes(graph, {
         id: `${this.id}-classes`,
-        length: positions.length,
-        inputs: {classifications, groundMask},
-        outputs: {outputClassifications},
+        length: this.props.positions.length,
+        plan: this.chunkPlan,
+        inputs: {
+          classifications: rowViews['classifications'] as GraphDataView<'uint32'>,
+          groundMask
+        },
+        outputs: {
+          outputClassifications: rowViews['outputClassifications'] as GraphDataView<'uint32'>
+        },
         body: `let original = readClassifications(index);
 writeOutputClassifications(index, select(select(original, 1u, original == 2u), 2u, readGroundMask(index) != 0u));`
       })

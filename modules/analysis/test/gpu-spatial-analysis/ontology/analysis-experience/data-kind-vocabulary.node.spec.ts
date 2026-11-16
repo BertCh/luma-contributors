@@ -176,200 +176,13 @@ describe('operator kind supplements', () => {
   const catalogue = getGPUAnalysisOperatorCatalog();
   const catalogueByName = new Map(catalogue.map(operator => [operator.exportName, operator]));
 
-  const BASELINE_OPERATORS = [
-    'GPUQuantileLISA',
-    'GPUDorlingCartogram',
-    'addExcessRiskRecipe',
-    'addSpatialRateRecipe',
-    'GPUNestedInterpolationValidation',
-    'GPUGeometryMeasures',
-    'GPUShapeDescriptors',
-    'GPUMinimumBounds',
-    'GPUMinimumClearance',
-    'GPULabelPoint',
-    'GPUGeographicDistribution',
-    'GPUGeodesicPairs',
-    'GPUGeodesicDestination',
-    'GPULocalFrameProjection',
-    'GPUAffineTransform',
-    'GPUGeometryOrientation',
-    'GPUGeometryCleanup',
-    'GPUVertexSnap',
-    'GPUOffsetCurve',
-    'GPUGridGenerator',
-    'GPUShapeGenerator',
-    'GPUDotDensity',
-    'GPURandomPointsInPolygon',
-    'GPURandomPointsOnLine',
-    'GPUPolygonTriangulation',
-    'GPUOutlineGeometry',
-    'GPUGeometryPredicates',
-    'GPUGeometryValidity',
-    'GPUCoverageValidity',
-    'GPUGreatCircleArcs',
-    'GPULineChunk',
-    'GPULineSegmentize',
-    'GPULineSmooth',
-    'GPULineSimplification',
-    'GPULineMerge',
-    'GPULineClipByPolygon',
-    'GPUSharedPaths',
-    'GPURectangleClip',
-    'GPULinearReferencing',
-    'GPULineLocate',
-    'GPUSegmentIntersection',
-    'GPUCoverageDissolve',
-    'GPUCoverageSimplification',
-    'GPUHilbertKeys',
-    'GPUSpatialJoinCandidates',
-    'GPUSpatialJoinPrepared',
-    'GPUPointInPolygonJoin',
-    'GPUNearestFeatureJoin',
-    'GPUBufferSelection',
-    'GPUOffsetExpansion',
-    'GPUBoundsFilter',
-    'GPUNeighborSearch',
-    'GPUContiguityWeights',
-    'GPULatticeWeights',
-    'GPUNearestFeatureWeights',
-    'GPUSpatialWeightsTransform',
-    'GPUSpatialWeightsAlgebra',
-    'GPUSpatialWeightsSummary',
-    'GPUSpatialWeightsTranspose',
-    'GPUSpatialWeightsValidation',
-    'GPUChunkedSpatialWeightsTransform',
-    'GPUChunkedSpatialWeightsAlgebra',
-    'GPUChunkedSpatialWeightsTranspose',
-    'GPUChunkedSpatialWeightsValidation',
-    'GPUSpatialLag',
-    'GPUMapColoring',
-    'GPUPointToCell',
-    'GPUCellGeometry',
-    'GPUCellTopology',
-    'GPUCellCompaction',
-    'GPUCellGridPath',
-    'GPUCellMeasures',
-    'GPUCellCover',
-    'GPUCellAggregation',
-    'GPUCellRollup',
-    'GPUCellPyramid',
-    'GPUCellLevelSelection',
-    'GPUCellSetOutline',
-    'GPUCellTableCompare',
-    'GPUPointDensity',
-    'GPUKernelDensity',
-    'GPULineDensity',
-    'GPULineLengthPerPolygon',
-    'GPUInverseDistanceWeighting',
-    'GPUKriging',
-    'GPUFocalStatistics',
-    'GPUZonalStatistics',
-    'GPURegionMask',
-    'GPUPickRegionMask',
-    'GPURegionStatistics',
-    'GPUSpatialClustering',
-    'GPUSpatialKMeans',
-    'GPUSpatialWeightsMinimumSpanningTree',
-    'GPUSkaterRegions',
-    'GPURegionPartitionEvaluation',
-    'GPUGroupGeometry',
-    'GPUGroupConvexHull',
-    'GPULocalOutlierFactor',
-    'GPUSimilarLocations',
-    'GPUGlobalSpatialStatistics',
-    'GPUHotSpotAnalysis',
-    'GPULocalMoran',
-    'GPULocalPermutationTest',
-    'GPUGlobalPermutationTest',
-    'GPUNeighborhoodSummary',
-    'GPUEmpiricalBayesRates',
-    'GPUSpatialEmpiricalBayesRates',
-    'GPUAssuncaoReisStandardization',
-    'GPUMultipleTestingAdjustment',
-    'GPUSpatialScanStatistic',
-    'GPUKnoxTest',
-    'GPUMantelTest',
-    'GPUOrdinaryLeastSquares',
-    'GPUSpatialRegressionDiagnostics',
-    'GPUSpatialTwoStageLeastSquares',
-    'GPUSpatialErrorGM',
-    'GPUSpatialLagMaximumLikelihood',
-    'GPUSpatialErrorMaximumLikelihood',
-    'GPUSpatialWeightsTraces',
-    'GPUSpatialLagImpacts',
-    'GPUGeographicallyWeightedRegression',
-    'GPUGeographicallyWeightedRegressionNonstationarityTest',
-    'GPUClassAssignment',
-    'GPUClassificationFit',
-    'GPUTransitionMatrix',
-    'GPUSpatialMarkov',
-    'GPULISAMarkov',
-    'GPUTransitionDiagnostics',
-    'GPUEmergingHotSpots',
-    'GPUCatchmentAccessibility',
-    'GPUHuffTradeAreas',
-    'GPUSegregation',
-    'GPUArealInterpolation',
-    'GPUPycnophylactic',
-    'GPUTrajectoryMetrics',
-    'GPUTrajectoryPlayhead',
-    'GPUTrajectoryResample',
-    'GPUZoneEvents',
-    'GPUTrajectoryEncounters',
-    'GPUTrajectoryClosestApproach',
-    'GPUTrackSimilarity',
-    'addClockEncounters',
-    'addChangeOfSupportRecipe',
-    'addClusterAndOutlineRecipe',
-    'addFleetDwellZoneEventsRecipe',
-    'addHotSpotAnalysisRecipe',
-    'addPeriodComparisonRecipe',
-    'addRateClusterMapRecipe',
-    'addSpaceTimeHotSpotsRecipe',
-    'addSpatialRegressionRecipe',
-    'addStraightLineCatchmentsRecipe'
-  ];
-  // The operators whose catalogue records had no kinds when the supplement rows were written. Other
-  // sessions add operators often, so an operator outside this list that resolves as unknown is
-  // reported, not failed.
-  it('resolves every baseline operator to catalogue, supplement or mixed kinds', () => {
-    const unresolved = BASELINE_OPERATORS.filter(name => {
+  it('populates every static kind record in the raw catalogue', () => {
+    for (const [name, kinds] of Object.entries(GPU_ANALYSIS_OPERATOR_KIND_SUPPLEMENTS)) {
       const operator = catalogueByName.get(name);
-      return !operator || resolveGPUAnalysisOperatorKinds(operator).source === 'unknown';
-    });
-    expect(
-      unresolved,
-      `baseline operators that are missing or unknown: ${unresolved.join(', ')}`
-    ).toEqual([]);
-    const baseline = new Set<string>(BASELINE_OPERATORS);
-    const newlyUnknown = catalogue
-      .filter(
-        operator =>
-          !baseline.has(operator.exportName) &&
-          resolveGPUAnalysisOperatorKinds(operator).source === 'unknown'
-      )
-      .map(operator => operator.exportName);
-    if (newlyUnknown.length > 0) {
-      console.info(
-        `operators added since the baseline with no kinds and no supplement row: ${newlyUnknown.join(', ')}`
-      );
+      expect(operator, `stale kind record: ${name}`).toBeDefined();
+      expect(operator?.inputs, `${name} raw inputs`).toEqual(kinds.inputs);
+      expect(operator?.outputs, `${name} raw outputs`).toEqual(kinds.outputs);
     }
-    // Every baseline operator has a row; a row is the only way one of them can resolve.
-    for (const name of BASELINE_OPERATORS) {
-      expect(Object.hasOwn(GPU_ANALYSIS_OPERATOR_KIND_SUPPLEMENTS, name), name).toBe(true);
-    }
-  });
-
-  it('has no row for an operator that is absent or that the catalogue describes on both sides', () => {
-    const absent = Object.keys(GPU_ANALYSIS_OPERATOR_KIND_SUPPLEMENTS).filter(
-      name => !catalogueByName.has(name)
-    );
-    expect(absent, `stale rows, operator not in the catalogue: ${absent.join(', ')}`).toEqual([]);
-    const redundant = Object.keys(GPU_ANALYSIS_OPERATOR_KIND_SUPPLEMENTS).filter(name => {
-      const operator = catalogueByName.get(name);
-      return operator && operator.inputs.length > 0 && operator.outputs.length > 0;
-    });
-    expect(redundant, `stale rows, catalogue now has kinds: ${redundant.join(', ')}`).toEqual([]);
   });
 
   it('uses only valid kinds, each at most once, with outputs empty only for handle operators', () => {
@@ -391,13 +204,22 @@ describe('operator kind supplements', () => {
     }
   });
 
-  it('supplements the baseline operators, all from the gpu-spatial-analysis entry point', () => {
+  it('records individual contracts across every added entry point', () => {
     const supplemented = catalogue.filter(operator =>
-      BASELINE_OPERATORS.includes(operator.exportName)
+      Object.hasOwn(GPU_ANALYSIS_OPERATOR_KIND_SUPPLEMENTS, operator.exportName)
     );
-    expect(supplemented.length).toBe(BASELINE_OPERATORS.length);
+    expect(supplemented.length).toBe(Object.keys(GPU_ANALYSIS_OPERATOR_KIND_SUPPLEMENTS).length);
     expect(new Set(supplemented.map(operator => operator.package))).toEqual(
-      new Set(['@luma-contributors/analysis/gpu-spatial-analysis'])
+      new Set([
+        '@luma-contributors/analysis/gpu-spatial-analysis',
+        '@luma-contributors/analysis/computation-record',
+        '@luma-contributors/analysis/gpu-network',
+        '@luma-contributors/analysis/gpu-terrain',
+        '@luma-contributors/analysis/raster-analysis',
+        '@luma-contributors/analysis/dataframe-analysis',
+        '@luma-contributors/analysis/pointcloud-analysis',
+        '@luma-contributors/analysis/geospatial-analysis'
+      ])
     );
   });
 
@@ -573,9 +395,10 @@ describe('operator kind supplements', () => {
       name: 'GPUGeodesicPairs',
       file: 'gpu-spatial-analysis/geometry-measures/gpu-geodesic-pairs.ts',
       ports: [
-        "origins: GraphDataView<'float32x2'>",
-        "targets: GraphDataView<'float32x2'>",
-        'distances?: GraphDataView'
+        "Rows extends\n    | GraphDataView<'float32x2'>\n    | GraphVectorView<'float32x2'> = GraphDataView<'float32x2'>",
+        'origins: Rows',
+        'targets: Rows',
+        "distances?: GPUGeodesicPairsRowView<'float32', Rows>"
       ],
       inputs: ['points'],
       outputs: ['attributes']
@@ -655,7 +478,12 @@ describe('operator kind supplements', () => {
     {
       name: 'GPULinearReferencing',
       file: 'gpu-spatial-analysis/linear-referencing/gpu-linear-referencing.ts',
-      ports: ["footPoints?: GraphDataView<'float32x2'>", 'measures?: GraphDataView'],
+      ports: [
+        "FootPointRows extends\n    | GraphDataView<'float32x2'>\n    | GraphVectorView<'float32x2'> = GraphDataView<'float32x2'>",
+        'footPoints?: FootPointRows',
+        "MeasureRows extends\n    | GraphDataView<'float32'>\n    | GraphVectorView<'float32'> = GraphDataView<'float32'>",
+        'measures?: MeasureRows'
+      ],
       inputs: ['points', 'lines'],
       outputs: ['attributes', 'points']
     },
@@ -712,7 +540,11 @@ describe('operator kind supplements', () => {
     {
       name: 'GPUPointToCell',
       file: 'gpu-spatial-analysis/cell-indexing/gpu-point-to-cell.ts',
-      ports: ["positions: GraphDataView<'float32x2'>", "cells: GraphDataView<'uint32x2'>"],
+      ports: [
+        "Positions extends PointPositionRows = GraphDataView<'float32x2'>",
+        'positions: Positions',
+        "cells: Positions extends GraphVectorView\n      ? GraphVectorView<'uint32x2'>\n      : GraphDataView<'uint32x2'>"
+      ],
       inputs: ['points'],
       outputs: ['cells']
     },
@@ -738,7 +570,8 @@ describe('operator kind supplements', () => {
       name: 'GPUKernelDensity',
       file: 'gpu-spatial-analysis/point-density/gpu-kernel-density.ts',
       ports: [
-        "positions: GraphDataView<'float32x2'>",
+        "Positions extends\n    | GraphDataView<'float32x2'>\n    | GraphVectorView<'float32x2'> = GraphDataView<'float32x2'>",
+        'positions: Positions',
         'grid: GPURasterMetadata',
         "values: GraphDataView<'float32'>"
       ],
@@ -972,16 +805,16 @@ describe('operator kind supplements', () => {
     }
   });
 
-  it('lets queries find supplemented operators that the catalogue alone would miss', () => {
+  it('makes kind queries and raw catalogue queries agree for the populated records', () => {
     const viaKinds = queryGPUAnalysisOperatorsByKind({input: 'points'}).map(
       operator => operator.exportName
     );
     const viaCatalogue = catalogue
-      .filter(operator => operator.inputs.includes('points'))
+      .filter(operator => operator.role !== 'helper' && operator.inputs.includes('points'))
       .map(operator => operator.exportName);
-    expect(viaKinds.length).toBeGreaterThan(viaCatalogue.length);
+    expect(viaKinds).toEqual(viaCatalogue);
     expect(viaKinds).toContain('GPUKernelDensity');
-    expect(viaCatalogue).not.toContain('GPUKernelDensity');
+    expect(viaCatalogue).toContain('GPUKernelDensity');
     const densityMakers = queryGPUAnalysisOperatorsByKind({input: 'points', output: 'surface'}).map(
       operator => operator.exportName
     );
@@ -1013,14 +846,15 @@ describe('operator paths', () => {
   });
 
   it('finds multi-step chains that use a supplemented operator', () => {
-    // cells -> polygons (GPUCellGeometry, supplemented) -> surface (GPUPolygonRasterization).
+    // cells -> points (GPUCellGeometry centroids) -> surface (GPUKernelDensity).
+    // Use a high-ranked witness: the full catalogue has more than 500 paths to a surface.
     const {paths} = findGPUAnalysisOperatorPaths(
       'cells',
       'surface',
       2,
       GPU_ANALYSIS_MAXIMUM_PATH_COUNT_LIMIT
     );
-    expect(paths).toContainEqual(['GPUCellGeometry', 'GPUPolygonRasterization']);
+    expect(paths).toContainEqual(['GPUCellGeometry', 'GPUKernelDensity']);
   });
 
   it('returns nothing for an unreachable pair and for the same kind', () => {

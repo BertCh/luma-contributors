@@ -91,3 +91,5 @@ export {GPUS2CapCoveringOperation} from './gpu-s2-cap-covering-operation';
 export type {S2CapCoveringOperationProps} from './gpu-s2-cap-covering-operation';
 export {GPUS2PolygonCoveringOperation} from './gpu-s2-polygon-covering-operation';
 export type {S2PolygonCoveringOperationProps} from './gpu-s2-polygon-covering-operation';
+
+export {GPU_CELL_GRID_PATH_S2_MAXIMUM_RADIUS} from './cell-grid-path-wgsl';

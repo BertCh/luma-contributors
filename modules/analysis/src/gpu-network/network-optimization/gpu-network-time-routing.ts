@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  validateNetworkOptimizationBindings,
+  validateNetworkOptimizationInputOutputBuffers
+} from './network-optimization-bindings';
+
 import {createTransientView} from '@luma.gl/graph/gpu-core';
 import type {
   GPUCommandGraph,
@@ -22,10 +27,9 @@ import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-node
 import {
   validateCapacity,
   validateMaximumCount,
+  validateGPUStorageBindingByteLength,
   validateSinglePackedView,
-  validateRequirement,
-  validateGraphViewsBelongToGraph,
-  validateGraphOutputsDisjointFromInputs
+  validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 
@@ -166,29 +170,43 @@ export class GPUNetworkTimeRouting implements GPUCommandNodeProducer {
       [props.output.arrivals, props.output.predecessorTransitions, props.output.summary],
       props.output.status
     );
-    validateGraphOutputsDisjointFromInputs(this.id, getTimeRoutingOutputViews(props.output), [
-      props.stateVertices,
-      props.transitions,
-      props.costs,
-      props.endpoints,
-      props.departure
-    ]);
+    validateNetworkOptimizationInputOutputBuffers(
+      this.id,
+      getTimeRoutingOutputViews(props.output),
+      [props.stateVertices, props.transitions, props.costs, props.endpoints, props.departure]
+    );
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.stateVertices,
-      props.transitions,
-      props.costs,
-      props.endpoints,
-      props.departure,
-      ...getTimeRoutingOutputViews(props.output)
-    ]);
+    validateNetworkOptimizationBindings(
+      graph,
+      id,
+      Object.fromEntries(
+        [
+          props.stateVertices,
+          props.transitions,
+          props.costs,
+          props.endpoints,
+          props.departure,
+          ...getTimeRoutingOutputViews(props.output)
+        ].map((view, index) => [`view ${index}`, view])
+      )
+    );
+
     // A fifth private summary word tracks sweeps only when requested. The solve already uses
     // eight bindings; publish its four public words separately rather than adding a ninth binding.
     const countsIterations = Boolean(props.output.status?.iterationCount);
+    if (countsIterations) {
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        'summary with iteration count',
+        (SUMMARY_WORD_COUNT + 1) * 4,
+        'omit output.status.iterationCount or request a larger binding limit'
+      );
+    }
     const summary = countsIterations
       ? createTransientView(
           graph,

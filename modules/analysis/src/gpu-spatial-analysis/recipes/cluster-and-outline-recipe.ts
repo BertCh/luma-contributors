@@ -44,6 +44,8 @@ export type GPUClusterAndOutlineRecipeProps = GPURecipeOverrides<
   {
     concaveHull?: GPUConcaveHullProps['output'];
     labels?: GraphDataView<'uint32'>;
+    /** Optional per-point core flags from the same clustering dispatch. */
+    coreFlags?: GraphDataView<'uint32'>;
     clusterCount?: GraphDataView<'uint32'>;
     hullPositions?: GraphDataView<'float32x2'>;
     hullOffsets?: GraphDataView<'uint32'>;
@@ -207,6 +209,7 @@ export function addClusterAndOutlineRecipe<Parameters>(
       gridSize: props.gridSize,
       output: {
         labels,
+        coreFlags: outputs.coreFlags,
         clusterCount,
         clusters: {
           ids: clusterIds,

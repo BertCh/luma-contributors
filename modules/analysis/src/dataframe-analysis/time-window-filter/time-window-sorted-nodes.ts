@@ -197,7 +197,8 @@ export function createSortedTimeWindowIdsNode<Parameters>(
   props: SortedTimeWindowIdsProps
 ): GPUCommandNode<Parameters> {
   const bindings: WGSLKernelBinding[] = [
-    {name: 'range', view: props.range, type: 'u32', access: 'read'},
+    // The retained range may share the caller's writable IDs buffer.
+    {name: 'range', view: props.range, type: 'u32', access: 'read_write'},
     {name: 'idsOut', view: props.ids, type: 'u32', access: 'read_write'}
   ];
   if (props.sourceIds) {

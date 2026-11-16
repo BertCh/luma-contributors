@@ -15,12 +15,21 @@ import {
   validateSinglePackedView,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {SPATIAL_STATISTICS_COUNTS_WGSL} from '../spatial-weights/spatial-statistics-counts-wgsl';
 import {GET_NAN_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import type {GPUSpatialWeights} from '../spatial-weights/spatial-weights';
 import {
   GPUCategoryPairCounts,
   GPU_CATEGORY_PAIR_COUNTS_MAXIMUM_CATEGORY_COUNT
 } from './gpu-category-pair-counts';
+
+import {validateSpatialStatisticsBindings} from '../spatial-weights/spatial-statistics-bindings';
+import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateGPUSpatialWeights} from '../spatial-weights/spatial-weights';
+import {
+  validateCapacity,
+  validateGraphOutputsDisjointFromInputs
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 
 const OPERATION = 'GPUSpatialEntropy';
 
@@ -73,6 +82,8 @@ export type GPUSpatialEntropyProps = {
 
 /** Caller-owned outputs of {@link GPUSpatialEntropy}. */
 export type GPUSpatialEntropyOutput = {
+  /** Exact uint32 [validRowCount, validOrderedLinkCount], matching the float32 summary counters. */
+  counts?: GraphDataView<'uint32'>;
   /** Summary words, see {@link GPU_SPATIAL_ENTROPY_LAYOUT}. */
   summary: GraphDataView<'float32'>;
   /** Optional ordered link counts, `categoryCount ^ 2` entries (see `GPUCategoryPairCounts`). */
@@ -116,7 +127,39 @@ export class GPUSpatialEntropy implements GPUCommandNodeProducer {
       props.categoryCount <= GPU_CATEGORY_PAIR_COUNTS_MAXIMUM_CATEGORY_COUNT,
       `categoryCount must be at most ${GPU_CATEGORY_PAIR_COUNTS_MAXIMUM_CATEGORY_COUNT}`
     );
-    // The other inputs are validated by GPUCategoryPairCounts when the nodes are requested.
+    validateCapacity(
+      id,
+      'categoryCount',
+      props.categoryCount,
+      1,
+      GPU_CATEGORY_PAIR_COUNTS_MAXIMUM_CATEGORY_COUNT
+    );
+    const rows = validateGPUSpatialWeights(id, props.weights);
+    validateSinglePackedView(props.categories, ['uint32'], `${id} categories`);
+    validateRequirement(
+      id,
+      props.categories.length === rows,
+      'categories length must equal the weights row count'
+    );
+    if (props.output.pairCounts) {
+      validateSinglePackedView(props.output.pairCounts, ['uint32'], `${id} output.pairCounts`);
+      validateRequirement(
+        id,
+        props.output.pairCounts.length >= props.categoryCount ** 2,
+        'output.pairCounts must hold categoryCount squared entries'
+      );
+    }
+    if (props.output.counts) {
+      validateSinglePackedView(props.output.counts, ['uint32'], `${id} output.counts`);
+      validateCapacity(id, 'output.counts length', props.output.counts.length, 2, 2);
+    }
+    validateDisjointWritableViews(id, props.output);
+    validateGraphOutputsDisjointFromInputs(id, Object.values(props.output), [
+      props.categories,
+      props.weights.offsets,
+      props.weights.neighbors,
+      props.weights.weights
+    ]);
   }
 
   /** Returns the pair count nodes and the finalize node. */
@@ -124,6 +167,10 @@ export class GPUSpatialEntropy implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
+    validateSpatialStatisticsBindings(graph, id, props, {
+      'pair count scratch': props.categoryCount ** 2 * 4,
+      'category scratch': props.categoryCount * 4
+    });
     const {categoryCount, output} = props;
     validateGraphViewsBelongToGraph(id, graph, [output.summary, output.pairCounts]);
     const pairCounts =
@@ -150,16 +197,27 @@ export class GPUSpatialEntropy implements GPUCommandNodeProducer {
         bindings: [
           {name: 'pairCounts', view: pairCounts, type: 'u32', access: 'read'},
           {name: 'categoryRowCounts', view: categoryRowCounts, type: 'u32', access: 'read'},
-          {name: 'summary', view: output.summary, type: 'f32', access: 'read_write'}
+          {name: 'summary', view: output.summary, type: 'f32', access: 'read_write'},
+          ...(output.counts
+            ? [
+                {
+                  name: 'counts',
+                  view: output.counts,
+                  type: 'u32' as const,
+                  access: 'read_write' as const
+                }
+              ]
+            : [])
         ],
         invocationCount: 1,
         declarations: `const CATEGORIES: u32 = ${categoryCount}u;
 ${GET_NAN_WGSL}
-fn getTerm(count: u32, total: f32) -> f32 {
+${SPATIAL_STATISTICS_COUNTS_WGSL}
+fn getTerm(count: u32, total: u32) -> f32 {
   if (count == 0u) {
     return 0.0;
   }
-  let share = f32(count) / total;
+  let share = divideSpatialCounts(count, total);
   return -share * log(share);
 }`,
         body: `var rowTotal = 0u;
@@ -170,21 +228,22 @@ fn getTerm(count: u32, total: f32) -> f32 {
       linkTotal += pairCounts[pairCountsOffset + a * CATEGORIES + b];
     }
   }
+  ${output.counts ? 'counts[countsOffset] = rowTotal; counts[countsOffset + 1u] = linkTotal;' : ''}
   var shannon = 0.0;
   var origin = 0.0;
   var destination = 0.0;
   var joint = 0.0;
   for (var a = 0u; a < CATEGORIES; a++) {
-    shannon += getTerm(categoryRowCounts[categoryRowCountsOffset + a], f32(rowTotal));
+    shannon += getTerm(categoryRowCounts[categoryRowCountsOffset + a], rowTotal);
     var originCount = 0u;
     var destinationCount = 0u;
     for (var b = 0u; b < CATEGORIES; b++) {
       originCount += pairCounts[pairCountsOffset + a * CATEGORIES + b];
       destinationCount += pairCounts[pairCountsOffset + b * CATEGORIES + a];
-      joint += getTerm(pairCounts[pairCountsOffset + a * CATEGORIES + b], f32(linkTotal));
+      joint += getTerm(pairCounts[pairCountsOffset + a * CATEGORIES + b], linkTotal);
     }
-    origin += getTerm(originCount, f32(linkTotal));
-    destination += getTerm(destinationCount, f32(linkTotal));
+    origin += getTerm(originCount, linkTotal);
+    destination += getTerm(destinationCount, linkTotal);
   }
   let nan = getNaN();
   let hasLinks = linkTotal > 0u;

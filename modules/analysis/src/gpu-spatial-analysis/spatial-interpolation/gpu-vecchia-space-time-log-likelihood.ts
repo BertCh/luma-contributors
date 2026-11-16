@@ -2,6 +2,15 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  validateInterpolationPredictionViews,
+  validateInterpolationOutputPasses,
+  validateInterpolationOutputsDisjointFromInputs
+} from './interpolation-view-validation';
+
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateGPUStorageBindingByteLength} from '../../analysis-core/kernels/gpu-contributor-utils';
+
 import type {
   GPUCommandGraph,
   GPUCommandNode,
@@ -19,14 +28,10 @@ import {
 } from '../../analysis-core/contracts/spatial-context';
 import {
   validateCapacity,
-  validateGraphViewsBelongToGraph,
   validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {
-  getPackedPredictionAccessors,
-  validatePredictionViews
-} from '../../analysis-core/kernels/gpu-prediction-utils';
+import {getPackedPredictionAccessors} from '../../analysis-core/kernels/gpu-prediction-utils';
 import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
@@ -114,7 +119,23 @@ export class GPUVecchiaSpaceTimeLogLikelihood implements GPUCommandNodeProducer 
     validateViewLength(id, 'output.siteStatus', output.siteStatus, this.rowCount);
     validateViewLength(id, 'output.logLikelihood', output.logLikelihood, 2);
     validateViewLength(id, 'output.status', output.status, 3);
-    validatePredictionViews(
+    validateInterpolationOutputPasses(id, output, [
+      {write: {conditionals: output.conditionals, conditionalStatus: output.conditionalStatus}},
+      {
+        read: {conditionals: output.conditionals, conditionalStatus: output.conditionalStatus},
+        write: {siteTerms: output.siteTerms, siteStatus: output.siteStatus, status: output.status}
+      },
+      {read: {status: output.status}, write: {logLikelihood: output.logLikelihood}}
+    ]);
+    validateInterpolationOutputsDisjointFromInputs(id, Object.values(output), [
+      positions,
+      observations,
+      neighborhoodOffsets,
+      neighborhoods,
+      parameters,
+      times
+    ]);
+    validateInterpolationPredictionViews(
       id,
       [positions, times, observations, neighborhoodOffsets, neighborhoods, parameters],
       [
@@ -132,6 +153,29 @@ export class GPUVecchiaSpaceTimeLogLikelihood implements GPUCommandNodeProducer 
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, rowCount} = this;
+    validateGraphChunkBindingRanges(graph, id, {
+      positions: props.positions,
+      observations: props.observations,
+      neighborhoodOffsets: props.neighborhoodOffsets,
+      neighborhoods: props.neighborhoods,
+      parameters: props.parameters,
+      times: props.times,
+      ...props.output
+    });
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'fixed-point words',
+      3 * 4,
+      'reduce the likelihood cell count'
+    );
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'fixed-point scale',
+      4,
+      'use a device with storage bindings'
+    );
     const {
       positions,
       times,
@@ -152,11 +196,6 @@ export class GPUVecchiaSpaceTimeLogLikelihood implements GPUCommandNodeProducer 
       {name: 'results', view: output.conditionals, type: 'f32', access: 'read_write'},
       {name: 'statuses', view: output.conditionalStatus, type: 'u32', access: 'read_write'}
     ] as const;
-    validateGraphViewsBelongToGraph(
-      id,
-      graph,
-      bindings.map(binding => binding.view)
-    );
     return [
       createWGSLKernelNode(graph, {
         id: `${id}-solve`,

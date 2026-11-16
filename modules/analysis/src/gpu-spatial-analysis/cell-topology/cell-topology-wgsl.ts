@@ -3,23 +3,17 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 /**
- * Quadbin tile helpers and per-thread neighborhood enumeration.
+ * Quadbin integer tile and hierarchy helpers shared by topology and grid paths.
  *
- * Concatenate after `CELL_KEY_WGSL` and define `CELL_TOPOLOGY_K` (radius) and
- * `CELL_TOPOLOGY_CAPACITY` (private array size, at least the largest neighborhood) first. Defines:
+ * Concatenate after `CELL_KEY_WGSL`. Defines:
  * - `cellTopologyQuadbinGetTile(key) -> vec2u(x, y)` and
  *   `cellTopologyQuadbinGetKey(x, y, z) -> vec2u` (canonical `vec2u(high, low)` keys).
- * - `cellTopologyQuadbinNeighborhood(cell, ringOnly) -> u32` fills the private arrays
- *   `cellTopologyCells` / `cellTopologyDistances` with the cells at Chebyshev distance
- *   `<= K` (or `== K` for rings) sorted by (distance, key) and returns the count. Longitude
- *   (x) wraps across the antimeridian, latitude (y) does not: rows outside `[0, 2^z)` are dropped.
- *   Each wrapped tile appears once, at its smallest circular x distance.
  * - `cellTopologyQuadbinGetChild(cell, targetResolution, depth, slot) -> vec2u` and
  *   `cellTopologyQuadbinGetParent(cell, targetResolution) -> vec2u`.
  *
  * @internal
  */
-export const QUADBIN_TOPOLOGY_WGSL = /* wgsl */ `
+export const QUADBIN_TILE_WGSL = /* wgsl */ `
 const CELL_TOPOLOGY_QUADBIN_HEADER_HIGH: u32 = 0x48000000u;
 
 fn cellTopologyQuadbinSpread16(value: u32) -> u32 {
@@ -69,7 +63,15 @@ fn cellTopologyQuadbinGetChild(cell: vec2u, targetResolution: u32, depth: u32, s
   let child = cellShiftLeft(compact, 2u * depth) | vec2u(0u, slot);
   return cellGetKey(child, CELL_TOPOLOGY_QUADBIN_HEADER_HIGH, targetResolution, 52u - 2u * targetResolution);
 }
+`;
 
+/**
+ * Adds private neighborhood enumeration to the tile helpers. Define CELL_TOPOLOGY_K (radius)
+ * and CELL_TOPOLOGY_CAPACITY (private array size) before this module. Neighborhoods sort by
+ * (Chebyshev distance, key), wrap columns, drop rows outside the grid and deduplicate columns.
+ * @internal
+ */
+export const QUADBIN_TOPOLOGY_WGSL = /* wgsl */ `${QUADBIN_TILE_WGSL}
 var<private> cellTopologyCells: array<vec2u, CELL_TOPOLOGY_CAPACITY>;
 var<private> cellTopologyDistances: array<u32, CELL_TOPOLOGY_CAPACITY>;
 

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {createClassificationKernelNode as createWGSLKernelNode} from './classification-kernel-node';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -9,33 +10,47 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
+import type {WGSLKernelBinding} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
-  createWGSLKernelNode,
-  type WGSLKernelBinding
-} from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {
+  getGraphViewChunks,
+  validateCommandNodeBudget,
+  validateMaximumCount,
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {COLUMN_ORDERED_KEY_WGSL} from './column-classification-shared';
 import {COLOR_SCALE_WGSL} from './color-scale-wgsl';
 import {GPU_BIVARIATE_CLASSIFICATION_PARAMETER_LENGTH} from './bivariate-classification-parameters';
 
+import {
+  type ClassificationRows,
+  type ClassificationRowView,
+  validateClassificationScratch,
+  validateClassificationBindings,
+  validateClassificationRows,
+  validateClassificationOutput,
+  validateClassificationOutputs
+} from './column-classification-rows';
+
 const OPERATION = 'GPUBivariateClassification';
+/** Class counts use u32 atomics and must not wrap even when every row has one class. */
+const MAXIMUM_COUNTED_ROW_COUNT = 2 ** 32 - 1;
+
 /** Largest per-axis class count. */
 const MAXIMUM_AXIS_CLASS_COUNT = 16;
 
 /** Caller-owned outputs of {@link GPUBivariateClassification}. At least one is required. */
-export type GPUBivariateClassificationOutput = {
+export type GPUBivariateClassificationOutput<
+  Rows extends ClassificationRows<'float32'> = GraphDataView<'float32'>
+> = {
   /**
    * Joint class per row, `yClass * classCountX + xClass`, or `0xffffffff` for a masked row or a
    * row with a NaN X or Y value.
    */
-  classIds?: GraphDataView<'uint32'>;
+  classIds?: ClassificationRowView<'uint32', Rows>;
   /** Packed `rgba8` colour per row (`r | g << 8 | b << 16 | a << 24`), with value-by-alpha applied. */
-  colors?: GraphDataView<'uint32'>;
+  colors?: ClassificationRowView<'uint32', Rows>;
   /** Rows per joint class, `maximumClassCount ** 2` rows, rewritten every encoding. */
   classCounts?: GraphDataView<'uint32'>;
 };
@@ -48,15 +63,17 @@ export type GPUBivariateClassificationOutput = {
  * Topology (needs a new graph): view lengths, `maximumClassCount`, and which optional views and
  * outputs are present.
  */
-export type GPUBivariateClassificationProps = {
+export type GPUBivariateClassificationProps<
+  Rows extends ClassificationRows<'float32'> = GraphDataView<'float32'>
+> = {
   /** Prefix for generated node and transient IDs. Defaults to `'bivariate-classification'`. */
   id?: string;
-  /** Packed float32 X value per row. */
-  valuesX: GraphDataView<'float32'>;
-  /** Packed float32 Y value per row. */
-  valuesY: GraphDataView<'float32'>;
-  /** Optional packed `uint32` row mask; zero makes the row no-data. */
-  mask?: GraphDataView<'uint32'>;
+  /** Packed or chunked float32 X values. */
+  valuesX: Rows;
+  /** Float32 Y values with the same chunk boundaries as valuesX. */
+  valuesY: ClassificationRowView<'float32', Rows>;
+  /** Optional row-aligned packed or chunked `uint32` mask; zero makes the row no-data. */
+  mask?: ClassificationRowView<'uint32', Rows>;
   /**
    * X edges, non-decreasing, at least `maximumClassCount + 1` rows; the first `classCountX + 1`
    * are active (for example the `breaks` of `GPUClassBreaks`). Edges must not be NaN.
@@ -70,16 +87,16 @@ export type GPUBivariateClassificationProps = {
    */
   palette: GraphDataView<'uint32'>;
   /**
-   * Optional packed float32 value-by-alpha variable per row (for example an uncertainty). It is
+   * Optional row-aligned packed or chunked float32 value-by-alpha variable (for example an uncertainty). It is
    * read only when `parameters` enables value-by-alpha.
    */
-  alphaValues?: GraphDataView<'float32'>;
+  alphaValues?: ClassificationRowView<'float32', Rows>;
   /** Per-frame parameters written with `getGPUBivariateClassificationParameterValues`. */
   parameters: GraphDataView<'float32'>;
   /** Largest class count per axis, `1..16`, compile-time. */
   maximumClassCount: number;
   /** Caller-owned outputs. */
-  output: GPUBivariateClassificationOutput;
+  output: GPUBivariateClassificationOutput<Rows>;
 };
 
 /**
@@ -97,17 +114,25 @@ export type GPUBivariateClassificationProps = {
  * (half up, f32; expect up to 1 difference from a double precision reference). A NaN alpha value
  * uses `minimumAlpha` (the row keeps its class colour, faded); `hi <= lo` uses factor 1.
  * Rows that are masked or have a NaN X or Y value get the no-data colour (unfaded), class
- * `0xffffffff`, and are not counted. Counts use integer atomics and are exact.
+ * `0xffffffff`, and are not counted. Counts use integer atomics and are exact (at most 2^32 - 1 source rows with classCounts).
  *
- * Inputs must be single packed views (chunked vectors are not supported).
+ * Row inputs and outputs accept GraphVectorView with identical ordered chunk lengths.
+ * Controls and class counts remain single packed views. Each nonempty chunk dispatches independently;
+ * counts are reset once and accumulated across all chunks, bitwise equal to packed input.
+ * With classCounts, at most 2^32 - 1 source rows are accepted to prevent counter overflow.
  */
-export class GPUBivariateClassification implements GPUCommandNodeProducer {
+export class GPUBivariateClassification<
+  Rows extends ClassificationRows<'float32'> = GraphDataView<'float32'>
+> implements GPUCommandNodeProducer
+{
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
-  readonly props: GPUBivariateClassificationProps;
+  readonly props: GPUBivariateClassificationProps<Rows>;
+  /** Upper bound for chunk dispatches, including the single counts reset. */
+  readonly estimatedCommandNodeCount: number;
 
-  constructor(props: GPUBivariateClassificationProps) {
+  constructor(props: GPUBivariateClassificationProps<Rows>) {
     this.id = props.id ?? 'bivariate-classification';
     this.props = props;
     const id = this.id;
@@ -117,20 +142,27 @@ export class GPUBivariateClassification implements GPUCommandNodeProducer {
       throw new Error(`${id} needs at least one output (classIds, colors, or classCounts)`);
     }
     const rows = props.valuesX.length;
+    if (output.classCounts)
+      validateMaximumCount(
+        id,
+        'values length with output.classCounts',
+        rows,
+        MAXIMUM_COUNTED_ROW_COUNT
+      );
     if (rows < 1) {
       throw new Error(`${id} needs at least one row`);
     }
-    validateSinglePackedView(props.valuesX, ['float32'], `${id} valuesX`);
-    validateSinglePackedView(props.valuesY, ['float32'], `${id} valuesY`);
+    validateClassificationRows(id, 'valuesX', props.valuesX, ['float32']);
+    validateClassificationRows(id, 'valuesY', props.valuesY, ['float32'], props.valuesX);
     validateSinglePackedView(props.breaksX, ['float32'], `${id} breaksX`);
     validateSinglePackedView(props.breaksY, ['float32'], `${id} breaksY`);
     validateSinglePackedView(props.palette, ['uint32'], `${id} palette`);
     validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.alphaValues) {
-      validateSinglePackedView(props.alphaValues, ['float32'], `${id} alphaValues`);
+      validateClassificationRows(id, 'alphaValues', props.alphaValues, ['float32'], props.valuesX);
     }
     if (props.mask) {
-      validateSinglePackedView(props.mask, ['uint32'], `${id} mask`);
+      validateClassificationRows(id, 'mask', props.mask, ['uint32'], props.valuesX);
     }
     for (const [name, view] of [
       ['valuesY', props.valuesY],
@@ -161,7 +193,7 @@ export class GPUBivariateClassification implements GPUCommandNodeProducer {
     for (const name of ['classIds', 'colors'] as const) {
       const view = output[name];
       if (view) {
-        validateSinglePackedView(view, ['uint32'], `${id} output.${name}`);
+        validateClassificationOutput(id, `output.${name}`, view, 'uint32', props.valuesX);
         if (view.length < rows) {
           throw new Error(`${id} output.${name} must hold one row per value`);
         }
@@ -173,12 +205,8 @@ export class GPUBivariateClassification implements GPUCommandNodeProducer {
         throw new Error(`${id} output.classCounts must hold maximumClassCount ** 2 rows`);
       }
     }
-    const outputs = [output.classIds, output.colors, output.classCounts].filter(
-      (view): view is GraphDataView<'uint32'> => Boolean(view)
-    );
-    if (new Set(outputs.map(view => view.buffer)).size !== outputs.length) {
-      throw new Error(`${id} outputs must not share buffers with each other`);
-    }
+    const outputs = [output.classIds, output.colors, output.classCounts];
+    validateClassificationOutputs(id, outputs);
     validateGraphOutputsDisjointFromInputs(id, outputs, [
       props.valuesX,
       props.valuesY,
@@ -189,6 +217,11 @@ export class GPUBivariateClassification implements GPUCommandNodeProducer {
       props.alphaValues,
       props.parameters
     ]);
+    this.estimatedCommandNodeCount =
+      getGraphViewChunks(props.valuesX).filter(chunk => chunk.length > 0).length *
+        (1 + Number(Boolean(output.colors || output.classCounts))) +
+      Number(Boolean(output.classCounts));
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
   }
 
   /** Returns the optional init, classify, and colorize nodes in order. */
@@ -196,22 +229,26 @@ export class GPUBivariateClassification implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
+
     const {output, maximumClassCount} = props;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.valuesX,
-      props.valuesY,
-      props.mask,
-      props.breaksX,
-      props.breaksY,
-      props.palette,
-      props.alphaValues,
-      props.parameters,
-      output.classIds,
-      output.colors,
-      output.classCounts
-    ]);
-    const rows = props.valuesX.length;
-    const classes = output.classIds ?? createTransientView(graph, `${id}-classes`, 'uint32', rows);
+    validateClassificationBindings(id, graph, {
+      valuesX: props.valuesX,
+      valuesY: props.valuesY,
+      mask: props.mask,
+      breaksX: props.breaksX,
+      breaksY: props.breaksY,
+      palette: props.palette,
+      alphaValues: props.alphaValues,
+      parameters: props.parameters,
+      'output.classIds': output.classIds,
+      'output.colors': output.colors,
+      'output.classCounts': output.classCounts
+    });
+    const maximumRows = getGraphViewChunks(props.valuesX).reduce(
+      (maximum, chunk) => Math.max(maximum, chunk.length),
+      0
+    );
+    validateClassificationScratch(graph, id, {'class scratch': maximumRows});
     const read = (name: string, view: GraphDataView, type: 'u32' | 'f32'): WGSLKernelBinding => ({
       name,
       view,
@@ -243,22 +280,49 @@ ${COLOR_SCALE_WGSL}`;
       );
     }
 
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-classify`,
-        operation: OPERATION,
-        variant: 'classify',
-        bindings: [
-          read('valuesX', props.valuesX, 'f32'),
-          read('valuesY', props.valuesY, 'f32'),
-          ...(props.mask ? [read('rowMask', props.mask, 'u32')] : []),
-          read('breaksX', props.breaksX, 'f32'),
-          read('breaksY', props.breaksY, 'f32'),
-          read('params', props.parameters, 'f32'),
-          {name: 'classes', view: classes, type: 'u32', access: 'read_write'}
-        ],
-        invocationCount: rows,
-        declarations: `${declarations}
+    const valueChunks = getGraphViewChunks(this.props.valuesX);
+    for (let chunkIndex = 0; chunkIndex < valueChunks.length; chunkIndex++) {
+      if (valueChunks[chunkIndex].length === 0) continue;
+      const props = {
+        ...this.props,
+        valuesX: getGraphViewChunks(this.props.valuesX)[chunkIndex],
+        valuesY: getGraphViewChunks(this.props.valuesY)[chunkIndex],
+        mask: this.props.mask ? getGraphViewChunks(this.props.mask)[chunkIndex] : undefined,
+        alphaValues: this.props.alphaValues
+          ? getGraphViewChunks(this.props.alphaValues)[chunkIndex]
+          : undefined,
+        output: {
+          ...this.props.output,
+          classIds: this.props.output.classIds
+            ? getGraphViewChunks(this.props.output.classIds)[chunkIndex]
+            : undefined,
+          colors: this.props.output.colors
+            ? getGraphViewChunks(this.props.output.colors)[chunkIndex]
+            : undefined
+        }
+      };
+      const {output} = props;
+      const chunkId = valueChunks.length === 1 ? id : `${id}-chunk-${chunkIndex}`;
+      const rows = props.valuesX.length;
+      const classes =
+        output.classIds ?? createTransientView(graph, `${chunkId}-classes`, 'uint32', rows);
+
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${chunkId}-classify`,
+          operation: OPERATION,
+          variant: 'classify',
+          bindings: [
+            read('valuesX', props.valuesX, 'f32'),
+            read('valuesY', props.valuesY, 'f32'),
+            ...(props.mask ? [read('rowMask', props.mask, 'u32')] : []),
+            read('breaksX', props.breaksX, 'f32'),
+            read('breaksY', props.breaksY, 'f32'),
+            read('params', props.parameters, 'f32'),
+            {name: 'classes', view: classes, type: 'u32', access: 'read_write'}
+          ],
+          invocationCount: rows,
+          declarations: `${declarations}
 // Number of inner edges edges[1 .. classCount - 1] that are <= value, as a u32 key comparison.
 fn getAxisClass(valueKey: u32, classCount: u32, isX: bool) -> u32 {
   var low = 1u;
@@ -279,7 +343,7 @@ fn getAxisClass(valueKey: u32, classCount: u32, isX: bool) -> u32 {
   }
   return low - 1u;
 }`,
-        body: `classes[classesOffset + index] = NO_CLASS;
+          body: `classes[classesOffset + index] = NO_CLASS;
   ${props.mask ? 'if (rowMask[rowMaskOffset + index] == 0u) {\n    return;\n  }' : ''}
   let valueX = valuesX[valuesXOffset + index];
   let valueY = valuesY[valuesYOffset + index];
@@ -291,46 +355,46 @@ fn getAxisClass(valueKey: u32, classCount: u32, isX: bool) -> u32 {
   let classX = getAxisClass(getComparisonKey(valueX), classCountX, true);
   let classY = getAxisClass(getComparisonKey(valueY), classCountY, false);
   classes[classesOffset + index] = classY * classCountX + classX;`
-      })
-    );
+        })
+      );
 
-    if (output.colors || output.classCounts) {
-      nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-colorize`,
-          operation: OPERATION,
-          variant: 'colorize',
-          bindings: [
-            read('classes', classes, 'u32'),
-            read('palette', props.palette, 'u32'),
-            read('params', props.parameters, 'f32'),
-            ...(props.alphaValues && output.colors
-              ? [read('alphaValues', props.alphaValues, 'f32')]
-              : []),
-            ...(output.colors
-              ? [
-                  {
-                    name: 'colors',
-                    view: output.colors,
-                    type: 'u32',
-                    access: 'read_write'
-                  } as WGSLKernelBinding
-                ]
-              : []),
-            ...(output.classCounts
-              ? [
-                  {
-                    name: 'counts',
-                    view: output.classCounts,
-                    type: 'atomic<u32>',
-                    access: 'read_write'
-                  } as WGSLKernelBinding
-                ]
-              : [])
-          ],
-          invocationCount: rows,
-          declarations,
-          body: `let classId = classes[classesOffset + index];
+      if (output.colors || output.classCounts) {
+        nodes.push(
+          createWGSLKernelNode<Parameters>(graph, {
+            id: `${chunkId}-colorize`,
+            operation: OPERATION,
+            variant: 'colorize',
+            bindings: [
+              read('classes', classes, 'u32'),
+              read('palette', props.palette, 'u32'),
+              read('params', props.parameters, 'f32'),
+              ...(props.alphaValues && output.colors
+                ? [read('alphaValues', props.alphaValues, 'f32')]
+                : []),
+              ...(output.colors
+                ? [
+                    {
+                      name: 'colors',
+                      view: output.colors,
+                      type: 'u32',
+                      access: 'read_write'
+                    } as WGSLKernelBinding
+                  ]
+                : []),
+              ...(output.classCounts
+                ? [
+                    {
+                      name: 'counts',
+                      view: output.classCounts,
+                      type: 'atomic<u32>',
+                      access: 'read_write'
+                    } as WGSLKernelBinding
+                  ]
+                : [])
+            ],
+            invocationCount: rows,
+            declarations,
+            body: `let classId = classes[classesOffset + index];
   let isValid = classId != NO_CLASS;
   ${output.classCounts ? 'if (isValid) {\n    atomicAdd(&counts[countsOffset + classId], 1u);\n  }' : ''}
   ${
@@ -363,8 +427,9 @@ fn getAxisClass(valueKey: u32, classCount: u32, isX: bool) -> u32 {
   colors[colorsOffset + index] = color;`
       : ''
   }`
-        })
-      );
+          })
+        );
+      }
     }
     return nodes;
   }

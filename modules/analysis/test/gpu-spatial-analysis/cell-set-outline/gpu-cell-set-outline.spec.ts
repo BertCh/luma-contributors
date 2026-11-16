@@ -37,6 +37,8 @@ import {
   outlineQuadbinOnCPU,
   type OutlineSegment
 } from './cell-set-outline-oracle';
+import {getS2TopologyCell} from '../cell-topology/s2-topology-oracle';
+import {s2CellToBoundary} from '../cell-indexing/cell-indexing-oracle';
 import {requireTestDevice} from '../../utils/require-test-device';
 
 type OutlineRun = {
@@ -55,7 +57,7 @@ function sortKeys(cells: bigint[]): bigint[] {
 
 async function runOutline(
   device: Device,
-  family: 'h3' | 'quadbin',
+  family: 'h3' | 'quadbin' | 's2',
   cells: bigint[],
   options: {groups?: Map<bigint, number>; capacity: number; count?: number}
 ): Promise<OutlineRun> {
@@ -404,4 +406,54 @@ it('GPUCellSetOutline reports overflow, clamps count and honors the row count', 
     count: half
   });
   expectSameSegments(limited.segments, outlineH3OnCPU(cells.slice(0, half)), 'count rows');
+});
+
+it('S2 outlines remove shared cube-face edges and use the independent float64 corner oracle', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const faces = Array.from({length: 6}, (_, face) =>
+    getS2TopologyCell({face, ij: [0, 0], level: 0})
+  );
+  for (const cell of faces) {
+    const run = await runOutline(device, 's2', [cell], {capacity: 8});
+    expect(run).toMatchObject({count: 4, total: 4, overflow: 0});
+    const corners = s2CellToBoundary(cell);
+    for (let edge = 0; edge < 4; edge++) {
+      expect(run.edgeIndices[edge]).toBe(edge);
+      expect(run.segments[edge].cell).toBe(cell);
+      for (let axis = 0; axis < 2; axis++) {
+        expect(Math.abs(run.segments[edge].a[axis] - corners[edge][axis])).toBeLessThan(5e-4);
+        expect(Math.abs(run.segments[edge].b[axis] - corners[(edge + 1) % 4][axis])).toBeLessThan(
+          5e-4
+        );
+      }
+    }
+  }
+  expect(await runOutline(device, 's2', faces, {capacity: 32})).toMatchObject({
+    count: 0,
+    total: 0,
+    overflow: 0
+  });
+  expect(await runOutline(device, 's2', faces.slice(1), {capacity: 32})).toMatchObject({
+    count: 4,
+    total: 4,
+    overflow: 0
+  });
+  expect(await runOutline(device, 's2', faces.slice(0, 2), {capacity: 16})).toMatchObject({
+    count: 6,
+    total: 6,
+    overflow: 0
+  });
+  const groups = new Map(faces.map((cell, face) => [cell, face]));
+  expect(await runOutline(device, 's2', faces, {capacity: 32, groups})).toMatchObject({
+    count: 24,
+    total: 24,
+    overflow: 0
+  });
+  expect(await runOutline(device, 's2', faces, {capacity: 3, groups})).toMatchObject({
+    count: 3,
+    total: 24,
+    overflow: 1
+  });
+  device.destroy();
 });

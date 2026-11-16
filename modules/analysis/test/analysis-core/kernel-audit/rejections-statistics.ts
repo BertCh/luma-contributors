@@ -4,8 +4,19 @@
 
 import type {KernelAuditRejection} from './kernel-audit-rejection-type';
 
+/** Core WebGPU permits at most 128 MiB in each storage-buffer binding. */
+const CORE_STORAGE_BINDING_BYTE_LIMIT = 134217728;
+
 /** Expected declaration refusals of the statistics cases. */
 export const STATISTICS_REJECTIONS: readonly KernelAuditRejection[] = [
+  ...['none', 'bonferroni', 'holm', 'benjamini-hochberg', 'benjamini-yekutieli'].map(method => ({
+    exportName: 'GPUMultipleTestingAdjustment',
+    name: `${method} one row above the binding limit`,
+    kind: 'binding' as const,
+    limit: CORE_STORAGE_BINDING_BYTE_LIMIT,
+    rejects:
+      /^Error: multiple-testing-adjustment binding 0 chunk 0 needs 134217732 bytes in one binding \(limit 134217728\); reduce the chunk row count or output capacity$/
+  })),
   {
     exportName: 'GPUGlobalPermutationTest',
     name: 'moran permutations x row blocks above the maximum',

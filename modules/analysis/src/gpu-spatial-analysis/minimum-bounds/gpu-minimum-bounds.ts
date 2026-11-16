@@ -21,11 +21,12 @@ import {
   validateCapacity,
   validateRequirement,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {GPUPolygonGeometryFields} from '../../analysis-core/contracts/index';
 import {PHILOX_PURPOSES, PHILOX_WGSL} from '../../analysis-core/kernels/philox-random';
+import {validateGroupConvexHullScratch} from '../group-geometry/gpu-group-convex-hull';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {GPUGroupConvexHull} from '../group-geometry/index';
 
 const OPERATION = 'GPUMinimumBounds';
@@ -274,15 +275,16 @@ export class GPUMinimumBounds implements GPUCommandNodeProducer {
     const {output, positions} = props;
     const {status, ...columns} = output;
     const polygons = 'ringOffsets' in props ? props : undefined;
-    validateGraphViewsBelongToGraph(id, graph, [
+    validateGraphChunkBindingRanges(graph, id, {
       positions,
-      polygons?.ringOffsets,
-      polygons?.polygonOffsets,
-      polygons?.featureOffsets,
-      props.labels,
-      ...Object.values(columns),
-      ...Object.values(status)
-    ]);
+      labels: props.labels,
+      ringOffsets: props.labels ? undefined : polygons?.ringOffsets,
+      polygonOffsets: props.labels ? undefined : polygons?.polygonOffsets,
+      featureOffsets: props.labels ? undefined : polygons?.featureOffsets,
+      ...columns,
+      ...Object.fromEntries(Object.entries(status).map(([name, view]) => [`status.${name}`, view]))
+    });
+    validateGroupConvexHullScratch(graph.device, id, positions.length, groupCount);
     const rows = positions.length;
     const u32 = (name: string, length: number) =>
       createTransientView(graph, `${id}-${name}`, 'uint32', length);

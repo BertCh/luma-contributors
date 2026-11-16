@@ -4,21 +4,35 @@
 
 import {
   createTransientView,
+  GPUScan,
+  GPUReduction,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
+import type {GPUApproximationStatusPort} from '../../analysis-core/contracts/status';
 import {
   createWGSLKernelNode,
+  getWGSLFloatLiteral,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
+  validateCommandNodeBudget,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {createGWRRuntimeKernelNode} from './gwr-runtime-kernel';
+import {
+  validateGWRBindings,
+  validateGWROutputs,
+  getGWRGridScratchSizes,
+  getGWRBindingOutputs,
+  validateGWRApproximationAliases,
+  validateGWRPositiveShaderFloat
+} from './gwr-scalability-utils';
 import {GPU_PERMUTATION_PARAMETER_LENGTH} from '../permutation-inference/permutation-parameters';
 import {getPermutationParameterWGSL} from '../permutation-inference/permutation-inference-kernels';
 import {PERMUTATION_RANDOM_WGSL} from '../../analysis-core/kernels/permutation-random';
@@ -36,6 +50,9 @@ import {
 } from './local-weighted-least-squares-wgsl';
 import {
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_ADAPTIVE_BANDWIDTH_FACTOR,
+  GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_INDEXED_ROW_COUNT,
+  GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_DENSE_INDEXED_ROW_COUNT,
+  GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_DEFAULT_GAUSSIAN_CUTOFF,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_DEFAULT_GRID_DIMENSION,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_LADDER_LENGTH,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MINIMUM_INDEXED_ROW_COUNT,
@@ -69,32 +86,48 @@ const OPERATION = 'GPUGeographicallyWeightedRegressionNonstationarityTest';
 /** Rows per thread of the compaction count pass. */
 const SCAN_TILE_ROWS = 256;
 /** Largest row count; the included count travels as an exact float32 integer. */
-const MAXIMUM_ROW_COUNT = 1048576;
+const MAXIMUM_ROW_COUNT = GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_INDEXED_ROW_COUNT;
 /** Float32 budget of the per-tile partial sums, 64 MiB. */
 const MAXIMUM_PARTIAL_FLOATS = 16777216;
+/** Bound the fixed-order merge per run and the per-run partial layout. */
 const MAXIMUM_TILE_COUNT = 4096;
+/** Keep each serial refit walk bounded while retaining the historical minimum tile size. */
 const MINIMUM_TILE_ROWS = 8;
+/** Runs share one bounded partial buffer; prevents scratch growing with maximumPermutations. */
+const MINIMUM_BATCH_RUN_COUNT = 32;
+/** Leaves room for grid primitives within the shared 32,768-node command budget. */
+const MAXIMUM_PERMUTATION_BATCH_COUNT = 8192;
+/** Original exact permutation count bound; keyed shuffle and output distribution use uint32. */
+const MAXIMUM_PERMUTATION_COUNT = 1048576;
+/** Conservative node allowance for published grid, sort and scan primitives. */
+const GRID_COMMAND_NODE_ALLOWANCE = 2048;
 /** Tiles of one permutation refitted by one workgroup of the permuted-refit pass. */
 const PERMUTED_WORKGROUP_SIZE = 64;
 
-/** Caller-owned outputs of {@link GPUGeographicallyWeightedRegressionNonstationarityTest}. */
-export type GPUGeographicallyWeightedRegressionNonstationarityTestOutput = {
-  /**
-   * `(predictorCount + 1) * GPU_GWR_NONSTATIONARITY_TABLE_STRIDE` float32 values, one row per
-   * coefficient (intercept first, then each predictor); see `GPU_GWR_NONSTATIONARITY_TABLE`.
-   */
-  table: GraphDataView<'float32'>;
-  /** At least `GPU_GWR_NONSTATIONARITY_SUMMARY.length` float32 values. */
-  summary: GraphDataView<'float32'>;
-  /**
-   * Optional standard deviation of the local estimates per run and coefficient, row-major
-   * `run * (predictorCount + 1) + coefficient`: run 0 is the observed fit and runs `1..P` are the
-   * permutations (NaN beyond `P` or when no local fit succeeded). Length
-   * `(maximumPermutations + 1) * (predictorCount + 1)`; this is the reference distribution of the
-   * test, for histograms.
-   */
-  standardDeviations?: GraphDataView<'float32'>;
-};
+/**
+ * Caller-owned outputs of {@link GPUGeographicallyWeightedRegressionNonstationarityTest}.
+ * The inherited flat approximation port is a deprecated compatibility alias for status.approximation.
+ */
+export type GPUGeographicallyWeightedRegressionNonstationarityTestOutput =
+  GPUApproximationStatusPort & {
+    /**
+     * `(predictorCount + 1) * GPU_GWR_NONSTATIONARITY_TABLE_STRIDE` float32 values, one row per
+     * coefficient (intercept first, then each predictor); see `GPU_GWR_NONSTATIONARITY_TABLE`.
+     */
+    table: GraphDataView<'float32'>;
+    /** One for deliberately truncated Gaussian refits; zero for bisquare/exact. */
+    status?: GPUApproximationStatusPort;
+    /** At least `GPU_GWR_NONSTATIONARITY_SUMMARY.length` float32 values. */
+    summary: GraphDataView<'float32'>;
+    /**
+     * Optional standard deviation of the local estimates per run and coefficient, row-major
+     * `run * (predictorCount + 1) + coefficient`: run 0 is the observed fit and runs `1..P` are the
+     * permutations (NaN beyond `P` or when no local fit succeeded). Length
+     * `(maximumPermutations + 1) * (predictorCount + 1)`; this is the reference distribution of the
+     * test, for histograms.
+     */
+    standardDeviations?: GraphDataView<'float32'>;
+  };
 
 /**
  * Properties for {@link GPUGeographicallyWeightedRegressionNonstationarityTest}.
@@ -102,7 +135,7 @@ export type GPUGeographicallyWeightedRegressionNonstationarityTestOutput = {
  * Per-frame (no recompile): the contents of every input buffer, including the permutation
  * `parameters` (seed and count). Compile-time: the row count, `predictorCount`,
  * `maximumPermutations`, `maximumBandwidthCount`, `maximumNeighborCount`, `tileRowCount`, whether
- * `mask` and `standardDeviations` are present.
+ * `mask` and `standardDeviations` are present, `gaussianMode` and `gaussianCutoff`.
  */
 export type GPUGeographicallyWeightedRegressionNonstationarityTestProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'gwr-nonstationarity-test'`. */
@@ -152,12 +185,17 @@ export type GPUGeographicallyWeightedRegressionNonstationarityTestProps = {
    * of at least 8 that keeps the partial sums within 64 MiB. Compile-time.
    */
   tileRowCount?: number;
+  /** Gaussian support radius in bandwidths; omitted support defaults to exact through the old cap. */
+  gaussianCutoff?: number;
+  /** Above the old cap the default is truncated at 8 bandwidths; exact keeps the old dense cap. */
+  gaussianMode?: 'exact' | 'truncated';
   /**
    * Dimensions `[columns, rows]` of the internal `GPUGridIndex` over the included rows, or `false`
    * for none. Compile-time. Defaults to a square grid of about 8 rows per cell (at most 1024 per
    * axis) from 1024 rows, otherwise none. With it, bisquare refits visit only the cells covering
-   * the bandwidth and an adaptive bandwidth finds its k-th neighbour by a ring walk; Gaussian
-   * refits scan every included row.
+   * the bandwidth and an adaptive bandwidth finds its k-th neighbour by a ring walk. Gaussian
+   * support is exact through the old cap and defaults to 8 bandwidths above it; an explicit cutoff
+   * must match the regression under test.
    */
   indexGridSize?: readonly [number, number] | false;
   /**
@@ -197,14 +235,18 @@ export type GPUGeographicallyWeightedRegressionNonstationarityTestProps = {
  * Numerics and cost: per-location sums are fixed-order and Jacobi-style equilibrated Cholesky
  * solves as in the regression; the spread of each tile is accumulated about the first successful
  * observed estimate and merged in tile order, so results are bitwise reproducible for a seed and a
- * `tileRowCount` (other tilings agree to float32 rounding). No `P x n` storage is kept.
+ * `tileRowCount` (other tilings agree to float32 rounding). Partial scratch is reused by batches
+ * of normally 32 runs (larger only to fit the command budget), with one global training index and one selected bandwidth. No `P x n` storage
+ * is kept. Packed views and the compact training table must fit the device binding limit.
  *
  * Cost: the kernel weights do not change between permutations, only the data attached to each
  * neighbour does, so with a grid index (default from 1024 rows) a bisquare refit visits only the
  * rows in the cells covering its bandwidth, `O(P n k p^2)` for `k` neighbours (the grid path sums
  * in cell order, so results differ from a scan by float rounding), and an adaptive bandwidth finds
  * its k-th neighbour by a ring walk. Gaussian kernels have unbounded support and still scan every
- * included row per refit, `O(P n^2 p^2)`; keep `n` to a few tens of thousands for them.
+ * included row per refit, `O(P n^2 p^2)`, through the old cap when support is exact. Above it,
+ * the default cutoff of 8 bandwidths omits weights below 1.27e-14; poorly conditioned fits may
+ * amplify truncation error. Use gaussianMode exact within its named cap for a reference result.
  */
 export class GPUGeographicallyWeightedRegressionNonstationarityTest
   implements GPUCommandNodeProducer
@@ -228,11 +270,20 @@ export class GPUGeographicallyWeightedRegressionNonstationarityTest
   /** Grid index dimensions `[columns, rows]`, or null when no index is built. */
   readonly indexGridSize: readonly [number, number] | null;
 
+  /** Runs held simultaneously in the reusable partial buffer, including the observed run. */
+  readonly batchRunCount: number;
+  /** Resolved Gaussian cutoff, or null for the dense exact route. */
+  readonly gaussianCutoff: number | null;
+  /** Node bound including the published primitives and the permutation batches. */
+  readonly estimatedCommandNodeCount: number;
+
   constructor(props: GPUGeographicallyWeightedRegressionNonstationarityTestProps) {
     const id = props.id ?? 'gwr-nonstationarity-test';
     this.id = id;
     this.props = props;
-    const {predictorCount, output, maximumPermutations} = props;
+    const {predictorCount, maximumPermutations} = props;
+    validateGWRApproximationAliases(id, props.output);
+    const output = getGWRBindingOutputs(props.output);
     resolveGPUSpatialContext(id, props.spatialContext, SPATIAL_CONTEXT_SUPPORT);
     validateCapacity(
       id,
@@ -241,7 +292,7 @@ export class GPUGeographicallyWeightedRegressionNonstationarityTest
       1,
       GPU_GWR_NONSTATIONARITY_MAXIMUM_PREDICTOR_COUNT
     );
-    validateCapacity(id, 'maximumPermutations', maximumPermutations, 1, 2 ** 20);
+    validateCapacity(id, 'maximumPermutations', maximumPermutations, 1, MAXIMUM_PERMUTATION_COUNT);
     this.coefficientCount = predictorCount + 1;
     this.maximumBandwidthCount =
       props.maximumBandwidthCount ?? GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_LADDER_LENGTH;
@@ -263,9 +314,33 @@ export class GPUGeographicallyWeightedRegressionNonstationarityTest
     );
     validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     this.rowCount = props.positions.length;
-    if (this.rowCount < 2 || this.rowCount > MAXIMUM_ROW_COUNT) {
-      throw new Error(`${id} needs between 2 and ${MAXIMUM_ROW_COUNT} rows`);
+    validateCapacity(id, 'positions.length', this.rowCount, 2, MAXIMUM_ROW_COUNT);
+    if (
+      props.gaussianMode !== undefined &&
+      props.gaussianMode !== 'exact' &&
+      props.gaussianMode !== 'truncated'
+    ) {
+      throw new Error(`${id} gaussianMode must be exact or truncated`);
     }
+    if (props.gaussianCutoff !== undefined)
+      validateGWRPositiveShaderFloat(id, 'gaussianCutoff', props.gaussianCutoff);
+    if (props.gaussianMode === 'exact') {
+      validateCapacity(
+        id,
+        'positions.length for gaussianMode exact',
+        this.rowCount,
+        2,
+        GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_DENSE_INDEXED_ROW_COUNT
+      );
+      if (props.gaussianCutoff !== undefined)
+        throw new Error(`${id} gaussianMode exact requires gaussianCutoff to be omitted`);
+    }
+    this.gaussianCutoff =
+      props.gaussianCutoff ??
+      (props.gaussianMode === 'truncated' ||
+      this.rowCount > GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_DENSE_INDEXED_ROW_COUNT
+        ? GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_DEFAULT_GAUSSIAN_CUTOFF
+        : null);
     if (props.indexGridSize === false) {
       this.indexGridSize = null;
     } else if (props.indexGridSize) {
@@ -291,6 +366,14 @@ export class GPUGeographicallyWeightedRegressionNonstationarityTest
     } else {
       this.indexGridSize = null;
     }
+    if (!this.indexGridSize)
+      validateCapacity(
+        id,
+        'positions.length without indexGridSize',
+        this.rowCount,
+        2,
+        GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_DENSE_INDEXED_ROW_COUNT
+      );
     validateSinglePackedView(props.predictors, ['float32'], `${id} predictors`);
     if (props.predictors.length !== this.rowCount * predictorCount) {
       throw new Error(`${id} predictors length must equal rows * predictorCount`);
@@ -346,31 +429,61 @@ export class GPUGeographicallyWeightedRegressionNonstationarityTest
         throw new Error(`${id} output.standardDeviations must hold ${length} float32 values`);
       }
     }
+    if (output.approximation) {
+      const property = props.output.status?.approximation
+        ? 'output.status.approximation'
+        : 'output.approximation';
+      validateSinglePackedView(output.approximation, ['uint32'], `${id} ${property}`);
+      validateCapacity(id, `${property}.length`, output.approximation.length, 1);
+    }
     const partialStride = 2 * this.coefficientCount + 1;
-    const partialRunCount = maximumPermutations + 1;
+    this.batchRunCount = Math.min(
+      maximumPermutations + 1,
+      Math.max(
+        MINIMUM_BATCH_RUN_COUNT,
+        Math.ceil((maximumPermutations + 1) / MAXIMUM_PERMUTATION_BATCH_COUNT)
+      )
+    );
+    const partialRunCount = this.batchRunCount;
     if (props.tileRowCount !== undefined) {
       validateCapacity(id, 'tileRowCount', props.tileRowCount);
       this.tileRowCount = props.tileRowCount;
     } else {
+      // Keep the historical default tiling within the old cap, including its float sum order.
+      const sizingRunCount =
+        this.rowCount <= GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_DENSE_INDEXED_ROW_COUNT
+          ? maximumPermutations + 1
+          : partialRunCount;
       const tileLimit = Math.max(
         1,
         Math.min(
           MAXIMUM_TILE_COUNT,
-          Math.floor(MAXIMUM_PARTIAL_FLOATS / (partialRunCount * partialStride))
+          Math.floor(MAXIMUM_PARTIAL_FLOATS / (sizingRunCount * partialStride))
         )
       );
       this.tileRowCount = Math.max(MINIMUM_TILE_ROWS, Math.ceil(this.rowCount / tileLimit));
     }
     this.tileCount = Math.ceil(this.rowCount / this.tileRowCount);
-    if (this.tileCount * partialRunCount * partialStride > MAXIMUM_PARTIAL_FLOATS * 4) {
-      throw new Error(`${id} tileRowCount is too small for the row and permutation counts`);
-    }
-    if (this.tileCount * maximumPermutations >= 2 ** 31) {
-      throw new Error(`${id} tileCount * maximumPermutations must stay below 2^31`);
-    }
+    validateCapacity(
+      id,
+      'tileCount * batchRunCount * partialStride for tileRowCount',
+      this.tileCount * partialRunCount * partialStride,
+      1,
+      MAXIMUM_PARTIAL_FLOATS
+    );
+    this.estimatedCommandNodeCount =
+      GRID_COMMAND_NODE_ALLOWANCE +
+      32 +
+      3 * Math.ceil((maximumPermutations + 1) / this.batchRunCount);
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
+    validateGWROutputs(
+      id,
+      [output.table, output.summary, output.standardDeviations, output.approximation],
+      [{writes: [output.table, output.summary], reads: [output.standardDeviations]}]
+    );
     validateGraphOutputsDisjointFromInputs(
       id,
-      [output.table, output.summary, output.standardDeviations],
+      [output.table, output.summary, output.standardDeviations, output.approximation],
       [
         props.positions,
         props.predictors,
@@ -401,9 +514,12 @@ export class GPUGeographicallyWeightedRegressionNonstationarityTest
       maximumNeighborCount,
       tileRowCount,
       tileCount,
-      indexGridSize
+      indexGridSize,
+      batchRunCount,
+      gaussianCutoff
     } = this;
-    const {output, predictorCount, maximumPermutations, mask} = props;
+    const {predictorCount, maximumPermutations, mask} = props;
+    const output = getGWRBindingOutputs(props.output);
     const tileGroupCount = Math.ceil(tileCount / PERMUTED_WORKGROUP_SIZE);
     validateGraphViewsBelongToGraph(id, graph, [
       props.positions,
@@ -416,8 +532,36 @@ export class GPUGeographicallyWeightedRegressionNonstationarityTest
       props.parameters,
       output.table,
       output.summary,
-      output.standardDeviations
+      output.standardDeviations,
+      output.approximation
     ]);
+    validateGWRBindings(
+      graph.device,
+      id,
+      [
+        props.positions,
+        props.predictors,
+        props.response,
+        mask,
+        props.bandwidthParameters,
+        props.selectedBandwidth,
+        props.coefficients,
+        props.parameters,
+        ...Object.values(output)
+      ],
+      [
+        ['row-valid', rowCount * 4],
+        ['approximation', 4],
+        ['coefficient anchors', P * 4],
+        ['anchor tiles and reduction scratch', Math.ceil(rowCount / SCAN_TILE_ROWS) * 4],
+        ['compacted training rows', (rowCount * (predictorCount + 4) + 1) * 4],
+        ['tile counts, offsets and scan scratch', (Math.ceil(rowCount / SCAN_TILE_ROWS) + 1) * 4],
+        ['coefficient and permutation partials', (batchRunCount * tileCount * (2 * P + 1) + 1) * 4],
+        ['fit-counts', (maximumPermutations + 1) * 4],
+        ['standard-deviations', (maximumPermutations + 1) * P * 4],
+        ...getGWRGridScratchSizes(rowCount, indexGridSize)
+      ]
+    );
     const rowStride = predictorCount + 4;
     const partialStride = 2 * P + 1;
     const scanTileCount = Math.ceil(rowCount / SCAN_TILE_ROWS);
@@ -427,7 +571,7 @@ export class GPUGeographicallyWeightedRegressionNonstationarityTest
       length: number
     ) => createTransientView(graph, `${id}-${name}`, format, Math.max(length, 1));
     const rowValid = transient('row-valid', 'uint32', rowCount);
-    const tileCounts = transient('tile-counts', 'uint32', scanTileCount);
+    const tileCounts = transient('tile-counts', 'uint32', scanTileCount + 1);
     const tileOffsets = transient('tile-offsets', 'uint32', scanTileCount + 1);
     // Compacted included rows: [x, y, bandwidth, predictors..., response] per row, then the count.
     const rows = transient('rows', 'float32', rowCount * rowStride + 1);
@@ -447,11 +591,9 @@ export class GPUGeographicallyWeightedRegressionNonstationarityTest
           })
         : null;
     const shifts = transient('shifts', 'float32', P);
-    const partial = transient(
-      'partial',
-      'float32',
-      (maximumPermutations + 1) * tileCount * partialStride
-    );
+    const anchorTiles = transient('anchor-tiles', 'uint32', scanTileCount);
+    const anchorRow = transient('anchor-row', 'uint32', 1);
+    const partial = transient('partial', 'float32', batchRunCount * tileCount * partialStride + 1);
     const fitCounts = transient('fit-counts', 'float32', maximumPermutations + 1);
     const standardDeviations =
       output.standardDeviations ??
@@ -476,6 +618,8 @@ export class GPUGeographicallyWeightedRegressionNonstationarityTest
         ]
       : [];
     const common = `const ROW_COUNT: u32 = ${rowCount}u;
+const BATCH_RUNS: u32 = ${batchRunCount}u;
+const BATCH_CURSOR: u32 = ${batchRunCount * tileCount * partialStride}u;
 const PREDICTOR_COUNT: u32 = ${predictorCount}u;
 const P: u32 = ${P}u;
 const ROW_STRIDE: u32 = ${rowStride}u;
@@ -495,7 +639,7 @@ ${getPermutationParameterWGSL(maximumPermutations)}`;
     const gridDeclarations = indexGridSize ? getGridLookupWGSL(indexGridSize) : '';
     const rowCountSlot = rowCount * rowStride;
 
-    return [
+    const nodes: GPUCommandNode<Parameters>[] = [
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-validate`,
         operation: OPERATION,
@@ -528,7 +672,7 @@ ${getPermutationParameterWGSL(maximumPermutations)}`;
         operation: OPERATION,
         variant: 'tile-counts',
         bindings: [read('rowValid', rowValid, 'u32'), write('tileCounts', tileCounts, 'u32')],
-        invocationCount: scanTileCount,
+        invocationCount: scanTileCount + 1,
         declarations: common,
         body: `let firstRow = index * SCAN_TILE_ROWS;
   let endRow = min(firstRow + SCAN_TILE_ROWS, ROW_COUNT);
@@ -538,19 +682,12 @@ ${getPermutationParameterWGSL(maximumPermutations)}`;
   }
   tileCounts[tileCountsOffset + index] = count;`
       }),
-      createWGSLKernelNode<Parameters>(graph, {
+      ...new GPUScan({
         id: `${id}-tile-offsets`,
-        operation: OPERATION,
-        variant: 'tile-offsets',
-        bindings: [read('tileCounts', tileCounts, 'u32'), write('tileOffsets', tileOffsets, 'u32')],
-        invocationCount: scanTileCount + 1,
-        declarations: common,
-        body: `var offset = 0u;
-  for (var tile = 0u; tile < index; tile++) {
-    offset += tileCounts[tileCountsOffset + tile];
-  }
-  tileOffsets[tileOffsetsOffset + index] = offset;`
-      }),
+        input: tileCounts,
+        output: tileOffsets,
+        mode: 'exclusive'
+      }).getCommandNodes(graph),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-compact`,
         operation: OPERATION,
@@ -667,26 +804,48 @@ ${indexGridSize ? getRingNeighborDistancesWGSL() : ''}`,
   }
   rows[rowsOffset + index * ROW_STRIDE + 2u] = bandwidth;`
       }),
-      // Observed spread is accumulated about the first finite estimate, which is within a few
-      // standard deviations of every other one, so the second moments do not cancel.
+      // Find the first successful observed estimate in parallel. The integer minimum keeps
+      // exactly the old anchor while avoiding a whole-data scan when every row is excluded.
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-anchor-tiles`,
+        operation: OPERATION,
+        variant: 'anchor-tiles',
+        bindings: [
+          read('coefficients', props.coefficients, 'f32'),
+          write('anchorTiles', anchorTiles, 'u32')
+        ],
+        invocationCount: scanTileCount,
+        declarations: `${common}\n${COEFFICIENT_ROW_WGSL}`,
+        body: `let firstRow = index * SCAN_TILE_ROWS;
+  let endRow = min(firstRow + SCAN_TILE_ROWS, ROW_COUNT);
+  var firstIncludedRow = 0xffffffffu;
+  for (var row = firstRow; row < endRow; row++) {
+    if (isFiniteRow(row)) { firstIncludedRow = row; break; }
+  }
+  anchorTiles[anchorTilesOffset + index] = firstIncludedRow;`
+      }),
+      ...new GPUReduction({
+        id: `${id}-anchor-minimum`,
+        input: anchorTiles,
+        output: anchorRow,
+        operation: 'min'
+      }).getCommandNodes(graph),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-anchor`,
         operation: OPERATION,
         variant: 'anchor',
-        bindings: [read('coefficients', props.coefficients, 'f32'), write('shifts', shifts, 'f32')],
+        bindings: [
+          read('coefficients', props.coefficients, 'f32'),
+          read('anchorRow', anchorRow, 'u32'),
+          write('shifts', shifts, 'f32')
+        ],
         invocationCount: 1,
-        declarations: `${common}
-${COEFFICIENT_ROW_WGSL}`,
-        body: `for (var column = 0u; column < P; column++) {
-    shifts[shiftsOffset + column] = 0.0;
-  }
-  for (var row = 0u; row < ROW_COUNT; row++) {
-    if (isFiniteRow(row)) {
-      for (var column = 0u; column < P; column++) {
-        shifts[shiftsOffset + column] = coefficients[coefficientsOffset + row * P + column];
-      }
-      break;
-    }
+        declarations: common,
+        body: `let row = anchorRow[anchorRowOffset];
+  for (var column = 0u; column < P; column++) {
+    var value = 0.0;
+    if (row < ROW_COUNT) { value = coefficients[coefficientsOffset + row * P + column]; }
+    shifts[shiftsOffset + column] = value;
   }`
       }),
       createWGSLKernelNode<Parameters>(graph, {
@@ -719,25 +878,44 @@ ${COEFFICIENT_ROW_WGSL}`,
   for (var slot = 0u; slot < PARTIAL_STRIDE; slot++) {
     partial[base + slot] = sums[slot];
   }`
-      }),
+      })
+    ];
+    nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-permuted-tiles`,
+        id: `${id}-batch-reset`,
         operation: OPERATION,
-        variant: 'permuted-tiles',
-        bindings: [
-          read('rows', rows, 'f32'),
-          read('params', props.bandwidthParameters, 'f32'),
-          read('parameters', props.parameters, 'u32'),
-          read('shifts', shifts, 'f32'),
-          write('partial', partial, 'f32'),
-          ...gridBindings
-        ],
-        // One workgroup refits PERMUTED_WORKGROUP_SIZE tiles of ONE permutation, so the
-        // swap-or-not round material of that permutation is drawn once into workgroup memory.
-        workgroupSize: PERMUTED_WORKGROUP_SIZE,
-        guardIndex: false,
-        invocationCount: tileGroupCount * PERMUTED_WORKGROUP_SIZE * maximumPermutations,
-        declarations: `${permutationDeclarations}
+        variant: 'batch-reset',
+        bindings: [write('partial', partial, 'f32')],
+        invocationCount: 1,
+        declarations: common,
+        body: 'partial[partialOffset + BATCH_CURSOR] = 0.0;'
+      })
+    );
+    const batchCount = Math.ceil((maximumPermutations + 1) / batchRunCount);
+    for (let batch = 0; batch < batchCount; batch++) {
+      const currentRunCount = Math.min(
+        batchRunCount,
+        maximumPermutations + 1 - batch * batchRunCount
+      );
+      nodes.push(
+        createGWRRuntimeKernelNode<Parameters>(graph, {
+          id: `${id}-batch-${batch}-permuted-tiles`,
+          operation: OPERATION,
+          variant: 'permuted-tiles',
+          bindings: [
+            read('rows', rows, 'f32'),
+            read('params', props.bandwidthParameters, 'f32'),
+            read('parameters', props.parameters, 'u32'),
+            read('shifts', shifts, 'f32'),
+            write('partial', partial, 'f32'),
+            ...gridBindings
+          ],
+          // One workgroup refits PERMUTED_WORKGROUP_SIZE tiles of ONE permutation, so the
+          // swap-or-not round material of that permutation is drawn once into workgroup memory.
+          workgroupSize: PERMUTED_WORKGROUP_SIZE,
+          guardIndex: false,
+          invocationCount: tileGroupCount * PERMUTED_WORKGROUP_SIZE * currentRunCount,
+          declarations: `${permutationDeclarations}
 ${gridDeclarations}
 const TILE_GROUP_COUNT: u32 = ${tileGroupCount}u;
 const PERMUTED_WORKGROUP_SIZE: u32 = ${PERMUTED_WORKGROUP_SIZE}u;
@@ -746,14 +924,15 @@ ${getPermutationShuffleWGSL(PHILOX_PURPOSES.geographicallyWeightedRegressionNons
 ${gridDeclarations ? '' : IS_FINITE_VALUE_WGSL}
 ${getCholeskyWGSL(P)}
 ${getEquilibratedCholeskyWGSL(P)}
-${getLocalKernelWeightWGSL()}
-${getPermutedFitWGSL(P, Boolean(indexGridSize))}`,
-        // No early return before the barrier: every invocation of the workgroup must reach it.
-        body: `let workgroup = index / PERMUTED_WORKGROUP_SIZE;
-  let permutation = workgroup / TILE_GROUP_COUNT + 1u;
-  let tile = (workgroup % TILE_GROUP_COUNT) * PERMUTED_WORKGROUP_SIZE + localInvocationIndex;
+${getLocalKernelWeightWGSL(gaussianCutoff)}
+${getPermutedFitWGSL(P, Boolean(indexGridSize), gaussianCutoff)}`,
+          // No early return before the barrier: every invocation of the workgroup must reach it.
+          body: `let permutationWorkgroup = index / PERMUTED_WORKGROUP_SIZE;
+  let localRun = permutationWorkgroup / TILE_GROUP_COUNT;
+  let permutation = u32(partial[partialOffset + BATCH_CURSOR]) + localRun;
+  let tile = (permutationWorkgroup % TILE_GROUP_COUNT) * PERMUTED_WORKGROUP_SIZE + localInvocationIndex;
   let count = u32(rows[rowsOffset + ${rowCountSlot}u]);
-  let runsPermutation = permutation <= readPermutationCount();
+  let runsPermutation = localRun < BATCH_RUNS && permutation > 0u && permutation <= readPermutationCount();
   if (runsPermutation) {
     loadSwapOrNotRounds(readSeedKey(), permutation, count, localInvocationIndex, PERMUTED_WORKGROUP_SIZE);
   }
@@ -778,27 +957,30 @@ ${getPermutedFitWGSL(P, Boolean(indexGridSize))}`,
         sums[1u + P + column] += deviation * deviation;
       }
     }
-    let base = partialOffset + (permutation * TILE_COUNT + tile) * PARTIAL_STRIDE;
+    let base = partialOffset + (localRun * TILE_COUNT + tile) * PARTIAL_STRIDE;
     for (var slot = 0u; slot < PARTIAL_STRIDE; slot++) {
       partial[base + slot] = sums[slot];
     }
   }`
-      }),
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-merge`,
-        operation: OPERATION,
-        variant: 'merge',
-        bindings: [
-          read('partial', partial, 'f32'),
-          read('parameters', props.parameters, 'u32'),
-          write('fitCounts', fitCounts, 'f32'),
-          write('standardDeviations', standardDeviations, 'f32')
-        ],
-        invocationCount: maximumPermutations + 1,
-        declarations: permutationDeclarations,
-        body: `let nan = getNaN();
+        }),
+        createGWRRuntimeKernelNode<Parameters>(graph, {
+          id: `${id}-batch-${batch}-merge`,
+          operation: OPERATION,
+          variant: 'merge',
+          bindings: [
+            read('partial', partial, 'f32'),
+            read('parameters', props.parameters, 'u32'),
+            write('fitCounts', fitCounts, 'f32'),
+            write('standardDeviations', standardDeviations, 'f32')
+          ],
+          invocationCount: currentRunCount,
+          workgroupSize: 32,
+          declarations: permutationDeclarations,
+          body: `let run = u32(partial[partialOffset + BATCH_CURSOR]) + index;
+  if (run > ${maximumPermutations}u) { return; }
+  let nan = getNaN();
   var sums: array<f32, ${partialStride}>;
-  if (index <= readPermutationCount()) {
+  if (run <= readPermutationCount()) {
     for (var tile = 0u; tile < TILE_COUNT; tile++) {
       let base = partialOffset + (index * TILE_COUNT + tile) * PARTIAL_STRIDE;
       for (var slot = 0u; slot < PARTIAL_STRIDE; slot++) {
@@ -808,16 +990,30 @@ ${getPermutedFitWGSL(P, Boolean(indexGridSize))}`,
   } else {
     sums[0] = -1.0;
   }
-  fitCounts[fitCountsOffset + index] = select(nan, sums[0], sums[0] >= 0.0);
+  fitCounts[fitCountsOffset + run] = select(nan, sums[0], sums[0] >= 0.0);
   for (var column = 0u; column < P; column++) {
     var spread = nan;
     if (sums[0] > 0.0) {
       let mean = sums[1u + column] / sums[0];
       spread = sqrt(max(sums[1u + P + column] / sums[0] - mean * mean, 0.0));
     }
-    standardDeviations[standardDeviationsOffset + index * P + column] = spread;
+    standardDeviations[standardDeviationsOffset + run * P + column] = spread;
   }`
-      }),
+        })
+      );
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-batch-${batch}-advance`,
+          operation: OPERATION,
+          variant: 'batch-advance',
+          bindings: [write('partial', partial, 'f32')],
+          invocationCount: 1,
+          declarations: common,
+          body: 'partial[partialOffset + BATCH_CURSOR] += f32(BATCH_RUNS);'
+        })
+      );
+    }
+    nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-finish`,
         operation: OPERATION,
@@ -876,7 +1072,22 @@ ${getPermutedFitWGSL(P, Boolean(indexGridSize))}`,
     summary[summaryOffset + ${GPU_GWR_NONSTATIONARITY_SUMMARY.failedFitCount}u] = failed;
   }`
       })
-    ];
+    );
+    if (output.approximation)
+      nodes.push(
+        createWGSLKernelNode(graph, {
+          id: `${id}-approximation`,
+          operation: OPERATION,
+          variant: 'approximation',
+          invocationCount: 1,
+          bindings: [
+            read('params', props.bandwidthParameters, 'f32'),
+            write('approximation', output.approximation, 'u32')
+          ],
+          body: `approximation[approximationOffset] = ${gaussianCutoff === null ? '0u' : 'select(1u, 0u, params[paramsOffset] > 0.5)'};`
+        })
+      );
+    return nodes;
   }
 }
 
@@ -905,7 +1116,11 @@ fn isFiniteRow(row: u32) -> bool {
  * permuted focal observation exactly like the regression's own fit. Writes the estimates
  * (intercept in original coordinates, then slopes) to `estimate`; returns false when singular.
  */
-function getPermutedFitWGSL(coefficientCount: number, hasGrid: boolean): string {
+function getPermutedFitWGSL(
+  coefficientCount: number,
+  hasGrid: boolean,
+  gaussianCutoff: number | null
+): string {
   const P = coefficientCount;
   return /* wgsl */ `
 fn getWeight(distance: f32, bandwidth: f32) -> f32 {
@@ -928,8 +1143,8 @@ fn fitPermuted(
   ${
     hasGrid
       ? `// Bisquare weights vanish beyond the bandwidth, so only the covering grid cells are visited.
-  let useGrid = params[paramsOffset] > 0.5 && bandwidth > 0.0 && isFiniteBits(bandwidth);
-  let range = select(vec4u(0u, 0u, 0u, 0u), getGridRange(origin, bandwidth), useGrid);
+  let useGrid = ${gaussianCutoff === null ? 'params[paramsOffset] > 0.5' : 'true'} && bandwidth > 0.0 && isFiniteBits(bandwidth);
+  let range = select(vec4u(0u, 0u, 0u, 0u), getGridRange(origin, ${gaussianCutoff === null ? 'bandwidth' : `select(bandwidth * ${getWGSLFloatLiteral(gaussianCutoff)}, bandwidth, params[paramsOffset] > 0.5)`}), useGrid);
   let gridRowCount = select(1u, range.w - range.z + 1u, useGrid);
   for (var gridRowStep = 0u; gridRowStep < gridRowCount; gridRowStep++) {
     var firstSlot = 0u;

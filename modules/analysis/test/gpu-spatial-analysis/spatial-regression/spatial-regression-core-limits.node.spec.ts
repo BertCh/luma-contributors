@@ -374,18 +374,34 @@ it('GPUGeographicallyWeightedRegression without index grid or refinement fits th
   );
 });
 
-// The constructor bounds rows * maximumBandwidthCount * 8 bytes by the 128 MiB binding size.
+// Focus/candidate scratch is batched. At maximum predictors the packed twelve-column output
+// limits rows before the algorithmic indexed maximum does; exercise the actual device bound.
 for (const [rows, ladderLength] of [
   [GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_INDEXED_ROW_COUNT, 16],
   [(1 << 24) / GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_LADDER_LENGTH, 32]
 ]) {
-  it(`GPUGeographicallyWeightedRegression at ${rows} rows and ${ladderLength} bandwidths binds within maxStorageBufferBindingSize`, () => {
+  it(`GPUGeographicallyWeightedRegression up to ${rows} device-supported rows and ${ladderLength} bandwidths binds within maxStorageBufferBindingSize`, () => {
     const context = createContext();
-    const nodes = createGWR(context, rows, {ladderLength}).getCommandNodes(context.graph);
-    expect(getLargestResourceBytes(nodes)).toBeGreaterThanOrEqual(rows * 12 * 4);
+    const bytesPerRow = (GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_PREDICTOR_COUNT + 1) * 4;
+    const rowCount = Math.min(
+      rows,
+      Math.floor(
+        Math.min(
+          context.device.limits.maxStorageBufferBindingSize,
+          context.device.limits.maxBufferSize
+        ) / bytesPerRow
+      )
+    );
+    const nodes = createGWR(context, rowCount, {ladderLength}).getCommandNodes(context.graph);
+    expect(getLargestResourceBytes(nodes)).toBeGreaterThanOrEqual(rowCount * bytesPerRow);
     expect(getLargestResourceBytes(nodes)).toBeLessThanOrEqual(
       context.device.limits.maxStorageBufferBindingSize
     );
+    expect(getLargestResourceBytes(nodes)).toBeLessThanOrEqual(context.device.limits.maxBufferSize);
+    if (rowCount < rows) {
+      const oversized = createGWR(context, rowCount + 1, {ladderLength});
+      expect(() => oversized.getCommandNodes(context.graph)).toThrow(/aligned binding.*limit/);
+    }
     context.device.destroy();
   });
 }

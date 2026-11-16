@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateTerrainBindings} from '../terrain-processing/terrain-binding-preflight';
 import {toRadians} from '@math.gl/core';
 import {
   createTransientView,
@@ -414,6 +415,28 @@ export class GPUSolarIrradiance implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    const needsSolarTable = Boolean(
+      this.props.output.sunHours ||
+        this.props.output.insolation ||
+        this.props.output.sunHoursTexture ||
+        this.props.output.insolationTexture
+    );
+    validateTerrainBindings(
+      graph,
+      this.id,
+      {
+        ...this.props,
+        sunTable: needsSolarTable ? this.props.sunTable : undefined,
+        parameters: needsSolarTable ? this.props.parameters : undefined
+      },
+      {
+        'texture staging':
+          (this.props.output.sunHoursTexture && !this.props.output.sunHours) ||
+          (this.props.output.insolationTexture && !this.props.output.insolation)
+            ? 4 * this.props.grid.width * this.props.grid.height
+            : 0
+      }
+    );
     const {id, props} = this;
     const {output} = props;
     const {directionCount, sampleCapacity} = props;

@@ -109,16 +109,16 @@ it('GPUCalendarBuckets splits outputs over kernels within the binding limit', ()
     output
   });
   const nodes = contributor.getCommandNodes(graph);
-  // 4 inputs + 11 outputs at 4 outputs per kernel = 3 kernels, after the matrix fill.
+  // 4 storage inputs + 11 outputs at 4 outputs per kernel = 3 kernels; chunk parameters use a uniform.
   expect(nodes.map(node => node.id)).toEqual([
     'calendar-fill-matrix',
-    'calendar-decode-0',
-    'calendar-decode-1',
-    'calendar-decode-2'
+    'calendar-decode-0-chunk-0',
+    'calendar-decode-1-chunk-0',
+    'calendar-decode-2-chunk-0'
   ]);
 
   const minimal = new GPUCalendarBuckets(createProps(graph, {id: 'small'}));
-  expect(minimal.getCommandNodes(graph).map(node => node.id)).toEqual(['small-decode-0']);
+  expect(minimal.getCommandNodes(graph).map(node => node.id)).toEqual(['small-decode-0-chunk-0']);
   device.destroy();
 });
 

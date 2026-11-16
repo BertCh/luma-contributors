@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  validateTrajectoryBindings,
+  validateTrajectoryOutputRanges
+} from '../trajectory-analysis/trajectory-binding-validation';
 import {PHILOX_PURPOSES} from '../../analysis-core/kernels/philox-random';
 import {
   createTransientView,
@@ -170,6 +174,7 @@ export class GPULocalKnox implements GPUCommandNodeProducer {
     if (props.output.summary.length < this.rows * GPU_LOCAL_KNOX_SUMMARY_LENGTH) {
       throw new Error(`${id} output.summary needs rows * ${GPU_LOCAL_KNOX_SUMMARY_LENGTH} rows`);
     }
+    validateTrajectoryOutputRanges(this.id, this.props.output);
     validateGraphOutputsDisjointFromInputs(
       id,
       [props.output.summary],
@@ -200,6 +205,7 @@ export class GPULocalKnox implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateTrajectoryBindings(graph, this.id, this.props);
     const {id, props, rows} = this;
     const {pairs, times, parameters, maximumPermutations} = props;
     const {summary} = props.output;

@@ -6,9 +6,12 @@ import type {
   GPUCommandGraph,
   GPUCommandNode,
   GPUCommandNodeProducer,
-  GraphDataView
+  GraphDataView,
+  GraphVectorView
 } from '@luma.gl/graph/gpu-core';
 import {
+  validateCommandNodeBudget,
+  validateSinglePackedView,
   validateCapacity,
   validateFiniteNumber,
   validateViewLength
@@ -16,7 +19,17 @@ import {
 import {getSymmetricEigenWGSL} from '../analysis-core/kernels/symmetric-eigen-wgsl';
 import {IS_FINITE_VALUE_WGSL} from '../analysis-core/kernels/wgsl-common';
 import {GPU_POINT_CLOUD_MAXIMUM_NEIGHBOR_CAPACITY} from './pointcloud-limits';
-import {getPointCloudKernelNodes} from './pointcloud-kernel-nodes';
+import {
+  getPointCloudChunkKernelNodes,
+  addPointCloudStridedFields,
+  validatePointCloudChunkViews
+} from './pointcloud-chunk-kernel-nodes';
+import {
+  planGraphChunkDispatch,
+  validateGraphChunkDispatchBindings,
+  validateGraphChunkBindingRanges,
+  type GraphChunkDispatchPlan
+} from '../analysis-core/kernels/graph-chunk-dispatch';
 
 // Eight sweeps cover 24 three-axis pair rotations, the previous rotation budget.
 const POINT_CLOUD_FEATURES_MAXIMUM_EIGEN_SWEEPS = 8;
@@ -44,18 +57,18 @@ export type GPUPointCloudFeaturesProps = {
   parameters?: GraphDataView<'float32'>;
   id?: string;
   positions: GraphDataView<'float32x3'>;
-  indices: GraphDataView<'uint32'>;
-  counts: GraphDataView<'uint32'>;
+  indices: GraphDataView<'uint32'> | GraphVectorView<'uint32'>;
+  counts: GraphDataView<'uint32'> | GraphVectorView<'uint32'>;
   capacity: number;
   /** Normal orientation toward this point; default chooses nonnegative z (then y, then x). */
   viewpoint?: readonly [number, number, number];
-  normals: GraphDataView<'float32x3'>;
+  normals: GraphDataView<'float32x3'> | GraphVectorView<'float32x3'>;
   /** Descending eigenvalues of population covariance. */
-  eigenvalues: GraphDataView<'float32x3'>;
+  eigenvalues: GraphDataView<'float32x3'> | GraphVectorView<'float32x3'>;
   /** Optional packed population covariance: xx, xy, xz, yy, yz, zz per row. */
-  covariance?: GraphDataView<'float32'>;
+  covariance?: GraphDataView<'float32'> | GraphVectorView<'float32'>;
   /** Linearity, planarity, scattering. */
-  shapes: GraphDataView<'float32x3'>;
+  shapes: GraphDataView<'float32x3'> | GraphVectorView<'float32x3'>;
   /**
    * Per-row bit set, zero when clean. Bit 1 (`GPU_POINT_CLOUD_FEATURES_STATUS_DEGENERATE`): fewer
    * than three neighbors, or collinear or coincident neighbors (middle eigenvalue at most 1e-6 of the
@@ -63,7 +76,7 @@ export type GPUPointCloudFeaturesProps = {
    * `capacity` neighbors were used. Bit 4 (`..._NOT_CONVERGED`): the Jacobi eigensolve did
    * not reach its tolerance within eight cyclic sweeps (24 pair rotations); the outputs are the last iterate. Bits above 4 are zero.
    */
-  status: GraphDataView<'uint32'>;
+  status: GraphDataView<'uint32'> | GraphVectorView<'uint32'>;
 };
 
 /** `GPUPointCloudFeatures` status bit 1: fewer than three neighbors or a degenerate covariance. */
@@ -76,10 +89,14 @@ export const GPU_POINT_CLOUD_FEATURES_STATUS_NOT_CONVERGED = 4;
 /**
  * Centered 3D covariance and the shared symmetric Jacobi eigensolve on GPU neighborhoods.
  * Per-frame: input contents and parameters (orientation). Compile-time: capacity, view shapes and
- * optional outputs. Without parameters, viewpoint retains its constructor-time behavior.
+ * optional outputs. Counts, fixed-stride indices, normals, eigenvalues, shapes, covariance and status
+ * accept aligned chunks; positions remain a resident packed cloud and indices are global rows.
+ * Without parameters, viewpoint retains its constructor-time behavior.
  */
 export class GPUPointCloudFeatures implements GPUCommandNodeProducer {
   readonly id: string;
+  readonly estimatedCommandNodeCount: number;
+  private readonly chunkPlan: GraphChunkDispatchPlan;
   constructor(readonly props: GPUPointCloudFeaturesProps) {
     this.id = props.id ?? 'gpu-pointcloud-features';
     validateCapacity(
@@ -108,40 +125,81 @@ export class GPUPointCloudFeatures implements GPUCommandNodeProducer {
     props.viewpoint?.forEach((value, axis) =>
       validateFiniteNumber(this.id, `viewpoint[${axis}]`, value)
     );
+    validateSinglePackedView(props.positions, ['float32x3'], `${this.id} positions`);
+    if (props.parameters)
+      validateSinglePackedView(props.parameters, ['float32'], `${this.id} parameters`);
+    this.chunkPlan = addPointCloudStridedFields(
+      this.id,
+      planGraphChunkDispatch(this.id, {
+        counts: props.counts,
+        normals: props.normals,
+        eigenvalues: props.eigenvalues,
+        shapes: props.shapes,
+        status: props.status
+      }),
+      {
+        indices: {view: props.indices, stride: props.capacity},
+        covariances: {view: props.covariance, stride: 6}
+      }
+    );
+    validatePointCloudChunkViews(
+      this.id,
+      this.chunkPlan,
+      ['counts', 'indices'],
+      ['normals', 'eigenvalues', 'shapes', 'status', 'covariances'],
+      {positions: props.positions, parameters: props.parameters},
+      [
+        {
+          inputNames: ['indices', 'counts'],
+          outputNames: ['normals', 'eigenvalues', 'status', 'covariances'],
+          inputs: {positions: props.positions}
+        },
+        {inputNames: ['eigenvalues', 'status'], outputNames: ['shapes']},
+        ...(props.parameters
+          ? [
+              {
+                inputNames: ['indices', 'counts'],
+                outputNames: ['normals'],
+                inputs: {positions: props.positions, parameters: props.parameters}
+              }
+            ]
+          : [])
+      ]
+    );
+    this.estimatedCommandNodeCount =
+      (props.parameters ? 3 : 2) * (1 + this.chunkPlan.nonemptyChunkCount);
+    validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {
-      positions,
-      indices,
-      counts,
-      normals,
-      eigenvalues,
-      shapes,
-      status,
-      capacity,
-      viewpoint,
-      parameters,
-      covariance
-    } = this.props;
-    const nodes = getPointCloudKernelNodes(graph, {
+    const {positions, counts, capacity, viewpoint, parameters, covariance} = this.props;
+    if (!this.chunkPlan.nonemptyChunkCount) return [];
+    validateGraphChunkDispatchBindings(graph, this.id, this.chunkPlan);
+    validateGraphChunkBindingRanges(graph, this.id, {positions, parameters});
+    const rowViews = this.chunkPlan.chunks[0].views;
+    const nodes = getPointCloudChunkKernelNodes(graph, {
       id: this.id,
       length: counts.length,
-      inputs: {positions, indices, counts},
+      plan: this.chunkPlan,
+      rowStrides: {indices: capacity, covariances: 6},
+      inputs: {
+        positions,
+        indices: rowViews['indices'] as GraphDataView<'uint32'>,
+        counts: rowViews['counts'] as GraphDataView<'uint32'>
+      },
       outputs: {
-        normals,
-        eigenvalues,
-        shapes,
-        status,
-        ...(covariance ? {covariances: covariance} : {})
+        normals: rowViews['normals'] as GraphDataView<'float32x3'>,
+        eigenvalues: rowViews['eigenvalues'] as GraphDataView<'float32x3'>,
+        status: rowViews['status'] as GraphDataView<'uint32'>,
+        ...(covariance ? {covariances: rowViews['covariances'] as GraphDataView<'float32'>} : {})
       },
       declarations: IS_FINITE_VALUE_WGSL + getSymmetricEigenWGSL(3),
       body: `
 let count = min(readCounts(index), ${capacity}u);
 var flags = select(0u, ${GPU_POINT_CLOUD_FEATURES_STATUS_TRUNCATED}u, readCounts(index) > ${capacity}u);
 ${covariance ? 'for (var component = 0u; component < 6u; component++) { writeCovariances(index * 6u + component, 0.0); }' : ''}
-writeNormals(index, vec3f(0.0)); writeEigenvalues(index, vec3f(0.0)); writeShapes(index, vec3f(0.0));
+writeNormals(index, vec3f(0.0)); writeEigenvalues(index, vec3f(0.0)); 
 if (count < 3u) { writeStatus(index, flags | ${GPU_POINT_CLOUD_FEATURES_STATUS_DEGENERATE}u); return; }
 let origin = readPositions(readIndices(index * ${capacity}u));
 var mean = vec3f(0.0);
@@ -169,18 +227,43 @@ let least = min(min(values.x,values.y),values.z);
 let middle = values.y;
 writeEigenvalues(index, vec3f(largest, middle, least));
 if (!(middle > largest * 1e-6) || !(largest > 1e-30)) { flags |= ${GPU_POINT_CLOUD_FEATURES_STATUS_DEGENERATE}u; }
-else { writeNormals(index, normal); writeShapes(index, vec3f((largest-middle)/largest, (middle-least)/largest, least/largest)); }
+else { writeNormals(index, normal); }
 writeStatus(index, flags);`
     });
+    nodes.push(
+      ...getPointCloudChunkKernelNodes(graph, {
+        id: `${this.id}-shapes`,
+        length: counts.length,
+        plan: this.chunkPlan,
+        inputs: {
+          eigenvalues: rowViews['eigenvalues'] as GraphDataView<'float32x3'>,
+          status: rowViews['status'] as GraphDataView<'uint32'>
+        },
+        outputs: {shapes: rowViews['shapes'] as GraphDataView<'float32x3'>},
+        body: `var shape = vec3f(0.0);
+if ((readStatus(index) & 1u) == 0u) {
+  let values = readEigenvalues(index);
+  shape = vec3f((values.x-values.y)/values.x, (values.y-values.z)/values.x, values.z/values.x);
+}
+writeShapes(index, shape);`
+      })
+    );
     if (parameters) {
       // Covariance output already uses all eight baseline storage bindings. Keep orientation in a
       // separate pass so parameters work with every output configuration on a baseline device.
       nodes.push(
-        ...getPointCloudKernelNodes(graph, {
+        ...getPointCloudChunkKernelNodes(graph, {
           id: `${this.id}-orient`,
           length: counts.length,
-          inputs: {positions, indices, counts, parameters},
-          outputs: {normals},
+          plan: this.chunkPlan,
+          rowStrides: {indices: capacity},
+          inputs: {
+            positions,
+            indices: rowViews['indices'] as GraphDataView<'uint32'>,
+            counts: rowViews['counts'] as GraphDataView<'uint32'>,
+            parameters
+          },
+          outputs: {normals: rowViews['normals'] as GraphDataView<'float32x3'>},
           body: `var normal = readNormals(index);
 if (dot(normal, normal) < 0.5) { return; }
 if (readParameters(3u) == 0.0) {

@@ -3,6 +3,12 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  validateTrajectoryBindings,
+  validateTrajectoryWritableDispatches,
+  validateTrajectoryScratch,
+  validateTrajectoryOutputRanges
+} from '../trajectory-analysis/trajectory-binding-validation';
+import {
   createTransientView,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -226,6 +232,17 @@ export class GPUMobilityIndicators implements GPUCommandNodeProducer {
       this.maximumEntropySequenceRows,
       GPU_MOBILITY_MAXIMUM_ENTROPY_SEQUENCE_ROWS
     );
+    validateTrajectoryOutputRanges(this.id, this.props.output);
+    validateTrajectoryWritableDispatches(this.id, [
+      {
+        randomEntropy: output.randomEntropy,
+        uncorrelatedEntropy: output.uncorrelatedEntropy,
+        homeLocations: output.homeLocations,
+        workLocations: output.workLocations
+      },
+      {realEntropy: output.realEntropy, candidateOverflow: output.status?.candidateOverflow},
+      {jumpLengths: output.jumpLengths, waitingTimes: output.waitingTimes}
+    ]);
     validateGraphOutputsDisjointFromInputs(id, this.getOutputViews(), this.getInputViews());
   }
 
@@ -277,6 +294,8 @@ export class GPUMobilityIndicators implements GPUCommandNodeProducer {
       capacity * 8,
       'use fewer staypoints per graph'
     );
+    validateTrajectoryBindings(graph, this.id, this.props);
+    validateTrajectoryScratch(graph, id, {'track offsets': (trackCount + 1) * 4});
     const radius = getGPUGreatCircleRadius(this.spatialContext);
     const timeMode = getTrajectoryTimeMode({timestamps});
     const trackOffsets = createTransientView(

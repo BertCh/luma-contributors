@@ -95,29 +95,36 @@ export function createSmoothLevelNode<Parameters>(
     operation: string;
     /** Level number, for the variant label only. */
     level: number;
-    /** One-word state holding the current level; {@link createSmoothLevelAdvanceNode} steps it. */
+    /** Two-word state holding the current level and total iterations; {@link createSmoothLevelAdvanceNode} steps it. */
     levelState: GraphDataView<'uint32'>;
     isFinal: boolean;
     closed: boolean;
     lineCount: number;
     /** Level 0 reads the input positions with `lineOffsets`; later levels read the previous level. */
-    source: GraphDataView<'float32x2'>;
+    source: GraphDataView<'float32x2'> | GraphDataView<'uint32x4'>;
+    /** Carry [local source row, fraction bits, chainage bits, ring length bits] through the same blends. */
+    metadata?: boolean;
     lineOffsets: GraphDataView<'uint32'>;
     smoothStarts: GraphDataView<'uint32'>;
     plainStarts: GraphDataView<'uint32'>;
     smoothFlagStarts?: GraphDataView<'uint32'>;
     parameters: GraphDataView<'float32'>;
-    destination: GraphDataView<'float32x2'>;
+    destination: GraphDataView<'float32x2'> | GraphDataView<'uint32x4'>;
   }
 ): GPUCommandNode<Parameters> {
-  const withClosing = props.isFinal && props.closed;
+  const withClosing = props.closed;
   const bindings: WGSLKernelBinding[] = [
-    {name: 'source', view: props.source, type: 'f32', access: 'read'},
+    {name: 'source', view: props.source, type: props.metadata ? 'u32' : 'f32', access: 'read'},
     {name: 'lineOffsets', view: props.lineOffsets, type: 'u32', access: 'read'},
     {name: 'smoothStarts', view: props.smoothStarts, type: 'u32', access: 'read'},
     {name: 'plainStarts', view: props.plainStarts, type: 'u32', access: 'read'},
     {name: 'parameters', view: props.parameters, type: 'f32', access: 'read'},
-    {name: 'destination', view: props.destination, type: 'f32', access: 'read_write'},
+    {
+      name: 'destination',
+      view: props.destination,
+      type: props.metadata ? 'u32' : 'f32',
+      access: 'read_write'
+    },
     {name: 'levelState', view: props.levelState, type: 'u32', access: 'read'}
   ];
   if (withClosing && props.smoothFlagStarts) {
@@ -132,26 +139,27 @@ export function createSmoothLevelNode<Parameters>(
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: props.operation,
-    variant: `smooth-level-${props.level}`,
+    variant: props.metadata ? 'smooth-level-metadata' : 'smooth-level',
     bindings,
     invocationCount: capacity,
     declarations: `const LINE_COUNT: u32 = ${props.lineCount}u;
 const CAPACITY: u32 = ${capacity}u;
-const SOURCE_LENGTH: u32 = ${props.source.length}u;
-const IS_FIRST_LEVEL: bool = ${props.level === 0};
 const CLOSED: bool = ${props.closed};
-const WITH_CLOSING: bool = ${withClosing};
 
 fn getClosingStart(line: u32) -> u32 {
   ${withClosing ? 'return smoothFlagStarts[smoothFlagStartsOffset + line];' : 'return 0u;'}
 }
 ${LEVEL_OFFSETS_WGSL}
 
-fn getSource(row: u32) -> vec2<f32> {
-  return vec2<f32>(source[sourceOffset + 2u * row], source[sourceOffset + 2u * row + 1u]);
+fn getSource(row: u32) -> ${props.metadata ? 'vec4f' : 'vec2f'} {
+  ${props.metadata ? 'let base = sourceOffset + 4u * row; return vec4f(0.0, bitcast<f32>(source[base + 1u]), bitcast<f32>(source[base + 2u]), bitcast<f32>(source[base + 3u]));' : 'return vec2f(source[sourceOffset + 2u * row], source[sourceOffset + 2u * row + 1u]);'}
 }`,
     body: /* wgsl */ `// The level lives in a GPU word, so no pipeline depends on the level (rule 12).
-  let sourceScale = 1u << levelState[levelStateOffset];
+  let currentLevel = levelState[levelStateOffset];
+  let IS_FIRST_LEVEL = currentLevel == 0u;
+  let WITH_CLOSING = CLOSED && currentLevel + 1u == levelState[levelStateOffset + 1u];
+  let SOURCE_LENGTH = (arrayLength(&source) - sourceOffset) / ${props.metadata ? 4 : 2}u;
+  let sourceScale = 1u << currentLevel;
   let destinationScale = sourceScale << 1u;
   let total = getLevelOffset(LINE_COUNT, destinationScale, WITH_CLOSING);
   if (index >= total) {
@@ -175,13 +183,15 @@ fn getSource(row: u32) -> vec2<f32> {
   if (IS_FIRST_LEVEL) {
     sourceStart = lineOffsets[lineOffsetsOffset + line];
   }
-  var vertex: vec2<f32>;
+  var vertex: ${props.metadata ? 'vec4f' : 'vec2f'};
+  ${props.metadata ? 'var sourceRow = 0u;' : ''}
   if (smoothCount == 0u) {
     // Copied line.
     if (sourceStart + local >= SOURCE_LENGTH) {
       return;
     }
     vertex = getSource(sourceStart + local);
+    ${props.metadata ? 'sourceRow = source[sourceOffset + 4u * (sourceStart + local)];' : ''}
   } else {
     let count = smoothCount * sourceScale;
     let ratio = parameters[parametersOffset];
@@ -205,19 +215,39 @@ fn getSource(row: u32) -> vec2<f32> {
         return;
       }
       vertex = getSource(sourceStart + copyRow);
+      ${props.metadata ? 'sourceRow = source[sourceOffset + 4u * (sourceStart + copyRow)];' : ''}
     } else {
       let nextEdge = select(edge + 1u, 0u, edge + 1u == count);
       if (sourceStart + max(edge, nextEdge) >= SOURCE_LENGTH) {
         return;
       }
       let start = getSource(sourceStart + edge);
-      let end = getSource(sourceStart + nextEdge);
-      vertex = mix(start, end, select(ratio, 1.0 - ratio, isSecond));
+      var end = getSource(sourceStart + nextEdge);
+      ${
+        props.metadata
+          ? `let startRow = source[sourceOffset + 4u * (sourceStart + edge)];
+      let endRow = source[sourceOffset + 4u * (sourceStart + nextEdge)];
+      var rowDistance = endRow - startRow;
+      let wrapped = CLOSED && (endRow < startRow || (endRow == startRow && end.y < start.y));
+      if (wrapped) { rowDistance = smoothCount - startRow + endRow; end.z += start.w; }
+      end.y += f32(rowDistance);`
+          : ''
+      }
+      let weight = select(ratio, 1.0 - ratio, isSecond);
+      vertex = start * (1.0 - weight) + end * weight;
+      ${
+        props.metadata
+          ? `vertex.w = start.w;
+      let advance = u32(floor(vertex.y));
+      sourceRow = startRow + advance;
+      vertex.y -= f32(advance);
+      if (CLOSED && sourceRow >= smoothCount) { sourceRow -= smoothCount; vertex.z -= vertex.w; }`
+          : ''
+      }
     }
   }
   if (index < CAPACITY) {
-    destination[destinationOffset + 2u * index] = vertex.x;
-    destination[destinationOffset + 2u * index + 1u] = vertex.y;
+    ${props.metadata ? 'destination[destinationOffset + 4u * index] = sourceRow;\n    destination[destinationOffset + 4u * index + 1u] = bitcast<u32>(vertex.y);\n    destination[destinationOffset + 4u * index + 2u] = bitcast<u32>(vertex.z);\n    destination[destinationOffset + 4u * index + 3u] = bitcast<u32>(vertex.w);' : 'destination[destinationOffset + 2u * index] = vertex.x;\n    destination[destinationOffset + 2u * index + 1u] = vertex.y;'}
   }`
   });
 }
@@ -303,14 +333,20 @@ ${LEVEL_OFFSETS_WGSL}`,
 }
 
 /**
- * Resets (`reset: true`) or advances the one-word Chaikin level state read by
+ * Resets (`reset: true`) or advances the two-word Chaikin level state read by
  * {@link createSmoothLevelNode}.
  *
  * @internal
  */
 export function createSmoothLevelStateNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
-  props: {id: string; operation: string; levelState: GraphDataView<'uint32'>; reset: boolean}
+  props: {
+    id: string;
+    operation: string;
+    iterationCount?: number;
+    levelState: GraphDataView<'uint32'>;
+    reset: boolean;
+  }
 ): GPUCommandNode<Parameters> {
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
@@ -319,7 +355,7 @@ export function createSmoothLevelStateNode<Parameters>(
     bindings: [{name: 'levelState', view: props.levelState, type: 'u32', access: 'read_write'}],
     invocationCount: 1,
     body: props.reset
-      ? 'levelState[levelStateOffset] = 0u;'
+      ? `levelState[levelStateOffset] = 0u; levelState[levelStateOffset + 1u] = ${props.iterationCount ?? 1}u;`
       : 'levelState[levelStateOffset] = levelState[levelStateOffset] + 1u;'
   });
 }

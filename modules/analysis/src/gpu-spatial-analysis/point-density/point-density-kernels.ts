@@ -2,7 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/graph/gpu-core';
+import type {
+  GPUCommandGraph,
+  GPUCommandNode,
+  GraphDataView,
+  GraphVectorView
+} from '@luma.gl/graph/gpu-core';
 import {
   createWGSLKernelNode,
   getWGSLFloatLiteral,
@@ -18,6 +23,9 @@ import {
 import {GPU_POINT_DENSITY_HEXAGON_WGSL} from './point-density-hexagon';
 import {GPU_POINT_DENSITY_D3_HEXAGON_WGSL} from './point-density-d3-hexagon';
 import type {GPUPointDensityHexagonAssignment} from './gpu-point-density';
+
+import {getGraphViewChunks} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {createDensityPointPass} from './density-point-passes';
 
 const OPERATION = 'GPUPointDensity';
 
@@ -106,16 +114,15 @@ export function createPointDensityHexagonKeysNode<Parameters>(
     typeof props.radius === 'number'
       ? `let radius = ${getWGSLFloatLiteral(props.radius)};`
       : 'let radius = radiusValues[radiusValuesOffset];';
-  return createWGSLKernelNode<Parameters>(graph, {
+  return createDensityPointPass<Parameters>(graph, {
     id: props.id,
     operation: OPERATION,
     variant: 'hexagon-keys',
     bindings,
     invocationCount: props.positions.length,
-    declarations: `const KEY_START: u32 = ${props.keyStart}u;
-const COLUMNS: u32 = ${props.gridSize[0]}u;
+    runtimeConstants: {KEY_START: props.keyStart, MASK_START: props.maskStart ?? 0},
+    declarations: `const COLUMNS: u32 = ${props.gridSize[0]}u;
 const ROWS: u32 = ${props.gridSize[1]}u;
-const MASK_START: u32 = ${props.maskStart ?? 0}u;
 const INVALID_KEY: u32 = 0xffffffffu;
 const MAXIMUM_FLOAT: f32 = 3.402823466e+38;
 ${props.assignment === 'd3' ? GPU_POINT_DENSITY_D3_HEXAGON_WGSL : GPU_POINT_DENSITY_HEXAGON_WGSL}`,
@@ -159,7 +166,7 @@ export function createPointDensityMaskedPositionsNode<Parameters>(
     rowStart: number;
   }
 ): GPUCommandNode<Parameters> {
-  return createWGSLKernelNode<Parameters>(graph, {
+  return createDensityPointPass<Parameters>(graph, {
     id: props.id,
     operation: OPERATION,
     variant: 'mask-positions',
@@ -169,7 +176,7 @@ export function createPointDensityMaskedPositionsNode<Parameters>(
       {name: 'maskedPositions', view: props.maskedPositions, type: 'f32', access: 'read_write'}
     ],
     invocationCount: props.positions.length,
-    declarations: `const ROW_START: u32 = ${props.rowStart}u;`,
+    runtimeConstants: {ROW_START: props.rowStart},
     body: `var nanBits = 0x7fc00000u;
   let nan = bitcast<f32>(nanBits);
   let included = rowMask[rowMaskOffset + ROW_START + index] != 0u;
@@ -273,14 +280,14 @@ export function createPointDensityGridKeysNode<Parameters>(
   let minimumY = boundsValues[boundsValuesOffset + 1u];
   let maximumX = boundsValues[boundsValuesOffset + 2u];
   let maximumY = boundsValues[boundsValuesOffset + 3u];`;
-  return createWGSLKernelNode<Parameters>(graph, {
+  return createDensityPointPass<Parameters>(graph, {
     id: props.id,
     operation: OPERATION,
     variant: 'grid-keys',
     bindings,
     invocationCount: props.positions.length,
-    declarations: `const KEY_START: u32 = ${props.keyStart}u;
-const COLUMNS: u32 = ${props.gridSize[0]}u;
+    runtimeConstants: {KEY_START: props.keyStart},
+    declarations: `const COLUMNS: u32 = ${props.gridSize[0]}u;
 const ROWS: u32 = ${props.gridSize[1]}u;
 ${IS_FINITE_BITS_WGSL}
 fn getCoordinate(value: f32, minimum: f32, maximum: f32, size: u32) -> u32 {
@@ -335,7 +342,7 @@ export function createPointDensityWorkgroupSumNode<Parameters>(
   }
 ): GPUCommandNode<Parameters> {
   const size = POINT_DENSITY_WORKGROUP_SUM_SIZE;
-  return createWGSLKernelNode<Parameters>(graph, {
+  return createDensityPointPass<Parameters>(graph, {
     id: props.id,
     operation: OPERATION,
     variant: 'workgroup-sums',
@@ -348,8 +355,8 @@ export function createPointDensityWorkgroupSumNode<Parameters>(
     workgroupSize: size,
     invocationCount: props.weights.length,
     guardIndex: false,
-    declarations: `const KEY_START: u32 = ${props.keyStart}u;
-const CELL_COUNT: u32 = ${props.fixedPointSums.length / FIXED_POINT_WORD_COUNT}u;
+    runtimeConstants: {KEY_START: props.keyStart},
+    declarations: `const CELL_COUNT: u32 = ${props.fixedPointSums.length / FIXED_POINT_WORD_COUNT}u;
 override HEADROOM_BITS: u32;
 ${IS_FINITE_BITS_WGSL}
 ${FIXED_POINT_WGSL}
@@ -387,4 +394,63 @@ var<workgroup> sortValues: array<vec3<u32>, ${size}>;`,
     addFixedPointToSums(key, runSum);
   }`
   });
+}
+
+/** Global exponent maximum for deterministic sums, with runtime chunk metadata. @internal */
+export function createPointDensityScaleNodes<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
+    /** Workload owner when KDE reuses the density scale pass. */
+    operation?: string;
+    values: GraphDataView<'float32'> | GraphVectorView<'float32'>;
+    scale: GraphDataView<'uint32'>;
+  }
+): GPUCommandNode<Parameters>[] {
+  const operation = props.operation ?? OPERATION;
+  return [
+    createWGSLKernelNode(graph, {
+      id: `${props.id}-clear`,
+      operation,
+      variant: 'fixed-point-scale-clear',
+      invocationCount: 1,
+      bindings: [{name: 'fixedPointScale', view: props.scale, type: 'u32', access: 'read_write'}],
+      body: 'fixedPointScale[fixedPointScaleOffset] = 0u;'
+    }),
+    ...getGraphViewChunks(props.values).flatMap((chunk, chunkIndex) =>
+      chunk.length === 0
+        ? []
+        : [
+            createDensityPointPass(graph, {
+              id: `${props.id}-${chunkIndex}`,
+              operation,
+              variant: 'fixed-point-scale',
+              invocationCount: chunk.length,
+              workgroupSize: 256,
+              guardIndex: false,
+              bindings: [
+                {name: 'fixedPointValues', view: chunk, type: 'f32', access: 'read'},
+                {
+                  name: 'fixedPointScale',
+                  view: props.scale,
+                  type: 'atomic<u32>',
+                  access: 'read_write'
+                }
+              ],
+              declarations: `${FIXED_POINT_WGSL}\nvar<workgroup> workgroupExponentBits: atomic<u32>;`,
+              body: `if (localInvocationIndex == 0u) { atomicStore(&workgroupExponentBits, 0u); }
+  workgroupBarrier();
+  if (index < INVOCATION_COUNT) {
+    let exponentBits = getFixedPointExponentBits(fixedPointValues[fixedPointValuesOffset + index]);
+    if (exponentBits != 0u) { atomicMax(&workgroupExponentBits, exponentBits); }
+  }
+  workgroupBarrier();
+  if (localInvocationIndex == 0u) {
+    let workgroupMaximum = atomicLoad(&workgroupExponentBits);
+    if (workgroupMaximum != 0u) { atomicMax(&fixedPointScale[fixedPointScaleOffset], workgroupMaximum); }
+  }`
+            })
+          ]
+    )
+  ];
 }

@@ -190,7 +190,7 @@ it.each([
       const allocations = vi.spyOn(graph, 'createTransientBuffer');
       if (limit < 256) {
         expect(() => contributor.getCommandNodes(graph)).toThrow(
-          /stack needs 256 bytes in one binding \(limit 255\)/
+          /stack scratch needs 256 bytes in one binding \(limit 255\)/
         );
         expect(allocations).not.toHaveBeenCalled();
       } else {

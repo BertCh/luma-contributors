@@ -15,7 +15,7 @@ import {
   KERNEL_AUDIT_REJECTIONS,
   type KernelAuditRejection
 } from './kernel-audit-rejections';
-import {auditWGSLModule, type WGSLFinding} from './kernel-audit-wgsl';
+import {auditWGSLModule, type WGSLFinding, type WGSLDeclaredBinding} from './kernel-audit-wgsl';
 
 /** The rejection-table entry of a case that must be refused at declaration. */
 export function getExpectedRejection(auditCase: KernelAuditCase): KernelAuditRejection | undefined {
@@ -78,12 +78,13 @@ type AuditedNode = {
 function getModuleFindings(
   source: string,
   constants: Readonly<Record<string, number>>,
+  declaredBindings: readonly WGSLDeclaredBinding[] | undefined,
   moduleFindings: Map<string, WGSLFinding[]>
 ) {
-  const key = `${source}\n${JSON.stringify(Object.entries(constants).sort())}`;
+  const key = `${source}\n${JSON.stringify(Object.entries(constants).sort())}\n${JSON.stringify(declaredBindings ?? null)}`;
   let findings = moduleFindings.get(key);
   if (!findings) {
-    findings = auditWGSLModule(source, constants);
+    findings = auditWGSLModule(source, constants, declaredBindings);
     try {
       // wgsl_reflect treats the old attribute name `block` as a keyword and the enumerant
       // `workgroup` as reserved outside `var<...>`; WGSL allows both as identifiers, so rename them
@@ -193,7 +194,12 @@ export function auditKernelCase(auditCase: KernelAuditCase): KernelAuditResult {
     try {
       recordShaderModules(nodes, module => {
         moduleCount++;
-        for (const finding of getModuleFindings(module.source, module.constants, moduleFindings)) {
+        for (const finding of getModuleFindings(
+          module.source,
+          module.constants,
+          module.declaredBindings,
+          moduleFindings
+        )) {
           findings.push({...finding, location: `${module.nodeId} ${module.id} (${module.stage})`});
         }
       });

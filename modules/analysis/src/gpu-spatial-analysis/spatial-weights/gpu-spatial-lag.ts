@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateSpatialStatisticsBindings} from './spatial-statistics-bindings';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -10,7 +11,10 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {createLoadBalancedSegmentSumNodes} from '../../analysis-core/kernels/load-balanced-for-each';
+import {
+  createLoadBalancedSegmentSumNodes,
+  getLoadBalancedTileCount
+} from '../../analysis-core/kernels/load-balanced-for-each';
 import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
@@ -24,6 +28,7 @@ import {
 } from './float32-values';
 import type {GPUSpatialWeights} from './spatial-weights';
 import {
+  getGPUSpatialWeightsChunkDispatches,
   getGPUSpatialWeightsOrChunksViews,
   isGPUChunkedSpatialWeights,
   validateGPUSpatialWeightsOrChunks,
@@ -31,6 +36,10 @@ import {
 } from './gpu-chunked-spatial-weights';
 
 const OPERATION = 'GPUSpatialLag';
+/** A load-balanced dispatch is encoded with uint32 invocation indices and 256 lanes. */
+const SPATIAL_LAG_MAXIMUM_WORKGROUP_COUNT = Math.floor(0xffffffff / 256);
+/** Merge-path diagonal and interleaved output addressing use uint32 indices. */
+const SPATIAL_LAG_MAXIMUM_MERGE_STEPS = 0xffffffff;
 
 /**
  * Properties for {@link GPUSpatialLag}.
@@ -98,6 +107,23 @@ export class GPUSpatialLag implements GPUCommandNodeProducer {
     validateSinglePackedView(props.output, ['float32'], `${id} output`);
     const columnCount = props.columnCount ?? 1;
     validateCapacity(id, 'columnCount', columnCount);
+    for (const dispatch of getGPUSpatialWeightsChunkDispatches(props.weights)) {
+      validateCapacity(
+        id,
+        'columnCount * merge steps (SPATIAL_LAG_MAXIMUM_MERGE_STEPS)',
+        columnCount * (dispatch.rowCount + dispatch.weights.neighbors.length),
+        1,
+        SPATIAL_LAG_MAXIMUM_MERGE_STEPS
+      );
+      validateCapacity(
+        id,
+        'load-balanced workgroups (SPATIAL_LAG_MAXIMUM_WORKGROUP_COUNT)',
+        columnCount *
+          getLoadBalancedTileCount(dispatch.rowCount, dispatch.weights.neighbors.length),
+        1,
+        SPATIAL_LAG_MAXIMUM_WORKGROUP_COUNT
+      );
+    }
     if (valueCount % columnCount !== 0 || valueCount === 0) {
       throw new Error(`${id} values length must be a multiple of columnCount`);
     }
@@ -130,6 +156,18 @@ export class GPUSpatialLag implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateSpatialStatisticsBindings(graph, this.id, this.props, {
+      'row scratch': this.props.output.length * 4,
+      'load-balanced carry scratch': Math.max(
+        ...getGPUSpatialWeightsChunkDispatches(this.props.weights).map(
+          dispatch =>
+            getLoadBalancedTileCount(dispatch.rowCount, dispatch.weights.neighbors.length) *
+            (this.props.columnCount ?? 1) *
+            2 *
+            4
+        )
+      )
+    });
     const {id, props} = this;
     const {mask, output} = props;
     const columnCount = props.columnCount ?? 1;

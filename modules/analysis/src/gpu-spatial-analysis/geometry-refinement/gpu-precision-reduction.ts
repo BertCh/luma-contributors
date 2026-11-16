@@ -2,19 +2,29 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateGeometryReadWriteViews} from '../geometry-edit/geometry-storage-validation';
+
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateOutlineOutputPasses} from '../outline-geometry/validate-outline-output-passes';
+import {
+  validateRefinementScratchByteLengths,
+  validateRefinementShaderNumber
+} from './refinement-storage-validation';
 import type {
   GPUCommandGraph,
   GPUCommandNode,
   GPUCommandNodeProducer,
   GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import {getGPUSnapRoundedNodingMaximumVertexCount} from '../geometry-topology/gpu-snap-rounded-noding';
 import {createTransientView, GPUScan} from '@luma.gl/graph/gpu-core';
 import {GPUMakeValid, type GPUMakeValidProps} from '../geometry-topology/gpu-make-valid';
 import {
   validateSinglePackedView,
   getGraphOutputViews,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateMaximumCount,
+  getNextPowerOfTwo
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   createWGSLKernelNode,
@@ -57,6 +67,7 @@ export class GPUPolygonPrecisionReduction implements GPUCommandNodeProducer {
   constructor(props: GPUPolygonPrecisionReductionProps) {
     this.id = props.id ?? 'polygon-precision-reduction';
     this.props = props;
+    validateRefinementShaderNumber(this.id, 'gridSize', props.gridSize, true);
     if (!(Number.isFinite(Math.fround(props.gridSize)) && Math.fround(props.gridSize) > 0)) {
       throw new Error('Precision grid must be finite and positive');
     }
@@ -80,15 +91,53 @@ export class GPUPolygonPrecisionReduction implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.polygons.positions,
-      props.polygons.ringOffsets,
-      props.polygons.polygonOffsets,
-      props.polygons.featureOffsets,
-      props.polygons.sourceIds,
-      props.lattice,
-      ...getGraphOutputViews(props.output)
-    ]);
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(
+        [
+          props.polygons.positions,
+          props.polygons.ringOffsets,
+          props.polygons.polygonOffsets,
+          props.polygons.featureOffsets,
+          props.polygons.sourceIds,
+          props.lattice,
+          ...getGraphOutputViews(props.output.polygons),
+          ...getGraphOutputViews(props.output.nodedSegments),
+          ...getGraphOutputViews(props.output.directedEdges),
+          ...getGraphOutputViews(props.output.diagnostics),
+          ...getGraphOutputViews(props.output.status)
+        ].map((view, index) => [`binding.${index}`, view])
+      )
+    );
+    // Precision reduction closes rings once; make-valid materializes its implicit closures once
+    // more before snap-rounding. Preflight that actual downstream row count and all larger tables.
+    const inputRingCount = props.polygons.ringOffsets.length - 1;
+    const nestedVertexCount = props.polygons.positions.length + 2 * inputRingCount;
+    const hotCapacity = nestedVertexCount + props.intersectionCapacity;
+    const segmentCapacity = props.output.nodedSegments.endpoints.length;
+    const incidenceCapacity = Math.max(segmentCapacity + nestedVertexCount, 2 * hotCapacity);
+    const ringCapacity = props.output.polygons.ringOffsets.length - 1;
+    validateMaximumCount(
+      id,
+      'closed positions rows + intersectionCapacity',
+      hotCapacity,
+      getGPUSnapRoundedNodingMaximumVertexCount(graph.device, 0)
+    );
+    validateRefinementScratchByteLengths(graph, id, {
+      closedPositions: nestedVertexCount * 8,
+      closedOffsets: (inputRingCount + 1) * 4,
+      hotPixelSegmentTables: hotCapacity * 128,
+      crossingTerms: props.intersectionCapacity * 8 * 4,
+      candidateListsAndScan: incidenceCapacity * 2 * 4,
+      nodedLatticeEndpoints: segmentCapacity * 16,
+      parityRecords: segmentCapacity * 5 * 4,
+      parityHierarchy: (2 * getNextPowerOfTwo(segmentCapacity) - 1) * 8,
+      ringBoundsAndProbes: ringCapacity * 16,
+      ringShellRecords: ringCapacity * 3 * 4,
+      ringShellHierarchy: (2 * getNextPowerOfTwo(ringCapacity) - 1) * 8,
+      ...(props.leafCapacity ? {requestedHierarchy: (2 * props.leafCapacity - 1) * 8} : {})
+    });
     const ringCount = props.polygons.ringOffsets.length - 1;
     const positions = createTransientView(
       graph,
@@ -235,6 +284,7 @@ export class GPULinePrecisionReduction implements GPUCommandNodeProducer {
   constructor(props: GPULinePrecisionReductionProps) {
     this.id = props.id ?? 'line-precision-reduction';
     this.props = props;
+    validateRefinementShaderNumber(this.id, 'gridSize', props.gridSize, true);
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     if (!(Number.isFinite(Math.fround(props.gridSize)) && Math.fround(props.gridSize) > 0)) {
       throw new Error('Invalid precision grid');
@@ -252,6 +302,8 @@ export class GPULinePrecisionReduction implements GPUCommandNodeProducer {
     ) {
       throw new Error('Precision output length mismatch');
     }
+    validateOutlineOutputPasses(this.id, props.output, [['positions', 'lineOffsets'], ['status']]);
+    validateGeometryReadWriteViews(this.id, [props.output.lineOffsets], [props.output.positions]);
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
       props.positions,
       props.lineOffsets
@@ -261,11 +313,20 @@ export class GPULinePrecisionReduction implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.positions,
-      props.lineOffsets,
-      ...Object.values(props.output)
-    ]);
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(
+        [props.positions, props.lineOffsets, ...Object.values(props.output)].map((view, index) => [
+          `binding.${index}`,
+          view
+        ])
+      )
+    );
+    validateRefinementScratchByteLengths(graph, id, {
+      staged: props.positions.length * 8,
+      keptCountsAndScan: props.lineOffsets.length * 4
+    });
     const lineCount = props.lineOffsets.length - 1;
     // Rounded lines are staged at their input offsets (a line never grows past its input length),
     // then compacted by a prefix sum of kept counts.

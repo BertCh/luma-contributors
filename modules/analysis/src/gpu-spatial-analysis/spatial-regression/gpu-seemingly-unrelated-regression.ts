@@ -12,19 +12,35 @@ import {
   validateCapacity,
   validateSinglePackedView,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGPUStorageBindingByteLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {
   type GPUSpatialWeights,
   validateGPUSpatialWeights
 } from '../spatial-weights/spatial-weights';
-import {getSpatialSURNodes} from './spatial-sur-nodes';
-import {getOrdinarySURNodes} from './ordinary-sur-nodes';
+import {getSpatialSURNodes, getSpatialSURAllocationLengths} from './spatial-sur-nodes';
+import {validateRegressionAllocations} from './spatial-likelihood-allocations';
+import {validateRegressionOutputDispatches} from './regression-output-dispatches';
+import {getOrdinarySURNodes, getOrdinarySURScratchLength} from './ordinary-sur-nodes';
+import {REGRESSION_TILE_MAXIMUM_ROW_COUNT} from './regression-row-tiles';
+
+/** Tiled counts are stored as exact float32 integers, up to 2^24 observations. */
+export const GPU_SUR_MAXIMUM_ROW_COUNT = REGRESSION_TILE_MAXIMUM_ROW_COUNT;
+/** Nested OLS and GM row counts remain exact float32 integers; bindings are audited separately. */
+export const GPU_SPATIAL_SUR_MAXIMUM_ROW_COUNT = REGRESSION_TILE_MAXIMUM_ROW_COUNT;
+/** Private dense error covariance and system solves are bounded to four equations. */
+const MAXIMUM_EQUATION_COUNT = 4;
+/** Each equation uses the existing eight-column (including intercept) dense fit. */
+const MAXIMUM_PREDICTOR_COUNT = 7;
+/** The joint GLS Cholesky is limited to sixteen coefficients. */
+const MAXIMUM_SYSTEM_COEFFICIENT_COUNT = 16;
 
 export type GPUSeeminglyUnrelatedRegressionProps = {
   id?: string;
   equationCount: number;
   predictorCount: number;
+  /** Up to 2^24 nonspatial rows (subject to device bindings); both routes use audited device bindings. */
   rowCount: number;
   /** Equation-major, then row-major predictors; each equation may have a different design. */
   predictors: GraphDataView<'float32'>;
@@ -96,14 +112,21 @@ export class GPUSeeminglyUnrelatedRegression implements GPUCommandNodeProducer {
           props.responses,
           props.spatial.weights.offsets,
           props.spatial.weights.neighbors,
-          props.spatial.weights.weights
+          props.spatial.weights.weights,
+          props.spatial.weights.status?.overflow
         ]
       );
     }
-    validateCapacity(this.id, 'equationCount', equations, 2, 4);
-    validateCapacity(this.id, 'predictorCount', columns, 1, 7);
-    validateCapacity(this.id, 'system coefficients', size, 1, 16);
-    validateCapacity(this.id, 'rowCount', rows, 1, 65536);
+    validateCapacity(this.id, 'equationCount', equations, 2, MAXIMUM_EQUATION_COUNT);
+    validateCapacity(this.id, 'predictorCount', columns, 1, MAXIMUM_PREDICTOR_COUNT);
+    validateCapacity(this.id, 'system coefficients', size, 1, MAXIMUM_SYSTEM_COEFFICIENT_COUNT);
+    validateCapacity(
+      this.id,
+      'rowCount',
+      rows,
+      1,
+      props.spatial ? GPU_SPATIAL_SUR_MAXIMUM_ROW_COUNT : GPU_SUR_MAXIMUM_ROW_COUNT
+    );
     for (const [view, format, length] of [
       [props.predictors, 'float32', equations * rows * columns],
       [props.responses, 'float32', equations * rows],
@@ -119,6 +142,25 @@ export class GPUSeeminglyUnrelatedRegression implements GPUCommandNodeProducer {
         validateSinglePackedView(view, [format], this.id);
         if (view.length !== length) throw new Error(`${this.id}: shape mismatch`);
       }
+    validateRegressionOutputDispatches(
+      this.id,
+      {
+        ...props.output,
+        spatialParameters: props.spatial?.output.parameters,
+        spatialStatus: props.spatial?.output.status
+      },
+      props.spatial
+        ? [
+            {read: ['spatialParameters'], write: ['coefficients', 'covariance']},
+            {read: ['coefficients'], write: ['residuals']},
+            ['residualCovariance', 'status'],
+            ['spatialParameters', 'spatialStatus']
+          ]
+        : [
+            ['coefficients', 'covariance', 'residualCovariance', 'status'],
+            {read: ['status'], write: ['residuals']}
+          ]
+    );
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
       props.predictors,
       props.responses,
@@ -130,14 +172,34 @@ export class GPUSeeminglyUnrelatedRegression implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    if (props.spatial) return getSpatialSURNodes(graph, this);
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.predictors,
-      props.responses,
-      props.mask,
-      props.initialResiduals,
-      ...Object.values(props.output)
-    ]);
+    validateGraphChunkBindingRanges(graph, id, {
+      predictors: props.predictors,
+      responses: props.responses,
+      mask: props.mask,
+      initialResiduals: props.initialResiduals,
+      ...props.output,
+      spatialParameters: props.spatial?.output.parameters,
+      spatialStatus: props.spatial?.output.status,
+      offsets: props.spatial?.weights.offsets,
+      neighbors: props.spatial?.weights.neighbors,
+      weights: props.spatial?.weights.weights,
+      overflow: props.spatial?.weights.status?.overflow
+    });
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'statistics scratch',
+      getOrdinarySURScratchLength(props.equationCount, props.predictorCount, props.rowCount) * 4,
+      'reduce rowCount or the system coefficient count'
+    );
+    if (props.spatial) {
+      validateRegressionAllocations(
+        graph.device,
+        id,
+        getSpatialSURAllocationLengths(props.rowCount, props.equationCount, props.predictorCount)
+      );
+      return getSpatialSURNodes(graph, this);
+    }
     return getOrdinarySURNodes(graph, this);
   }
 }

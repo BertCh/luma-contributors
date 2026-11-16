@@ -686,9 +686,20 @@ it('RTS-03 refuses sizes above the named limits at declaration', async () => {
         queryCount: 1,
         vectors: vectors(129),
         queries: vectors(129),
+        output: {maximum: harness.output('accepted-maximum', 'float32', 1)}
+      })
+  ).not.toThrow();
+  expect(
+    () =>
+      new GPURasterEmbeddingSimilarity({
+        pixelCount: 1,
+        dimensions: 1025,
+        queryCount: 1,
+        vectors: vectors(1025),
+        queries: vectors(1025),
         output: {maximum: harness.output('maximum', 'float32', 1)}
       })
-  ).toThrow(/raster-embedding-similarity dimensions must be an integer in \[1, 128\]/);
+  ).toThrow(/raster-embedding-similarity dimensions must be an integer in \[1, 1024\]/);
   expect(
     () =>
       new GPURasterEmbeddingSimilarity({

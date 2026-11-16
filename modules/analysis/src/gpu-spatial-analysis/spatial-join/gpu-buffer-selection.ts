@@ -11,7 +11,6 @@ import {
   type GraphVectorView
 } from '@luma.gl/graph/gpu-core';
 import {
-  createWGSLKernelNode,
   createPublishNode,
   createTransientUint32Rows
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
@@ -23,24 +22,43 @@ import type {GPUPointGeometryPort} from '../../analysis-core/contracts/index';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   getGraphViewChunks,
-  validateGraphOutputsDisjointFromInputs,
   validateGraphViewTopology,
-  validateGraphViewsBelongToGraph,
   validateCompactOutput,
   validateCapacity,
   validateSinglePackedView,
   validatePowerOfTwo,
-  validateRequirement
+  validateRequirement,
+  validateNonZeroFiniteNumber
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {GPUNearestFeatureJoin} from './gpu-nearest-feature-join';
+import {
+  GPUNearestFeatureJoin,
+  getGPUNearestFeatureJoinMaximumLeafCapacity
+} from './gpu-nearest-feature-join';
 import {validateStatusScalars} from './spatial-join-geometry';
-import type {SpatialSortCurve} from './spatial-join-passes';
+import {
+  getNextPowerOfTwo,
+  getDefaultSpatialSort,
+  getDefaultQuerySort,
+  validateDisjointOutputs,
+  type SpatialSortCurve
+} from './spatial-join-passes';
+import {
+  validateSpatialJoinBindings,
+  validateSpatialJoinReadWriteBindings
+} from './spatial-join-binding-preflight';
+import {validateNearestNeighborBindings} from './nearest-nodes';
+import {NEAREST_NODE_WORDS} from './nearest-wgsl';
+import {
+  createGraphChunkGroupKernelNode,
+  validateGraphChunkGroupKernelSupport
+} from '../../analysis-core/kernels/graph-chunk-groups';
 import {GPU_SPATIAL_JOIN_NO_FEATURE, type GPUNearestFeatureSource} from './spatial-join-types';
 
 import {
   GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
   resolveGPUSpatialContext,
   resolveGPUSecondarySpatialContext,
+  getGPUGreatCircleRadius,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
 
@@ -51,6 +69,15 @@ const BUFFER_SELECTION_SPATIAL_CONTEXT_SUPPORT = Object.freeze({
 } as const);
 
 const OPERATION = 'GPUBufferSelection';
+
+/** Query row bases and compaction totals are uint32. */
+const GPU_BUFFER_SELECTION_MAXIMUM_ROWS = 0xffffffff;
+/** Published radix sort uses four-bit buckets in 256-key workgroups. */
+const GPU_BUFFER_SELECTION_RADIX_BUCKET_COUNT = 16;
+/** Matches the published radix sort and spatial-bound reduction tile width. */
+const GPU_BUFFER_SELECTION_SORT_WORKGROUP_SIZE = 256;
+/** A positive placeholder bypasses unused planar-candidate validation in the nested geodesic route. */
+const GPU_BUFFER_SELECTION_UNUSED_CANDIDATE_CAPACITY = 1;
 
 /** Caller-owned outputs of {@link GPUBufferSelection}. */
 export type GPUBufferSelectionOutput = {
@@ -187,6 +214,11 @@ export class GPUBufferSelection implements GPUCommandNodeProducer {
   readonly pointCount: number;
   /** Resolved spatial context. */
   readonly spatialContext: GPUSpatialContext;
+  /** Resolved nested join topology, validated without declaring its scratch. */
+  private readonly featureCount: number;
+  private readonly leafCapacity: number;
+  private readonly spatialSort: boolean;
+  private readonly querySort: boolean;
 
   constructor(props: GPUBufferSelectionProps) {
     this.id = props.id ?? 'buffer-selection';
@@ -203,6 +235,9 @@ export class GPUBufferSelection implements GPUCommandNodeProducer {
       props.featuresSpatialContext,
       this.spatialContext
     );
+    const sphereRadius = getGPUGreatCircleRadius(this.spatialContext);
+    if (sphereRadius !== undefined)
+      validateNonZeroFiniteNumber(id, 'spatialContext.sphereRadius', sphereRadius);
     const points = props.points.positions;
     const {sourceIds} = props.points;
     const {outputMask, matches, distances, nearestFeatureIds, drawInstanceCount} = props.output;
@@ -213,6 +248,13 @@ export class GPUBufferSelection implements GPUCommandNodeProducer {
     if (this.pointCount === 0) {
       throw new Error(`${id} needs at least one point`);
     }
+    validateCapacity(
+      id,
+      'points.positions.length',
+      this.pointCount,
+      1,
+      GPU_BUFFER_SELECTION_MAXIMUM_ROWS
+    );
     for (const chunk of getGraphViewChunks(points)) {
       validateSinglePackedView(chunk, ['float32x2'], `${id} points.positions`);
     }
@@ -265,13 +307,82 @@ export class GPUBufferSelection implements GPUCommandNodeProducer {
         throw new Error(`${id} output.matches.ids needs at least one row`);
       }
     }
-    // Feature views are validated by the join when getCommandNodes builds it; forwarded scalar
-    // options are checked here so the error names this contributor.
+    // Validate nested topology once, before getCommandNodes can allocate adapter storage.
+    const {features} = props;
+    validateRequirement(
+      id,
+      features.kind === 'points' || features.kind === 'segments',
+      'features must contain points or segments'
+    );
+    const featureViews =
+      features.kind === 'points' ? [features.positions] : [features.starts, features.ends];
+    for (const view of featureViews)
+      validateSinglePackedView(view, ['float32x2'], `${id} features`);
+    this.featureCount = featureViews[0].length;
+    validateCapacity(
+      id,
+      'features.length',
+      this.featureCount,
+      0,
+      GPU_BUFFER_SELECTION_MAXIMUM_ROWS
+    );
+    validateRequirement(
+      id,
+      featureViews.every(view => view.length === this.featureCount),
+      'features starts and ends must have matching lengths'
+    );
+    if (features.sourceIds) {
+      validateSinglePackedView(features.sourceIds, ['uint32'], `${id} features.sourceIds`);
+      validateRequirement(
+        id,
+        features.sourceIds.length === this.featureCount,
+        'features.sourceIds needs one row per feature'
+      );
+    }
     validateCapacity(id, 'candidateCapacity', props.candidateCapacity);
     if (props.leafCapacity !== undefined) {
       validatePowerOfTwo(id, 'leafCapacity', props.leafCapacity);
     }
-    validateGraphOutputsDisjointFromInputs(id, getOutputs(props), getInputs(props));
+    this.leafCapacity = props.leafCapacity ?? getNextPowerOfTwo(Math.max(1, this.featureCount));
+    this.spatialSort = props.spatialSort ?? getDefaultSpatialSort(this.featureCount);
+    this.querySort = props.querySort ?? getDefaultQuerySort(this.pointCount, this.featureCount);
+    validateRequirement(
+      id,
+      props.spatialSortCurve === undefined ||
+        ['hilbert', 'morton'].includes(props.spatialSortCurve),
+      'spatialSortCurve must be hilbert or morton'
+    );
+    validateDisjointOutputs(id, getInputs(props), getOutputs(props), [
+      // Preserve the nested join's current writable-output contract before declaring adapters.
+      {
+        nearestFeatureIds,
+        distances,
+        overflow: props.output.status?.overflow,
+        candidateOverflow: props.output.status?.candidateOverflow,
+        candidateTruncated: props.output.candidateTruncated
+      },
+      {
+        ids: matches?.ids,
+        count: matches?.status.count,
+        requiredCount: matches?.status.requiredCount,
+        overflow: matches?.status.overflow,
+        drawInstanceCount
+      }
+    ]);
+    validateSpatialJoinReadWriteBindings(id, [nearestFeatureIds], [outputMask]);
+    validateSpatialJoinReadWriteBindings(id, [features.sourceIds], [nearestFeatureIds, distances]);
+    if (matches)
+      validateSpatialJoinReadWriteBindings(
+        id,
+        [props.output.status?.overflow],
+        [
+          matches.ids,
+          matches.status.count,
+          matches.status.overflow,
+          matches.status.requiredCount,
+          drawInstanceCount
+        ]
+      );
   }
 
   /** Returns join, mask, and (with `output`) stable compaction and publish nodes in order. */
@@ -282,7 +393,90 @@ export class GPUBufferSelection implements GPUCommandNodeProducer {
     const points = props.points.positions;
     const {sourceIds} = props.points;
     const {outputMask, matches} = props.output;
-    validateGraphViewsBelongToGraph(id, graph, [...getInputs(props), ...getOutputs(props)]);
+    const chunks = getGraphViewChunks(points);
+    const sort = this.spatialSort && this.featureCount > 1;
+    const candidateCapacity =
+      this.spatialContext.metric === 'great-circle'
+        ? GPU_BUFFER_SELECTION_UNUSED_CANDIDATE_CAPACITY
+        : props.candidateCapacity;
+    const scratchBytes: Record<string, number> = {
+      'join state and indirect dispatch': 16,
+      'BVH bounds and children': (2 * this.leafCapacity - 1) * 8,
+      'feature bounds and sorted bounds': this.featureCount * 8,
+      'feature radix histogram': sort
+        ? GPU_BUFFER_SELECTION_RADIX_BUCKET_COUNT *
+          Math.ceil(this.featureCount / GPU_BUFFER_SELECTION_SORT_WORKGROUP_SIZE) *
+          4
+        : 0,
+      'feature sort tile/scene bounds': sort
+        ? Math.max(1, Math.ceil(this.featureCount / GPU_BUFFER_SELECTION_SORT_WORKGROUP_SIZE)) * 16
+        : 0,
+      'query assignment and scan scratch': pointCount * 4,
+      'candidate pair and geometry scratch': candidateCapacity * 8,
+      'query radix histogram': this.querySort
+        ? GPU_BUFFER_SELECTION_RADIX_BUCKET_COUNT *
+          Math.ceil(pointCount / GPU_BUFFER_SELECTION_SORT_WORKGROUP_SIZE) *
+          4
+        : 0,
+      'visibility chunk totals/offsets': matches
+        ? chunks.filter(chunk => chunk.length > 0).length * 4
+        : 0,
+      'selected IDs': matches ? pointCount * 4 : 0,
+      'selected total': 4
+    };
+    // Per-chunk mask, identity, normalized flags and scan rows never exceed the packed query
+    // assignment envelope. Published scan hierarchies shrink by at least 256 at each level.
+    validateSpatialJoinBindings(
+      graph,
+      id,
+      Object.fromEntries(
+        [...getInputs(props), ...getOutputs(props)].map((view, index) => [
+          `binding[${index}]`,
+          view
+        ])
+      ),
+      scratchBytes
+    );
+    validatePowerOfTwo(
+      id,
+      'leafCapacity',
+      this.leafCapacity,
+      1,
+      getGPUNearestFeatureJoinMaximumLeafCapacity(graph.device)
+    );
+    if (this.spatialContext.metric === 'great-circle') {
+      // Reuse the nested contributor's pure planner; these existing uint32 views stand in only
+      // for adapter-owned outputs whose bindings are checked above before they are declared.
+      const scalar = matches?.status.count ?? getGraphViewChunks(outputMask!)[0];
+      const plan = validateNearestNeighborBindings(graph, {
+        id,
+        operation: OPERATION,
+        queries: {kind: 'points', points},
+        queryCount: pointCount,
+        features: props.features,
+        featureCount: this.featureCount,
+        k: 1,
+        capacity: 1,
+        leafCapacity: this.leafCapacity,
+        spatialSort: this.spatialSort,
+        querySort: this.querySort,
+        neighborIds: scalar,
+        neighborCounts: scalar,
+        overflow: scalar
+      });
+      validateSpatialJoinBindings(
+        graph,
+        id,
+        {},
+        {
+          'great-circle node table':
+            ((2 * this.leafCapacity - 1) * NEAREST_NODE_WORDS + 2 * pointCount) * 4,
+          'great-circle topk': (plan.scratchQueryCount * plan.stride + 3) * 4,
+          'great-circle query bounds': this.querySort ? pointCount * 8 : 0
+        }
+      );
+    }
+    validateGraphChunkGroupKernelSupport(graph, id, 8);
     const nodes: GPUCommandNode<Parameters>[] = [];
 
     const nearestFeatureIds =
@@ -299,7 +493,7 @@ export class GPUBufferSelection implements GPUCommandNodeProducer {
         queries: {kind: 'points', positions: points},
         features: props.features,
         radius: props.distance,
-        candidateCapacity: props.candidateCapacity,
+        candidateCapacity,
         leafCapacity: props.leafCapacity,
         spatialSort: props.spatialSort,
         spatialSortCurve: props.spatialSortCurve,
@@ -324,7 +518,7 @@ export class GPUBufferSelection implements GPUCommandNodeProducer {
         continue;
       }
       nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
+        createGraphChunkGroupKernelNode<Parameters>(graph, {
           id: idChunks.length > 1 ? `${id}-mask-chunk-${chunkIndex}` : `${id}-mask`,
           operation: OPERATION,
           variant: 'mask',
@@ -375,7 +569,7 @@ function getInputs(
   const {features} = props;
   return [
     props.points.positions,
-    props.points.sourceIds,
+    props.output.matches ? props.points.sourceIds : undefined,
     props.distance,
     ...(features.kind === 'points' ? [features.positions] : [features.starts, features.ends]),
     features.sourceIds

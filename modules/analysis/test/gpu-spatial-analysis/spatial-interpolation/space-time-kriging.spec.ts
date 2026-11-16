@@ -10,9 +10,15 @@ import type {GPUTemporalContext} from '../../../src/analysis-core/contracts/temp
 import type {SpaceTimeVariogramModel} from '../../../src/dataframe-analysis/pair-statistics/space-time-variogram-model';
 import {
   GPUSpaceTimeKriging,
-  type GPUSpaceTimeKrigingNeighborSearch
+  type GPUSpaceTimeKrigingNeighborSearch,
+  type GPUSpaceTimeKrigingProps
 } from '../../../src/gpu-spatial-analysis/spatial-interpolation/gpu-space-time-kriging';
-import {KRIGING_PIVOT_RATIO_TOLERANCE} from '../../../src/gpu-spatial-analysis/spatial-interpolation/kriging-parameters';
+import {
+  KRIGING_PIVOT_RATIO_TOLERANCE,
+  getGPUKrigingParameterValues,
+  GPU_KRIGING_PARAMETER_LENGTH
+} from '../../../src/gpu-spatial-analysis/spatial-interpolation/kriging-parameters';
+import {GPUKriging} from '../../../src/gpu-spatial-analysis/spatial-interpolation/gpu-kriging';
 import {
   getGPUSpaceTimeKrigingParameterValues,
   GPU_SPACE_TIME_KRIGING_PARAMETER_LENGTH,
@@ -20,6 +26,7 @@ import {
 } from '../../../src/gpu-spatial-analysis/spatial-interpolation/prediction-covariance';
 import {
   createInputBuffer,
+  createVectorView,
   createOutputBuffer,
   readFloat32,
   readUint32,
@@ -30,17 +37,17 @@ import gstoolsFixture from '../../oracles/fixtures/space-time-metric-gstools.jso
 import {makeExtentGrid} from './extent-grid';
 import {solveReferenceKriging} from './matern-kriging-reference';
 import {
-  getGPUKrigingParameterValues,
-  GPUKriging,
-  GPU_KRIGING_PARAMETER_LENGTH
-} from '../../../src/gpu-spatial-analysis/spatial-interpolation/index';
-import {
   getReferenceSpaceTimeCovariance,
   selectReferenceNeighbors,
   solveReferenceSpaceTimeKriging,
   type Point,
   type ReferenceScene
 } from './space-time-kriging-reference';
+
+/** Padding detects writes beyond the logical query prefix and across shared chunk boundaries. */
+const OUTPUT_FLOAT_SENTINEL = -12345;
+/** A distinctive uint32 padding value cannot be confused with a published status. */
+const OUTPUT_STATUS_SENTINEL = 0xdeadbeef;
 
 const TEMPORAL_CONTEXT: GPUTemporalContext = {
   unit: 'second',
@@ -120,6 +127,11 @@ async function createHarness(props: {
   neighborSearch?: GPUSpaceTimeKrigingNeighborSearch;
   neighborsPerOctant?: number;
   stagedCandidateCount?: number;
+  sampleIndex?: GPUSpaceTimeKrigingProps['sampleIndex'];
+  queryChunkLengths?: number[];
+  outputChunkLengths?: number[];
+  outputPadding?: number;
+  sampleValidity?: readonly number[];
 }) {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
@@ -127,6 +139,7 @@ async function createHarness(props: {
   const {scene} = props;
   const queryCount = scene.queries.length;
   const sampleCount = scene.positions.length;
+  const outputRowCount = queryCount + (props.outputPadding ?? 0);
   const buffers = {
     parameters: createInputBuffer(
       device,
@@ -136,43 +149,97 @@ async function createHarness(props: {
     times: createInputBuffer(device, Float32Array.from(scene.times)),
     observations: createInputBuffer(
       device,
-      Float32Array.from(scene.observations.flatMap(([value, error]) => [value, error, 0, 1]))
+      Float32Array.from(
+        scene.observations.flatMap(([value, error], row) => [
+          value,
+          error,
+          0,
+          props.sampleValidity?.[row] ?? 1
+        ])
+      )
     ),
     queries: createInputBuffer(device, Float32Array.from(scene.queries.flat())),
     queryTimes: createInputBuffer(device, Float32Array.from(scene.queryTimes)),
-    values: createOutputBuffer(device, queryCount * 4),
-    status: createOutputBuffer(device, queryCount)
+    values: createOutputBuffer(device, outputRowCount * 4),
+    status: createOutputBuffer(device, outputRowCount)
   };
-  const contributor = new GPUSpaceTimeKriging({
-    temporalContext: TEMPORAL_CONTEXT,
-    positions: importGraphBuffer(graph, 'positions', buffers.positions, 'float32x2', sampleCount),
-    times: importGraphBuffer(graph, 'times', buffers.times, 'float32', sampleCount),
-    observations: importGraphBuffer(
+  buffers.values.write(new Float32Array(outputRowCount * 4).fill(OUTPUT_FLOAT_SENTINEL));
+  buffers.status.write(new Uint32Array(outputRowCount).fill(OUTPUT_STATUS_SENTINEL));
+  const createQueryRows = <Format extends 'float32' | 'float32x2' | 'float32x4' | 'uint32'>(
+    name: 'queries' | 'queryTimes' | 'values' | 'status',
+    format: Format
+  ) => {
+    const isOutput = name === 'values' || name === 'status';
+    const packed = importGraphBuffer(
       graph,
-      'observations',
-      buffers.observations,
-      'float32x4',
-      sampleCount
-    ),
-    queries: importGraphBuffer(graph, 'queries', buffers.queries, 'float32x2', queryCount),
-    queryTimes: importGraphBuffer(graph, 'queryTimes', buffers.queryTimes, 'float32', queryCount),
-    mode: props.mode,
-    parameters: importGraphBuffer(
-      graph,
-      'parameters',
-      buffers.parameters,
-      'float32',
-      GPU_SPACE_TIME_KRIGING_PARAMETER_LENGTH
-    ),
-    neighborCount: props.neighborCount,
-    neighborSearch: props.neighborSearch,
-    neighborsPerOctant: props.neighborsPerOctant,
-    stagedCandidateCount: props.stagedCandidateCount,
-    output: {
-      values: importGraphBuffer(graph, 'values', buffers.values, 'float32x4', queryCount),
-      status: importGraphBuffer(graph, 'status', buffers.status, 'uint32', queryCount)
+      name,
+      buffers[name],
+      format,
+      isOutput ? outputRowCount : queryCount
+    );
+    const lengths = isOutput
+      ? (props.outputChunkLengths ?? props.queryChunkLengths)
+      : props.queryChunkLengths;
+    if (!lengths) return packed;
+    let rowBase = 0;
+    return createVectorView(
+      name,
+      format,
+      lengths.map(length => {
+        const chunk = graph.createDataView(packed.buffer, {
+          format,
+          length,
+          byteOffset: rowBase * packed.rowByteLength
+        });
+        rowBase += length;
+        return chunk;
+      })
+    );
+  };
+  const contributor = (() => {
+    try {
+      return new GPUSpaceTimeKriging({
+        temporalContext: TEMPORAL_CONTEXT,
+        positions: importGraphBuffer(
+          graph,
+          'positions',
+          buffers.positions,
+          'float32x2',
+          sampleCount
+        ),
+        times: importGraphBuffer(graph, 'times', buffers.times, 'float32', sampleCount),
+        observations: importGraphBuffer(
+          graph,
+          'observations',
+          buffers.observations,
+          'float32x4',
+          sampleCount
+        ),
+        queries: createQueryRows('queries', 'float32x2'),
+        queryTimes: createQueryRows('queryTimes', 'float32'),
+        mode: props.mode,
+        parameters: importGraphBuffer(
+          graph,
+          'parameters',
+          buffers.parameters,
+          'float32',
+          GPU_SPACE_TIME_KRIGING_PARAMETER_LENGTH
+        ),
+        sampleIndex: props.sampleIndex,
+        neighborCount: props.neighborCount,
+        neighborSearch: props.neighborSearch,
+        neighborsPerOctant: props.neighborsPerOctant,
+        stagedCandidateCount: props.stagedCandidateCount,
+        output: {
+          values: createQueryRows('values', 'float32x4'),
+          status: createQueryRows('status', 'uint32')
+        }
+      });
+    } catch (error) {
+      Object.values(buffers).forEach(buffer => buffer.destroy());
+      throw error;
     }
-  });
+  })();
   let buildCount = 0;
   const getCommandNodes = contributor.getCommandNodes.bind(contributor);
   contributor.getCommandNodes = (target => {
@@ -184,6 +251,26 @@ async function createHarness(props: {
   return {
     get buildCount() {
       return buildCount;
+    },
+    writeSamples(next: ReferenceScene, validity?: readonly number[]) {
+      buffers.positions.write(Float32Array.from(next.positions.flat()));
+      buffers.times.write(Float32Array.from(next.times));
+      buffers.observations.write(
+        Float32Array.from(
+          next.observations.flatMap(([value, error], row) => [
+            value,
+            error,
+            0,
+            validity?.[row] ?? 1
+          ])
+        )
+      );
+    },
+    async readOutputStorage() {
+      return {
+        values: await readFloat32(buffers.values, outputRowCount * 4),
+        status: await readUint32(buffers.status, outputRowCount)
+      };
     },
     async run(settings?: GPUSpaceTimeKrigingSettings) {
       if (settings) {
@@ -624,4 +711,397 @@ it('GPUKriging accepts Matern variograms and matches an independent binary64 sol
     expect(Math.abs(variance[index] - reference.variance), `cell ${index}`).toBeLessThan(1e-3);
   });
   compiled.destroy();
+});
+
+for (const neighborSearch of ['metric', 'octant', 'staged'] as const) {
+  for (const mode of ['simple', 'ordinary'] as const) {
+    it(`indexed ${neighborSearch} ${mode} predictions match a CPU solve and the scan across query chunks`, async () => {
+      const scene = createScene(42, 180);
+      const settings = {
+        scene,
+        mode,
+        neighborSearch,
+        neighborCount: 8,
+        neighborsPerOctant: 2,
+        stagedCandidateCount: 16
+      };
+      const indexed = await createHarness({
+        ...settings,
+        sampleIndex: 'grid',
+        queryChunkLengths: [1, 0, 4, 7]
+      });
+      const reference = await createHarness({...settings, sampleIndex: 'brute-force'});
+      try {
+        // Both the lattice and the covariance update between frames without recompiling.
+        for (const [covariance, searchAnisotropy] of [
+          [MODELS[0], 0.1],
+          [MODELS[2], 3]
+        ] as const) {
+          const parameters = {covariance, searchAnisotropy, mean: 0.4};
+          const result = await indexed.run(parameters);
+          const scan = await reference.run(parameters);
+          expect(result.status).toEqual(scan.status);
+          scene.queries.forEach((query, queryIndex) => {
+            const rows = selectReferenceNeighbors(
+              scene,
+              query,
+              scene.queryTimes[queryIndex],
+              covariance,
+              {
+                search: neighborSearch,
+                neighborCount: 8,
+                neighborsPerOctant: 2,
+                stagedCandidateCount: 16,
+                searchAnisotropy
+              }
+            );
+            const expected = solveReferenceSpaceTimeKriging({
+              scene,
+              query,
+              queryTime: scene.queryTimes[queryIndex],
+              covariance,
+              rows,
+              mode,
+              mean: 0.4
+            });
+            expect(result.status[queryIndex]).toBe(0);
+            expect(result.values[queryIndex * 4 + 3]).toBe(rows.length);
+            expect(Math.abs(result.values[queryIndex * 4] - expected.prediction)).toBeLessThan(
+              5e-4
+            );
+            expect(Math.abs(result.values[queryIndex * 4 + 1] - expected.variance)).toBeLessThan(
+              5e-4
+            );
+            for (let component = 0; component < 4; component++)
+              expect(
+                Math.abs(
+                  result.values[queryIndex * 4 + component] -
+                    scan.values[queryIndex * 4 + component]
+                )
+              ).toBeLessThan(5e-4);
+          });
+        }
+        expect(indexed.buildCount).toBe(1);
+      } finally {
+        indexed.destroy();
+        reference.destroy();
+      }
+    });
+  }
+}
+
+it('indexed filters exclude invalid samples and publish missing neighborhoods across chunks', async () => {
+  const scene = {
+    positions: [
+      [NaN, 0],
+      [0, 0],
+      [0.5, 0],
+      [1, 0],
+      [2, 0]
+    ] as Point[],
+    times: [0, 0, 10, 0, 0],
+    observations: [
+      [1, 0],
+      [10, 0],
+      [20, 0],
+      [30, 0],
+      [40, -1]
+    ] as const,
+    queries: [
+      [0, 0],
+      [100, 100]
+    ] as Point[],
+    queryTimes: [0, 0]
+  };
+  const harness = await createHarness({
+    scene,
+    mode: 'ordinary',
+    neighborCount: 8,
+    sampleIndex: 'grid',
+    queryChunkLengths: [1, 0, 1]
+  });
+  try {
+    const result = await harness.run({
+      covariance: MODELS[2],
+      searchRadius: 0.25,
+      maximumTimeLag: 0
+    });
+    expect(result.status).toEqual([0, 1]);
+    expect(result.values[0]).toBeCloseTo(10, 5);
+    expect(result.values[1]).toBeCloseTo(0, 5);
+    expect(result.values[3]).toBe(1);
+    expect(Number.isNaN(result.values[4])).toBe(true);
+  } finally {
+    harness.destroy();
+  }
+});
+
+it('indexes 8M samples on default WebGPU bindings and matches closed-form one-neighbor predictions', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const sampleCount = 8 * 1024 * 1024;
+  const positions = new Float32Array(sampleCount * 2);
+  const times = new Float32Array(sampleCount);
+  const observations = new Float32Array(sampleCount * 4);
+  for (let row = 0; row < sampleCount; row++) {
+    positions[row * 2] = row % 2048;
+    positions[row * 2 + 1] = Math.floor(row / 2048) % 2048;
+    times[row] = Math.floor(row / (2048 * 2048));
+    observations[row * 4] = row;
+    observations[row * 4 + 3] = 1;
+  }
+  const targetRows = [0, Math.floor(sampleCount / 2) + 1234, sampleCount - 1];
+  const queryPositions = Float32Array.from(
+    targetRows.flatMap(row => [positions[row * 2], positions[row * 2 + 1]])
+  );
+  const queryTimes = Float32Array.from(targetRows.map(row => times[row]));
+  const queryCount = targetRows.length;
+  const graph = new GPUCommandGraph(device);
+  const buffers = {
+    positions: createInputBuffer(device, positions),
+    times: createInputBuffer(device, times),
+    observations: createInputBuffer(device, observations),
+    queries: createInputBuffer(device, queryPositions),
+    queryTimes: createInputBuffer(device, queryTimes),
+    parameters: createInputBuffer(
+      device,
+      getGPUSpaceTimeKrigingParameterValues({
+        covariance: {
+          type: 'metric',
+          joint: {model: 'exponential', nugget: 0, sill: 1, range: 100},
+          anisotropy: 1
+        },
+        mean: 0
+      })
+    ),
+    values: createOutputBuffer(device, queryCount * 4),
+    status: createOutputBuffer(device, queryCount)
+  };
+  const contributor = new GPUSpaceTimeKriging({
+    temporalContext: TEMPORAL_CONTEXT,
+    mode: 'simple',
+    neighborCount: 1,
+    positions: importGraphBuffer(graph, 'positions', buffers.positions, 'float32x2', sampleCount),
+    times: importGraphBuffer(graph, 'times', buffers.times, 'float32', sampleCount),
+    observations: importGraphBuffer(
+      graph,
+      'observations',
+      buffers.observations,
+      'float32x4',
+      sampleCount
+    ),
+    queries: importGraphBuffer(graph, 'queries', buffers.queries, 'float32x2', queryCount),
+    queryTimes: importGraphBuffer(graph, 'queryTimes', buffers.queryTimes, 'float32', queryCount),
+    parameters: importGraphBuffer(
+      graph,
+      'parameters',
+      buffers.parameters,
+      'float32',
+      GPU_SPACE_TIME_KRIGING_PARAMETER_LENGTH
+    ),
+    output: {
+      values: importGraphBuffer(graph, 'values', buffers.values, 'float32x4', queryCount),
+      status: importGraphBuffer(graph, 'status', buffers.status, 'uint32', queryCount)
+    }
+  });
+  expect(contributor.sampleIndex).toBe('grid');
+  graph.add(contributor);
+  const compiled = graph.compile();
+  try {
+    submitGraph(device, compiled, undefined);
+    const values = await readFloat32(buffers.values, queryCount * 4);
+    expect(await readUint32(buffers.status, queryCount)).toEqual(targetRows.map(() => 0));
+    targetRows.forEach((row, queryIndex) => {
+      // Exact, zero-error hit with one neighbor: weight 1, variance 0, value is the sample ID.
+      expect(values[queryIndex * 4]).toBe(row);
+      expect(values[queryIndex * 4 + 1]).toBeCloseTo(0, 5);
+      expect(values[queryIndex * 4 + 3]).toBe(1);
+    });
+  } finally {
+    compiled.destroy();
+    Object.values(buffers).forEach(buffer => buffer.destroy());
+  }
+}, 120000);
+
+for (const neighborSearch of ['metric', 'octant', 'staged'] as const) {
+  it(`preserves ${neighborSearch} row-zero underflow ties at 4097 samples`, async () => {
+    const sampleCount = 4097;
+    const scene = {
+      positions: Array.from({length: sampleCount}, () => [0, 0] as Point),
+      times: Array.from({length: sampleCount}, (_, row) => (row === 0 ? Math.fround(1e-24) : 0)),
+      observations: Array.from(
+        {length: sampleCount},
+        (_, row) => [row === 0 ? 10 : 20, 0] as const
+      ),
+      queries: [[0, 0]] as Point[],
+      queryTimes: [0]
+    };
+    const settings = {scene, mode: 'ordinary' as const, neighborSearch, neighborCount: 1};
+    const indexed = await createHarness({...settings, sampleIndex: 'grid'});
+    const reference = await createHarness({...settings, sampleIndex: 'brute-force'});
+    try {
+      const parameters = {
+        covariance: {
+          type: 'metric' as const,
+          joint: {model: 'exponential' as const, nugget: 0, sill: 1, range: 1},
+          anisotropy: 1
+        }
+      };
+      // Explicit float32 square shows the independent expected tie; row zero must win.
+      expect(Math.fround(scene.times[0] * scene.times[0])).toBe(0);
+      for (const harness of [indexed, reference]) {
+        const result = await harness.run(parameters);
+        expect(result.status).toEqual([0]);
+        expect(result.values[0]).toBeCloseTo(10, 5);
+        expect(result.values[3]).toBe(1);
+      }
+      // With one ordinary neighbor the prediction equals its observation. Encoding source IDs
+      // as values is an independent selected-row probe with no public output-layout change.
+      const rowScene = {
+        ...scene,
+        observations: scene.observations.map((_, row) => [row, 0] as const)
+      };
+      for (const harness of [indexed, reference]) {
+        harness.writeSamples(rowScene);
+        expect((await harness.run(parameters)).values[0]).toBe(0);
+      }
+    } finally {
+      indexed.destroy();
+      reference.destroy();
+    }
+  });
+}
+
+it('publishes contiguous shared-buffer chunks around 32 and 256 rows without touching sentinel padding', async () => {
+  const lengths = [1, 0, 31, 32, 33, 255, 256, 257, 0];
+  const queryCount = lengths.reduce((total, length) => total + length, 0);
+  const positions: Point[] = [
+    [0, 0],
+    [10, 0],
+    [0, 10],
+    [10, 10]
+  ];
+  const times = [0, 1, 2, 3];
+  const observations = [
+    [11, 0],
+    [23, 0],
+    [37, 0],
+    [41, 0]
+  ] as const;
+  const scene = {
+    positions,
+    times,
+    observations,
+    queries: Array.from({length: queryCount}, (_, row) => positions[row % 4]),
+    queryTimes: Array.from({length: queryCount}, (_, row) => times[row % 4])
+  };
+  const outputLengths = lengths.slice();
+  outputLengths[outputLengths.length - 1] += 2;
+  const harness = await createHarness({
+    scene,
+    mode: 'ordinary',
+    neighborCount: 1,
+    sampleIndex: 'grid',
+    queryChunkLengths: lengths,
+    outputChunkLengths: outputLengths,
+    outputPadding: 2
+  });
+  try {
+    const result = await harness.run({covariance: MODELS[2]});
+    expect(result.status).toEqual(Array.from({length: queryCount}, () => 0));
+    for (let row = 0; row < queryCount; row++) {
+      expect(result.values[row * 4]).toBeCloseTo(observations[row % 4][0], 5);
+      expect(result.values[row * 4 + 1]).toBeCloseTo(0, 5);
+      expect(result.values[row * 4 + 3]).toBe(1);
+    }
+    const storage = await harness.readOutputStorage();
+    expect(storage.values.slice(queryCount * 4)).toEqual(new Array(8).fill(OUTPUT_FLOAT_SENTINEL));
+    expect(storage.status.slice(queryCount)).toEqual([
+      OUTPUT_STATUS_SENTINEL,
+      OUTPUT_STATUS_SENTINEL
+    ]);
+  } finally {
+    harness.destroy();
+  }
+});
+
+it('rejects an oversized intermediate output chunk before GPU execution', async () => {
+  const scene = {
+    positions: [[0, 0]] as Point[],
+    times: [0],
+    observations: [[10, 0]] as const,
+    queries: [
+      [0, 0],
+      [0, 0]
+    ] as Point[],
+    queryTimes: [0, 0]
+  };
+  await expect(
+    createHarness({
+      scene,
+      mode: 'ordinary',
+      neighborCount: 1,
+      queryChunkLengths: [1, 1],
+      outputChunkLengths: [2, 1],
+      outputPadding: 1
+    })
+  ).rejects.toThrow('non-final output chunk lengths must match queries');
+});
+
+it('rebuilds bounds and membership after positions, times, values and validity change between frames', async () => {
+  const initial = {
+    positions: [
+      [0, 0],
+      [10, 0],
+      [20, 0],
+      [100, 100]
+    ] as Point[],
+    times: [0, 0, 0, 20],
+    observations: [
+      [11, 0],
+      [22, 0],
+      [33, 0],
+      [44, 0]
+    ] as const,
+    queries: [[0, 0]] as Point[],
+    queryTimes: [0]
+  };
+  const harness = await createHarness({
+    scene: initial,
+    mode: 'ordinary',
+    neighborCount: 1,
+    sampleIndex: 'grid'
+  });
+  try {
+    expect((await harness.run({covariance: MODELS[2]})).values[0]).toBeCloseTo(11, 5);
+    const changed = {
+      positions: [
+        [1000, 1000],
+        [0, 0],
+        [1, 0],
+        [100, 100]
+      ] as Point[],
+      times: [1000, 0, 100, 20],
+      observations: [
+        [101, 0],
+        [202, 0],
+        [303, 0],
+        [404, 0]
+      ] as const
+    };
+    harness.writeSamples(changed, [1, 0, 1, 1]);
+    // Row 1 is now an invalid exact hit; row 2 is spatially near but outside the time window.
+    // The sole eligible row is row 3, independent of either index or scan ordering.
+    const result = await harness.run({
+      covariance: MODELS[2],
+      searchRadius: 200,
+      maximumTimeLag: 30
+    });
+    expect(result.status).toEqual([0]);
+    expect(result.values[0]).toBeCloseTo(404, 4);
+    expect(result.values[3]).toBe(1);
+    expect(harness.buildCount).toBe(1);
+  } finally {
+    harness.destroy();
+  }
 });

@@ -224,7 +224,7 @@ it('GPUPointDensity validates props', () => {
         counts: graph.createDataView(shared, {format: 'uint32', length: 8})
       }
     })
-  ).toThrow(/separate buffers/);
+  ).toThrow(/must not overlap/);
   const otherGraph = new GPUCommandGraph(device);
   expect(() => new GPUPointDensity(createProps(otherGraph)).getCommandNodes(graph)).toThrow(
     /belong to the target graph/

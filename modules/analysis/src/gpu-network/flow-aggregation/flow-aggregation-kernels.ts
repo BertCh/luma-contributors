@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getViewBindingRange, getBoundedDispatchLayout} from '@luma.gl/graph/gpu-core';
 import type {
   GPUCommandGraph,
   GPUCommandGraphGPUIndirectCondition,
   GPUCommandNode,
+  GPUComputeCommandNode,
   GraphDataView,
   GraphVectorView
 } from '@luma.gl/graph/gpu-core';
@@ -18,6 +20,7 @@ import {
 import {
   createWGSLKernelNode,
   getWGSLFloatLiteral,
+  type WGSLKernelProps,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {GPU_POINT_DENSITY_HEXAGON_WGSL} from '../../gpu-spatial-analysis/point-density/point-density-hexagon';
@@ -25,13 +28,74 @@ import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 
 const OPERATION = 'GPUFlowAggregation';
 
+/** Fixed lane count keeps zone and contribution pipelines independent of chunk length. @internal */
+export const FLOW_CHUNK_WORKGROUP_SIZE = 256;
+/** Guard the linear workgroup index before multiplying into a uint32 row index. */
+const MAXIMUM_FLOW_CHUNK_WORKGROUP_COUNT = Math.floor(0xffffffff / FLOW_CHUNK_WORKGROUP_SIZE) + 1;
+
+/**
+ * Adapts the shared kernel's direct dispatch to a flow chunk's own bounded geometry. The shared
+ * kernel's overrides are fixed; row count, row base and dispatch strides come from runtime slots.
+ * The executable dispatches only this chunk's workgroups, independently of pipeline compilation.
+ */
+function createFlowChunkNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: Omit<WGSLKernelProps<Parameters>, 'invocationCount' | 'guardIndex' | 'workgroupSize'> & {
+    chunkLength: number;
+  }
+): GPUCommandNode<Parameters> {
+  const layout = getBoundedDispatchLayout(
+    OPERATION,
+    props.chunkLength,
+    FLOW_CHUNK_WORKGROUP_SIZE,
+    graph.device.limits.maxComputeWorkgroupsPerDimension
+  );
+  const node = createWGSLKernelNode(graph, {
+    ...props,
+    invocationCount: 1,
+    guardIndex: false,
+    workgroupSize: FLOW_CHUNK_WORKGROUP_SIZE,
+    body: `let chunkWorkgroupIndex = (workgroupId.z * rowBase[rowBaseOffset + 4u] + workgroupId.y) * rowBase[rowBaseOffset + 3u] + workgroupId.x;
+  if (chunkWorkgroupIndex >= ${MAXIMUM_FLOW_CHUNK_WORKGROUP_COUNT}u) { return; }
+  let rowIndex = chunkWorkgroupIndex * ${FLOW_CHUNK_WORKGROUP_SIZE}u + localInvocationIndex;
+  if (rowIndex >= rowBase[rowBaseOffset + 1u]) { return; }
+  ${props.body}`
+  }) as GPUComputeCommandNode<Parameters>;
+  return {
+    ...node,
+    workload: {
+      ...node.workload,
+      maximumInvocationCount: props.chunkLength,
+      maximumWorkgroupCount: layout.x * layout.y * layout.z
+    },
+    compile: (context): ReturnType<GPUComputeCommandNode<Parameters>['compile']> => {
+      const executable = node.compile(context);
+      return {
+        ...executable,
+        encode: encodeContext => {
+          const pass = encodeContext.computePass;
+          const chunkPass = new Proxy(pass, {
+            get(currentPass, property) {
+              if (property === 'dispatch')
+                return () => currentPass.dispatch(layout.x, layout.y, layout.z);
+              const value = Reflect.get(currentPass, property, currentPass);
+              return typeof value === 'function' ? value.bind(currentPass) : value;
+            }
+          });
+          executable.encode({...encodeContext, computePass: chunkPass});
+        }
+      };
+    }
+  };
+}
+
 /** Bounds resolved to either a literal or one GPU `float32x4` row. @internal */
 export type FlowResolvedBounds =
   | readonly [number, number, number, number]
   | GraphDataView<'float32x4'>;
 
 /**
- * Writes one zone ID per position of a chunk into `zones[zoneStart + index]`, or the no-zone
+ * Writes one zone ID per position of a chunk into `zones[rowBase[0] + rowIndex]`, or the no-zone
  * marker for rejected rows. Grid cells mirror `GPUGridBinning`; hexagons mirror point-density.
  *
  * @internal
@@ -43,7 +107,7 @@ export function createFlowZoneNode<Parameters>(
     kind: 'grid' | 'hexagon';
     positions: GraphDataView;
     zones: GraphDataView<'uint32'>;
-    zoneStart: number;
+    rowBase: GraphDataView<'uint32'>;
     gridSize: readonly [number, number];
     bounds: FlowResolvedBounds;
     radius?: number | GraphDataView<'float32'>;
@@ -51,9 +115,16 @@ export function createFlowZoneNode<Parameters>(
     activeGridSize?: GraphDataView<'uint32'>;
   }
 ): GPUCommandNode<Parameters> {
+  const range = getViewBindingRange(props.positions);
+  const positions = graph.createDataView(props.positions.buffer, {
+    format: 'float32',
+    byteOffset: range.offset,
+    length: range.size / 4
+  });
   const bindings: WGSLKernelBinding[] = [
-    {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
-    {name: 'zones', view: props.zones, type: 'u32', access: 'read_write'}
+    {name: 'positions', view: positions, type: 'f32', access: 'read'},
+    {name: 'zones', view: props.zones, type: 'u32', access: 'read_write'},
+    {name: 'rowBase', view: props.rowBase, type: 'u32', access: 'read'}
   ];
   const boundsIsView = !Array.isArray(props.bounds);
   if (boundsIsView) {
@@ -108,14 +179,13 @@ export function createFlowZoneNode<Parameters>(
     zone = getCoordinate(y, minimumY, maximumY, rows) * columns +
       getCoordinate(x, minimumX, maximumX, columns);
   }`;
-  return createWGSLKernelNode<Parameters>(graph, {
+  return createFlowChunkNode<Parameters>(graph, {
     id: props.id,
     operation: OPERATION,
     variant: `${props.kind}-zones`,
     bindings,
-    invocationCount: props.positions.length,
-    declarations: `const ZONE_START: u32 = ${props.zoneStart}u;
-const COLUMNS: u32 = ${props.gridSize[0]}u;
+    chunkLength: props.positions.length,
+    declarations: `const COLUMNS: u32 = ${props.gridSize[0]}u;
 const ROWS: u32 = ${props.gridSize[1]}u;
 const NO_ZONE: u32 = 0xffffffffu;
 ${IS_FINITE_VALUE_WGSL}
@@ -133,15 +203,15 @@ fn getCoordinate(value: f32, minimum: f32, maximum: f32, size: u32) -> u32 {
   let rows = clamp(activeGridSizeValues[activeGridSizeValuesOffset + 1u], 1u, ROWS);`
       : 'let columns = COLUMNS;\n  let rows = ROWS;'
   }
-  let x = positions[positionsOffset + index * 2u];
-  let y = positions[positionsOffset + index * 2u + 1u];
+  let x = positions[positionsOffset + rowBase[rowBaseOffset + 2u] + rowIndex * 2u];
+  let y = positions[positionsOffset + rowBase[rowBaseOffset + 2u] + rowIndex * 2u + 1u];
   var zone = NO_ZONE;
   let finite = isFiniteValue(x) && isFiniteValue(y);
   let inX = x >= minimumX && x <= maximumX && (maximumX != minimumX || x == minimumX);
   let inY = y >= minimumY && y <= maximumY && (maximumY != minimumY || y == minimumY);
   let inside = maximumX >= minimumX && maximumY >= minimumY && inX && inY;
   ${zoneSource}
-  zones[zonesOffset + ZONE_START + index] = zone;`
+  zones[zonesOffset + rowBase[rowBaseOffset] + rowIndex] = zone;`
   });
 }
 
@@ -163,6 +233,7 @@ export function createFlowPairKeysNode<Parameters>(
     acceptedOriginZones: GraphDataView<'uint32'>;
     acceptedDestinationZones: GraphDataView<'uint32'>;
     zoneCount: number;
+    useRowKeys?: boolean;
     excludeSelfFlows: boolean;
   }
 ): GPUCommandNode<Parameters> {
@@ -230,7 +301,7 @@ const NO_ZONE: u32 = 0xffffffffu;`,
   ${props.excludeSelfFlows ? 'accepted = accepted && origin != destination;' : ''}
   ${props.mask ? 'accepted = accepted && rowMask[rowMaskOffset + index] != 0u;' : ''}
   ${props.timeMask ? 'accepted = accepted && timeMask[timeMaskOffset + index] != 0u;' : ''}
-  pairKeys[pairKeysOffset + index] = select(NO_ZONE, origin * ZONE_COUNT + destination, accepted);
+  pairKeys[pairKeysOffset + index] = select(NO_ZONE, ${props.useRowKeys ? 'index' : 'origin * ZONE_COUNT + destination'}, accepted);
   acceptedOriginZones[acceptedOriginZonesOffset + index] = select(NO_ZONE, origin, accepted);
   acceptedDestinationZones[acceptedDestinationZonesOffset + index] =
     select(NO_ZONE, destination, accepted);`
@@ -504,6 +575,8 @@ export function createFlowDecodeZonesNode<Parameters>(
     id: string;
     zoneCount: number;
     ids: GraphDataView<'uint32'>;
+    sourceOrigins?: GraphDataView<'uint32'>;
+    sourceDestinations?: GraphDataView<'uint32'>;
     originZoneIds?: GraphDataView<'uint32'>;
     destinationZoneIds?: GraphDataView<'uint32'>;
   }
@@ -511,6 +584,12 @@ export function createFlowDecodeZonesNode<Parameters>(
   const bindings: WGSLKernelBinding[] = [
     {name: 'ids', view: props.ids, type: 'u32', access: 'read'}
   ];
+  if (props.sourceOrigins && props.sourceDestinations) {
+    bindings.push(
+      {name: 'sourceOrigins', view: props.sourceOrigins, type: 'u32', access: 'read'},
+      {name: 'sourceDestinations', view: props.sourceDestinations, type: 'u32', access: 'read'}
+    );
+  }
   if (props.originZoneIds) {
     bindings.push({
       name: 'originOut',
@@ -536,8 +615,9 @@ export function createFlowDecodeZonesNode<Parameters>(
     declarations: `const ZONE_COUNT: u32 = ${props.zoneCount}u;`,
     body: `let key = ids[idsOffset + index];
   let valid = key != 0xffffffffu;
-  ${props.originZoneIds ? 'originOut[originOutOffset + index] = select(0xffffffffu, key / ZONE_COUNT, valid);' : ''}
-  ${props.destinationZoneIds ? 'destinationOut[destinationOutOffset + index] = select(0xffffffffu, key % ZONE_COUNT, valid);' : ''}`
+  let sourceRow = select(0u, key, valid);
+  ${props.originZoneIds ? `originOut[originOutOffset + index] = select(0xffffffffu, ${props.sourceOrigins ? 'sourceOrigins[sourceOriginsOffset + sourceRow]' : 'key / ZONE_COUNT'}, valid);` : ''}
+  ${props.destinationZoneIds ? `destinationOut[destinationOutOffset + index] = select(0xffffffffu, ${props.sourceDestinations ? 'sourceDestinations[sourceDestinationsOffset + sourceRow]' : 'key % ZONE_COUNT'}, valid);` : ''}`
   });
 }
 
@@ -575,7 +655,7 @@ export function createFlowPairOverflowNode<Parameters>(
 
 /**
  * Writes one finite-or-zero weight per source row into `contributions` (one node per weight chunk),
- * so non-finite weights add 0 to every sorted sum, matching the atomic path that skips them.
+ * so non-finite weights add 0 to every requested sum, matching the atomic path's skip policy.
  *
  * @internal
  */
@@ -585,37 +665,42 @@ export function createFlowContributionNodes<Parameters>(
     id: string;
     weights: GraphDataView<'float32'> | GraphVectorView<'float32'>;
     contributions: GraphDataView<'float32'>;
+    rowBases: readonly GraphDataView<'uint32'>[];
   }
 ): GPUCommandNode<Parameters>[] {
   const nodes: GPUCommandNode<Parameters>[] = [];
   const chunks = getGraphViewChunks(props.weights);
-  let rowStart = 0;
   for (const [chunkIndex, chunk] of chunks.entries()) {
     if (chunk.length > 0) {
+      const range = getViewBindingRange(chunk);
+      const weights = graph.createDataView(chunk.buffer, {
+        format: 'float32',
+        byteOffset: range.offset,
+        length: range.size / 4
+      });
       nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
+        createFlowChunkNode<Parameters>(graph, {
           id: `${props.id}-contributions${chunks.length > 1 ? `-chunk-${chunkIndex}` : ''}`,
           operation: OPERATION,
           variant: 'contributions',
           bindings: [
-            {name: 'weights', view: chunk, type: 'f32', access: 'read'},
+            {name: 'weights', view: weights, type: 'f32', access: 'read'},
             {
               name: 'contributions',
               view: props.contributions,
               type: 'f32',
               access: 'read_write'
-            }
+            },
+            {name: 'rowBase', view: props.rowBases[chunkIndex], type: 'u32', access: 'read'}
           ],
-          invocationCount: chunk.length,
-          declarations: `const ROW_START: u32 = ${rowStart}u;
-${IS_FINITE_VALUE_WGSL}`,
-          body: `let weight = weights[weightsOffset + index];
+          chunkLength: chunk.length,
+          declarations: IS_FINITE_VALUE_WGSL,
+          body: `let weight = weights[weightsOffset + rowBase[rowBaseOffset + 2u] + rowIndex];
   let isFinite = isFiniteValue(weight);
-  contributions[contributionsOffset + ROW_START + index] = select(0.0, weight, isFinite);`
+  contributions[contributionsOffset + rowBase[rowBaseOffset] + rowIndex] = select(0.0, weight, isFinite);`
         })
       );
     }
-    rowStart += chunk.length;
   }
   return nodes;
 }

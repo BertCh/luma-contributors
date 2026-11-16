@@ -4,29 +4,34 @@
 
 import type {
   GraphDataView,
+  GraphVectorView,
   GPUCommandGraph,
   GPUCommandNode,
   GPUCommandNodeProducer
 } from '@luma.gl/graph/gpu-core';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  createRasterTimeSeriesKernelNode,
+  planRasterTimeSeriesChunks,
+  validateRasterTimeSeriesBindings,
+  validateRasterTimeSeriesViews,
+  type RasterTimeSeriesField,
+  type RasterTimeSeriesScalarView
+} from './raster-time-series-chunks';
 import {
   validateCapacity,
+  validateCommandNodeBudget,
   validateFiniteNumber,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   RASTER_FINITE_WGSL,
   getRasterLeastSquaresWGSL,
-  rasterBinding,
-  validateRasterGraph,
-  validateRasterViews,
-  type RasterScalarView
+  rasterBinding
 } from '../remote-sensing/raster-kernel-utils';
 import {
   getGPURasterDateAxisBinding,
   getGPURasterDateAxisDeclarations,
   resolveGPURasterIrregularDateAxis,
-  validateGPURasterDateAxisGraph,
   type GPURasterIrregularDateAxis
 } from './raster-irregular-date-axis';
 
@@ -62,14 +67,16 @@ export function getGPURasterHANTSParameterValues(
 }
 
 /** Properties of {@link GPURasterHANTS}. */
-export type GPURasterHANTSProps = {
+export type GPURasterHANTSProps<
+  Rows extends GraphDataView<'float32'> | GraphVectorView<'float32'> = GraphDataView<'float32'>
+> = {
   id?: string;
   cellCount: number;
   sliceCount: number;
   /** Cell-major `cell * sliceCount + slice`; nonfinite samples are missing. */
-  values: GraphDataView<'float32'>;
+  values: Rows;
   /** Per-observation QA; zero rejects the sample. */
-  mask?: GraphDataView<'uint32'>;
+  mask?: RasterTimeSeriesField<'uint32', Rows>;
   /** Float32, see {@link getGPURasterHANTSParameterValues}. */
   parameters: GraphDataView<'float32'>;
   /** Harmonics; coefficients per cell are `2 * harmonicCount + 1`. */
@@ -82,13 +89,13 @@ export type GPURasterHANTSProps = {
   dateAxis?: GPURasterIrregularDateAxis;
   output: {
     /** Fitted curve at every slice, gaps included; NaN when status is 1 or 2. */
-    smoothed: GraphDataView<'float32'>;
+    smoothed: RasterTimeSeriesField<'float32', Rows>;
     /** Per cell: mean, then cosine and sine per harmonic, centred on the axis midpoint. */
-    coefficients: GraphDataView<'float32'>;
+    coefficients: RasterTimeSeriesField<'float32', Rows>;
     /** Per cell: 0 converged, 1 insufficient support, 2 rank failure, 8 rejection passes exhausted (partial result published). */
-    status: GraphDataView<'uint32'>;
+    status: RasterTimeSeriesField<'uint32', Rows>;
     /** Optional per cell `[rejectedObservationCount, passesUsed]`. */
-    diagnostics?: GraphDataView<'uint32'>;
+    diagnostics?: RasterTimeSeriesField<'uint32', Rows>;
   };
 };
 
@@ -99,16 +106,24 @@ export type GPURasterHANTSProps = {
  * `2 * harmonicCount + 1 + degreeOfOverdetermination` observations. A cell that runs out of passes
  * with outliers remaining publishes its latest fit and reports status 8.
  *
+ * Cell-major fields accept packed views or matching vector chunks of complete cell records.
+ * Shared date, model and parameter tables remain packed.
+ *
  * Per-frame: `parameters`. Compile-time: `cellCount`, `sliceCount`, `harmonicCount`,
  * `rejectionSide`, `rejectionPassCount`, and which optional views exist.
  */
-export class GPURasterHANTS implements GPUCommandNodeProducer {
+export class GPURasterHANTS<
+  Rows extends GraphDataView<'float32'> | GraphVectorView<'float32'> = GraphDataView<'float32'>
+> implements GPUCommandNodeProducer
+{
   readonly id: string;
+  readonly estimatedCommandNodeCount: number;
+  private readonly chunkProps: readonly GPURasterHANTSProps<Rows>[];
   readonly rejectionPassCount: number;
   readonly rejectionSide: 'low' | 'high' | 'both';
   private readonly ticksPerYear: number;
 
-  constructor(readonly props: GPURasterHANTSProps) {
+  constructor(readonly props: GPURasterHANTSProps<Rows>) {
     const id = props.id ?? 'raster-hants';
     this.id = id;
     const passCount = props.rejectionPassCount ?? 8;
@@ -175,15 +190,30 @@ export class GPURasterHANTS implements GPUCommandNodeProducer {
     this.ticksPerYear = props.dateAxis
       ? resolveGPURasterIrregularDateAxis(id, props.dateAxis, props.sliceCount)
       : 0;
-    validateRasterViews(id, this.getInputs(), this.getOutputs());
+    this.chunkProps = planRasterTimeSeriesChunks(id, props, {
+      values: props.sliceCount,
+      mask: props.sliceCount,
+      'output.smoothed': props.sliceCount,
+      'output.coefficients': columns,
+      'output.status': 1,
+      'output.diagnostics': 2
+    });
+    this.estimatedCommandNodeCount = this.chunkProps.length * 1;
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
+    validateRasterTimeSeriesViews(id, this.getInputs(), this.getOutputs());
   }
 
-  private getInputs(): RasterScalarView[] {
+  private getInputs(): RasterTimeSeriesScalarView[] {
     const {values, mask, parameters} = this.props;
-    return [values, parameters, ...(mask ? [mask] : [])];
+    return [
+      values,
+      parameters,
+      ...(mask ? [mask] : []),
+      ...(this.props.dateAxis ? [this.props.dateAxis.acquisitionTimes] : [])
+    ];
   }
 
-  private getOutputs(): RasterScalarView[] {
+  private getOutputs(): RasterTimeSeriesScalarView[] {
     const {smoothed, coefficients, status, diagnostics} = this.props.output;
     return [smoothed, coefficients, status, ...(diagnostics ? [diagnostics] : [])];
   }
@@ -191,10 +221,22 @@ export class GPURasterHANTS implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {props, id, rejectionPassCount, rejectionSide} = this;
+    validateRasterTimeSeriesBindings(graph, this.id, [...this.getInputs(), ...this.getOutputs()]);
+    return this.chunkProps.flatMap((props, chunkIndex) =>
+      this.getChunkCommandNodes(graph, {
+        ...props,
+        id: `${this.id}-chunk-${chunkIndex}`
+      } as unknown as GPURasterHANTSProps)
+    );
+  }
+
+  private getChunkCommandNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>,
+    props: GPURasterHANTSProps
+  ): readonly GPUCommandNode<Parameters>[] {
+    const {rejectionPassCount, rejectionSide} = this;
+    const id = props.id!;
     const {sliceCount: slices, harmonicCount, values, mask, parameters, dateAxis, output} = props;
-    validateRasterGraph(id, graph, this.getInputs(), this.getOutputs());
-    if (dateAxis) validateGPURasterDateAxisGraph(id, graph, dateAxis);
     const columns = 2 * harmonicCount + 1;
     const timeExpression = dateAxis
       ? 'rasterSliceYears(slice)'
@@ -206,7 +248,7 @@ export class GPURasterHANTS implements GPUCommandNodeProducer {
           ? '-residual'
           : 'residual';
     return [
-      createWGSLKernelNode<Parameters>(graph, {
+      createRasterTimeSeriesKernelNode<Parameters>(graph, {
         id,
         operation: 'GPURasterHANTS',
         invocationCount: props.cellCount,

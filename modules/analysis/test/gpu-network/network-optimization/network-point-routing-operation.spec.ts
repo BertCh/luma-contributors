@@ -112,3 +112,35 @@ it('checks the documented status difference when a full-edge float32 sum overflo
     }
   }
 });
+
+it('lowers explicit reference mode with maximumRelaxations 2048 and preserves expected same-edge results', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const input = getPointRoutingInput();
+  const rows = await runOperationGraph(device, {
+    inputs: {
+      turns: {format: 'uint32x2', values: input.turns},
+      edgeCosts: {format: 'float32', values: input.costs},
+      queries: {format: 'uint32x2', values: input.queries},
+      fractions: {format: 'float32x2', values: input.fractions}
+    },
+    operations: [
+      new GPUNetworkPointRoutingOperation({
+        edgeCount: 6,
+        queryCount: 5,
+        turns: 'turns',
+        costs: 'edgeCosts',
+        queries: 'queries',
+        fractions: 'fractions',
+        mode: 'reference',
+        maximumRelaxations: 2048,
+        output: {costs: 'costs', status: 'status', predecessorEdges: 'parents'}
+      })
+    ],
+    outputs: ['costs', 'status', 'parents']
+  });
+  expect(Array.from(rows['costs'])).toEqual([11, 12, 4, 19, Infinity]);
+  expect(Array.from(rows['status'])).toEqual([0, 0, 0, 0, 0]);
+  expect(rows['parents'][6]).toBe(2);
+  expect(rows['parents'][12]).toBe(0xffffffff);
+});

@@ -74,9 +74,12 @@ it('validates arrays, CPU construction and deferred GPU contributor construction
     })
   ).toThrow(/periodCount/);
   expect(() =>
-    constructNetworkOperationContributor(new GPURankMarkovOperation({...PROPS, rowCount: 65}), {
-      values: {format: 'float32', length: 195}
-    })
+    constructNetworkOperationContributor(
+      new GPURankMarkovOperation({...PROPS, rowCount: 65, rankingMethod: 'pairwise'}),
+      {
+        values: {format: 'float32', length: 195}
+      }
+    )
   ).toThrow(/rowCount/);
   expect(() => new CPURankMarkovOperation({...PROPS, rowCount: 65})).not.toThrow();
 });

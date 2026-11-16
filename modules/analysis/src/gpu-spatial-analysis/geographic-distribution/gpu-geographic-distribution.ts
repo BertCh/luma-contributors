@@ -3,6 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  getSpatialAnalysisPackedKernelNodes,
+  validateSpatialAnalysisPackedOutputAllocations
+} from './spatial-analysis-packed-kernel';
+import {
   createTransientView,
   GPUScan,
   GPUSort,
@@ -13,7 +17,6 @@ import {
 import {
   createFillNode,
   createWGSLDispatchGate,
-  createWGSLKernelNode,
   getWGSLFloatLiteral,
   type WGSLDispatchGate,
   type WGSLKernelBinding
@@ -26,8 +29,8 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
-  validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
+  validateMaximumCount,
+  validateCommandNodeBudget,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -48,6 +51,14 @@ import {
   type GroupedSumProps
 } from './grouped-sum-reduction';
 
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {
+  validateGeographicDistributionViews,
+  validateGeographicDistributionStorage
+} from './geographic-distribution-validation';
+
+import {SPATIAL_ANALYSIS_QUOTIENT_WGSL} from './spatial-analysis-quotient';
+
 const OPERATION = 'GPUGeographicDistribution';
 
 // Standard distances and deviational ellipse axes measure distance.
@@ -61,7 +72,14 @@ const CHECK_WORKGROUP_SIZE = 256;
 /** Workgroup size of the sorted median update (a workgroup OR before one global atomic). */
 const UPDATE_WORKGROUP_SIZE = 256;
 
+/** Bounds graph topology for the optional unrolled median solve. */
 const MAXIMUM_MEDIAN_ITERATIONS = 256;
+/** float32x2 polygon vertices use two uint32 component indices per row. */
+const GEOGRAPHIC_DISTRIBUTION_MAXIMUM_VERTEX_ROWS = 0x7fffffff;
+/** Allowance for sorting, initial moments, optional direction/spread and output publication. */
+const GEOGRAPHIC_DISTRIBUTION_BASE_COMMAND_NODE_ALLOWANCE = 256;
+/** Four segment sums, row transforms, update and gating fit within sixteen nodes per median step. */
+const GEOGRAPHIC_DISTRIBUTION_MEDIAN_COMMAND_NODES_PER_ITERATION = 16;
 const DEFAULT_MEDIAN_ITERATIONS = 24;
 const DEFAULT_POLYGON_VERTEX_COUNT = 64;
 
@@ -79,7 +97,7 @@ function getVardiZhangWGSL(pullX: string, pullY: string, coincidentWeight: strin
     let pullLength = sqrt(${pullX} * ${pullX} + ${pullY} * ${pullY});
     var gamma = 1.0;
     if (pullLength > 0.0) {
-      gamma = min(1.0, coincidentWeight / pullLength);
+      gamma = min(1.0, getSpatialAnalysisQuotient(coincidentWeight,pullLength));
     }
     stepX = stepX * (1.0 - gamma);
     stepY = stepY * (1.0 - gamma);
@@ -277,6 +295,7 @@ export class GPUGeographicDistribution implements GPUCommandNodeProducer {
   readonly groupCount: number;
   /** Largest Weiszfeld iteration count. */
   readonly maximumMedianIterations: number;
+  readonly estimatedCommandNodeCount: number;
   /** Vertices per ring. */
   readonly polygonVertexCount: number;
   /** Resolved reduction strategy. */
@@ -363,6 +382,19 @@ export class GPUGeographicDistribution implements GPUCommandNodeProducer {
 
     const groups = this.groupCount;
     const vertices = groups * this.polygonVertexCount;
+    if (output.ellipseVertices || output.circleVertices)
+      validateMaximumCount(
+        id,
+        'groupCount * polygonVertexCount',
+        vertices,
+        GEOGRAPHIC_DISTRIBUTION_MAXIMUM_VERTEX_ROWS
+      );
+    this.estimatedCommandNodeCount =
+      GEOGRAPHIC_DISTRIBUTION_BASE_COMMAND_NODE_ALLOWANCE +
+      (output.medianCenters || output.medianConverged
+        ? this.maximumMedianIterations * GEOGRAPHIC_DISTRIBUTION_MEDIAN_COMMAND_NODES_PER_ITERATION
+        : 0);
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     const checks = [
       ['counts', output.counts, ['uint32'], groups],
       ['weightSums', output.weightSums, ['float32'], groups],
@@ -392,11 +424,42 @@ export class GPUGeographicDistribution implements GPUCommandNodeProducer {
     if (output.directionalMeans && !props.lineEnds) {
       throw new Error(`${id} output.directionalMeans requires lineEnds`);
     }
-    validateGraphOutputsDisjointFromInputs(
-      id,
-      checks.map(([, view]) => view),
-      [props.positions, props.weights, props.groupIds, props.mask, props.lineEnds, props.parameters]
-    );
+    const inputs = {
+      positions: props.positions,
+      weights: props.weights,
+      groupIds: props.groupIds,
+      mask: props.mask,
+      lineEnds: output.directionalMeans ? props.lineEnds : undefined,
+      parameters: props.parameters
+    };
+    const parameters = {parameters: props.parameters};
+    validateGeographicDistributionViews(id, inputs, output, [
+      {
+        reads: parameters,
+        writes: {
+          counts: output.counts,
+          weightSums: output.weightSums,
+          meanCenters: output.meanCenters
+        }
+      },
+      {
+        reads: parameters,
+        writes: {standardDistances: output.standardDistances, ellipses: output.ellipses}
+      },
+      {
+        reads: parameters,
+        writes: {medianCenters: output.medianCenters, medianConverged: output.medianConverged}
+      },
+      {reads: parameters, writes: {directionalMeans: output.directionalMeans}},
+      {
+        reads: {...parameters, ellipses: output.ellipses},
+        writes: {ellipseVertices: output.ellipseVertices}
+      },
+      {
+        reads: {...parameters, standardDistances: output.standardDistances},
+        writes: {circleVertices: output.circleVertices}
+      }
+    ]);
   }
 
   /**
@@ -408,15 +471,34 @@ export class GPUGeographicDistribution implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id, groupCount, polygonVertexCount} = this;
     const {output, positions, weights, groupIds, mask, lineEnds, parameters} = props;
-    validateGraphViewsBelongToGraph(id, graph, [
+    validateSpatialAnalysisPackedOutputAllocations(graph, id, output);
+    validateGraphChunkBindingRanges(graph, id, {
       positions,
       weights,
       groupIds,
       mask,
-      lineEnds,
+      lineEnds: output.directionalMeans ? lineEnds : undefined,
       parameters,
-      ...Object.values(output)
-    ]);
+      ...output
+    });
+    const validateScratch = (name: string, bytes: number) =>
+      validateGeographicDistributionStorage(graph.device, id, name, bytes);
+    if (this.reduction === 'sorted') validateScratch('row scratch', positions.length * 4);
+    validateScratch('group mean scratch', groupCount * 8);
+    validateScratch('group offsets scratch', (groupCount + 1) * 4);
+    if (output.ellipses || output.ellipseVertices)
+      validateScratch('ellipse scratch', groupCount * 12);
+    if (output.medianCenters || output.medianConverged) {
+      validateScratch('median records scratch', (4 * groupCount + 1) * 4);
+      validateScratch('median dispatch scratch', 36);
+    }
+    if (this.reduction === 'chunked') {
+      const chunkCount = Math.min(1024, Math.max(1, Math.ceil(positions.length / 256)));
+      // The directional pass has four quantities, the largest nested grouped scratch.
+      const quantityCount =
+        output.directionalMeans || output.medianCenters || output.medianConverged ? 4 : 3;
+      validateScratch('grouped partial sums scratch', quantityCount * groupCount * chunkCount * 4);
+    }
     const rows = positions.length;
     const f32 = (name: string, length: number) =>
       createTransientView(graph, `${id}-${name}`, 'float32', length);
@@ -442,18 +524,19 @@ export class GPUGeographicDistribution implements GPUCommandNodeProducer {
       gate?: ReturnType<WGSLDispatchGate<Parameters>['getGate']>,
       variant = step
     ) =>
-      createWGSLKernelNode<Parameters>(graph, {
+      getSpatialAnalysisPackedKernelNodes<Parameters>(graph, {
         id: `${id}-${step}`,
         operation: OPERATION,
         variant,
         bindings,
         invocationCount,
-        declarations: `${GEOGRAPHIC_DISTRIBUTION_WGSL}\n${declarations}`,
+        declarations: `${GEOGRAPHIC_DISTRIBUTION_WGSL}
+${SPATIAL_ANALYSIS_QUOTIENT_WGSL}\n${declarations}`,
         body,
         ...gate
       });
     const groupConstants = `const GROUP_COUNT: u32 = ${groupCount}u;`;
-    const nodes: GPUCommandNode<Parameters>[] = [];
+    const nodes: (GPUCommandNode<Parameters> | GPUCommandNode<Parameters>[])[] = [];
 
     const chunked = this.reduction === 'chunked';
     const groupCounts = u32('group-counts', groupCount);
@@ -477,6 +560,7 @@ export class GPUGeographicDistribution implements GPUCommandNodeProducer {
       ...(mask ? [read('mask', mask, 'u32')] : [])
     ];
     const rowDeclarations = `${GEOGRAPHIC_DISTRIBUTION_WGSL}
+${SPATIAL_ANALYSIS_QUOTIENT_WGSL}
 struct RowData {
   group: u32,
   weight: f32,
@@ -553,9 +637,9 @@ fn loadRow(row: u32) -> RowData {
         finalizeBindings,
         `let total = weightSums[weightSumsOffset + index];
   let isEmpty = !(total > 0.0);
-  let varianceX = sumXX[sumXXOffset + index] / total;
-  let varianceY = sumYY[sumYYOffset + index] / total;
-  let covariance = sumXY[sumXYOffset + index] / total;
+  let varianceX = getSpatialAnalysisQuotient(sumXX[sumXXOffset + index],total);
+  let varianceY = getSpatialAnalysisQuotient(sumYY[sumYYOffset + index],total);
+  let covariance = getSpatialAnalysisQuotient(sumXY[sumXYOffset + index],total);
   let multiplier = parameters[parametersOffset + 2u];
   let scale = multiplier * parameters[parametersOffset + 3u];
   ${
@@ -591,13 +675,13 @@ fn loadRow(row: u32) -> RowData {
     // to a tolerance below that. The last word is a runtime zero: the anchor subtraction is routed
     // through an XOR with it, because Metal otherwise reassociates `(p - anchor) - offset` into
     // `p - (anchor + offset)` and rounds the iterate back to the f32 grid of `p` (measured: steps
-    // stalled near 1e-2 at 1e6). The median starts at the anchor and arms the iteration gate. `active` (sorted path
+    // stalled near 1e-2 at 1e6). The median starts at the anchor and arms the iteration gate. `medianActive` (sorted path
     // only) is the word the update kernels set while some group still moves.
     const createMedianStartNode = (
       median: GraphDataView<'float32'>,
       lastMoves: GraphDataView<'float32'>,
       gate: WGSLDispatchGate<Parameters>,
-      active?: GraphDataView<'uint32'>
+      medianActive?: GraphDataView<'uint32'>
     ) =>
       kernel(
         'median-start',
@@ -607,7 +691,7 @@ fn loadRow(row: u32) -> RowData {
           write('median', median),
           write('lastMoves', lastMoves),
           write('dispatch', gate.view, 'u32'),
-          ...(active ? [write('medianActive', active, 'u32')] : [])
+          ...(medianActive ? [write('medianActive', medianActive, 'u32')] : [])
         ],
         `median[medianOffset + index * 4u] = 0.0;
   median[medianOffset + index * 4u + 1u] = 0.0;
@@ -616,7 +700,7 @@ fn loadRow(row: u32) -> RowData {
   lastMoves[lastMovesOffset + index] = 0.0;
   if (index == 0u) {
     median[medianOffset + 4u * ${groupCount}u] = 0.0;
-    ${active ? 'medianActive[medianActiveOffset] = 0u;' : ''}
+    ${medianActive ? 'medianActive[medianActiveOffset] = 0u;' : ''}
     ${gate.armWGSL}
   }`
       );
@@ -681,7 +765,7 @@ fn loadRow(row: u32) -> RowData {
   let isEmpty = !(total > 0.0);
   let cosine = sumCosine[sumCosineOffset + index];
   let sine = sumSine[sumSineOffset + index];
-  let resultant = min(sqrt(cosine * cosine + sine * sine) / total, 1.0);
+  let resultant = min(length(vec2<f32>(getSpatialAnalysisQuotient(cosine,total),getSpatialAnalysisQuotient(sine,total))), 1.0);
   let hasAngle = cosine != 0.0 || sine != 0.0;
   var angle = atan2(sine, cosine);
   if (parameters[parametersOffset + 4u] > 0.5) {
@@ -690,7 +774,7 @@ fn loadRow(row: u32) -> RowData {
   let nan = getQuietNaN(index);
   directionalMeans[directionalMeansOffset + index * 3u] = select(angle, nan, isEmpty || !hasAngle);
   directionalMeans[directionalMeansOffset + index * 3u + 1u] = select(1.0 - resultant, nan, isEmpty);
-  directionalMeans[directionalMeansOffset + index * 3u + 2u] = select(sumLength[sumLengthOffset + index] / total, nan, isEmpty);`
+  directionalMeans[directionalMeansOffset + index * 3u + 2u] = select(getSpatialAnalysisQuotient(sumLength[sumLengthOffset + index],total), nan, isEmpty);`
       );
     const createMeanNode = () =>
       kernel(
@@ -704,8 +788,8 @@ fn loadRow(row: u32) -> RowData {
         ],
         `let total = weightSums[weightSumsOffset + index];
   let isEmpty = !(total > 0.0);
-  mean[meanOffset + index * 2u] = select(sumX[sumXOffset + index] / total, getQuietNaN(index), isEmpty);
-  mean[meanOffset + index * 2u + 1u] = select(sumY[sumYOffset + index] / total, getQuietNaN(index), isEmpty);`
+  mean[meanOffset + index * 2u] = select(getSpatialAnalysisQuotient(sumX[sumXOffset + index],total), getQuietNaN(index), isEmpty);
+  mean[meanOffset + index * 2u + 1u] = select(getSpatialAnalysisQuotient(sumY[sumYOffset + index],total), getQuietNaN(index), isEmpty);`
       );
     if (chunked) {
       // 1-3. One pass over the rows gives counts, weight sums and weighted coordinate sums.
@@ -791,12 +875,15 @@ fn loadRow(row: u32) -> RowData {
               outputs: [sumMedianWeight, sumMedianX, sumMedianY, sumMedianCoincident],
               foldSuffix: 'update',
               finish: {
+                // The fold is a separate module: partial-pass declarations are not in scope.
+                declarations: `${GEOGRAPHIC_DISTRIBUTION_WGSL}
+${SPATIAL_ANALYSIS_QUOTIENT_WGSL}`,
                 bindings: [write('median', median), write('lastMoves', lastMoves)],
                 body: `var stepX = 0.0;
     var stepY = 0.0;
     if (sum0 > 0.0) {
-      stepX = sum1 / sum0;
-      stepY = sum2 / sum0;
+      stepX = getSpatialAnalysisQuotient(sum1,sum0);
+      stepY = getSpatialAnalysisQuotient(sum2,sum0);
     }
     ${getVardiZhangWGSL('sum1', 'sum2', 'sum3')}
     median[medianOffset + group * 4u] = median[medianOffset + group * 4u] + stepX;
@@ -805,7 +892,7 @@ fn loadRow(row: u32) -> RowData {
               }
             }),
             // Ungated (it writes the gate): one lane per group (at most 256 in the chunked path).
-            createWGSLKernelNode<Parameters>(graph, {
+            getSpatialAnalysisPackedKernelNodes<Parameters>(graph, {
               id: `${id}-median-${iteration}-check`,
               operation: OPERATION,
               variant: 'median-check',
@@ -819,6 +906,7 @@ fn loadRow(row: u32) -> RowData {
               workgroupSize: CHECK_WORKGROUP_SIZE,
               guardIndex: false,
               declarations: `${GEOGRAPHIC_DISTRIBUTION_WGSL}
+${SPATIAL_ANALYSIS_QUOTIENT_WGSL}
 ${MEDIAN_MOVING_WGSL}
 ${groupConstants}
 var<workgroup> moving: atomic<u32>;`,
@@ -867,8 +955,8 @@ fn getLineWeight(weight: f32, dx: f32, dy: f32) -> f32 {
           var cosine = 0.0;
           var sine = 0.0;
           if (parameters[parametersOffset + 4u] > 0.5) {
-            cosine = (dx * dx - dy * dy) / lengthSquared;
-            sine = 2.0 * dx * dy / lengthSquared;
+            cosine = getSpatialAnalysisQuotient(dx * dx - dy * dy,lengthSquared);
+            sine = getSpatialAnalysisQuotient(2.0 * dx * dy,lengthSquared);
           } else {
             let lineLength = sqrt(lengthSquared);
             cosine = dx / lineLength;
@@ -1123,8 +1211,8 @@ fn getLineWeight(weight: f32, dx: f32, dy: f32) -> f32 {
             getSegmentSumDispatchShape(groupCount)
           ]
         });
-        const active = u32('median-active', 1);
-        nodes.push(createMedianStartNode(median, lastMoves, gate, active));
+        const medianActive = u32('median-medianActive', 1);
+        nodes.push(createMedianStartNode(median, lastMoves, gate, medianActive));
         for (let iteration = 0; iteration < this.maximumMedianIterations; iteration++) {
           const step = `median-${iteration}`;
           nodes.push(
@@ -1191,7 +1279,7 @@ fn getLineWeight(weight: f32, dx: f32, dy: f32) -> f32 {
             sum(`${step}-x`, contributionX, sumMedianX, gate.getGate(2)),
             sum(`${step}-y`, contributionY, sumMedianY, gate.getGate(2)),
             sum(`${step}-coincident`, contributionCoincident, sumMedianCoincident, gate.getGate(2)),
-            createWGSLKernelNode<Parameters>(graph, {
+            getSpatialAnalysisPackedKernelNodes<Parameters>(graph, {
               id: `${id}-${step}-update`,
               operation: OPERATION,
               variant: 'median-update',
@@ -1203,13 +1291,14 @@ fn getLineWeight(weight: f32, dx: f32, dy: f32) -> f32 {
                 write('median', median),
                 write('lastMoves', lastMoves),
                 read('parameters', parameters, 'f32'),
-                write('medianActive', active, 'atomic<u32>')
+                write('medianActive', medianActive, 'atomic<u32>')
               ],
               invocationCount: groupCount,
               workgroupSize: UPDATE_WORKGROUP_SIZE,
               guardIndex: false,
               ...gate.getGate(1),
               declarations: `${GEOGRAPHIC_DISTRIBUTION_WGSL}
+${SPATIAL_ANALYSIS_QUOTIENT_WGSL}
 ${MEDIAN_MOVING_WGSL}
 var<workgroup> moving: atomic<u32>;`,
               // Unguarded so every lane reaches the barriers; one global atomic per workgroup.
@@ -1222,8 +1311,8 @@ var<workgroup> moving: atomic<u32>;`,
   var stepX = 0.0;
   var stepY = 0.0;
   if (total > 0.0) {
-    stepX = sumX[sumXOffset + index] / total;
-    stepY = sumY[sumYOffset + index] / total;
+    stepX = getSpatialAnalysisQuotient(sumX[sumXOffset + index],total);
+    stepY = getSpatialAnalysisQuotient(sumY[sumYOffset + index],total);
   }
   ${getVardiZhangWGSL('sumX[sumXOffset + index]', 'sumY[sumYOffset + index]', 'sumCoincident[sumCoincidentOffset + index]')}
   let nextX = median[medianOffset + index * 4u] + stepX;
@@ -1241,11 +1330,14 @@ var<workgroup> moving: atomic<u32>;`,
   }`
             }),
             // Ungated (it writes the gate): stop once no group moved, then clear the word.
-            createWGSLKernelNode<Parameters>(graph, {
+            getSpatialAnalysisPackedKernelNodes<Parameters>(graph, {
               id: `${id}-${step}-check`,
               operation: OPERATION,
               variant: 'median-check',
-              bindings: [write('medianActive', active, 'u32'), write('dispatch', gate.view, 'u32')],
+              bindings: [
+                write('medianActive', medianActive, 'u32'),
+                write('dispatch', gate.view, 'u32')
+              ],
               invocationCount: 1,
               body: `if (medianActive[medianActiveOffset] == 0u) {
     ${gate.disarmWGSL}
@@ -1299,8 +1391,8 @@ fn getLineWeight(weight: f32, dx: f32, dy: f32) -> f32 {
   if (weight > 0.0) {
     let lengthSquared = dx * dx + dy * dy;
     if (parameters[parametersOffset + 4u] > 0.5) {
-      cosine = (dx * dx - dy * dy) / lengthSquared;
-      sine = 2.0 * dx * dy / lengthSquared;
+      cosine = getSpatialAnalysisQuotient(dx * dx - dy * dy,lengthSquared);
+      sine = getSpatialAnalysisQuotient(2.0 * dx * dy,lengthSquared);
     } else {
       let lineLength = sqrt(lengthSquared);
       cosine = dx / lineLength;
@@ -1408,6 +1500,6 @@ fn getLineWeight(weight: f32, dx: f32, dy: f32) -> f32 {
         )
       );
     }
-    return nodes;
+    return nodes.flat();
   }
 }

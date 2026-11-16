@@ -10,6 +10,7 @@ import type {
 } from '@luma.gl/graph/gpu-core';
 import {createTransientView, GPUReduction} from '@luma.gl/graph/gpu-core';
 import {
+  validateCommandNodeBudget,
   validateCapacity,
   validateFiniteNumber,
   validateMaximumCount,
@@ -20,10 +21,29 @@ import {
   GPU_POINT_CLOUD_MAXIMUM_SMRF_WINDOW_CELLS
 } from './pointcloud-limits';
 import {getPointCloudDiamondMorphologyNodes} from './pointcloud-diamond-morphology';
-import {createPointCloudGridIndex, getPointCloudRowDirection} from './pointcloud-grid-index';
-import {getPointCloudKernelNodes} from './pointcloud-kernel-nodes';
+import {
+  createPointCloudGridIndex,
+  getPointCloudRowDirection,
+  validatePointCloudGridIndexBindings
+} from './pointcloud-grid-index';
+import {
+  getPointCloudKernelNodes,
+  validatePointCloudPackedViews,
+  validatePointCloudScratchBindings
+} from './pointcloud-kernel-nodes';
 import {getPointCloudCellSource, validatePointCloudGrid} from './gpu-pointcloud-surfaces';
 import type {PointCloudRasterGrid} from './gpu-pointcloud-surfaces';
+
+import {
+  getPointCloudRuntimeKernelNodes,
+  validatePointCloudDispatchParameterBindings
+} from './pointcloud-chunk-kernel-nodes';
+import {validateGraphChunkBindingRanges} from '../analysis-core/kernels/graph-chunk-dispatch';
+
+// Public grid sort/build (512), reductions (at most 16 per fill) and fixed raster/classify passes.
+const POINT_CLOUD_SMRF_FIXED_NODE_ALLOWANCE = 640;
+// Runtime mask thresholds need three common words, two settings and at most five offsets.
+const POINT_CLOUD_SMRF_MAXIMUM_DISPATCH_WORD_COUNT = 10;
 
 export type GPUPointCloudSMRFSettings = {
   /** Nonnegative terrain slope; default 0.15. */
@@ -136,6 +156,7 @@ export class GPUPointCloudSMRF implements GPUCommandNodeProducer {
   readonly id: string;
   readonly maximumRadius: number;
   readonly cutRadius: number;
+  readonly estimatedCommandNodeCount: number;
   constructor(readonly props: GPUPointCloudSMRFProps) {
     this.id = props.id ?? 'gpu-pointcloud-smrf';
     validatePointCloudGrid(props.grid, this.id);
@@ -199,6 +220,62 @@ export class GPUPointCloudSMRF implements GPUCommandNodeProducer {
     if (props.selection) {
       validateViewLength(this.id, 'selection', props.selection, props.positions.length);
     }
+    validateFiniteNumber(
+      this.id,
+      'low-outlier threshold (5 * grid.cellSize)',
+      5 * props.grid.cellSize,
+      0
+    );
+    validateFiniteNumber(
+      this.id,
+      'maximum slope threshold',
+      (props.slope ?? 0.15) * props.grid.cellSize * this.maximumRadius,
+      0
+    );
+    validatePointCloudPackedViews(
+      this.id,
+      {
+        positions: props.positions,
+        classifications: props.classifications,
+        selection: props.selection,
+        parameters: props.parameters
+      },
+      {
+        groundSurface: props.groundSurface,
+        groundMask: props.groundMask,
+        outputClassifications: props.outputClassifications,
+        status: props.status
+      },
+      [
+        {inputs: {parameters: props.parameters}, outputs: {groundSurface: props.groundSurface}},
+        {
+          inputs: {
+            positions: props.positions,
+            terrain: props.groundSurface,
+            selection: props.selection,
+            parameters: props.parameters
+          },
+          outputs: {groundMask: props.groundMask, status: props.status}
+        },
+        {
+          inputs: {
+            classifications: props.classifications,
+            groundMask: props.groundMask,
+            status: props.status,
+            parameters: props.parameters
+          },
+          outputs: {outputClassifications: props.outputClassifications}
+        }
+      ]
+    );
+    const morphologyPasses =
+      2 +
+      4 * this.cutRadius +
+      this.maximumRadius +
+      (this.maximumRadius * (this.maximumRadius + 1)) / 2;
+    this.estimatedCommandNodeCount =
+      POINT_CLOUD_SMRF_FIXED_NODE_ALLOWANCE + morphologyPasses + 2 * this.maximumRadius;
+    validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
@@ -214,6 +291,27 @@ export class GPUPointCloudSMRF implements GPUCommandNodeProducer {
       status,
       parameters
     } = this.props;
+    validateGraphChunkBindingRanges(graph, this.id, {
+      positions,
+      classifications,
+      selection,
+      groundSurface,
+      groundMask,
+      outputClassifications,
+      status,
+      parameters
+    });
+    validatePointCloudGridIndexBindings(graph, this.id, positions, [grid.width, grid.height, 1]);
+    validatePointCloudScratchBindings(graph, this.id, {
+      'SMRF raster scratch and morphology validity': grid.width * grid.height * 4,
+      'SMRF reduction totals': 4
+    });
+    validatePointCloudDispatchParameterBindings(
+      graph,
+      this.id,
+      POINT_CLOUD_SMRF_MAXIMUM_DISPATCH_WORD_COUNT,
+      1
+    );
     const cells = grid.width * grid.height;
     const nodes: GPUCommandNode<Parameters>[] = [];
     let serial = 0;
@@ -224,10 +322,12 @@ export class GPUPointCloudSMRF implements GPUCommandNodeProducer {
       inputs: RasterViews,
       outputs: RasterViews,
       body: string,
-      length = cells
+      length = cells,
+      runtimeWords?: readonly number[]
     ) => {
       nodes.push(
-        ...getPointCloudKernelNodes(graph, {
+        ...(runtimeWords ? getPointCloudRuntimeKernelNodes : getPointCloudKernelNodes)(graph, {
+          ...(runtimeWords ? {runtimeWords} : {}),
           id: `${this.id}-${name}`,
           length,
           inputs: {...inputs, ...(parameters ? {parameters} : {})},
@@ -393,7 +493,14 @@ writeResult(index,mean); writeAvailability(index,select(0u,2u,count>0u));`
         `object-mask-${radius}`,
         {previous: previousOpening, opening, objectMask},
         {nextMask},
-        `writeNextMask(index,readObjectMask(index)|u32(abs(readPrevious(index)-readOpening(index))>${parameters ? `readParameters(${radius + 1}u)` : Math.fround((this.props.slope ?? 0.15) * grid.cellSize * radius)}));`
+        `writeNextMask(index,readObjectMask(index)|u32(abs(readPrevious(index)-readOpening(index))>${parameters ? 'readParameters(readDispatchParameter(0u))' : 'bitcast<f32>(readDispatchParameter(1u))'}));`,
+        cells,
+        [
+          radius + 1,
+          new Uint32Array(
+            new Float32Array([(this.props.slope ?? 0.15) * grid.cellSize * radius]).buffer
+          )[0]
+        ]
       );
       objectMask = nextMask;
       previousOpening = opening;

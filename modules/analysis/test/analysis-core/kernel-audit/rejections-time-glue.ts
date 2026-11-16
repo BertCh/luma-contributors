@@ -15,7 +15,7 @@ export const TIME_GLUE_REJECTIONS: readonly KernelAuditRejection[] = [
     kind: 'binding',
     limit: BINDING_BYTES,
     rejects:
-      /^Error: period-index output.periods needs 134217732 bytes in one binding \(limit 134217728\); split the rows over several graphs$/
+      /^Error: period-index calendarYear chunk 0 needs 134217732 bytes in one binding \(limit 134217728\); reduce the chunk row count or output capacity$/
   },
   {
     exportName: 'GPUPeriodIndex',
@@ -23,7 +23,7 @@ export const TIME_GLUE_REJECTIONS: readonly KernelAuditRejection[] = [
     kind: 'binding',
     limit: BINDING_BYTES,
     rejects:
-      /^Error: period-index timestamps needs 134217736 bytes in one binding \(limit 134217728\); split the rows over several graphs$/
+      /^Error: period-index timestamps chunk 0 needs 134217736 bytes in one binding \(limit 134217728\); reduce the chunk row count or output capacity$/
   },
   {
     exportName: 'GPUCubeLayoutTranspose',
@@ -31,7 +31,7 @@ export const TIME_GLUE_REJECTIONS: readonly KernelAuditRejection[] = [
     kind: 'binding',
     limit: BINDING_BYTES,
     rejects:
-      /^Error: cube-layout-transpose cube needs 134234112 bytes in one binding \(limit 134217728\); reduce cellCount \* periodCount$/
+      /^Error: cube-layout-transpose values chunk 0 needs 134234112 bytes in one binding \(limit 134217728\); reduce the chunk row count or output capacity$/
   },
   {
     exportName: 'GPUTimeWordsRelative',
@@ -39,6 +39,6 @@ export const TIME_GLUE_REJECTIONS: readonly KernelAuditRejection[] = [
     kind: 'binding',
     limit: BINDING_BYTES,
     rejects:
-      /^Error: time-words-relative timestamps needs 134217736 bytes in one binding \(limit 134217728\); convert fewer rows per graph$/
+      /^Error: time-words-relative timestamps chunk 0 needs 134217736 bytes in one binding \(limit 134217728\); reduce the chunk row count or output capacity$/
   }
 ];

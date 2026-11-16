@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {Buffer} from '@luma.gl/core';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -9,12 +10,14 @@ import {
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
+import type {GPUApproximationStatusPort} from '../../analysis-core/contracts/status';
 import {
   createWGSLKernelNode,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
+  validateCommandNodeBudget,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView
@@ -25,17 +28,35 @@ import {
   resolveGPUSpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
+import {
+  validateGWRBindings,
+  validateGWROutputs,
+  getGWRGridScratchSizes,
+  getGWRBindingOutputs,
+  validateGWRApproximationAliases,
+  validateGWRPositiveShaderFloat
+} from './gwr-scalability-utils';
+import {createGWRRuntimeKernelNode} from './gwr-runtime-kernel';
+import {
+  createGWRCandidateReduction,
+  createGWRSearchBoundsReductionNodes,
+  createGWRVarianceReductionNodes,
+  getGWRReductionScratchSizes,
+  GWR_REDUCTION_SLOT_WORDS
+} from './gwr-global-reductions';
 import {createGridIndexNodes, getDefaultGWRGridSize} from './gwr-grid-index';
 import {createGoldenSectionSearchNodes} from './gwr-golden-section-nodes';
 import {getGWRFitWGSL} from './gwr-fit-wgsl';
-import {getStudentTWGSL} from './gwr-student-t';
+import {getGWRLargeSampleInferenceWGSL} from './gwr-large-sample-inference';
 import {
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_ADAPTIVE_BANDWIDTH_FACTOR,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_CANDIDATE_TABLE_STRIDE,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_DEFAULT_MAXIMUM_SEARCH_ITERATIONS,
+  GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_DEFAULT_GAUSSIAN_CUTOFF,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_DEFAULT_REFINEMENT_PASS_COUNT,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_DEFAULT_SIGNIFICANCE_LEVEL,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_INDEXED_ROW_COUNT,
+  GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_DENSE_INDEXED_ROW_COUNT,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_LADDER_LENGTH,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_NEIGHBOR_COUNT,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_PREDICTOR_COUNT,
@@ -67,8 +88,12 @@ const LOCAL_STRIDE = 6;
 const TILE_CANDIDATE_STRIDE = 5;
 /** Words of the row-state tail (selection results shared with the later kernels). */
 const TAIL_WORDS = 8;
-/** Default `maxStorageBufferBindingSize`; bounds the per-candidate scratch and the row state. */
-const MAXIMUM_SCRATCH_BYTES = 134217728;
+/** Whole reduction tiles; 32 candidates need at most 64 MiB and 64 search rounds fit the node budget. */
+const FOCUS_BATCH_ROWS = 262144;
+/** Bounded reference reductions preserve the historical float addition order through the old cap. */
+const MAXIMUM_HISTORICAL_REDUCTION_ROW_COUNT = 1048576;
+/** Allowance for published grid, scan and stable-sort nodes (at most eight radix digits). */
+const GRID_COMMAND_NODE_ALLOWANCE = 2048;
 /** Values of the tail words of the row-state buffer. */
 const TAIL = {
   SELECTED_INDEX: 0,
@@ -76,16 +101,22 @@ const TAIL = {
   KERNEL: 2,
   MODE: 3,
   SIGMA_SQUARED: 4,
-  CRITICAL_T: 5
+  CRITICAL_T: 5,
+  FOCUS_BASE: 6
 } as const;
 
-/** Caller-owned outputs of {@link GPUGeographicallyWeightedRegression}. */
-export type GPUGeographicallyWeightedRegressionOutput = {
+/**
+ * Caller-owned outputs of {@link GPUGeographicallyWeightedRegression}.
+ * The inherited flat approximation port is a deprecated compatibility alias for status.approximation.
+ */
+export type GPUGeographicallyWeightedRegressionOutput = GPUApproximationStatusPort & {
   /**
    * Local coefficients at the selected bandwidth, row-major `row * (predictorCount + 1) + column`;
    * column 0 is the intercept and column `c + 1` is predictor `c`. NaN for excluded or singular rows.
    */
   coefficients: GraphDataView<'float32'>;
+  /** Optional named status, rewritten each encoding: one for truncated Gaussian support, zero for bisquare/exact. */
+  status?: GPUApproximationStatusPort;
   /**
    * Optional local standard errors of the coefficients, laid out like `coefficients`, as mgwr
    * `bse`: `sqrt(diag(C_i C_i') * sigma2)` with `C_i C_i' = (X'W_iX)^-1 X'W_i^2 X (X'W_iX)^-1` and
@@ -180,7 +211,7 @@ export type GPUGeographicallyWeightedRegressionOutput = {
  * Per-frame (no rebuild or recompile): the contents of `positions`, `predictors`, `response`,
  * `mask` and `parameters` (kernel, bandwidth mode, ladder or search bounds, significance level).
  * Compile-time: the row count, `predictorCount`, `maximumBandwidthCount`, `maximumNeighborCount`,
- * `spatialContext`, `refinement`, `bandwidthSearch`, `maximumSearchIterations`, `gaussianCutoff`,
+ * `spatialContext`, `refinement`, `bandwidthSearch`, `maximumSearchIterations`, `gaussianCutoff`, `gaussianMode`,
  * and which optional views are present.
  */
 export type GPUGeographicallyWeightedRegressionProps = {
@@ -253,7 +284,8 @@ export type GPUGeographicallyWeightedRegressionProps = {
    * Gaussian truncation in bandwidth multiples. Compile-time. Weights of rows farther than
    * `gaussianCutoff * h` are exactly 0 (fixed and adaptive), so the Gaussian kernel can use the grid
    * index like bisquare and costs `O(n * neighbours)` instead of `O(n^2)`. Omitted (default) is the
-   * exact unbounded Gaussian. The omitted weight of a row is at most `exp(-gaussianCutoff^2 / 2)`
+   * exact unbounded Gaussian through 1,048,576 rows; above that cap the default cutoff is 8.
+   * The omitted weight of a row is at most `exp(-gaussianCutoff^2 / 2)`
    * (the Gaussian at the cutoff) of the self weight: 1.1e-2 at 3, 3.4e-4 at 4, 3.7e-6 at 5, 1.5e-8
    * at 6. For a locally uniform density the omitted share of the weight sum is that value and of
    * the weighted second moment `(1 + gaussianCutoff^2 / 2)` times it, which sets the relative effect on
@@ -261,6 +293,12 @@ export type GPUGeographicallyWeightedRegressionProps = {
    * that below float32 accumulation error. Ignored by the bisquare kernel.
    */
   gaussianCutoff?: number;
+  /**
+   * Exact Gaussian support retains the 1,048,576 indexed-row reference cap. When omitted,
+   * support is exact through that cap and truncated at 8 bandwidths above it (omitted weights
+   * below 1.27e-14). An explicit gaussianCutoff selects truncated support at any size.
+   */
+  gaussianMode?: 'exact' | 'truncated';
   /**
    * Dimensions `[columns, rows]` of the internal `GPUGridIndex` over the included rows, or `false`
    * for none. Compile-time. Defaults to a square grid of about 8 rows per cell (at most 1024 per
@@ -369,20 +407,24 @@ export type GPUGeographicallyWeightedRegressionProps = {
  * support, so with a `GPUGridIndex` (`indexGridSize`, built by default from 1024 rows) they visit
  * only the rows in the cells covering the bandwidth, for fixed and adaptive bandwidths alike: the
  * work is `O(n * neighbours * ladder * p^2)` and the 65,536-row limit of the scan is lifted to
- * 1,048,576 rows (the indexed limit is the `rows * ladder * 8` byte per-candidate scratch and the
- * row-state buffer fitting one 128 MiB storage binding). An adaptive bandwidth finds its k-th
+ * 16,777,216 rows, subject to the device binding bound. Above 262,144 rows, focus batches reuse
+ * candidate and local-result scratch against one global index and one global score. An adaptive
+ * bandwidth finds its k-th
  * nearest distance by walking grid cells in rings around the location and stopping once the k
  * nearest are inside the visited block, `O(k)` per location instead of a scan of every row (any
- * kernel, adaptive). Invocations take the included rows in grid-cell order, so one workgroup fits
- * neighboring locations and shares their cells. Gaussian kernels are unbounded: without
- * `gaussianCutoff` they scan every row per candidate in `O(n^2)` (a grid-enabled instance accepts
- * them but the caller must keep `n` practical); with a cutoff they visit only the cells within
+ * kernel, adaptive). Through the focus batch size invocations follow grid-cell order; larger
+ * inputs batch consecutive focus rows while retaining the global training index. Exact Gaussian
+ * kernels scan every row per candidate in `O(n^2)` and retain their original indexed cap through
+ * `gaussianMode: exact`. Above that cap Gaussian support defaults to eight bandwidths (each omitted
+ * weight below 1.27e-14); with a cutoff they visit only the cells within
  * `gaussianCutoff * h` like bisquare. The grid path sums rows in cell order (ascending row ID inside
  * each cell) instead of row order, so results differ from the scan only by float rounding (about
  * 1e-5 in coefficients); sums stay in a fixed order and no float atomics are used, so results are
- * bitwise reproducible on one adapter. Candidate RSS and trace are reduced by 256-row tiles merged
- * in tile order. Very clustered data puts many rows in one cell and the in-cell ID ranking costs
- * `O(cell size^2)`.
+ * bitwise reproducible on one adapter. Poorly conditioned local systems can amplify the
+ * Gaussian truncation error; choose explicit exact support within its cap for a reference fit.
+ * Candidate RSS and trace retain the historical tile-order sum through the dense indexed cap;
+ * the expanded route uses published fixed-tree sums and a centred two-pass variance reduction. Grid-cell row order
+ * is restored by the shared stable radix sort, including for highly clustered data.
  *
  * Limits: 11 predictors (12 design columns), see
  * `GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_PREDICTOR_COUNT`. No kernel binds more than eight
@@ -422,11 +464,18 @@ export class GPUGeographicallyWeightedRegression implements GPUCommandNodeProduc
   /** Rows of the candidate table. */
   readonly candidateTableRowCount: number;
 
+  /** Rows fitted together; training data and bandwidth scores always remain global. */
+  readonly focusRowCount: number;
+  /** Upper bound including the published grid and sort primitives. */
+  readonly estimatedCommandNodeCount: number;
+
   constructor(props: GPUGeographicallyWeightedRegressionProps) {
     this.id = props.id ?? 'geographically-weighted-regression';
     this.props = props;
     const id = this.id;
-    const {predictorCount, output} = props;
+    const {predictorCount} = props;
+    validateGWRApproximationAliases(id, props.output);
+    const output = getGWRBindingOutputs(props.output);
     validateCapacity(
       id,
       'predictorCount',
@@ -440,6 +489,13 @@ export class GPUGeographicallyWeightedRegression implements GPUCommandNodeProduc
       props.spatialContext,
       SPATIAL_CONTEXT_SUPPORT
     );
+    if (this.spatialContext.metric === 'great-circle') {
+      validateGWRPositiveShaderFloat(
+        id,
+        'spatialContext.sphereRadius',
+        getGPUSphereRadius(this.spatialContext)
+      );
+    }
     this.maximumBandwidthCount =
       props.maximumBandwidthCount ?? GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_LADDER_LENGTH;
     validateCapacity(
@@ -498,10 +554,18 @@ export class GPUGeographicallyWeightedRegression implements GPUCommandNodeProduc
       );
     }
     const {gaussianCutoff} = props;
-    if (gaussianCutoff !== undefined && !(Number.isFinite(gaussianCutoff) && gaussianCutoff > 0)) {
-      throw new Error(`${id} gaussianCutoff must be a positive finite number`);
+    if (gaussianCutoff !== undefined)
+      validateGWRPositiveShaderFloat(id, 'gaussianCutoff', gaussianCutoff);
+    if (
+      props.gaussianMode !== undefined &&
+      props.gaussianMode !== 'exact' &&
+      props.gaussianMode !== 'truncated'
+    ) {
+      throw new Error(`${id} gaussianMode must be exact or truncated`);
     }
-    this.gaussianCutoff = gaussianCutoff ?? null;
+    if (props.gaussianMode === 'exact' && gaussianCutoff !== undefined) {
+      throw new Error(`${id} gaussianMode exact requires gaussianCutoff to be omitted`);
+    }
     this.refinementPassCount =
       this.maximumBandwidthCount < 2 || isGoldenSection
         ? 0
@@ -552,21 +616,40 @@ export class GPUGeographicallyWeightedRegression implements GPUCommandNodeProduc
         `${id} supports at most ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_ROW_COUNT} rows without a grid index`
       );
     }
-    if (
-      this.indexGridSize &&
-      (this.rowCount > GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_INDEXED_ROW_COUNT ||
-        this.rowCount * this.candidateWidth * 8 > MAXIMUM_SCRATCH_BYTES)
-    ) {
-      throw new Error(
-        `${id} supports at most ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_INDEXED_ROW_COUNT} rows ` +
-          `and rows * ${isGoldenSection ? '2' : 'maximumBandwidthCount'} * 8 <= ${MAXIMUM_SCRATCH_BYTES} with a grid index`
+    validateCapacity(
+      id,
+      'positions.length',
+      this.rowCount,
+      1,
+      this.indexGridSize
+        ? GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_INDEXED_ROW_COUNT
+        : GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_ROW_COUNT
+    );
+    if (props.gaussianMode === 'exact') {
+      validateCapacity(
+        id,
+        'positions.length for gaussianMode exact',
+        this.rowCount,
+        1,
+        GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_DENSE_INDEXED_ROW_COUNT
       );
     }
-    if (this.getRowStateWordCount() * 4 > MAXIMUM_SCRATCH_BYTES) {
-      throw new Error(
-        `${id} row state exceeds one storage binding; reduce rows, predictors or inference outputs`
-      );
-    }
+    this.gaussianCutoff =
+      gaussianCutoff ??
+      (props.gaussianMode === 'truncated' ||
+      this.rowCount > GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_DENSE_INDEXED_ROW_COUNT
+        ? GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_DEFAULT_GAUSSIAN_CUTOFF
+        : null);
+    this.focusRowCount = Math.min(this.rowCount, FOCUS_BATCH_ROWS);
+    const focusBatchCount = Math.ceil(this.rowCount / this.focusRowCount);
+    const passCount = isGoldenSection ? this.maximumSearchIterations : 1 + this.refinementPassCount;
+    this.estimatedCommandNodeCount =
+      GRID_COMMAND_NODE_ALLOWANCE +
+      32 +
+      passCount * (5 * focusBatchCount + 3 + this.candidateWidth * TILE_CANDIDATE_STRIDE * 8) +
+      8 * focusBatchCount +
+      32;
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     validateSinglePackedView(props.predictors, ['float32'], `${id} predictors`);
     if (props.predictors.length !== this.rowCount * predictorCount) {
       throw new Error(`${id} predictors length must equal rows * predictorCount`);
@@ -590,8 +673,9 @@ export class GPUGeographicallyWeightedRegression implements GPUCommandNodeProduc
     }
     const tableLength =
       this.candidateTableRowCount * GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_CANDIDATE_TABLE_STRIDE;
-    const lengths: [keyof GPUGeographicallyWeightedRegressionOutput, number][] = [
+    const lengths: [keyof Omit<GPUGeographicallyWeightedRegressionOutput, 'status'>, number][] = [
       ['coefficients', this.rowCount * this.coefficientCount],
+      ['approximation', 1],
       ['standardErrors', this.rowCount * this.coefficientCount],
       ['tValues', this.rowCount * this.coefficientCount],
       ['significant', this.rowCount * this.coefficientCount],
@@ -611,9 +695,18 @@ export class GPUGeographicallyWeightedRegression implements GPUCommandNodeProduc
     if (output.searchState && !isGoldenSection) {
       throw new Error(`${id} output.searchState needs bandwidthSearch 'golden-section'`);
     }
-    const uint32Outputs = new Set(['localStatus', 'significant', 'bandwidthSingularRowCounts']);
+    const uint32Outputs = new Set([
+      'localStatus',
+      'significant',
+      'bandwidthSingularRowCounts',
+      'approximation'
+    ]);
     for (const [name, length] of lengths) {
       const view = output[name];
+      const property =
+        name === 'approximation' && props.output.status?.approximation
+          ? 'status.approximation'
+          : name;
       if (!view) {
         if (name === 'coefficients') {
           throw new Error(`${id} output.coefficients is required`);
@@ -624,15 +717,41 @@ export class GPUGeographicallyWeightedRegression implements GPUCommandNodeProduc
         validateSinglePackedView(
           view as GraphDataView<'uint32'>,
           ['uint32'],
-          `${id} output.${name}`
+          `${id} output.${property}`
         );
       } else {
-        validateSinglePackedView(view, ['float32'], `${id} output.${name}`);
+        validateSinglePackedView(view, ['float32'], `${id} output.${property}`);
       }
       if (view.length < length) {
-        throw new Error(`${id} output.${name} must hold at least ${length} values`);
+        throw new Error(`${id} output.${property} must hold at least ${length} values`);
       }
     }
+    validateGWROutputs(
+      id,
+      lengths.map(([name]) => output[name]),
+      [
+        {
+          writes: [output.selectedBandwidth, output.summary],
+          reads: [output.candidateTable, output.searchState]
+        },
+        {writes: [output.candidateTable, output.searchState]},
+        {
+          writes: [output.bandwidthScores, output.bandwidthSingularRowCounts],
+          reads: [output.candidateTable]
+        },
+        {
+          writes: [
+            output.localR2,
+            output.fitted,
+            output.residuals,
+            output.hatDiagonal,
+            output.localStatus,
+            output.localConditionNumber
+          ]
+        },
+        {writes: [output.standardErrors, output.tValues, output.significant]}
+      ]
+    );
     validateGraphOutputsDisjointFromInputs(
       id,
       lengths.map(([name]) => output[name]),
@@ -659,9 +778,10 @@ export class GPUGeographicallyWeightedRegression implements GPUCommandNodeProduc
   private getRowStateWordCount(): number {
     const {rowCount, coefficientCount} = this;
     return (
-      rowCount * (1 + LOCAL_STRIDE) +
-      (this.hasInference() ? rowCount * coefficientCount : 0) +
-      (this.hasTValues() ? rowCount * coefficientCount : 0) +
+      rowCount +
+      this.focusRowCount * LOCAL_STRIDE +
+      (this.hasInference() ? this.focusRowCount * coefficientCount : 0) +
+      (this.hasTValues() ? this.focusRowCount * coefficientCount : 0) +
       TAIL_WORDS
     );
   }
@@ -687,10 +807,16 @@ export class GPUGeographicallyWeightedRegression implements GPUCommandNodeProduc
       maximumSearchIterations,
       candidateWidth,
       candidateTableRowCount,
-      gaussianCutoff
+      gaussianCutoff,
+      focusRowCount
     } = this;
+    const isBatched = focusRowCount < rowCount;
+    const usesParallelReduction = rowCount > MAXIMUM_HISTORICAL_REDUCTION_ROW_COUNT;
+    const focusBatchCount = Math.ceil(rowCount / focusRowCount);
+    const focusTileCount = Math.ceil(focusRowCount / TILE_ROWS);
     const isGoldenSection = this.bandwidthSearch === 'golden-section';
-    const {output, predictorCount, positions, predictors, response, parameters} = props;
+    const {predictorCount, positions, predictors, response, parameters} = props;
+    const output = getGWRBindingOutputs(props.output);
     validateGraphViewsBelongToGraph(id, graph, [
       positions,
       predictors,
@@ -699,6 +825,55 @@ export class GPUGeographicallyWeightedRegression implements GPUCommandNodeProduc
       parameters,
       ...Object.values(output)
     ]);
+    validateGWRBindings(
+      graph.device,
+      id,
+      [positions, predictors, response, props.mask, parameters, ...Object.values(output)],
+      [
+        ['row-state', this.getRowStateWordCount() * 4],
+        ['selection', 8],
+        ['approximation', 4],
+        ['focus indirect dispatch', 24],
+        ...(usesParallelReduction
+          ? [
+              ...getGWRReductionScratchSizes(
+                Math.ceil(rowCount / TILE_ROWS),
+                candidateWidth * TILE_CANDIDATE_STRIDE
+              ),
+              ...getGWRReductionScratchSizes(Math.ceil(rowCount / TILE_ROWS), 3)
+            ]
+          : []),
+        ['summary', GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY_LENGTH * 4],
+        ...(isGoldenSection
+          ? [
+              [
+                'search-state',
+                GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SEARCH_STATE_LENGTH * 4
+              ] as const,
+              ['search gate', 36] as const
+            ]
+          : []),
+        ['candidate-scratch', focusRowCount * candidateWidth * 8],
+        [
+          'tile-candidates',
+          Math.ceil(rowCount / TILE_ROWS) * candidateWidth * TILE_CANDIDATE_STRIDE * 4
+        ],
+        ['tile-statistics', Math.ceil(rowCount / TILE_ROWS) * 3 * 4],
+        [
+          'ladders',
+          (1 +
+            (isGoldenSection ? maximumSearchIterations : 1 + refinementPassCount) *
+              getGPUGeographicallyWeightedRegressionParameterLength(maximumBandwidthCount)) *
+            4
+        ],
+        [
+          'candidate-table',
+          candidateTableRowCount * GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_CANDIDATE_TABLE_STRIDE * 4
+        ],
+        ...(isGoldenSection ? [['search-bounds-scratch', rowCount * 8] as const] : []),
+        ...getGWRGridScratchSizes(rowCount, indexGridSize)
+      ]
+    );
     // Candidate passes: the caller ladder and each refinement, or one per golden-section iteration
     // (iteration i evaluates the candidate its predecessor scheduled; the last one evaluates none).
     const passCount = isGoldenSection ? maximumSearchIterations : 1 + refinementPassCount;
@@ -720,13 +895,16 @@ export class GPUGeographicallyWeightedRegression implements GPUCommandNodeProduc
     const candidateScratch = transient(
       'candidate-scratch',
       'float32',
-      rowCount * candidateWidth * 2
+      focusRowCount * candidateWidth * 2
     );
     const tileCandidates = transient(
       'tile-candidates',
       'float32',
       tileCount * candidateWidth * TILE_CANDIDATE_STRIDE
     );
+    const candidateReduction = usesParallelReduction
+      ? createGWRCandidateReduction(graph, {id, tileCount, candidateWidth, source: tileCandidates})
+      : null;
     const tableStride = GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_CANDIDATE_TABLE_STRIDE;
     const candidateTable =
       output.candidateTable ??
@@ -776,12 +954,13 @@ export class GPUGeographicallyWeightedRegression implements GPUCommandNodeProduc
       type,
       access: 'read_write'
     });
-    const standardErrorBase = rowCount * (1 + LOCAL_STRIDE);
-    const tValueBase = standardErrorBase + (hasInference ? rowCount * P : 0);
-    const tailBase = tValueBase + (hasTValues ? rowCount * P : 0);
+    const standardErrorBase = rowCount + focusRowCount * LOCAL_STRIDE;
+    const tValueBase = standardErrorBase + (hasInference ? focusRowCount * P : 0);
+    const tailBase = tValueBase + (hasTValues ? focusRowCount * P : 0);
     const isGreatCircle = this.spatialContext.metric === 'great-circle';
     const sphereRadius = isGreatCircle ? getGPUSphereRadius(this.spatialContext) : null;
     const common = `const ROW_COUNT: u32 = ${rowCount}u;
+const FOCUS_ROWS: u32 = ${focusRowCount}u;
 const PREDICTOR_COUNT: u32 = ${predictorCount}u;
 const P: u32 = ${P}u;
 const LADDER: u32 = ${candidateWidth}u;
@@ -797,6 +976,7 @@ const LOCALS_BASE: u32 = ${rowCount}u;
 const STANDARD_ERROR_BASE: u32 = ${standardErrorBase}u;
 const T_VALUE_BASE: u32 = ${tValueBase}u;
 const TAIL_BASE: u32 = ${tailBase}u;
+const TAIL_FOCUS_BASE: u32 = ${TAIL.FOCUS_BASE}u;
 const TAIL_SELECTED_INDEX: u32 = ${TAIL.SELECTED_INDEX}u;
 const TAIL_SELECTED_VALUE: u32 = ${TAIL.SELECTED_VALUE}u;
 const TAIL_KERNEL: u32 = ${TAIL.KERNEL}u;
@@ -817,12 +997,17 @@ ${GWR_COMMON_WGSL}`;
     // With a grid, invocations take the included rows in grid-cell order instead of row order, so
     // the invocations of one workgroup fit neighboring locations and read the same neighborhood
     // cells (row order is spatially random). Per-location results do not depend on the order.
-    const focalRowWGSL = indexGridSize
+    const globalFocalRowWGSL = indexGridSize
       ? `if (index >= getFocalCount()) {
     return;
   }
   let focal = getFocalRow(index);`
       : 'let focal = index;';
+    const focusBaseWGSL = 'rowValid[rowValidOffset + TAIL_BASE + TAIL_FOCUS_BASE]';
+    const focalRowWGSL = isBatched
+      ? `let focal = ${focusBaseWGSL} + index;
+  if (focal >= ROW_COUNT) { return; }`
+      : globalFocalRowWGSL;
     // Settings of a candidate pass come from that pass's parameter block.
     const passDeclarations = `${common}
 fn getParameter(slot: u32) -> f32 {
@@ -965,23 +1150,68 @@ ${getGWRFitWGSL({
             candidateWidth,
             maximumIterations: maximumSearchIterations,
             tableRowCount: candidateTableRowCount,
-            common,
+            // The expanded route feeds one parallel-reduced bounds record to the stable search API.
+            common: usesParallelReduction
+              ? common.replace(
+                  `const TILE_COUNT: u32 = ${tileCount}u;`,
+                  'const TILE_COUNT: u32 = 1u;'
+                )
+              : common,
             candidateDeclarations,
-            focalRowWGSL,
+            focalRowWGSL: globalFocalRowWGSL,
+            dispatchShapes: [[focusRowCount], [focusTileCount * candidateWidth], [candidateWidth]],
             hasGrid: Boolean(indexGridSize),
             candidateBindings,
             rowValid,
             ladders,
             parameters,
-            candidateScratch,
+            candidateScratch: isBatched
+              ? transient('search-bounds-scratch', 'float32', rowCount * 2)
+              : candidateScratch,
             tileCandidates,
             candidateTable,
             searchState
           })
         : null;
     if (search) {
-      nodes.push(...search.setupNodes);
+      if (usesParallelReduction)
+        nodes.push(
+          ...search.setupNodes.slice(0, 2),
+          ...createGWRSearchBoundsReductionNodes(graph, {id, tileCount, tileCandidates}),
+          ...search.setupNodes.slice(2)
+        );
+      else nodes.push(...search.setupNodes);
     }
+    const createFocusCursorNode = (suffix: string, reset: boolean) =>
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-${suffix}`,
+        operation: OPERATION,
+        variant: reset ? 'focus-reset' : 'focus-advance',
+        bindings: [write('rowValid', rowValid, 'u32')],
+        invocationCount: 1,
+        declarations: common,
+        body: `rowValid[rowValidOffset + TAIL_BASE + TAIL_FOCUS_BASE] = ${reset ? '0u' : `${focusBaseWGSL} + FOCUS_ROWS`};`
+      });
+    const focusDispatch =
+      isBatched && search
+        ? createTransientView(
+            graph,
+            `${id}-focus-dispatch`,
+            'uint32',
+            6,
+            Buffer.STORAGE | Buffer.INDIRECT
+          )
+        : null;
+    const getFocusGate = (slot: number) => ({
+      condition: {
+        id: `${id}-focus-gate-${slot}`,
+        source: 'gpu' as const,
+        mode: 'indirect' as const,
+        buffer: focusDispatch!.buffer,
+        byteOffset: focusDispatch!.byteOffset + slot * 12
+      },
+      extraResources: [{buffer: focusDispatch!, usage: 'indirect' as const}]
+    });
     for (let pass = 0; pass < passCount; pass++) {
       const suffix = pass === 0 ? '' : isGoldenSection ? `-search-${pass}` : `-refine-${pass}`;
       // Golden-section passes after the first run only while the search is armed (rule 13).
@@ -1002,16 +1232,47 @@ ${REFINE_LADDER_WGSL}`,
           })
         );
       }
-      nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}${suffix}-candidates`,
-          operation: OPERATION,
-          variant: 'candidates',
-          ...gated?.getGate(0),
-          bindings: [...candidateBindings, write('candidateScratch', candidateScratch, 'f32')],
-          invocationCount: rowCount,
-          declarations: candidateDeclarations,
-          body: `${focalRowWGSL}
+      if (isBatched) nodes.push(createFocusCursorNode(`${suffix}-focus-reset`, true));
+      for (let focusBatch = 0; focusBatch < focusBatchCount; focusBatch++) {
+        const batchSuffix = isBatched ? `-batch-${focusBatch}` : '';
+        const batchRowCount = Math.min(focusRowCount, rowCount - focusBatch * focusRowCount);
+        const batchTileCount = Math.ceil(batchRowCount / TILE_ROWS);
+        if (gated && focusDispatch)
+          nodes.push(
+            createWGSLKernelNode(graph, {
+              id: `${id}${suffix}${batchSuffix}-focus-dispatch`,
+              operation: OPERATION,
+              variant: 'focus-dispatch',
+              invocationCount: 1,
+              bindings: [
+                read('rowValid', rowValid, 'u32'),
+                read('searchDispatch', search!.gate.view, 'u32'),
+                write('focusDispatch', focusDispatch, 'u32')
+              ],
+              declarations: common,
+              body: `let firstRow = ${focusBaseWGSL};
+  let rows = min(FOCUS_ROWS, ROW_COUNT - min(firstRow, ROW_COUNT));
+  let enabled = searchDispatch[searchDispatchOffset] > 0u;
+  focusDispatch[focusDispatchOffset] = select(0u, (rows + 255u) / 256u, enabled);
+  focusDispatch[focusDispatchOffset + 1u] = 1u;
+  focusDispatch[focusDispatchOffset + 2u] = 1u;
+  let tileInvocations = ((rows + TILE_ROWS - 1u) / TILE_ROWS) * LADDER;
+  focusDispatch[focusDispatchOffset + 3u] = select(0u, (tileInvocations + 255u) / 256u, enabled);
+  focusDispatch[focusDispatchOffset + 4u] = 1u;
+  focusDispatch[focusDispatchOffset + 5u] = 1u;`
+            })
+          );
+        nodes.push(
+          (isBatched ? createGWRRuntimeKernelNode : createWGSLKernelNode)<Parameters>(graph, {
+            id: `${id}${suffix}${batchSuffix}-candidates`,
+            operation: OPERATION,
+            variant: 'candidates',
+            ...(gated && focusDispatch ? getFocusGate(0) : gated?.getGate(0)),
+            bindings: [...candidateBindings, write('candidateScratch', candidateScratch, 'f32')],
+            invocationCount: batchRowCount,
+            workgroupSize: isBatched ? 256 : undefined,
+            declarations: candidateDeclarations,
+            body: `${focalRowWGSL}
   let candidateCount = getCandidateCount();
   if (candidateCount == 0u || rowValid[rowValidOffset + focal] == 0u) {
     // Excluded rows are skipped by the tile sums, so their scratch is never read.
@@ -1024,7 +1285,7 @@ ${REFINE_LADDER_WGSL}`,
   }
   for (var candidate = 0u; candidate < candidateCount; candidate++) {
     // Marker in the hat slot: -1 singular local system, -2 invalid bandwidth for this row.
-    let slot = candidateScratchOffset + (candidate * ROW_COUNT + focal) * 2u;
+    let slot = candidateScratchOffset + (candidate * FOCUS_ROWS + ${isBatched ? 'index' : 'focal'}) * 2u;
     candidateScratch[slot] = 0.0;
     candidateScratch[slot + 1u] = -1.0;
     let bandwidth = getBandwidthForValue(getParameter(HEADER + candidate), isAdaptive, &neighbors);
@@ -1040,23 +1301,25 @@ ${REFINE_LADDER_WGSL}`,
     candidateScratch[slot] = residual * residual;
     candidateScratch[slot + 1u] = fit.hat;
   }`
-        })
-      );
+          })
+        );
 
-      nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}${suffix}-tile-candidates`,
-          operation: OPERATION,
-          variant: 'tile-candidates',
-          ...gated?.getGate(1),
-          bindings: [
-            read('candidateScratch', candidateScratch, 'f32'),
-            read('rowValid', rowValid, 'u32'),
-            write('tileCandidates', tileCandidates, 'f32')
-          ],
-          invocationCount: tileCount * candidateWidth,
-          declarations: common,
-          body: `let tile = index / LADDER;
+        nodes.push(
+          (isBatched ? createGWRRuntimeKernelNode : createWGSLKernelNode)<Parameters>(graph, {
+            id: `${id}${suffix}${batchSuffix}-tile-candidates`,
+            operation: OPERATION,
+            variant: 'tile-candidates',
+            ...(gated && focusDispatch ? getFocusGate(1) : gated?.getGate(1)),
+            bindings: [
+              read('candidateScratch', candidateScratch, 'f32'),
+              read('rowValid', rowValid, 'u32'),
+              write('tileCandidates', tileCandidates, 'f32')
+            ],
+            invocationCount: batchTileCount * candidateWidth,
+            workgroupSize: isBatched ? 256 : undefined,
+            declarations: common,
+            body: `let tile = index / LADDER + ${isBatched ? `${focusBaseWGSL} / TILE_ROWS` : '0u'};
+  if (tile >= TILE_COUNT) { return; }
   let candidate = index % LADDER;
   let firstRow = tile * TILE_ROWS;
   let endRow = min(firstRow + TILE_ROWS, ROW_COUNT);
@@ -1070,7 +1333,7 @@ ${REFINE_LADDER_WGSL}`,
       continue;
     }
     included = included + 1.0;
-    let slot = candidateScratchOffset + (candidate * ROW_COUNT + row) * 2u;
+    let slot = candidateScratchOffset + (candidate * FOCUS_ROWS + row - ${isBatched ? focusBaseWGSL : '0u'}) * 2u;
     let hat = candidateScratch[slot + 1u];
     if (hat < -1.5) {
       invalid = invalid + 1.0;
@@ -1081,15 +1344,19 @@ ${REFINE_LADDER_WGSL}`,
       traceSum = traceSum + hat;
     }
   }
-  let base = tileCandidatesOffset + index * TILE_CANDIDATE_STRIDE;
+  let base = tileCandidatesOffset + (tile * LADDER + candidate) * TILE_CANDIDATE_STRIDE;
   tileCandidates[base] = residualSum;
   tileCandidates[base + 1u] = traceSum;
   tileCandidates[base + 2u] = singular;
   tileCandidates[base + 3u] = invalid;
   tileCandidates[base + 4u] = included;`
-        })
-      );
+          })
+        );
 
+        if (isBatched)
+          nodes.push(createFocusCursorNode(`${suffix}${batchSuffix}-focus-advance`, false));
+      }
+      if (candidateReduction) nodes.push(...candidateReduction.createNodes(suffix));
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}${suffix}-select`,
@@ -1097,7 +1364,7 @@ ${REFINE_LADDER_WGSL}`,
           variant: 'select',
           ...gated?.getGate(2),
           bindings: [
-            read('tileCandidates', tileCandidates, 'f32'),
+            read('tileCandidates', candidateReduction?.totals ?? tileCandidates, 'f32'),
             read('params', ladders, 'f32'),
             write('table', candidateTable, 'f32')
           ],
@@ -1122,7 +1389,15 @@ ${REFINE_LADDER_WGSL}`,
     return;
   }`
   }
-  var residualSum = 0.0;
+  ${
+    candidateReduction
+      ? `let reductionBase = tileCandidatesOffset + candidate * ${TILE_CANDIDATE_STRIDE * GWR_REDUCTION_SLOT_WORDS}u;
+  let residualSum = tileCandidates[reductionBase];
+  let traceSum = tileCandidates[reductionBase + ${GWR_REDUCTION_SLOT_WORDS}u];
+  let singular = tileCandidates[reductionBase + ${2 * GWR_REDUCTION_SLOT_WORDS}u];
+  let invalid = tileCandidates[reductionBase + ${3 * GWR_REDUCTION_SLOT_WORDS}u];
+  let included = tileCandidates[reductionBase + ${4 * GWR_REDUCTION_SLOT_WORDS}u];`
+      : `  var residualSum = 0.0;
   var traceSum = 0.0;
   var singular = 0.0;
   var invalid = 0.0;
@@ -1134,6 +1409,8 @@ ${REFINE_LADDER_WGSL}`,
     singular = singular + tileCandidates[tileBase + 2u];
     invalid = invalid + tileCandidates[tileBase + 3u];
     included = included + tileCandidates[tileBase + 4u];
+  }
+`
   }
   // AICc over the non-singular rows; a row with an invalid bandwidth voids the candidate.
   let count = included - singular;
@@ -1176,7 +1453,7 @@ ${REFINE_LADDER_WGSL}`,
         ],
         invocationCount: 1,
         declarations: `${common}
-${getStudentTWGSL()}
+${getGWRLargeSampleInferenceWGSL()}
 ${searchState ? GPU_SEARCH_STATE_WGSL : ''}
 const DEFAULT_SIGNIFICANCE_LEVEL: f32 = ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_DEFAULT_SIGNIFICANCE_LEVEL};`,
         body: `let nan = getNaN();
@@ -1225,12 +1502,13 @@ const DEFAULT_SIGNIFICANCE_LEVEL: f32 = ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION
   let requestedLevel = params[paramsOffset + 3u];
   let level = select(DEFAULT_SIGNIFICANCE_LEVEL, requestedLevel, requestedLevel > 0.0 && requestedLevel < 1.0);
   let adjustedAlpha = select(nan, level * f32(P) / traceSum, hasBest && traceSum > 0.0);
-  let criticalT = select(nan, gwrStudentCriticalValue(adjustedAlpha, count - 1.0), hasBest && traceSum > 0.0);
+  let criticalT = select(nan, gwrLargeSampleCriticalValue(adjustedAlpha, count - 1.0), hasBest && traceSum > 0.0);
   let logLikelihood = select(
     nan,
     -0.5 * count * (LN_TWO_PI + log(max(residualSum / count, MINIMUM_VARIANCE)) + 1.0),
     hasBest
   );
+  rowValid[rowValidOffset + TAIL_BASE + TAIL_FOCUS_BASE] = 0u;
   selection[selectionOffset] = f32(bestIndex);
   selection[selectionOffset + 1u] = selectedValue;
   rowValid[rowValidOffset + TAIL_BASE + TAIL_SELECTED_INDEX] = bestIndex;
@@ -1254,25 +1532,101 @@ const DEFAULT_SIGNIFICANCE_LEVEL: f32 = ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION
       })
     );
 
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-fit`,
-        operation: OPERATION,
-        variant: 'fit',
-        bindings: [
-          read('positions', positions, 'f32'),
-          read('predictors', predictors, 'f32'),
-          read('response', response, 'f32'),
-          write('rowValid', rowValid, 'u32'),
-          ...gridBindings,
-          write('coefficients', output.coefficients, 'f32')
-        ],
-        invocationCount: rowCount,
-        declarations: fitDeclarations,
-        body: `${focalRowWGSL}
+    const appendSummaryNodes = () => {
+      if (usesParallelReduction) {
+        nodes.push(
+          ...createGWRVarianceReductionNodes(graph, {
+            id,
+            tileCount,
+            statistics: tileStatistics,
+            summary
+          })
+        );
+      } else
+        nodes.push(
+          createWGSLKernelNode<Parameters>(graph, {
+            id: `${id}-summarize`,
+            operation: OPERATION,
+            variant: 'summarize',
+            bindings: [
+              read('tileStatistics', tileStatistics, 'f32'),
+              write('summary', summary, 'f32')
+            ],
+            invocationCount: 1,
+            declarations: common,
+            body: `var count = 0.0;
+  var mean = 0.0;
+  var m2 = 0.0;
+  for (var tile = 0u; tile < TILE_COUNT; tile++) {
+    let tileCountValue = tileStatistics[tileStatisticsOffset + 3u * tile];
+    if (tileCountValue == 0.0) {
+      continue;
+    }
+    let tileMean = tileStatistics[tileStatisticsOffset + 3u * tile + 1u];
+    let delta = tileMean - mean;
+    let total = count + tileCountValue;
+    mean = mean + delta * tileCountValue / total;
+    m2 = m2 + tileStatistics[tileStatisticsOffset + 3u * tile + 2u] + delta * delta * count * tileCountValue / total;
+    count = total;
+  }
+  let hasValid = summary[summaryOffset + 5u] > 0.5;
+  summary[summaryOffset + 3u] = select(getNaN(), 1.0 - summary[summaryOffset] / m2, hasValid && m2 > 0.0);`
+          })
+        );
+
+      if (output.bandwidthScores || output.bandwidthSingularRowCounts) {
+        const present: WGSLKernelBinding[] = [read('table', candidateTable, 'f32')];
+        if (output.bandwidthScores) {
+          present.push(write('scores', output.bandwidthScores, 'f32'));
+        }
+        if (output.bandwidthSingularRowCounts) {
+          present.push(write('singularRowCounts', output.bandwidthSingularRowCounts, 'u32'));
+        }
+        nodes.push(
+          createWGSLKernelNode<Parameters>(graph, {
+            id: `${id}-publish-candidates`,
+            operation: OPERATION,
+            variant: 'publish-candidates',
+            bindings: present,
+            invocationCount: maximumBandwidthCount,
+            declarations: common,
+            body: `${
+              isGoldenSection
+                ? `// The golden-section table can hold fewer rows than the ladder capacity.
+  let isRow = index < TABLE_ROWS;
+  let base = tableOffset + min(index, TABLE_ROWS - 1u) * TABLE_STRIDE;`
+                : 'let base = tableOffset + index * TABLE_STRIDE;'
+            }
+  ${output.bandwidthScores ? `scores[scoresOffset + index] = ${isGoldenSection ? 'select(getNaN(), table[base + 1u], isRow)' : 'table[base + 1u]'};` : ''}
+  ${output.bandwidthSingularRowCounts ? `let singular = table[base + 2u];\n  singularRowCounts[singularRowCountsOffset + index] = select(0u, u32(singular), ${isGoldenSection ? 'isRow && ' : ''}singular >= 0.0 && singular < 4.0e9);` : ''}`
+          })
+        );
+      }
+    };
+    for (let focusBatch = 0; focusBatch < focusBatchCount; focusBatch++) {
+      const batchSuffix = isBatched ? `-batch-${focusBatch}` : '';
+      const batchRowCount = Math.min(focusRowCount, rowCount - focusBatch * focusRowCount);
+      nodes.push(
+        (isBatched ? createGWRRuntimeKernelNode : createWGSLKernelNode)<Parameters>(graph, {
+          id: `${id}${batchSuffix}-fit`,
+          operation: OPERATION,
+          variant: 'fit',
+          bindings: [
+            read('positions', positions, 'f32'),
+            read('predictors', predictors, 'f32'),
+            read('response', response, 'f32'),
+            write('rowValid', rowValid, 'u32'),
+            ...gridBindings,
+            write('coefficients', output.coefficients, 'f32')
+          ],
+          invocationCount: batchRowCount,
+          workgroupSize: isBatched ? 256 : undefined,
+          declarations: fitDeclarations,
+          body: `${focalRowWGSL}
+  let localRow = ${isBatched ? 'index' : 'focal'};
   let nan = getNaN();
   let coefficientBase = coefficientsOffset + focal * P;
-  let localBase = rowValidOffset + LOCALS_BASE + focal * LOCAL_STRIDE;
+  let localBase = rowValidOffset + LOCALS_BASE + localRow * LOCAL_STRIDE;
   var status = ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS.SINGULAR}u;
   var localR2 = nan;
   var conditionNumber = nan;
@@ -1281,8 +1635,8 @@ const DEFAULT_SIGNIFICANCE_LEVEL: f32 = ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION
   var hat = nan;
   for (var column = 0u; column < P; column++) {
     coefficients[coefficientBase + column] = nan;
-    ${hasInference ? 'rowValid[rowValidOffset + STANDARD_ERROR_BASE + focal * P + column] = bitcast<u32>(nan);' : ''}
-    ${hasTValues ? 'rowValid[rowValidOffset + T_VALUE_BASE + focal * P + column] = bitcast<u32>(nan);' : ''}
+    ${hasInference ? 'rowValid[rowValidOffset + STANDARD_ERROR_BASE + localRow * P + column] = bitcast<u32>(nan);' : ''}
+    ${hasTValues ? 'rowValid[rowValidOffset + T_VALUE_BASE + localRow * P + column] = bitcast<u32>(nan);' : ''}
   }
   if (rowValid[rowValidOffset + focal] == 0u) {
     status = ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS.EXCLUDED}u;
@@ -1320,12 +1674,12 @@ const DEFAULT_SIGNIFICANCE_LEVEL: f32 = ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION
           if (isFiniteBits(variance) && variance >= 0.0) {
             standardError = sqrt(variance);
           }
-          rowValid[rowValidOffset + STANDARD_ERROR_BASE + focal * P + column] = bitcast<u32>(standardError);
+          rowValid[rowValidOffset + STANDARD_ERROR_BASE + localRow * P + column] = bitcast<u32>(standardError);
           ${
             hasTValues
               ? `let coefficient = coefficients[coefficientBase + column];
           let tValue = select(nan, coefficient / standardError, isFiniteBits(standardError) && standardError > 0.0 && isFiniteBits(coefficient));
-          rowValid[rowValidOffset + T_VALUE_BASE + focal * P + column] = bitcast<u32>(tValue);`
+          rowValid[rowValidOffset + T_VALUE_BASE + localRow * P + column] = bitcast<u32>(tValue);`
               : ''
           }
         }`
@@ -1340,23 +1694,24 @@ const DEFAULT_SIGNIFICANCE_LEVEL: f32 = ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION
   rowValid[localBase + 3u] = bitcast<u32>(hat);
   rowValid[localBase + 4u] = status;
   rowValid[localBase + 5u] = bitcast<u32>(conditionNumber);`
-      })
-    );
+        })
+      );
 
-    if (indexGridSize) {
-      // The fit kernel visits only grid (included) rows, so excluded rows are written here.
-      nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-fit-excluded`,
-          operation: OPERATION,
-          variant: 'fit-excluded',
-          bindings: [
-            write('rowValid', rowValid, 'u32'),
-            write('coefficients', output.coefficients, 'f32')
-          ],
-          invocationCount: rowCount,
-          declarations: common,
-          body: `if (rowValid[rowValidOffset + index] != 0u) {
+      if (indexGridSize && !isBatched) {
+        // The fit kernel visits only grid (included) rows, so excluded rows are written here.
+        nodes.push(
+          (isBatched ? createGWRRuntimeKernelNode : createWGSLKernelNode)<Parameters>(graph, {
+            id: `${id}${batchSuffix}-fit-excluded`,
+            operation: OPERATION,
+            variant: 'fit-excluded',
+            bindings: [
+              write('rowValid', rowValid, 'u32'),
+              write('coefficients', output.coefficients, 'f32')
+            ],
+            invocationCount: batchRowCount,
+            workgroupSize: isBatched ? 256 : undefined,
+            declarations: common,
+            body: `if (rowValid[rowValidOffset + index] != 0u) {
     return;
   }
   let nan = getNaN();
@@ -1370,30 +1725,33 @@ const DEFAULT_SIGNIFICANCE_LEVEL: f32 = ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION
     rowValid[localBase + word] = bitcast<u32>(nan);
   }
   rowValid[localBase + 4u] = ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS.EXCLUDED}u;`
-        })
-      );
-    }
+          })
+        );
+      }
 
-    // R^2 needs the total sum of squares of the rows that were fitted, known only after the final
-    // fit: per-tile count, mean and M2 (two-pass inside a tile), merged in tile order (Chan).
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-tile-statistics`,
-        operation: OPERATION,
-        variant: 'tile-statistics',
-        bindings: [
-          read('response', response, 'f32'),
-          read('rowValid', rowValid, 'u32'),
-          write('tileStatistics', tileStatistics, 'f32')
-        ],
-        invocationCount: tileCount,
-        declarations: common,
-        body: `let firstRow = index * TILE_ROWS;
+      // R^2 needs the total sum of squares of the rows that were fitted, known only after the final
+      // fit: per-tile count, mean and M2 (two-pass inside a tile), merged in tile order (Chan).
+      nodes.push(
+        (isBatched ? createGWRRuntimeKernelNode : createWGSLKernelNode)<Parameters>(graph, {
+          id: `${id}${batchSuffix}-tile-statistics`,
+          operation: OPERATION,
+          variant: 'tile-statistics',
+          bindings: [
+            read('response', response, 'f32'),
+            read('rowValid', rowValid, 'u32'),
+            write('tileStatistics', tileStatistics, 'f32')
+          ],
+          invocationCount: Math.ceil(batchRowCount / TILE_ROWS),
+          workgroupSize: isBatched ? 256 : undefined,
+          declarations: common,
+          body: `let focusBase = ${isBatched ? focusBaseWGSL : '0u'};
+  let firstRow = focusBase + index * TILE_ROWS;
+  if (firstRow >= ROW_COUNT) { return; }
   let endRow = min(firstRow + TILE_ROWS, ROW_COUNT);
   var count = 0.0;
   var sum = 0.0;
   for (var row = firstRow; row < endRow; row++) {
-    if (rowValid[rowValidOffset + LOCALS_BASE + row * LOCAL_STRIDE + 4u] == ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS.OK}u) {
+    if (rowValid[rowValidOffset + LOCALS_BASE + (row - focusBase) * LOCAL_STRIDE + 4u] == ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS.OK}u) {
       count = count + 1.0;
       sum = sum + response[responseOffset + row];
     }
@@ -1401,141 +1759,109 @@ const DEFAULT_SIGNIFICANCE_LEVEL: f32 = ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION
   let mean = sum / max(count, 1.0);
   var m2 = 0.0;
   for (var row = firstRow; row < endRow; row++) {
-    if (rowValid[rowValidOffset + LOCALS_BASE + row * LOCAL_STRIDE + 4u] == ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS.OK}u) {
+    if (rowValid[rowValidOffset + LOCALS_BASE + (row - focusBase) * LOCAL_STRIDE + 4u] == ${GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS.OK}u) {
       let deviation = response[responseOffset + row] - mean;
       m2 = m2 + deviation * deviation;
     }
   }
-  tileStatistics[tileStatisticsOffset + 3u * index] = count;
-  tileStatistics[tileStatisticsOffset + 3u * index + 1u] = mean;
-  tileStatistics[tileStatisticsOffset + 3u * index + 2u] = m2;`
-      })
-    );
-
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-summarize`,
-        operation: OPERATION,
-        variant: 'summarize',
-        bindings: [read('tileStatistics', tileStatistics, 'f32'), write('summary', summary, 'f32')],
-        invocationCount: 1,
-        declarations: common,
-        body: `var count = 0.0;
-  var mean = 0.0;
-  var m2 = 0.0;
-  for (var tile = 0u; tile < TILE_COUNT; tile++) {
-    let tileCountValue = tileStatistics[tileStatisticsOffset + 3u * tile];
-    if (tileCountValue == 0.0) {
-      continue;
-    }
-    let tileMean = tileStatistics[tileStatisticsOffset + 3u * tile + 1u];
-    let delta = tileMean - mean;
-    let total = count + tileCountValue;
-    mean = mean + delta * tileCountValue / total;
-    m2 = m2 + tileStatistics[tileStatisticsOffset + 3u * tile + 2u] + delta * delta * count * tileCountValue / total;
-    count = total;
-  }
-  let hasValid = summary[summaryOffset + 5u] > 0.5;
-  summary[summaryOffset + 3u] = select(getNaN(), 1.0 - summary[summaryOffset] / m2, hasValid && m2 > 0.0);`
-      })
-    );
-
-    if (output.bandwidthScores || output.bandwidthSingularRowCounts) {
-      const present: WGSLKernelBinding[] = [read('table', candidateTable, 'f32')];
-      if (output.bandwidthScores) {
-        present.push(write('scores', output.bandwidthScores, 'f32'));
-      }
-      if (output.bandwidthSingularRowCounts) {
-        present.push(write('singularRowCounts', output.bandwidthSingularRowCounts, 'u32'));
-      }
-      nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-publish-candidates`,
-          operation: OPERATION,
-          variant: 'publish-candidates',
-          bindings: present,
-          invocationCount: maximumBandwidthCount,
-          declarations: common,
-          body: `${
-            isGoldenSection
-              ? `// The golden-section table can hold fewer rows than the ladder capacity.
-  let isRow = index < TABLE_ROWS;
-  let base = tableOffset + min(index, TABLE_ROWS - 1u) * TABLE_STRIDE;`
-              : 'let base = tableOffset + index * TABLE_STRIDE;'
-          }
-  ${output.bandwidthScores ? `scores[scoresOffset + index] = ${isGoldenSection ? 'select(getNaN(), table[base + 1u], isRow)' : 'table[base + 1u]'};` : ''}
-  ${output.bandwidthSingularRowCounts ? `let singular = table[base + 2u];\n  singularRowCounts[singularRowCountsOffset + index] = select(0u, u32(singular), ${isGoldenSection ? 'isRow && ' : ''}singular >= 0.0 && singular < 4.0e9);` : ''}`
+  tileStatistics[tileStatisticsOffset + 3u * (firstRow / TILE_ROWS)] = count;
+  tileStatistics[tileStatisticsOffset + 3u * (firstRow / TILE_ROWS) + 1u] = mean;
+  tileStatistics[tileStatisticsOffset + 3u * (firstRow / TILE_ROWS) + 2u] = m2;`
         })
       );
-    }
 
-    const publishTargets: [string, GraphDataView | undefined, 'f32' | 'u32', number][] = [
-      ['localR2', output.localR2, 'f32', 0],
-      ['fitted', output.fitted, 'f32', 1],
-      ['residuals', output.residuals, 'f32', 2],
-      ['hatDiagonal', output.hatDiagonal, 'f32', 3],
-      ['localStatus', output.localStatus, 'u32', 4],
-      ['localConditionNumber', output.localConditionNumber, 'f32', 5]
-    ];
-    const present = publishTargets.filter(([, view]) => view);
-    if (present.length > 0) {
-      nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-publish`,
-          operation: OPERATION,
-          variant: 'publish',
-          bindings: [
-            read('rowValid', rowValid, 'u32'),
-            ...present.map(([name, view, type]) => write(name, view!, type))
-          ],
-          invocationCount: rowCount,
-          declarations: common,
-          body: present
-            .map(([name, , type, slot]) =>
-              type === 'f32'
-                ? `${name}[${name}Offset + index] = bitcast<f32>(rowValid[rowValidOffset + LOCALS_BASE + index * LOCAL_STRIDE + ${slot}u]);`
-                : `${name}[${name}Offset + index] = rowValid[rowValidOffset + LOCALS_BASE + index * LOCAL_STRIDE + ${slot}u];`
-            )
-            .join('\n  ')
-        })
-      );
-    }
+      if (!isBatched) appendSummaryNodes();
 
-    if (hasInference) {
-      const inferenceBindings: WGSLKernelBinding[] = [read('rowValid', rowValid, 'u32')];
-      const statements: string[] = [];
-      if (output.standardErrors) {
-        inferenceBindings.push(write('standardErrors', output.standardErrors, 'f32'));
-        statements.push(
-          'standardErrors[standardErrorsOffset + index] = bitcast<f32>(rowValid[rowValidOffset + STANDARD_ERROR_BASE + index]);'
+      const publishTargets: [string, GraphDataView | undefined, 'f32' | 'u32', number][] = [
+        ['localR2', output.localR2, 'f32', 0],
+        ['fitted', output.fitted, 'f32', 1],
+        ['residuals', output.residuals, 'f32', 2],
+        ['hatDiagonal', output.hatDiagonal, 'f32', 3],
+        ['localStatus', output.localStatus, 'u32', 4],
+        ['localConditionNumber', output.localConditionNumber, 'f32', 5]
+      ];
+      const present = publishTargets.filter(([, view]) => view);
+      if (present.length > 0) {
+        nodes.push(
+          (isBatched ? createGWRRuntimeKernelNode : createWGSLKernelNode)<Parameters>(graph, {
+            id: `${id}${batchSuffix}-publish`,
+            operation: OPERATION,
+            variant: 'publish',
+            bindings: [
+              read('rowValid', rowValid, 'u32'),
+              ...present.map(([name, view, type]) => write(name, view!, type))
+            ],
+            invocationCount: batchRowCount,
+            workgroupSize: isBatched ? 256 : undefined,
+            declarations: common,
+            body:
+              `${isBatched ? `if (${focusBaseWGSL} + index >= ROW_COUNT) { return; }\n` : ''}` +
+              present
+                .map(([name, , type, slot]) =>
+                  type === 'f32'
+                    ? `${name}[${name}Offset + ${isBatched ? `(${focusBaseWGSL} + index)` : 'index'}] = bitcast<f32>(rowValid[rowValidOffset + LOCALS_BASE + index * LOCAL_STRIDE + ${slot}u]);`
+                    : `${name}[${name}Offset + ${isBatched ? `(${focusBaseWGSL} + index)` : 'index'}] = rowValid[rowValidOffset + LOCALS_BASE + index * LOCAL_STRIDE + ${slot}u];`
+                )
+                .join('\n  ')
+          })
         );
       }
-      if (output.tValues) {
-        inferenceBindings.push(write('tValues', output.tValues, 'f32'));
-        statements.push(
-          'tValues[tValuesOffset + index] = bitcast<f32>(rowValid[rowValidOffset + T_VALUE_BASE + index]);'
-        );
-      }
-      if (output.significant) {
-        inferenceBindings.push(write('significant', output.significant, 'u32'));
-        statements.push(`let tValue = bitcast<f32>(rowValid[rowValidOffset + T_VALUE_BASE + index]);
+
+      if (hasInference) {
+        const inferenceBindings: WGSLKernelBinding[] = [read('rowValid', rowValid, 'u32')];
+        const statements: string[] = [];
+        if (output.standardErrors) {
+          inferenceBindings.push(write('standardErrors', output.standardErrors, 'f32'));
+          statements.push(
+            'standardErrors[standardErrorsOffset + globalIndex] = bitcast<f32>(rowValid[rowValidOffset + STANDARD_ERROR_BASE + index]);'
+          );
+        }
+        if (output.tValues) {
+          inferenceBindings.push(write('tValues', output.tValues, 'f32'));
+          statements.push(
+            'tValues[tValuesOffset + globalIndex] = bitcast<f32>(rowValid[rowValidOffset + T_VALUE_BASE + index]);'
+          );
+        }
+        if (output.significant) {
+          inferenceBindings.push(write('significant', output.significant, 'u32'));
+          statements.push(`let tValue = bitcast<f32>(rowValid[rowValidOffset + T_VALUE_BASE + index]);
   let criticalT = bitcast<f32>(rowValid[rowValidOffset + TAIL_BASE + TAIL_CRITICAL_T]);
   // NaN t values and a NaN critical value are never significant.
-  significant[significantOffset + index] =
+  significant[significantOffset + globalIndex] =
     select(0u, 1u, isFiniteBits(tValue) && isFiniteBits(criticalT) && abs(tValue) > criticalT);`);
+        }
+        nodes.push(
+          (isBatched ? createGWRRuntimeKernelNode : createWGSLKernelNode)<Parameters>(graph, {
+            id: `${id}${batchSuffix}-publish-inference`,
+            operation: OPERATION,
+            variant: 'publish-inference',
+            bindings: inferenceBindings,
+            invocationCount: batchRowCount * P,
+            workgroupSize: isBatched ? 256 : undefined,
+            declarations: common,
+            body:
+              `let globalIndex = ${isBatched ? `${focusBaseWGSL} * P + index` : 'index'};\n  if (globalIndex >= ROW_COUNT * P) { return; }\n  ` +
+              statements.join('\n  ')
+          })
+        );
       }
+      if (isBatched) nodes.push(createFocusCursorNode(`${batchSuffix}-fit-focus-advance`, false));
+    }
+    if (isBatched) appendSummaryNodes();
+    if (output.approximation)
       nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-publish-inference`,
+        createWGSLKernelNode(graph, {
+          id: `${id}-approximation`,
           operation: OPERATION,
-          variant: 'publish-inference',
-          bindings: inferenceBindings,
-          invocationCount: rowCount * P,
-          declarations: common,
-          body: statements.join('\n  ')
+          variant: 'approximation',
+          invocationCount: 1,
+          bindings: [
+            read('params', parameters, 'f32'),
+            write('approximation', output.approximation, 'u32')
+          ],
+          body: `approximation[approximationOffset] = ${gaussianCutoff === null ? '0u' : 'select(1u, 0u, params[paramsOffset] > 0.5)'};`
         })
       );
-    }
     return nodes;
   }
 }

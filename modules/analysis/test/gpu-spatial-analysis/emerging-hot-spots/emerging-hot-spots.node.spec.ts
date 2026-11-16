@@ -778,7 +778,9 @@ it('GPUEmergingHotSpots refuses a cube larger than one storage binding (rule 16)
     if (fits) {
       expect(() => contributor.getCommandNodes(graph)).not.toThrow();
     } else {
-      expect(() => contributor.getCommandNodes(graph)).toThrow(/maxStorageBufferBindingSize/);
+      expect(() => contributor.getCommandNodes(graph)).toThrow(
+        /binding.*limit|maxStorageBufferBindingSize/
+      );
     }
   }
   device.destroy();

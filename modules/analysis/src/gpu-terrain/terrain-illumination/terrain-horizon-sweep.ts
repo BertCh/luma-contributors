@@ -207,7 +207,7 @@ const SWEEP_SECTOR_RECORD_LENGTH = 7;
  * @internal
  */
 export type TerrainSweepSectorTable<Parameters> = {
-  /** One-thread node that writes every record; schedule it before the first sweep. */
+  /** Parallel node that writes every record; schedule it before the first sweep. */
   writeNode: GPUCommandNode<Parameters>;
   /** Returns the record view of `sector`. */
   getRecord: (sector: number) => GraphDataView<'uint32'>;
@@ -266,14 +266,11 @@ export function createTerrainSweepSectorTable<Parameters>(
     operation: 'GPUTerrainHorizon',
     variant: 'sweep-sector-table',
     bindings: [{name: 'records', view: table, type: 'u32', access: 'read_write'}],
-    invocationCount: 1,
+    invocationCount: words.length,
     declarations: `const SECTOR_WORDS = array<u32, ${words.length}>(${Array.from(words, word => `${word}u`).join(', ')});`,
-    body: `for (var sector = 0u; sector < ${sectorCount}u; sector++) {
-    for (var word = 0u; word < ${SWEEP_SECTOR_RECORD_LENGTH}u; word++) {
-      records[recordsOffset + sector * ${SWEEP_SECTOR_RECORD_STRIDE}u + word] =
-        SECTOR_WORDS[sector * ${SWEEP_SECTOR_RECORD_LENGTH}u + word];
-    }
-  }`
+    body: `let sector = index / ${SWEEP_SECTOR_RECORD_LENGTH}u;
+  let word = index % ${SWEEP_SECTOR_RECORD_LENGTH}u;
+  records[recordsOffset + sector * ${SWEEP_SECTOR_RECORD_STRIDE}u + word] = SECTOR_WORDS[index];`
   });
   const getRecord = (sector: number): GraphDataView<'uint32'> =>
     graph.createDataView(table.buffer, {

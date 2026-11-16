@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateOutlineOutputPasses} from '../outline-geometry/validate-outline-output-passes';
+import {validateRefinementScratchByteLengths} from './refinement-storage-validation';
+import {validateRefinementShaderNumber} from './refinement-storage-validation';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -17,8 +21,7 @@ import {
 import {
   validateCapacity,
   validateSinglePackedView,
-  validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {getReadPointWGSL} from '../shared/spatial-wgsl-point-helpers';
 
@@ -58,6 +61,8 @@ export class GPUVectorStraightSkeleton implements GPUCommandNodeProducer {
   constructor(props: GPUVectorStraightSkeletonProps) {
     this.id = props.id ?? 'vector-straight-skeleton';
     this.props = props;
+    validateRefinementShaderNumber(this.id, 'offsetDistance', props.offsetDistance);
+    validateRefinementShaderNumber(this.id, 'eventTolerance', props.eventTolerance ?? 1e-5, true);
     this.maximumVertices = props.maximumVertices ?? 128;
     this.maximumEvents = props.maximumEvents ?? 128;
     validateCapacity(this.id, 'maximumVertices', this.maximumVertices, 3, 1024);
@@ -87,6 +92,7 @@ export class GPUVectorStraightSkeleton implements GPUCommandNodeProducer {
       validateSinglePackedView(props.output[name], [format], this.id);
       if (props.output[name].length !== length) throw new Error('Skeleton output size mismatch');
     }
+    validateOutlineOutputPasses(this.id, props.output, [Object.keys(props.output)]);
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
       props.positions,
       props.ringOffsets,
@@ -100,13 +106,30 @@ export class GPUVectorStraightSkeleton implements GPUCommandNodeProducer {
     const {props, id} = this;
     const slots = this.maximumVertices + 2 * this.maximumEvents;
     const polygons = props.polygonOffsets.length - 1;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.positions,
-      props.ringOffsets,
-      props.polygonOffsets,
-      props.featureOffsets,
-      ...Object.values(props.output)
-    ]);
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(
+        [
+          props.positions,
+          props.ringOffsets,
+          props.polygonOffsets,
+          ...Object.values(props.output)
+        ].map((view, index) => [`binding.${index}`, view])
+      )
+    );
+    validateRefinementScratchByteLengths(graph, id, {
+      wavefront:
+        (props.polygonOffsets.length -
+          1 +
+          (Math.min(
+            props.positions.length,
+            (props.polygonOffsets.length - 1) * this.maximumVertices
+          ) +
+            (props.polygonOffsets.length - 1) * 2 * this.maximumEvents) *
+            19) *
+        4
+    });
     // Motion/topology (11), original edge plane/source (4), snapshot links (2), visitation (1), ordered active successor (1).
     // Source ranges include closing vertices, so they conservatively bound initial live vertices.
     const packedWorkspace = props.positions.length < polygons * this.maximumVertices;

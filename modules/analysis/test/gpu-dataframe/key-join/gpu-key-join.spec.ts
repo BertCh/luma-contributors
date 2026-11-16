@@ -33,6 +33,7 @@ const AGGREGATES: {
 }[] = [
   {operation: 'count', withColumn: false, sums: false},
   {operation: 'count', withColumn: true, sums: false},
+  {operation: 'count-distinct', withColumn: true, sums: false},
   {operation: 'sum', withColumn: true, sums: true},
   {operation: 'mean', withColumn: true, sums: true},
   {operation: 'minimum', withColumn: true, sums: false},

@@ -3,6 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  validateTerrainBindings,
+  getTerrainGateScratchByteLength
+} from '../terrain-processing/terrain-binding-preflight';
+import {
   getGraphOutputViews,
   validateCapacity,
   validateCommandNodeBudget,
@@ -167,6 +171,17 @@ export class GPUTerrainStreamNetwork implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateTerrainBindings(graph, this.id, this.props, {
+      'pointer state': 20 * this.props.grid.width * this.props.grid.height,
+      'gate table': getTerrainGateScratchByteLength(
+        getTerrainJumpRoundCount(
+          Math.min(
+            this.props.maximumSteps ?? this.props.grid.width * this.props.grid.height,
+            this.props.grid.width * this.props.grid.height
+          )
+        )
+      )
+    });
     const {id, props} = this;
     const {grid, output} = props;
     const count = grid.width * grid.height;

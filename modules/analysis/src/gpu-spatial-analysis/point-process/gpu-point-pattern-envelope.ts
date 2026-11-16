@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateSpatialOutputViews} from '../spatial-clustering/spatial-output-validation';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -14,7 +16,8 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validateRequirement
+  validateRequirement,
+  validateGPUStorageBindingByteLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {IS_FINITE_FLOAT_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {createRankEnvelopeNodes} from './gpu-point-pattern-rank-envelope';
@@ -151,6 +154,10 @@ export class GPUPointPatternEnvelope implements GPUCommandNodeProducer {
       validatePointProcessView(props.output.pValueInterval, 'float32', 2, id);
     }
 
+    validateSpatialOutputViews(this.id, props.output, [
+      [props.output.statistics, props.output.status, props.output.pValueInterval],
+      {read: [props.output.status], write: [props.output.lower, props.output.upper]}
+    ]);
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
       props.observed,
       props.simulations,
@@ -172,6 +179,22 @@ export class GPUPointPatternEnvelope implements GPUCommandNodeProducer {
       props.integrationWeights,
       ...Object.values(props.output)
     ]);
+    validateGraphChunkBindingRanges(graph, id, {
+      observed: props.observed,
+      simulations: props.simulations,
+      reference: props.reference,
+      integrationWeights: props.integrationWeights,
+      ...Object.fromEntries(
+        Object.entries(props.output).map(([name, view]) => [`output.${name}`, view])
+      )
+    });
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'curve deviations/ranks',
+      (simulationCount + 1) * 4,
+      'reduce simulationCount'
+    );
     if (props.statistic === 'extreme-rank') return createRankEnvelopeNodes(graph, props, id);
     const deviations = createTransientView(
       graph,

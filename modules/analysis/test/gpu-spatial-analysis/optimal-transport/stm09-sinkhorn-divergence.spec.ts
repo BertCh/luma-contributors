@@ -85,6 +85,26 @@ function makeRandomProblem(seed: number) {
 
 const RUN = {maximumIterations: 400};
 
+it('returns zero for positive masses on a single cell with default blur settings', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const result = await runSinkhornGPU(device, {
+    width: 1,
+    height: 1,
+    cellWidth: 1,
+    cellHeight: 1,
+    epsilon: 2,
+    source: [5],
+    target: [0.25]
+  });
+  // Both normalized distributions are the same point mass: every transport cost is zero.
+  expect(result.divergence).toBe(0);
+  expect(result.components).toEqual([0, 0, 0]);
+  expect(result.converged).toBe(1);
+  expect(result.invalidCount).toBe(0);
+  expect(result.approximation).toBe(0);
+});
+
 it('GPUSinkhornDivergence matches POT on the fixture grids, with the components', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);

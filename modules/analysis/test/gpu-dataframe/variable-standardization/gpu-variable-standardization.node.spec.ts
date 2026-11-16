@@ -10,8 +10,11 @@ import {
 } from '../../../src/dataframe-analysis/variable-standardization/index';
 import {
   createNullWebGPUDevice,
-  getParsedKernelSources
+  getParsedKernelSources,
+  getGPUCommandNodeKernelSources,
+  getGPUCommandNodePipelineKeys
 } from '../../utils/gpu-contributor-test-utils';
+import {auditWGSLModule} from '../../analysis-core/kernel-audit/kernel-audit-wgsl';
 import {standardizeReference} from './standardization-oracle';
 
 const methods: GPUVariableStandardizationMethod[] = [
@@ -85,7 +88,7 @@ it('GPUVariableStandardization validates topology, format and ownership', () => 
   });
   expect(
     () => new GPUVariableStandardization({values, output: overlapping, method: 'mad'})
-  ).toThrow(/single chunk/);
+  ).toThrow(/overlap/);
   const otherGraph = new GPUCommandGraph(device);
   const foreign = createTransientView(otherGraph, 'foreign', 'float32', 3);
   expect(() =>
@@ -94,7 +97,7 @@ it('GPUVariableStandardization validates topology, format and ownership', () => 
   device.destroy();
 });
 
-it('GPUVariableStandardization rejects multi-chunk values and mask vectors', () => {
+it('GPUVariableStandardization rejects mismatched chunk topology', () => {
   const device = createNullWebGPUDevice();
   const graph = new GPUCommandGraph(device);
   const output = createTransientView(graph, 'output', 'float32', 3);
@@ -113,23 +116,21 @@ it('GPUVariableStandardization rejects multi-chunk values and mask vectors', () 
         createTransientView(graph, `${name}-b`, format, 1)
       ]
     });
-  expect(
-    () =>
-      new GPUVariableStandardization({
-        values: makeTwoChunkVector('float32', 'chunked-values'),
-        output,
-        method: 'mad'
-      })
-  ).toThrow('variable-standardization values single chunk');
-  expect(
-    () =>
-      new GPUVariableStandardization({
-        values: createTransientView(graph, 'values', 'float32', 3),
-        mask: makeTwoChunkVector('uint32', 'chunked-mask'),
-        output,
-        method: 'mad'
-      })
-  ).toThrow('variable-standardization mask single chunk');
+  expect(() =>
+    new GPUVariableStandardization({
+      values: makeTwoChunkVector('float32', 'chunked-values'),
+      output,
+      method: 'mad'
+    }).getCommandNodes(graph)
+  ).toThrow(/topology/);
+  expect(() =>
+    new GPUVariableStandardization({
+      values: createTransientView(graph, 'values', 'float32', 3),
+      mask: makeTwoChunkVector('uint32', 'chunked-mask'),
+      output,
+      method: 'mad'
+    }).getCommandNodes(graph)
+  ).toThrow(/topology/);
   device.destroy();
 });
 
@@ -159,4 +160,60 @@ it('GPUVariableStandardization emits an unmasked recipe without a mask binding',
       .every(source => !source.includes('maskOffset'))
   ).toBe(true);
   device.destroy();
+});
+
+it('standardization keeps uint32 count reduction and fixed pipelines across uneven chunk counts', () => {
+  const build = (lengths: number[]) => {
+    const device = createNullWebGPUDevice();
+    const graph = new GPUCommandGraph(device);
+    const length = lengths.reduce((total, value) => total + value, 0);
+    let serial = 0;
+    const vector = (name: string) =>
+      new GraphVectorView({
+        id: name,
+        name,
+        format: 'float32',
+        length,
+        valueLength: length,
+        stride: 1,
+        byteStride: 4,
+        rowByteLength: 4,
+        data: lengths.map(rows =>
+          createTransientView(graph, `${name}-${serial++}`, 'float32', rows)
+        )
+      });
+    try {
+      const contributor = new GPUVariableStandardization({
+        values: vector('values'),
+        output: vector('output'),
+        method: 'z-score'
+      });
+      const nodes = contributor.getCommandNodes(graph);
+      expect(nodes.length).toBeLessThanOrEqual(contributor.estimatedCommandNodeCount);
+      const sources = getGPUCommandNodeKernelSources(nodes);
+      for (const kernel of sources)
+        expect(auditWGSLModule(kernel.source, kernel.constants), kernel.id).toEqual([]);
+      for (const kernel of sources.filter(kernel => kernel.source.includes('fn getRatio'))) {
+        expect(kernel.source).toContain('return getScaledQuotient(numerator, denominator, 1.0, 0)');
+        expect(kernel.source).toContain('frexp(value)');
+        expect(kernel.source).not.toContain('numerator * 1e-19');
+      }
+      const reduction = sources.find(
+        kernel => kernel.id.includes('-count') && kernel.source.includes('inputValues')
+      )!;
+      expect(reduction.source).toMatch(/inputValues:\s*array<u32>/);
+      expect(reduction.source).toMatch(/outputValues:\s*array<u32>/);
+      const dispatches = nodes.filter(node => node.id.includes('-prepare-'));
+      expect(dispatches.map(node => node.workload?.maximumInvocationCount)).toEqual(
+        lengths.filter(rows => rows > 0)
+      );
+      expect(dispatches.map(node => node.workload?.maximumWorkgroupCount)).toEqual(
+        lengths.filter(rows => rows > 0).map(rows => Math.ceil(rows / 256))
+      );
+      return getGPUCommandNodePipelineKeys(nodes, {includeShaderLayout: true});
+    } finally {
+      device.destroy();
+    }
+  };
+  expect(build([1, 0, 256, 768])).toEqual(build([1025]));
 });

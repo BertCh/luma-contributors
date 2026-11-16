@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import {createVectorView} from '../../utils/gpu-contributor-test-utils';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {
@@ -75,7 +77,9 @@ function createBoundsValues(): Float32Array {
 function createFixture(
   device: NonNullable<Awaited<ReturnType<typeof getWebGPUTestDevice>>>,
   mode: GPUBoundsFilterMode,
-  capacity: number
+  capacity: number,
+  chunkLengths?: number[],
+  includeMask = true
 ) {
   return createGeometryFixture(device, {
     inputs: {bounds: {values: createBoundsValues(), format: 'float32x4'}},
@@ -86,13 +90,32 @@ function createFixture(
       overflow: {format: 'uint32', length: 1},
       requiredCount: {format: 'uint32', length: 1}
     },
-    create: ({inputs, outputs, parameters}) =>
-      new GPUBoundsFilter({
-        bounds: inputs['bounds'] as never,
+    create: ({inputs, outputs, parameters}) => {
+      function chunkView<Format extends 'float32x4' | 'uint32'>(view: GraphDataView<Format>) {
+        if (!chunkLengths) return view;
+        let firstRow = 0;
+        return createVectorView(
+          `chunks-${view.buffer.id}`,
+          view.format,
+          chunkLengths.map(length => {
+            const chunk = (view.buffer.graph as GPUCommandGraph).createDataView(view.buffer, {
+              format: view.format,
+              length,
+              byteOffset: firstRow * view.rowByteLength
+            });
+            firstRow += length;
+            return chunk;
+          })
+        );
+      }
+      return new GPUBoundsFilter({
+        bounds: chunkView(inputs['bounds'] as GraphDataView<'float32x4'>),
         parameters,
         mode,
         output: {
-          outputMask: outputs['mask'] as never,
+          outputMask: includeMask
+            ? chunkView(outputs['mask'] as GraphDataView<'uint32'>)
+            : undefined,
           ids: outputs['ids'] as never,
           status: {
             count: outputs['count'] as never,
@@ -100,7 +123,8 @@ function createFixture(
             requiredCount: outputs['requiredCount'] as never
           }
         }
-      })
+      });
+    }
   });
 }
 
@@ -177,3 +201,252 @@ it('GPUBoundsFilter reads minX > maxX with wrapX as a box through the longitude 
     fixture.destroy();
   }
 });
+
+for (const mode of ['intersects', 'within', 'contains'] as const) {
+  for (const capacity of [5, 64]) {
+    for (const includeMask of [false, true]) {
+      it(`GPUBoundsFilter ${mode} packed and three uneven chunks agree (capacity ${capacity}, mask ${includeMask})`, async () => {
+        const device = await getWebGPUTestDevice();
+        requireTestDevice(device);
+        const packed = createFixture(device, mode, capacity, undefined, includeMask);
+        const chunked = createFixture(device, mode, capacity, [3, 11, 28], includeMask);
+        try {
+          for (const testCase of CASES) {
+            const [minX, minY, maxX, maxY] = testCase.box;
+            const parameters = getGPUBoundsFilterParameterValues({minX, minY, maxX, maxY});
+            const packedResult = await packed.run(parameters);
+            const chunkedResult = await chunked.run(parameters);
+            const expected = mode === 'within' ? testCase.withinClosed : testCase[mode];
+            expect(chunkedResult).toEqual(packedResult);
+            expect(chunkedResult['ids'].slice(0, Math.min(capacity, expected.length))).toEqual(
+              expected.slice(0, capacity)
+            );
+            expect(chunkedResult['requiredCount']).toEqual([expected.length]);
+          }
+        } finally {
+          packed.destroy();
+          chunked.destroy();
+        }
+      });
+    }
+  }
+}
+
+it('GPUBoundsFilter selects global rows across nine million bounds in three uneven chunks', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // More bounds than fit in a single core 128MiB float32x4 storage binding (8,388,608 rows).
+  // Only the last row of chunk 0, first row of chunk 1 and last row of chunk 2 are accepted.
+  const lengths = [3_000_001, 2_000_000, 4_000_000];
+  const values = lengths.map(length => new Float32Array(length * 4));
+  values[0].fill(1, (lengths[0] - 1) * 4);
+  values[1].fill(1, 0, 4);
+  values[2].fill(1, (lengths[2] - 1) * 4);
+  const fixture = createGeometryFixture(device, {
+    inputs: Object.fromEntries(
+      values.map((chunk, index) => [
+        `bounds-${index}`,
+        {values: chunk, format: 'float32x4' as const}
+      ])
+    ),
+    outputs: {
+      ids: {format: 'uint32', length: 2},
+      count: {format: 'uint32', length: 1},
+      overflow: {format: 'uint32', length: 1},
+      requiredCount: {format: 'uint32', length: 1}
+    },
+    create: ({inputs, outputs, parameters}) =>
+      new GPUBoundsFilter({
+        bounds: createVectorView(
+          'large-bounds',
+          'float32x4',
+          lengths.map((_, index) => inputs[`bounds-${index}`] as GraphDataView<'float32x4'>)
+        ),
+        parameters,
+        output: {
+          ids: outputs['ids'] as GraphDataView<'uint32'>,
+          status: {
+            count: outputs['count'] as GraphDataView<'uint32'>,
+            overflow: outputs['overflow'] as GraphDataView<'uint32'>,
+            requiredCount: outputs['requiredCount'] as GraphDataView<'uint32'>
+          }
+        }
+      })
+  });
+  try {
+    const result = await fixture.run(
+      getGPUBoundsFilterParameterValues({minX: 1, minY: 1, maxX: 1, maxY: 1})
+    );
+    expect(result['ids']).toEqual([3_000_000, 3_000_001]);
+    expect(result['count']).toEqual([2]);
+    expect(result['requiredCount']).toEqual([3]);
+    expect(result['overflow']).toEqual([1]);
+  } finally {
+    fixture.destroy();
+  }
+});
+
+it('bounds compaction crosses bit words, scan blocks and scratch binding ceilings and resets each frame', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  // Model a small binding device so the old full-row scratch exceeds one binding on 4097 rows.
+  // Every bounds input chunk is at most 16KiB; the new bit masks and block counts are much smaller.
+  const lengths = [1021, 7, 1024, 1024, 1021];
+  const originalLimit = device.limits.maxStorageBufferBindingSize;
+  Object.defineProperty(device.limits, 'maxStorageBufferBindingSize', {
+    configurable: true,
+    value: 16384
+  });
+  let firstRow = 0;
+  const selected: number[] = [];
+  const values = lengths.map(length => {
+    const chunk = new Float32Array(length * 4);
+    for (let row = 0; row < length; row++) {
+      const globalRow = firstRow + row;
+      if (globalRow % 3 === 1 || globalRow % 256 === 255) {
+        chunk.fill(1, row * 4, row * 4 + 4);
+        selected.push(globalRow);
+      }
+    }
+    firstRow += length;
+    return chunk;
+  });
+  let fixture: ReturnType<typeof createGeometryFixture> | undefined;
+  try {
+    fixture = createGeometryFixture(device, {
+      inputs: Object.fromEntries(
+        values.map((chunk, index) => [
+          `chunk-${index}`,
+          {values: chunk, format: 'float32x4' as const}
+        ])
+      ),
+      outputs: {
+        ids: {format: 'uint32', length: 1000},
+        count: {format: 'uint32', length: 1},
+        requiredCount: {format: 'uint32', length: 1},
+        overflow: {format: 'uint32', length: 1}
+      },
+      create: ({inputs, outputs, parameters}) =>
+        new GPUBoundsFilter({
+          bounds: createVectorView(
+            'small-binding-bounds',
+            'float32x4',
+            lengths.map((_, index) => inputs[`chunk-${index}`] as GraphDataView<'float32x4'>)
+          ),
+          parameters,
+          output: {
+            ids: outputs['ids'] as GraphDataView<'uint32'>,
+            status: {
+              count: outputs['count'] as GraphDataView<'uint32'>,
+              requiredCount: outputs['requiredCount'] as GraphDataView<'uint32'>,
+              overflow: outputs['overflow'] as GraphDataView<'uint32'>
+            }
+          }
+        })
+    });
+    const parameters = getGPUBoundsFilterParameterValues({minX: 1, minY: 1, maxX: 1, maxY: 1});
+    const result = await fixture.run(parameters);
+    expect(result['ids']).toEqual(selected.slice(0, 1000));
+    expect(result['count']).toEqual([1000]);
+    expect(result['requiredCount']).toEqual([selected.length]);
+    expect(result['overflow']).toEqual([1]);
+    for (const index of lengths.keys())
+      fixture.writeInput(`chunk-${index}`, new Float32Array(lengths[index] * 4));
+    const empty = await fixture.run(parameters);
+    expect(empty['count']).toEqual([0]);
+    expect(empty['requiredCount']).toEqual([0]);
+    expect(empty['overflow']).toEqual([0]);
+    for (const index of lengths.keys()) fixture.writeInput(`chunk-${index}`, values[index]);
+    expect((await fixture.run(parameters))['ids']).toEqual(selected.slice(0, 1000));
+  } finally {
+    fixture?.destroy();
+    Object.defineProperty(device.limits, 'maxStorageBufferBindingSize', {
+      configurable: true,
+      value: originalLimit
+    });
+  }
+});
+
+for (const rowCount of [31, 32, 33, 255, 256, 257, 8191, 8192, 8193]) {
+  for (const chunked of [false, true]) {
+    it(`dense bounds compaction preserves offset views and truncated prefixes at ${rowCount} rows (chunked ${chunked})`, async () => {
+      const device = await getWebGPUTestDevice();
+      requireTestDevice(device);
+      const lengths = chunked
+        ? [1, Math.floor(rowCount / 3), rowCount - 1 - Math.floor(rowCount / 3)]
+        : [rowCount];
+      const capacity = rowCount - 2;
+      const fixture = createGeometryFixture(device, {
+        inputs: Object.fromEntries(
+          lengths.map((length, index) => {
+            const values = new Float32Array((length + 2) * 4);
+            values.fill(1, 4, (length + 1) * 4);
+            return [`bounds-${index}`, {values, format: 'float32x4' as const}];
+          })
+        ),
+        outputs: {
+          ids: {format: 'uint32', length: capacity + 2},
+          mask: {format: 'uint32', length: rowCount + 2},
+          count: {format: 'uint32', length: 1},
+          required: {format: 'uint32', length: 1},
+          overflow: {format: 'uint32', length: 1}
+        },
+        create: ({inputs, outputs, parameters}) => {
+          const graph = parameters.buffer.graph as GPUCommandGraph;
+          let firstRow = 0;
+          const masks = lengths.map(length => {
+            const view = graph.createDataView(outputs['mask'].buffer, {
+              format: 'uint32',
+              length,
+              byteOffset: (firstRow + 1) * 4
+            });
+            firstRow += length;
+            return view;
+          });
+          const boundChunks = lengths.map((length, index) =>
+            graph.createDataView(inputs[`bounds-${index}`].buffer, {
+              format: 'float32x4',
+              length,
+              byteOffset: 16
+            })
+          );
+          return new GPUBoundsFilter({
+            bounds: chunked
+              ? createVectorView('offset-bounds', 'float32x4', boundChunks)
+              : boundChunks[0],
+            parameters,
+            output: {
+              ids: graph.createDataView(outputs['ids'].buffer, {
+                format: 'uint32',
+                length: capacity,
+                byteOffset: 4
+              }),
+              outputMask: chunked ? createVectorView('offset-masks', 'uint32', masks) : masks[0],
+              status: {
+                count: outputs['count'] as GraphDataView<'uint32'>,
+                requiredCount: outputs['required'] as GraphDataView<'uint32'>,
+                overflow: outputs['overflow'] as GraphDataView<'uint32'>
+              }
+            }
+          });
+        }
+      });
+      try {
+        const result = await fixture.run(
+          getGPUBoundsFilterParameterValues({minX: 1, minY: 1, maxX: 1, maxY: 1})
+        );
+        expect(result['ids']).toEqual([
+          0,
+          ...Array.from({length: capacity}, (_, index) => index),
+          0
+        ]);
+        expect(result['mask']).toEqual([0, ...new Array(rowCount).fill(1), 0]);
+        expect(result['count']).toEqual([capacity]);
+        expect(result['required']).toEqual([rowCount]);
+        expect(result['overflow']).toEqual([1]);
+      } finally {
+        fixture.destroy();
+      }
+    });
+  }
+}

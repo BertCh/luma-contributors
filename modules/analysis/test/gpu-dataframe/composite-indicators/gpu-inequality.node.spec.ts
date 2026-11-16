@@ -70,6 +70,14 @@ it('getGPUInequalityParameterValues packs epsilon and the Palma cuts', () => {
 });
 
 it('GPUInequality validates props', () => {
+  expectThrows(
+    graph => ({
+      id: 'empty-inequality',
+      values: createTransientView(graph, `empty-values-${serial++}`, 'float32', 0),
+      zoneIds: createTransientView(graph, `empty-zones-${serial++}`, 'uint32', 0)
+    }),
+    /^empty-inequality values length must be an integer in \[1, 2147483648\]$/
+  );
   expectThrows(() => ({zoneCount: 0}), /zoneCount/);
   expectThrows(() => ({lorenzKnotCount: 1}), /lorenzKnotCount/);
   expectThrows(
@@ -124,7 +132,7 @@ it('GPUInequality emits deterministic node IDs and only the passes its outputs n
   const graph = new GPUCommandGraph(device);
   const view = <Format extends 'uint32' | 'float32'>(format: Format, length: number) =>
     createTransientView(graph, `n-${serial++}`, format, length);
-  const basic = new GPUInequality(createProps(graph, {id: 'basic'}));
+  const basic = new GPUInequality(createProps(graph, {id: 'basic', mode: 'reference'}));
   const basicIds = basic.getCommandNodes(graph).map(node => node.id);
   expect(basicIds[0]).toBe('basic-keys');
   expect(basicIds).toContain('basic-zone-keys');
@@ -135,6 +143,7 @@ it('GPUInequality emits deterministic node IDs and only the passes its outputs n
   const full = new GPUInequality(
     createProps(graph, {
       id: 'full',
+      mode: 'reference',
       weights: view('float32', 10),
       mask: view('uint32', 10),
       lorenzKnotCount: 5,

@@ -3,6 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  validateInterpolationOutputsDisjointFromInputs,
+  validateInterpolationOutputPasses
+} from '../spatial-interpolation/interpolation-view-validation';
+
+import {
   createTransientView,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -22,12 +27,12 @@ import {
   getStorageBindingElementLimit,
   validateCapacity,
   validateCommandNodeBudget,
-  validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
+  validateGPUStorageBindingByteLength,
   validateMaximumCount,
   validateSinglePackedView,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
   createWGSLDispatchGate,
@@ -221,7 +226,7 @@ export class GPUSinkhornDivergence implements GPUCommandNodeProducer {
       GPU_SINKHORN_DIVERGENCE_MAXIMUM_ITERATIONS
     );
     const fullRadius = Math.max(width, height) - 1;
-    this.blurRadius = props.blurRadius ?? fullRadius;
+    this.blurRadius = props.blurRadius ?? Math.max(fullRadius, 1);
     validateCapacity(
       id,
       'blurRadius',
@@ -277,12 +282,17 @@ export class GPUSinkhornDivergence implements GPUCommandNodeProducer {
       }
     }
     const outputViews = this.getOutputViews();
-    validateRequirement(
-      id,
-      new Set(outputViews.map(view => view.buffer)).size === outputViews.length,
-      'outputs must use separate buffers'
-    );
-    validateGraphOutputsDisjointFromInputs(id, outputViews, [
+    validateInterpolationOutputPasses(id, this.getOutputBindings(), [
+      {
+        write: {
+          divergence: output.divergence,
+          components: output.components,
+          marginalError: output.marginalError
+        }
+      },
+      {write: output.status ?? {}}
+    ]);
+    validateInterpolationOutputsDisjointFromInputs(id, outputViews, [
       props.source,
       props.target,
       props.parameters
@@ -293,13 +303,19 @@ export class GPUSinkhornDivergence implements GPUCommandNodeProducer {
   }
 
   private getOutputViews(): GraphDataView[] {
+    return Object.values(this.getOutputBindings()).filter(view => view !== undefined);
+  }
+
+  private getOutputBindings(): Record<string, GraphDataView | undefined> {
     const {output} = this.props;
-    return [
-      output.divergence,
-      output.components,
-      output.marginalError,
-      ...Object.values(output.status ?? {})
-    ].filter(view => view !== undefined);
+    return {
+      'output.divergence': output.divergence,
+      'output.components': output.components,
+      'output.marginalError': output.marginalError,
+      ...Object.fromEntries(
+        Object.entries(output.status ?? {}).map(([name, view]) => [`output.status.${name}`, view])
+      )
+    };
   }
 
   /**
@@ -314,14 +330,45 @@ export class GPUSinkhornDivergence implements GPUCommandNodeProducer {
     const {output} = props;
     const {width, height} = props.grid;
     const cellCount = width * height;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.source,
-      props.target,
-      props.parameters,
-      ...this.getOutputViews()
-    ]);
+    validateGraphChunkBindingRanges(graph, id, {
+      source: props.source,
+      target: props.target,
+      parameters: props.parameters,
+      ...this.getOutputBindings()
+    });
     // Four potential blocks and three blur blocks per cell, in single bindings.
     validateMaximumCount(id, 'cells', cellCount, getStorageBindingElementLimit(graph.device, 16));
+    const layout = getRegressionTileLayout(cellCount);
+    const [tileShape, singleMergeShape] = getRowTileSumDispatchShapes(layout, 1);
+    const dispatchShapes = [
+      [3 * cellCount],
+      [3 * cellCount],
+      tileShape,
+      singleMergeShape,
+      [cellCount],
+      [cellCount]
+    ] as const;
+    for (const [name, length] of Object.entries({
+      state: SINKHORN_DIVERGENCE_STATE_LENGTH,
+      masses: 4,
+      logSource: cellCount,
+      logTarget: cellCount,
+      potentials: 4 * cellCount,
+      blurred: 3 * cellCount,
+      errors: cellCount,
+      finalSums: 5,
+      massPartials: layout.tileCount * 4,
+      errorPartials: layout.tileCount,
+      finalPartials: layout.tileCount * 5,
+      iterationDispatch: dispatchShapes.length * 3
+    }))
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        name,
+        length * Float32Array.BYTES_PER_ELEMENT,
+        'reduce the grid size'
+      );
     const slots = SINKHORN_DIVERGENCE_STATE_SLOTS;
     const f32 = (name: string, length: number) =>
       createTransientView(graph, `${id}-${name}`, 'float32', Math.max(length, 1));
@@ -333,19 +380,10 @@ export class GPUSinkhornDivergence implements GPUCommandNodeProducer {
     const blurred = f32('blurred', 3 * cellCount);
     const errors = f32('errors', cellCount);
     const finalSums = f32('final-sums', 5);
-    const layout = getRegressionTileLayout(cellCount);
-    const [tileShape, singleMergeShape] = getRowTileSumDispatchShapes(layout, 1);
     const gate = createWGSLDispatchGate(graph, {
       id: `${id}-iteration-dispatch`,
       operation: OPERATION,
-      shapes: [
-        [3 * cellCount],
-        [3 * cellCount],
-        tileShape,
-        singleMergeShape,
-        [cellCount],
-        [cellCount]
-      ]
+      shapes: dispatchShapes
     });
     const stateConstants = Object.entries(slots)
       .map(
@@ -683,16 +721,16 @@ fn accumulateRow(row: u32, terms: ptr<function, array<f32, TERM_COUNT>>) {
         ],
         declarations: `${stateConstants}\n${nanDeclaration}`,
         body: `let valid = state[stateOffset + S_VALID] != 0.0;
-  let nan = getNaN();
-  divergence[divergenceOffset] = select(nan, finalSums[finalSumsOffset + 4u], valid);
+  let invalidValue = getNaN();
+  divergence[divergenceOffset] = select(invalidValue, finalSums[finalSumsOffset + 4u], valid);
   ${
     output.components
-      ? `components[componentsOffset] = select(nan, finalSums[finalSumsOffset] + finalSums[finalSumsOffset + 1u], valid);
-  components[componentsOffset + 1u] = select(nan, 2.0 * finalSums[finalSumsOffset + 2u], valid);
-  components[componentsOffset + 2u] = select(nan, 2.0 * finalSums[finalSumsOffset + 3u], valid);`
+      ? `components[componentsOffset] = select(invalidValue, finalSums[finalSumsOffset] + finalSums[finalSumsOffset + 1u], valid);
+  components[componentsOffset + 1u] = select(invalidValue, 2.0 * finalSums[finalSumsOffset + 2u], valid);
+  components[componentsOffset + 2u] = select(invalidValue, 2.0 * finalSums[finalSumsOffset + 3u], valid);`
       : ''
   }
-  ${output.marginalError ? 'marginalError[marginalErrorOffset] = select(nan, state[stateOffset + S_MARGINAL_ERROR], valid);' : ''}`
+  ${output.marginalError ? 'marginalError[marginalErrorOffset] = select(invalidValue, state[stateOffset + S_MARGINAL_ERROR], valid);' : ''}`
       })
     );
     const status = output.status ?? {};

@@ -27,6 +27,8 @@ import {
 import {getSortedSegmentOffsetNodes} from '../../analysis-core/kernels/sorted-segment-offsets';
 import {
   validateCapacity,
+  validateGPUStorageBindingByteLength,
+  getNextPowerOfTwo,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView
@@ -34,6 +36,8 @@ import {
 import {GPUGeographicDistribution} from '../geographic-distribution/index';
 import {GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH} from '../geographic-distribution/index';
 import {GET_QUIET_NAN_SEEDED_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateGeographicDistributionViews} from '../geographic-distribution/geographic-distribution-validation';
 
 const OPERATION = 'GPUGroupGeometry';
 
@@ -253,6 +257,17 @@ export class GPUGroupGeometry implements GPUCommandNodeProducer {
       checks.map(([, view]) => view),
       [props.positions, props.labels, props.weights, props.parameters]
     );
+    validateGeographicDistributionViews(
+      id,
+      {},
+      Object.fromEntries(checks.map(([name, view]) => [name, view])),
+      [
+        {
+          reads: {},
+          writes: {medoidIndices: output.medoidIndices, overflow: output.status?.overflow}
+        }
+      ]
+    );
   }
 
   /** Returns key, sort, bounds, geographic-distribution, medoid and publish nodes in order. */
@@ -262,6 +277,47 @@ export class GPUGroupGeometry implements GPUCommandNodeProducer {
     const {props, id, groupCount, medoidMaximumGroupSize} = this;
     const {output, positions, labels, weights, parameters} = props;
     const {status, ...columns} = output;
+    const wantsEllipse = Boolean(output.ellipses || output.standardDistances);
+    const needsGeography = Boolean(
+      output.meanCenters || output.weightedCenters || output.weightSums || wantsEllipse
+    );
+    const needsWeights = Boolean(output.weightedCenters || output.weightSums || wantsEllipse);
+    validateGraphChunkBindingRanges(graph, id, {
+      positions,
+      labels,
+      weights: needsWeights ? weights : undefined,
+      parameters: needsGeography ? parameters : undefined,
+      ...columns,
+      overflow: status?.overflow
+    });
+    // Sort keys/values, reductions and medoid costs are scalar planes. Geography auto uses
+    // a three-quantity grouped reduction up to 64 groups, otherwise scalar sorted planes.
+    const rowCount = positions.length;
+    for (const [name, bytes] of [
+      ['group row scratch', 4 * (rowCount <= 256 ? getNextPowerOfTwo(rowCount) : rowCount)],
+      ['group offsets scratch', 4 * (groupCount + 1)],
+      ...(needsGeography
+        ? [
+            ['geographic mean scratch', 8 * groupCount],
+            ...(output.ellipses ? [['geographic ellipse scratch', 12 * groupCount]] : []),
+            ...(groupCount <= 64
+              ? [
+                  [
+                    'geographic grouped partial scratch',
+                    12 * groupCount * Math.min(1024, Math.max(1, Math.ceil(rowCount / 256)))
+                  ]
+                ]
+              : [])
+          ]
+        : [])
+    ] as [string, number][])
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        name,
+        bytes,
+        'reduce row or group counts'
+      );
     validateGraphViewsBelongToGraph(id, graph, [
       positions,
       labels,
@@ -431,7 +487,6 @@ export class GPUGroupGeometry implements GPUCommandNodeProducer {
     }
 
     // 4. Centers and ellipse through GPUGeographicDistribution on the same keys.
-    const wantsEllipse = Boolean(output.ellipses || output.standardDistances);
     const needUnweightedGeography = Boolean(output.meanCenters || (wantsEllipse && !weights));
     if (needUnweightedGeography) {
       const meanCenters =

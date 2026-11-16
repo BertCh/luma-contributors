@@ -40,6 +40,7 @@ type FixtureOptions = {
   order?: Uint32Array;
   window?: MatrixOracleOptions['window'];
   withTexture?: boolean;
+  textureStatistic?: 'count' | 'weightSum';
   weightScale?: number;
 };
 
@@ -144,7 +145,7 @@ class Fixture {
         maximumCount: importUint('max-count', this.maxCount, 1),
         maximumWeightSum: importUint('max-weight-sum', this.maxWeightSum, 1),
         texture: textureView as never,
-        textureStatistic: 'count'
+        textureStatistic: options.textureStatistic ?? 'count'
       }
     });
     this.graph.add(this.contributor);
@@ -487,4 +488,28 @@ it('GPUAdjacencyMatrix rounds each fixed-point weight half up, also above 2^23',
   expect(scaledResult.weightSums[1]).toBe(16004);
   expectMatches(scaledResult, scaled.oracle());
   scaled.destroy();
+});
+
+it('adjacency weight textures preserve division by a near-maximum scale', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const weightScale = 3e38;
+  const test = new Fixture(device, {
+    nodeCount: 2,
+    edges: [[0, 1, 1e-29]],
+    resolution: 1,
+    directed: true,
+    withTexture: true,
+    textureStatistic: 'weightSum',
+    weightScale
+  });
+  try {
+    expectMatches(await test.run(), test.oracle());
+    const expected = test.oracle().weightSums[0] / Math.fround(weightScale);
+    const actual = (await readFloat32(test.textureReadback, 1))[0];
+    expect(actual).toBeGreaterThan(0);
+    expect(Math.abs(actual / expected - 1)).toBeLessThan(2e-5);
+  } finally {
+    test.destroy();
+  }
 });

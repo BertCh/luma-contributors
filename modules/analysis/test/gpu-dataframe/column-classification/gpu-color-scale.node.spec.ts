@@ -186,7 +186,9 @@ it('GPUColorScale rejects aliased buffers and foreign graphs', () => {
     ...props,
     output: {colors: props.output.colors, classIndices: props.output.colors}
   };
-  expect(() => new GPUColorScale(sharedOutputs)).toThrow(/share buffers/);
+  expect(() => new GPUColorScale(sharedOutputs)).toThrow(
+    /aligned binding byte ranges must not overlap/
+  );
   const otherGraph = new GPUCommandGraph(device);
   const contributor = new GPUColorScale(createProps(graph));
   expect(() => contributor.getCommandNodes(otherGraph)).toThrow(/target graph/);

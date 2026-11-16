@@ -12,11 +12,14 @@ import {
   validateMaximumCount,
   validateRequirement
 } from '../analysis-core/kernels/gpu-contributor-utils';
+import {validateGraphChunkBindingRanges} from '../analysis-core/kernels/graph-chunk-dispatch';
 import {getPointCloudKernelNodes} from './pointcloud-kernel-nodes';
 import {
   GPU_POINT_CLOUD_MAXIMUM_GRID_AXIS_CELLS,
   GPU_POINT_CLOUD_MAXIMUM_GRID_CELLS
 } from './pointcloud-limits';
+
+import {validatePointCloudGridParameters} from './pointcloud-grid-parameters';
 
 export type PointCloudGrid = {
   origin: readonly [number, number, number];
@@ -69,6 +72,38 @@ export function getPointCloudRowDirection(grid: {
   return grid.rowDirection ?? 'south';
 }
 
+/** Checks packed input and all grid-index/sort scratch before any resource is declared. */
+export function validatePointCloudGridIndexBindings<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  id: string,
+  positions: GraphDataView<'float32x3'>,
+  dimensions: readonly [number, number, number],
+  gridParameters?: GraphDataView<'float32'>
+): void {
+  validateGraphChunkBindingRanges(graph, id, {positions, gridParameters});
+  const cells = dimensions.reduce((product, value) => product * value, 1);
+  for (const [name, byteLength] of [
+    ['grid cell offsets', (cells + 1) * 4],
+    ['grid keys and indices', Math.max(positions.length, 1) * 4],
+    // Public GPUSort can choose padded bitonic indices or per-workgroup radix histograms.
+    [
+      'grid sort scratch',
+      Math.max(
+        2 ** Math.ceil(Math.log2(Math.max(positions.length, 1))),
+        16 * Math.ceil(positions.length / 256),
+        1
+      ) * 4
+    ]
+  ] as const)
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      name,
+      byteLength,
+      'reduce the point count or grid dimensions'
+    );
+}
+
 /**
  * @internal Exact reusable grid index. Raster mode ignores Z only for the cell key; `rowDirection`
  * `'south'` (raster mode only) counts rows down from the top edge.
@@ -96,18 +131,13 @@ export function createPointCloudGridIndex<Parameters>(
   positions: GraphDataView<'float32x3'>,
   grid: PointCloudGrid,
   raster = false,
-  rowDirection: 'north' | 'south' = 'north'
+  rowDirection: 'north' | 'south' = 'north',
+  gridParameters?: GraphDataView<'float32'>
 ) {
   validatePointCloudSearchGrid(id, 'grid', grid);
+  validatePointCloudGridParameters(id, gridParameters);
+  validatePointCloudGridIndexBindings(graph, id, positions, grid.dimensions, gridParameters);
   const cells = grid.dimensions.reduce((product, value) => product * value, 1);
-  // The cell offsets hold one uint32 per cell plus one closing entry.
-  validateGPUStorageBindingByteLength(
-    graph.device,
-    id,
-    'grid cell offsets',
-    (cells + 1) * 4,
-    'reduce grid.dimensions or increase grid.cellSize'
-  );
   const allocate = (name: string, length = positions.length) =>
     createTransientView(graph, `${id}-${name}`, 'uint32', length);
   const keys = allocate('keys');
@@ -121,10 +151,17 @@ export function createPointCloudGridIndex<Parameters>(
   // row height - 1 - floor(y), in integers, the arithmetic of getPointCloudCellSource, so the key
   // of a point equals its raster cell index (`height - y` in float32 would round up just below a
   // row boundary).
-  const rasterOffset = `(position.xy-vec2f(${grid.origin.slice(0, 2).map(Math.fround).join(',')}))/${Math.fround(grid.cellSize)}`;
+  const cellSize = gridParameters ? 'readGridParameters(3u)' : `${Math.fround(grid.cellSize)}`;
+  const origin2D = gridParameters
+    ? 'vec2f(readGridParameters(0u),readGridParameters(1u))'
+    : `vec2f(${grid.origin.slice(0, 2).map(Math.fround).join(',')})`;
+  const origin3D = gridParameters
+    ? 'vec3f(readGridParameters(0u),readGridParameters(1u),readGridParameters(2u))'
+    : `vec3f(${grid.origin.map(Math.fround).join(',')})`;
+  const rasterOffset = `getPointCloudQuotient2(position.xy-${origin2D},${cellSize})`;
   const coordinate = raster
     ? `vec3f(${rasterOffset},0.0)`
-    : `(position-vec3f(${grid.origin.map(Math.fround).join(',')}))/${Math.fround(grid.cellSize)}`;
+    : `getPointCloudQuotient3(position-${origin3D},${cellSize})`;
   const bounds = `vec3f(${grid.dimensions.map(value => `${value}.0`).join(',')})`;
   const inside = `all(coordinate>=vec3f(0.0))&&all(coordinate<${bounds})`;
   const cell = south
@@ -133,7 +170,7 @@ export function createPointCloudGridIndex<Parameters>(
   const nodes = getPointCloudKernelNodes(graph, {
     id: `${id}-keys`,
     length: positions.length,
-    inputs: {positions},
+    inputs: {positions, ...(gridParameters ? {gridParameters} : {})},
     outputs: {keys, values},
     body: `let position=readPositions(index);let coordinate=${coordinate};writeValues(index,index);writeKeys(index,0xffffffffu);if(all(abs(position)<=vec3f(3.402823e38))&&${inside}){let cell=${cell};writeKeys(index,(cell.z*${grid.dimensions[1]}u+cell.y)*${grid.dimensions[0]}u+cell.x);}`
   });

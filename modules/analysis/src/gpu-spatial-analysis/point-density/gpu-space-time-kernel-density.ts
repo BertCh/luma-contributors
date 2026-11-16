@@ -16,6 +16,7 @@ import {
   getGPUGridIndexMaximumCellCount,
   getStorageBindingElementLimit,
   validateCapacity,
+  validateFiniteNumber,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
@@ -52,6 +53,16 @@ import {
   getTemporalKernelValueWGSL,
   getTemporalWindowMassWGSL
 } from './space-time-kernel-density-wgsl';
+
+import {
+  DENSITY_MAXIMUM_SORT_ROW_COUNT,
+  DENSITY_MAXIMUM_INDEX_DIMENSION,
+  stageDensityOutputViews,
+  validateDensityIndexedScratch,
+  validateDensityScratchBindings,
+  validateDensityViewBindings,
+  validateDensityWritableViews
+} from './density-point-passes';
 
 const OPERATION = 'GPUSpaceTimeKernelDensity';
 
@@ -272,13 +283,16 @@ export class GPUSpaceTimeKernelDensity implements GPUCommandNodeProducer {
       props.grid.affine[1] === 0 && props.grid.affine[3] === 0,
       'needs an axis-aligned grid'
     );
-    validateCapacity(id, 'sliceCount', props.sliceCount, 1, Number.MAX_SAFE_INTEGER);
+    validateCapacity(id, 'sliceCount', props.sliceCount, 1, DENSITY_MAXIMUM_INDEX_DIMENSION);
     this.voxelCount = cellCount * props.sliceCount;
     for (const [name, size] of [
       ['indexGridSize[0]', props.indexGridSize[0]],
       ['indexGridSize[1]', props.indexGridSize[1]]
     ] as const) {
-      validateCapacity(id, name, size, 1, Number.MAX_SAFE_INTEGER);
+      validateCapacity(id, name, size, 1, DENSITY_MAXIMUM_INDEX_DIMENSION);
+    }
+    for (const [index, value] of props.indexBounds.entries()) {
+      validateFiniteNumber(id, `indexBounds[${index}]`, value);
     }
     const [minX, minY, maxX, maxY] = props.indexBounds;
     validateRequirement(
@@ -291,7 +305,13 @@ export class GPUSpaceTimeKernelDensity implements GPUCommandNodeProducer {
     );
     validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     validateSinglePackedView(props.times, ['float32'], `${id} times`);
-    validateRequirement(id, props.positions.length >= 1, 'needs at least one point');
+    validateCapacity(
+      id,
+      'positions length',
+      props.positions.length,
+      1,
+      DENSITY_MAXIMUM_SORT_ROW_COUNT
+    );
     validateRequirement(
       id,
       props.times.length === props.positions.length,
@@ -330,11 +350,11 @@ export class GPUSpaceTimeKernelDensity implements GPUCommandNodeProducer {
     const outputViews = [output.values, output.weightSum, output.status?.invalidCount].filter(
       view => view !== undefined
     );
-    validateRequirement(
-      id,
-      new Set(outputViews.map(view => view.buffer)).size === outputViews.length,
-      'outputs must use separate buffers'
-    );
+    validateDensityWritableViews(id, {
+      values: output.values,
+      weightSum: output.weightSum,
+      invalidCount: output.status?.invalidCount
+    });
     validateGraphOutputsDisjointFromInputs(id, outputViews, [
       props.positions,
       props.times,
@@ -343,16 +363,10 @@ export class GPUSpaceTimeKernelDensity implements GPUCommandNodeProducer {
     ]);
   }
 
-  /**
-   * Returns, in order: the row keys, the time sort, the time-ordered copy of the positions, the
-   * grid index and in-cell order, the cell-ordered point table, the optional weight and invalid
-   * counts, and the voxel gather.
-   */
-  getCommandNodes<Parameters>(
-    graph: GPUCommandGraph<Parameters>
-  ): readonly GPUCommandNode<Parameters>[] {
-    const {id, props, spatialKernel, temporalKernel, normalization} = this;
-    const {output, grid, indexBounds, indexGridSize, sliceCount} = props;
+  /** Checks caller bindings and every nested transient before graph mutation. @internal */
+  validateBindings<Parameters>(graph: GPUCommandGraph<Parameters>): void {
+    const {id, props} = this;
+    const {output, indexGridSize} = props;
     const rowCount = props.positions.length;
     validateGraphViewsBelongToGraph(id, graph, [
       props.positions,
@@ -382,6 +396,50 @@ export class GPUSpaceTimeKernelDensity implements GPUCommandNodeProducer {
       rowCount,
       getStorageBindingElementLimit(graph.device, 16)
     );
+    validateDensityViewBindings(
+      graph,
+      id,
+      [
+        ['positions', props.positions],
+        ['times', props.times],
+        ['weights', props.weights],
+        ['parameters', props.parameters],
+        ['output.values', output.values],
+        ['output.weightSum', output.weightSum],
+        ['output.status.invalidCount', output.status?.invalidCount]
+      ],
+      {dispatchMetadata: false}
+    );
+    validateDensityIndexedScratch(graph, id, rowCount, indexGridSize[0] * indexGridSize[1]);
+    validateDensityScratchBindings(graph, id, [
+      ['cell-ordered point table scratch', rowCount * 16]
+    ]);
+  }
+
+  /**
+   * Returns, in order: the row keys, the time sort, the time-ordered copy of the positions, the
+   * grid index and in-cell order, the cell-ordered point table, the optional weight and invalid
+   * counts, and the voxel gather.
+   */
+  getCommandNodes<Parameters>(
+    graph: GPUCommandGraph<Parameters>
+  ): readonly GPUCommandNode<Parameters>[] {
+    this.validateBindings(graph);
+    const {id, props, spatialKernel, temporalKernel, normalization} = this;
+    const {grid, indexBounds, indexGridSize, sliceCount} = props;
+    const staged = stageDensityOutputViews(
+      graph,
+      id,
+      OPERATION,
+      {
+        values: props.output.values,
+        weightSum: props.output.weightSum,
+        invalidCount: props.output.status?.invalidCount
+      },
+      {values: this.voxelCount}
+    );
+    const output = {...staged.views, status: {invalidCount: staged.views.invalidCount}};
+    const rowCount = props.positions.length;
     const {width, height} = grid;
     const spatialEdge = this.spatialEdgeCorrection === 'uniform';
     const temporalEdge = this.temporalEdgeCorrection === 'uniform';
@@ -703,6 +761,6 @@ ${temporalEdge ? getTemporalWindowMassWGSL(temporalKernel, temporalNeedsErfc) : 
   valuesOut[valuesOutOffset + index] = select(getNaN(), result, valid);`
       })
     );
-    return nodes;
+    return [...nodes, ...staged.publishNodes];
   }
 }

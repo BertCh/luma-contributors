@@ -29,6 +29,8 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
+import {getStorageTopKNodeRecord} from '../../../src/analysis-core/kernels/storage-backed-top-k';
+import {getNearestNeighborNodes} from '../../../src/gpu-spatial-analysis/spatial-join/nearest-nodes';
 import {GPUSpatialJoinPrepared} from '../../../src/gpu-spatial-analysis/spatial-join/gpu-spatial-join-prepared';
 import {createRandom} from './spatial-join-oracle';
 import {
@@ -49,6 +51,8 @@ type NeighborCase = {
   maxDistance?: number;
   featureIds?: number[];
   spatialSort?: boolean;
+  querySort?: boolean;
+  scratchChunkQueryCount?: number;
   /** Splits point queries into chunks of these sizes. */
   queryChunks?: number[];
   leafCapacity?: number;
@@ -60,6 +64,7 @@ type NeighborResult = {
   ids: number[][];
   distances: number[][];
   foot: NearestPoint[][];
+  queryFoot: NearestPoint[][];
   segments: number[][];
   counts: number[];
   overflow: number;
@@ -69,6 +74,8 @@ type NeighborRun = {
   prepared?: GPUSpatialJoinPrepared;
   run: () => Promise<NeighborResult>;
   setMaxDistance: (value: number) => void;
+  traversalInvocationCount: number;
+  traversalWorkgroupCount: number;
   destroy: () => void;
 };
 
@@ -140,7 +147,10 @@ function createNeighborRun(device: Device, input: NeighborCase): NeighborRun {
     for (const [index, size] of sizes.entries()) {
       const chunkPoints = positions.slice(first, first + size);
       first += size;
-      const buffer = createInputBuffer(device, Float32Array.from(chunkPoints.flat()));
+      const buffer = createInputBuffer(
+        device,
+        chunkPoints.length ? Float32Array.from(chunkPoints.flat()) : new Float32Array(2)
+      );
       buffers.push(buffer);
       chunks.push(
         importGraphBuffer(graph, `query-chunk-${index}`, buffer, 'float32x2', chunkPoints.length)
@@ -157,10 +167,11 @@ function createNeighborRun(device: Device, input: NeighborCase): NeighborRun {
   const ids = createOutputBuffer(device, slotCount);
   const distances = createOutputBuffer(device, slotCount);
   const foot = createOutputBuffer(device, slotCount * 2);
+  const queryFoot = createOutputBuffer(device, slotCount * 2);
   const segments = createOutputBuffer(device, slotCount);
   const counts = createOutputBuffer(device, queryCount);
   const overflow = createOutputBuffer(device, 1);
-  buffers.push(ids, distances, foot, segments, counts, overflow);
+  buffers.push(ids, distances, foot, queryFoot, segments, counts, overflow);
   let featureIds: GraphDataView<'uint32'> | undefined;
   if (input.featureIds) {
     const buffer = createInputBuffer(device, Uint32Array.from(input.featureIds));
@@ -180,53 +191,105 @@ function createNeighborRun(device: Device, input: NeighborCase): NeighborRun {
     ? new GPUSpatialJoinPrepared({geometry: features, leafCapacity: input.leafCapacity})
     : undefined;
   if (prepared) graph.add(prepared);
-  graph.add(
-    new GPUNearestFeatureJoin({
-      queries,
-      features: {...features, sourceIds: featureIds},
-      k: input.k,
-      ties: input.ties,
-      neighborCapacity: capacity,
-      spatialSort: prepared ? undefined : input.spatialSort,
-      leafCapacity: input.leafCapacity,
-      prepared,
-      radius: maxDistance?.importToGraph(graph),
-      output: {
-        neighborIds: importGraphBuffer(graph, 'neighbor-ids', ids, 'uint32', slotCount),
-        neighborDistances: importGraphBuffer(
-          graph,
-          'neighbor-distances',
-          distances,
-          'float32',
-          slotCount
-        ),
-        neighborFootPoints: importGraphBuffer(graph, 'neighbor-foot', foot, 'float32x2', slotCount),
-        neighborSegmentIndices: importGraphBuffer(
-          graph,
-          'neighbor-segments',
-          segments,
-          'uint32',
-          slotCount
-        ),
-        neighborCounts: importGraphBuffer(graph, 'neighbor-counts', counts, 'uint32', queryCount),
-        status: {overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1)}
-      }
-    })
-  );
+  const contributor = new GPUNearestFeatureJoin({
+    queries,
+    features: {...features, sourceIds: featureIds},
+    k: input.k,
+    ties: input.ties,
+    neighborCapacity: capacity,
+    spatialSort: prepared ? undefined : input.spatialSort,
+    querySort: input.querySort,
+    leafCapacity: input.leafCapacity,
+    prepared,
+    radius: maxDistance?.importToGraph(graph),
+    output: {
+      neighborIds: importGraphBuffer(graph, 'neighbor-ids', ids, 'uint32', slotCount),
+      neighborDistances: importGraphBuffer(
+        graph,
+        'neighbor-distances',
+        distances,
+        'float32',
+        slotCount
+      ),
+      neighborFootPoints: importGraphBuffer(graph, 'neighbor-foot', foot, 'float32x2', slotCount),
+      neighborQueryPoints: importGraphBuffer(
+        graph,
+        'neighbor-query-foot',
+        queryFoot,
+        'float32x2',
+        slotCount
+      ),
+      neighborSegmentIndices: importGraphBuffer(
+        graph,
+        'neighbor-segments',
+        segments,
+        'uint32',
+        slotCount
+      ),
+      neighborCounts: importGraphBuffer(graph, 'neighbor-counts', counts, 'uint32', queryCount),
+      status: {overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1)}
+    }
+  });
+  const producer =
+    input.scratchChunkQueryCount === undefined
+      ? contributor
+      : {
+          getCommandNodes: (target: GPUCommandGraph) => {
+            if (queries.kind !== 'points') throw new Error('Forced scratch fixture expects points');
+            const output = contributor.props.output;
+            return getNearestNeighborNodes(target, {
+              id: contributor.id,
+              operation: 'GPUNearestFeatureJoin',
+              queries: {kind: 'points', points: queries.positions},
+              queryCount,
+              features,
+              featureCount,
+              k: input.k,
+              capacity,
+              ties: input.ties,
+              leafCapacity: contributor.leafCapacity,
+              spatialSort: contributor.spatialSort,
+              querySort: input.querySort,
+              scratchChunkQueryCount: input.scratchChunkQueryCount,
+              neighborIds: output.neighborIds!,
+              neighborCounts: output.neighborCounts!,
+              neighborDistances: output.neighborDistances,
+              neighborFootPoints: output.neighborFootPoints,
+              neighborQueryPoints: output.neighborQueryPoints,
+              neighborSegmentIndices: output.neighborSegmentIndices,
+              overflow: output.status.overflow
+            }).nodes;
+          }
+        };
+  const commandNodes = producer.getCommandNodes(graph);
+  const traversalRecords = commandNodes
+    .filter(node => node.id.endsWith('-traverse'))
+    .map(node => getStorageTopKNodeRecord(node)!);
+  graph.add({getCommandNodes: () => commandNodes});
   const compiled = graph.compile();
   return {
     prepared,
+    traversalInvocationCount: traversalRecords.reduce(
+      (total, record) => total + record.settings[0],
+      0
+    ),
+    traversalWorkgroupCount: traversalRecords.reduce(
+      (total, record) => total + record.layout.x * record.layout.y * record.layout.z,
+      0
+    ),
     setMaxDistance: value => maxDistance?.write(Float32Array.of(value)),
     run: async () => {
       submitGraph(device, compiled, undefined);
       const flatIds = await readUint32(ids, slotCount);
       const flatDistances = await readFloat32(distances, slotCount);
       const flatFoot = await readFloat32(foot, slotCount * 2);
+      const flatQueryFoot = await readFloat32(queryFoot, slotCount * 2);
       const flatSegments = await readUint32(segments, slotCount);
       const result: NeighborResult = {
         ids: [],
         distances: [],
         foot: [],
+        queryFoot: [],
         segments: [],
         counts: await readUint32(counts, queryCount),
         overflow: (await readUint32(overflow, 1))[0]
@@ -236,6 +299,12 @@ function createNeighborRun(device: Device, input: NeighborCase): NeighborRun {
         result.ids.push(flatIds.slice(base, base + capacity));
         result.distances.push(flatDistances.slice(base, base + capacity));
         result.segments.push(flatSegments.slice(base, base + capacity));
+        result.queryFoot.push(
+          Array.from({length: capacity}, (_, slot) => [
+            flatQueryFoot[(base + slot) * 2],
+            flatQueryFoot[(base + slot) * 2 + 1]
+          ])
+        );
         result.foot.push(
           Array.from({length: capacity}, (_, slot) => [
             flatFoot[(base + slot) * 2],
@@ -861,4 +930,135 @@ describe('GPUNearestFeatureJoin neighbors mode validation', () => {
     ).toThrow(/output.neighborIds needs 4 rows/);
     for (const buffer of buffers) buffer.destroy();
   });
+});
+
+it('nearest storage top-k matches a CPU full sort for 65, 256 and 1024 neighbors with ties and chunked queries', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const features: NearestOracleGeometry = {
+    kind: 'points',
+    features: Array.from({length: 1100}, (_, row) => {
+      const distance = Math.floor(row / 4) + 1;
+      return [
+        [distance, 0],
+        [-distance, 0],
+        [0, distance],
+        [0, -distance]
+      ][row % 4] as NearestPoint;
+    })
+  };
+  for (const k of [32, 64, 65, 256, 1024]) {
+    const input: NeighborCase = {
+      queries: {
+        kind: 'points',
+        features: [
+          [0, 0],
+          [1, 0],
+          [0, 0]
+        ]
+      },
+      features,
+      k,
+      queryChunks: [1, 2],
+      spatialSort: false,
+      querySort: true
+    };
+    const result = await runNeighbors(device, input);
+    const oracle = nearestNeighborsOracle(input.queries, input.features, {k});
+    expectMatchesOracle(result, oracle, k, {exactIds: true, checkFoot: true});
+    expect(result.ids[0]).toEqual(Array.from({length: k}, (_, row) => row));
+    expect(result.overflow).toBe(0);
+  }
+  // All 1100 features are tied; retain the lowest 256 rows and report dropped ties.
+  const input: NeighborCase = {
+    queries: {kind: 'points', features: [[0, 0]]},
+    features: {kind: 'points', features: Array.from({length: 1100}, () => [1, 0])},
+    k: 65,
+    capacity: 256,
+    ties: 'all'
+  };
+  const result = await runNeighbors(device, input);
+  expectMatchesOracle(
+    result,
+    nearestNeighborsOracle(input.queries, input.features, {k: 65, ties: 'all'}).map(row =>
+      row.slice(0, 256)
+    ),
+    256,
+    {exactIds: true}
+  );
+  expect(result.ids[0]).toEqual(Array.from({length: 256}, (_, row) => row));
+  expect(result.overflow).toBe(1);
+});
+
+it('nearest forced storage batches cover [65, 0, 64] query chunks for large k and both query orders', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const queries: NearestOracleGeometry = {
+    kind: 'points',
+    features: Array.from({length: 129}, (_, row) => [row % 7, row % 3])
+  };
+  const features: NearestOracleGeometry = {
+    kind: 'points',
+    features: Array.from({length: 1100}, (_, row) => [
+      20 + Math.floor(row / 4),
+      [-1, 1, -2, 2][row % 4]
+    ])
+  };
+  for (const k of [65, 256, 1024])
+    for (const querySort of [false, true]) {
+      const input: NeighborCase = {
+        queries,
+        features,
+        k,
+        querySort,
+        spatialSort: false,
+        queryChunks: [65, 0, 64],
+        scratchChunkQueryCount: 64
+      };
+      const result = await runNeighbors(device, input);
+      const expected = nearestNeighborsOracle(queries, features, {k});
+      expectMatchesOracle(result, expected, k, {exactIds: true, checkFoot: true});
+      result.queryFoot.forEach((row, query) =>
+        row.forEach(point => {
+          expect(point).toEqual(queries.features[query]);
+        })
+      );
+      expect(result.counts).toEqual(Array(129).fill(k));
+      expect(result.overflow).toBe(0);
+    }
+});
+
+it('profiles GPU execution over many short query chunks against an independent oracle', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const sizes = Array.from({length: 128}, (_, chunk) => [1, 7, 0, 3][chunk % 4]);
+  const queryCount = sizes.reduce((sum, length) => sum + length, 0);
+  const queries: NearestOracleGeometry = {
+    kind: 'points',
+    features: Array.from({length: queryCount}, (_, row) => [row % 5, row % 3])
+  };
+  const features: NearestOracleGeometry = {
+    kind: 'points',
+    features: Array.from({length: 80}, (_, row) => [20 + row, row % 4])
+  };
+  const expected = nearestNeighborsOracle(queries, features, {k: 65});
+  for (const querySort of [false, true]) {
+    const run = createNeighborRun(device, {
+      queries,
+      features,
+      k: 65,
+      queryChunks: sizes,
+      querySort,
+      spatialSort: false
+    });
+    try {
+      expect(run.traversalInvocationCount).toBe(queryCount);
+      expect(run.traversalWorkgroupCount).toBe(sizes.filter(length => length > 0).length);
+      const result = await run.run();
+      expectMatchesOracle(result, expected, 65, {exactIds: true, checkFoot: true});
+      expect(result.overflow).toBe(0);
+    } finally {
+      run.destroy();
+    }
+  }
 });

@@ -11,11 +11,20 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   createFillNode,
-  createWGSLKernelNode,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {createStatisticsKernelNode as createWGSLKernelNode} from '../spatial-weights/statistics-kernel-node';
+import {
+  getTiledGlobalSpatialStatisticsNodes,
+  GLOBAL_SPATIAL_STATISTICS_MAXIMUM_ROWS,
+  GLOBAL_SPATIAL_STATISTICS_MAXIMUM_SLOTS
+} from './global-spatial-statistics-tiled';
+import {validateSpatialStatisticsWritableDispatches} from '../spatial-weights/spatial-statistics-writable-dispatches';
+import {validateSpatialStatisticsBindings} from '../spatial-weights/spatial-statistics-bindings';
 import {createSegmentSumNode} from '../../analysis-core/kernels/sorted-segment-sums';
 import {
+  validateCommandNodeBudget,
+  validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGPUStorageBindingByteLength,
   validateGraphViewsBelongToGraph,
@@ -132,7 +141,7 @@ const COUNTER_LENGTH = 9;
  * counts are summed as f32 columns, which is exact only below 2^24. The local statistics use the
  * same limit.
  */
-const MAXIMUM_ROWS = 2 ** 24;
+const GLOBAL_SPATIAL_STATISTICS_REFERENCE_MAXIMUM_ROWS = 2 ** 24;
 
 /**
  * Properties for {@link GPUGlobalSpatialStatistics}.
@@ -144,6 +153,12 @@ const MAXIMUM_ROWS = 2 ** 24;
 export type GPUGlobalSpatialStatisticsProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'global-spatial-statistics'`. */
   id?: string;
+  /**
+   * Fixed-order compensated tiles by default; the former matrix route remains an explicit reference.
+   * Finite statistical and inference fields use a float32 comparison tolerance of 1e-4 relative
+   * plus 1e-6 absolute; exact counts belong to the uint32 ports. Undefined-value policies agree.
+   */
+  mode?: 'tiled' | 'reference';
   /**
    * Square spatial weights: neighbor IDs index the same rows as `offsets`. Chunked weights run the
    * weights-reading kernels once per chunk (and the symmetry lookup per row chunk and target
@@ -206,6 +221,8 @@ export type GPUGlobalSpatialStatisticsOutput = {
    * symmetric weights) as uint32.
    */
   joinCounts?: GraphDataView<'uint32'>;
+  /** Exact [analysis population, islands, black population]; legacy float32 summary fields remain. */
+  counts?: GraphDataView<'uint32'>;
 };
 
 /**
@@ -266,8 +283,9 @@ export type GPUGlobalSpatialStatisticsOutput = {
  *
  * Precision: `n` is counted in u32 (atomic integer adds), the mean gets a second-pass correction
  * `mean += sum(x - mean) / n`, and deviations are formed from the corrected mean. Row counts must
- * be below 2^24 (degrees and counts are f32 columns, exact only there), the same limit as the
- * local statistics.
+ * fit GLOBAL_SPATIAL_STATISTICS_MAXIMUM_ROWS and each actual device binding. Exact population,
+ * island and black counts are available in output.counts. The explicit reference mode retains
+ * its exclusive 2^24 ceiling.
  *
  * Value scale: every statistic here is unchanged when the values are multiplied by a constant, so
  * `values` (and `secondValues`) are divided by a power of two near their mean magnitude before the
@@ -281,7 +299,8 @@ export type GPUGlobalSpatialStatisticsOutput = {
  * Algorithm: one gather pass per row over its CSR slots (binary search of `w_ji` in row `j`), a
  * deterministic transpose (stable sort of slots by neighbor) for column sums, and per-row partials
  * summed by fixed-order two-level workgroup trees. Join counts use u32 atomics. No float atomics,
- * so results are bitwise reproducible. Integer-valued sums (counts, degrees) are exact below 2^24.
+ * so results are reproducible for a fixed chunk topology. The default tiled route keeps counts in
+ * uint32 and uses compensated tile and merge sums without a row-by-column scratch matrix.
  */
 export class GPUGlobalSpatialStatistics implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -300,9 +319,40 @@ export class GPUGlobalSpatialStatistics implements GPUCommandNodeProducer {
     this.islands = resolveGPUIslandPolicy(id, props.islands);
     this.alternative = resolveAnalyticAlternative(id, props.alternative);
     const rows = validateGPUSpatialWeightsOrChunks(id, props.weights);
-    if (rows >= MAXIMUM_ROWS) {
-      throw new Error(`${id} weights must hold fewer than 2^24 rows`);
-    }
+    validateCapacity(
+      id,
+      'weights.rowCount (GLOBAL_SPATIAL_STATISTICS_MAXIMUM_ROWS)',
+      rows,
+      1,
+      GLOBAL_SPATIAL_STATISTICS_MAXIMUM_ROWS
+    );
+    if (props.mode !== undefined && props.mode !== 'tiled' && props.mode !== 'reference')
+      throw new Error(`${id} mode must be tiled or reference`);
+    if (props.mode === 'reference')
+      validateCapacity(
+        id,
+        'weights.rowCount (GLOBAL_SPATIAL_STATISTICS_REFERENCE_MAXIMUM_ROWS)',
+        rows,
+        1,
+        GLOBAL_SPATIAL_STATISTICS_REFERENCE_MAXIMUM_ROWS - 1
+      );
+    validateCommandNodeBudget(
+      id,
+      getGPUSpatialWeightsChunkDispatches(props.weights).length ** 2 * 8 +
+        getGPUSpatialWeightsChunkDispatches(props.weights).length * 220 +
+        100
+    );
+    const capacity = getGPUSpatialWeightsChunkDispatches(props.weights).reduce(
+      (sum, dispatch) => sum + dispatch.weights.neighbors.length,
+      0
+    );
+    validateCapacity(
+      id,
+      'weights.capacity (GLOBAL_SPATIAL_STATISTICS_MAXIMUM_SLOTS)',
+      capacity,
+      0,
+      GLOBAL_SPATIAL_STATISTICS_MAXIMUM_SLOTS
+    );
     if (props.weights.status?.overflow) {
       validateSinglePackedView(
         props.weights.status.overflow,
@@ -349,9 +399,18 @@ export class GPUGlobalSpatialStatistics implements GPUCommandNodeProducer {
         throw new Error(`${id} output.joinCounts needs 3 values`);
       }
     }
+    if (output.counts) {
+      validateSinglePackedView(output.counts, ['uint32'], `${id} output.counts`);
+      validateCapacity(id, 'output.counts.length', output.counts.length, 3);
+    }
+    validateSpatialStatisticsWritableDispatches(
+      id,
+      {summary: output.summary, joinCounts: output.joinCounts, counts: output.counts},
+      [['summary', 'joinCounts']]
+    );
     validateGraphOutputsDisjointFromInputs(
       id,
-      [output.summary, output.joinCounts],
+      [output.summary, output.joinCounts, output.counts],
       [
         ...getWeightsViews(props.weights),
         props.weights.status?.overflow,
@@ -384,6 +443,46 @@ export class GPUGlobalSpatialStatistics implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
     const {weights, mask, output} = props;
+    if (props.mode !== 'reference') {
+      const declarations = `${Object.entries(COLUMN)
+        .map(([name, column]) => `const COLUMN_${toConstantCase(name)}: u32 = ${column}u;`)
+        .join('\n')}
+${GLOBAL_STATISTICS_FINALIZE_WGSL}
+${getPValueWGSL(this.alternative)}
+fn writeBlock(offset: u32, statisticBlock: array<f32, 8>, enabled: bool) {
+ for (var field = 0u; field < 8u; field++) { results[resultsOffset + offset + field] = select(getQuietNaN(field), statisticBlock[field], enabled); }
+}`;
+      const body = getFinalizeBody(props, Boolean(weights.status?.overflow))
+        .replace(
+          'let mean = divideBySpatialCount(readTotal(COLUMN_X), count) * inverseScaleX + divideBySpatialCount(readTotal(COLUMN_DEVIATION_X), count);',
+          'let mean = readControlFloat(13u) + readControlFloat(14u);'
+        )
+        .replace(
+          'let p = divide(blackCount, n);',
+          'let p = divideSpatialCounts(counters[countersOffset + 10u], count);'
+        )
+        .replaceAll(
+          '(blackCount - 1.0)',
+          'f32(counters[countersOffset + 10u] - min(counters[countersOffset + 10u], 1u))'
+        );
+      return getTiledGlobalSpatialStatisticsNodes(graph, props, declarations, body);
+    }
+    const referenceRows = getGPUSpatialWeightsChunkDispatches(weights).reduce(
+      (sum, dispatch) => sum + dispatch.rowCount,
+      0
+    );
+    const referenceCapacity = getGPUSpatialWeightsChunkDispatches(weights).reduce(
+      (sum, dispatch) => sum + dispatch.weights.neighbors.length,
+      0
+    );
+    validateSpatialStatisticsBindings(graph, id, props, {
+      matrix: COLUMN_COUNT * referenceRows * 4,
+      centered: referenceRows * 8,
+      magnitudes: referenceRows * 8,
+      'column parts': referenceRows * 12,
+      'transpose offsets': (referenceRows + 1) * 4,
+      'transpose slots': referenceCapacity * 4
+    });
     validateGraphViewsBelongToGraph(id, graph, [
       ...getWeightsViews(weights),
       weights.status?.overflow,
@@ -1338,14 +1437,28 @@ fn readTotal(column: u32) -> f32 {
   return totalsD[totalsDOffset + column - BATCH_D_FIRST];
 }
 ${getPValueWGSL(this.alternative)}
-fn writeBlock(offset: u32, block: array<f32, 8>, enabled: bool) {
+fn writeBlock(offset: u32, statisticBlock: array<f32, 8>, enabled: bool) {
   for (var field = 0u; field < 8u; field++) {
-    results[resultsOffset + offset + field] = select(getQuietNaN(field), block[field], enabled);
+    results[resultsOffset + offset + field] = select(getQuietNaN(field), statisticBlock[field], enabled);
   }
 }`,
         body: getFinalizeBody(props, Boolean(overflow))
       })
     ];
+    if (output.counts)
+      nodes.push(
+        createWGSLKernelNode(graph, {
+          id: `${id}-reference-counts`,
+          operation: OPERATION,
+          invocationCount: 1,
+          bindings: [
+            {name: 'counters', view: counters, type: 'u32', access: 'read'},
+            {name: 'totalsB', view: totalsB, type: 'f32', access: 'read'},
+            {name: 'counts', view: output.counts, type: 'u32', access: 'read_write'}
+          ],
+          body: `counts[countsOffset] = counters[countersOffset]; counts[countsOffset + 1u] = u32(totalsB[totalsBOffset + ${COLUMN.island - BATCH_B.first}u]); counts[countsOffset + 2u] = u32(totalsB[totalsBOffset + ${COLUMN.black - BATCH_B.first}u]);`
+        })
+      );
     return nodes;
   }
 }
@@ -1460,45 +1573,48 @@ fn getZScore(statistic: f32, expected: f32, variance: f32) -> f32 {
 // (above the f32 range for about 1e7 rows with tens of neighbors) is never formed.
 
 // esda.Moran: (expected, VI_norm, VI_rand).
-fn getMoranMoments(n: f32, s0: f32, s1: f32, s2: f32, kurtosis: f32) -> vec3<f32> {
+fn getMoranMoments(count: u32, s0: f32, s1: f32, s2: f32, kurtosis: f32) -> vec3<f32> {
+  let n = f32(count);
   let n2 = n * n;
   let r1 = s1 / s0 / s0;
   let r2 = s2 / s0 / s0;
-  let expected = -1.0 / (n - 1.0);
+  let expected = -divideSpatialCounts(1u, count - min(count, 1u));
   let varianceNormality = (n2 * r1 - n * r2 + 3.0) / (n2 - 1.0) - expected * expected;
   let a = n * ((n2 - 3.0 * n + 3.0) * r1 - n * r2 + 3.0);
   let b = kurtosis * ((n2 - n) * r1 - 2.0 * n * r2 + 6.0);
   let varianceRandomization =
-    (a - b) / ((n - 1.0) * (n - 2.0) * (n - 3.0)) - expected * expected;
+    (a - b) / (f32(count - min(count, 1u)) * f32(count - min(count, 2u)) * f32(count - min(count, 3u))) - expected * expected;
   return vec3<f32>(expected, varianceNormality, varianceRandomization);
 }
 
 // esda.Geary: (VC_norm, VC_rand).
-fn getGearyMoments(n: f32, s0: f32, s1: f32, s2: f32, kurtosis: f32) -> vec2<f32> {
+fn getGearyMoments(count: u32, s0: f32, s1: f32, s2: f32, kurtosis: f32) -> vec2<f32> {
+  let n = f32(count);
   let n2 = n * n;
   let r1 = s1 / s0 / s0;
   let r2 = s2 / s0 / s0;
-  let varianceNormality = ((2.0 * r1 + r2) * (n - 1.0) - 4.0) / (2.0 * (n + 1.0));
-  let a = (n - 1.0) * r1 * (n2 - 3.0 * n + 3.0 - (n - 1.0) * kurtosis);
-  let b = 0.25 * (n - 1.0) * r2 * (n2 + 3.0 * n - 6.0 - (n2 - n + 2.0) * kurtosis);
-  let c = n2 - 3.0 - (n - 1.0) * (n - 1.0) * kurtosis;
-  let varianceRandomization = (a - b + c) / (n * (n - 2.0) * (n - 3.0));
+  let varianceNormality = ((2.0 * r1 + r2) * f32(count - min(count, 1u)) - 4.0) / (2.0 * (n + 1.0));
+  let a = f32(count - min(count, 1u)) * r1 * (n2 - 3.0 * n + 3.0 - f32(count - min(count, 1u)) * kurtosis);
+  let b = 0.25 * f32(count - min(count, 1u)) * r2 * (n2 + 3.0 * n - 6.0 - (n2 - n + 2.0) * kurtosis);
+  let c = n2 - 3.0 - f32(count - min(count, 1u)) * f32(count - min(count, 1u)) * kurtosis;
+  let varianceRandomization = (a - b + c) / (n * f32(count - min(count, 2u)) * f32(count - min(count, 3u)));
   return vec2<f32>(varianceNormality, varianceRandomization);
 }
 
 // Randomization variance of x'Wx (zero diagonal) with x = mean + z, sum z = 0:
 // mean^2 Var(d'z) + 2 mean Cov(d'z, z'Wz) + Var(z'Wz), d_i = w_i. + w_.i, Vd = sum (d - mean d)^2.
 fn getQuadraticFormVariance(
-  n: f32, s0: f32, s1: f32, s2: f32, degreeDeviation: f32, mean: f32,
+  count: u32, s0: f32, s1: f32, s2: f32, degreeDeviation: f32, mean: f32,
   sumSquares: f32, sumCubes: f32, sumFourths: f32
 ) -> f32 {
+  let n = f32(count);
   // A constant input has an invariant quadratic form under every permutation.
   if (sumSquares == 0.0) { return 0.0; }
-  let kurtosis = n * (sumFourths / sumSquares) / sumSquares;
-  let moranVariance = getMoranMoments(n, s0, s1, s2, kurtosis).z;
-  let scale = s0 * sumSquares / n;
-  let linearVariance = sumSquares * degreeDeviation / (n - 1.0);
-  let covariance = -sumCubes * degreeDeviation / ((n - 1.0) * (n - 2.0));
+  let kurtosis = multiplyBySpatialCount(sumFourths / sumSquares, count) / sumSquares;
+  let moranVariance = getMoranMoments(count, s0, s1, s2, kurtosis).z;
+  let scale = divideBySpatialCount(s0 * sumSquares, count);
+  let linearVariance = sumSquares * degreeDeviation / f32(count - min(count, 1u));
+  let covariance = -sumCubes * degreeDeviation / (f32(count - min(count, 1u)) * f32(count - min(count, 2u)));
   return mean * mean * linearVariance + 2.0 * mean * covariance + moranVariance * scale * scale;
 }
 `;
@@ -1559,7 +1675,8 @@ function getFinalizeBody(props: GPUGlobalSpatialStatisticsProps, hasOverflow: bo
         : '!truncated'
       : 'false';
   const layout = GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT;
-  return /* wgsl */ `let n = f32(counters[countersOffset]);
+  return /* wgsl */ `let count = counters[countersOffset];
+  let n = f32(count);
   let hasNegative = counters[countersOffset + 1u] > 0u;
   let truncated = ${hasOverflow ? 'overflow[overflowOffset] != 0u' : 'false'};
   // Every moment below is in scaled units (values divided by a power of two near their mean
@@ -1567,7 +1684,7 @@ function getFinalizeBody(props: GPUGlobalSpatialStatisticsProps, hasOverflow: bo
   let inverseScaleX = bitcast<f32>(counters[countersOffset + ${VALUE_SCALE.inverseX}u]);
   let scaleX = bitcast<f32>(counters[countersOffset + ${VALUE_SCALE.x}u]);
   // Mean with the second-pass correction sum(x - mean) / n.
-  let mean = divide(readTotal(COLUMN_X), n) * inverseScaleX + divide(readTotal(COLUMN_DEVIATION_X), n);
+  let mean = divideBySpatialCount(readTotal(COLUMN_X), count) * inverseScaleX + divideBySpatialCount(readTotal(COLUMN_DEVIATION_X), count);
   let sumSquares = readTotal(COLUMN_CENTERED_SQUARE);
   let sumCubes = readTotal(COLUMN_CENTERED_CUBE);
   let sumFourths = readTotal(COLUMN_CENTERED_FOURTH);
@@ -1576,7 +1693,7 @@ function getFinalizeBody(props: GPUGlobalSpatialStatisticsProps, hasOverflow: bo
   let s2 = readTotal(COLUMN_DEGREE_SQUARE);
   let blackCount = readTotal(COLUMN_BLACK);
   let degreeDeviation = readTotal(COLUMN_DEGREE_DEVIATION);
-  let kurtosis = divide(n * divide(sumFourths, sumSquares), sumSquares);
+  let kurtosis = divide(multiplyBySpatialCount(divide(sumFourths, sumSquares), count), sumSquares);
   let valid = n >= 4.0 && s0 > 0.0 && sumSquares > 0.0;
 
   results[resultsOffset + ${layout.summary}u] = n;
@@ -1585,14 +1702,14 @@ function getFinalizeBody(props: GPUGlobalSpatialStatisticsProps, hasOverflow: bo
   results[resultsOffset + ${layout.summary + 3}u] = select(s2, getQuietNaN(3u), truncated);
   results[resultsOffset + ${layout.summary + 4}u] = select(getFinite(mean * scaleX), getQuietNaN(4u), truncated);
   results[resultsOffset + ${layout.summary + 5}u] =
-    select(getFinite(divide(sumSquares, n) * scaleX * scaleX), getQuietNaN(5u), truncated);
+    select(getFinite(divideBySpatialCount(sumSquares, count) * scaleX * scaleX), getQuietNaN(5u), truncated);
   results[resultsOffset + ${layout.summary + 6}u] = blackCount;
   results[resultsOffset + ${layout.summary + 7}u] = readTotal(COLUMN_ISLAND);
 
   // Moran's I.
   {
-    let statistic = divide(n * readTotal(COLUMN_MORAN_CROSS), s0 * sumSquares);
-    let moments = getMoranMoments(n, s0, s1, s2, kurtosis);
+    let statistic = divide(multiplyBySpatialCount(readTotal(COLUMN_MORAN_CROSS), count), s0 * sumSquares);
+    let moments = getMoranMoments(count, s0, s1, s2, kurtosis);
     let varianceNormality = select(getQuietNaN(1u), getFinite(moments.y), valid);
     let varianceRandomization = select(getQuietNaN(1u), getFinite(moments.z), valid);
     let zNormality = getZScore(statistic, moments.x, varianceNormality);
@@ -1605,8 +1722,8 @@ function getFinalizeBody(props: GPUGlobalSpatialStatisticsProps, hasOverflow: bo
   }
   // Geary's C.
   {
-    let statistic = divide((n - 1.0) * readTotal(COLUMN_GEARY_SUM), 2.0 * s0 * sumSquares);
-    let moments = getGearyMoments(n, s0, s1, s2, kurtosis);
+    let statistic = divide(multiplyBySpatialCount(readTotal(COLUMN_GEARY_SUM), count - min(count, 1u)), 2.0 * s0 * sumSquares);
+    let moments = getGearyMoments(count, s0, s1, s2, kurtosis);
     let varianceNormality = select(getQuietNaN(1u), getFinite(moments.x), valid);
     let varianceRandomization = select(getQuietNaN(1u), getFinite(moments.y), valid);
     let zNormality = getZScore(statistic, 1.0, varianceNormality);
@@ -1618,10 +1735,10 @@ function getFinalizeBody(props: GPUGlobalSpatialStatisticsProps, hasOverflow: bo
   }
   // Getis-Ord General G.
   {
-    let denominator = n * (n - 1.0) * mean * mean - sumSquares;
+    let denominator = n * f32(count - min(count, 1u)) * mean * mean - sumSquares;
     let statistic = divide(readTotal(COLUMN_G_CROSS), denominator);
-    let expected = divide(s0, n * (n - 1.0));
-    let variance = select(getQuietNaN(1u), getFinite(getQuadraticFormVariance(n, s0, s1, s2,
+    let expected = divide(s0, n * f32(count - min(count, 1u)));
+    let variance = select(getQuietNaN(1u), getFinite(getQuadraticFormVariance(count, s0, s1, s2,
       degreeDeviation, mean, sumSquares, sumCubes, sumFourths) / denominator / denominator),
       n >= 4.0 && s0 > 0.0 && denominator > 0.0);
     let z = getZScore(statistic, expected, variance);
@@ -1632,10 +1749,10 @@ function getFinalizeBody(props: GPUGlobalSpatialStatisticsProps, hasOverflow: bo
   // Bivariate Moran's I, randomization of y.
   {
     let sumSquaresY = readTotal(COLUMN_CENTERED_SQUARE_Y);
-    let scale = divide(n, s0);
+    let scale = divideSpatialCountByValue(count, s0);
     let statistic = divide(scale * readTotal(COLUMN_BIVARIATE_CROSS), sqrt(sumSquares * sumSquaresY));
     let variance = select(getQuietNaN(1u), getFinite(scale * scale *
-      readTotal(COLUMN_COLUMN_LAG_DEVIATION) / ((n - 1.0) * sumSquares)), valid);
+      readTotal(COLUMN_COLUMN_LAG_DEVIATION) / (f32(count - min(count, 1u)) * sumSquares)), valid);
     let z = getZScore(statistic, 0.0, variance);
     writeBlock(${layout.bivariateMoran}u, array<f32, 8>(statistic, 0.0, getQuietNaN(2u),
       getQuietNaN(2u), getQuietNaN(2u), variance, z, getPValue(z)), ${enabled('bivariateMoran')});
@@ -1664,26 +1781,26 @@ function getFinalizeBody(props: GPUGlobalSpatialStatisticsProps, hasOverflow: bo
     let binaryValid = n >= 4.0 && b0 > 0.0;
     // A single colour makes every join count constant: zero variance.
     let oneColour = blackCount == 0.0 || blackCount == n;
-    let expectedBlackBlack = getFinite(0.5 * b0 * blackCount * (blackCount - 1.0) / (n * (n - 1.0)));
-    let varianceBlackBlack = select(getQuietNaN(3u), getFinite(0.25 * getQuadraticFormVariance(n,
+    let expectedBlackBlack = getFinite(0.5 * b0 * blackCount * (blackCount - 1.0) / (n * f32(count - min(count, 1u))));
+    let varianceBlackBlack = select(getQuietNaN(3u), getFinite(0.25 * getQuadraticFormVariance(count,
       b0, b1, b2, readTotal(COLUMN_BINARY_DEGREE_DEVIATION), p, blackSquares, blackCubes,
       blackFourths)), binaryValid);
     let varianceBlackBlackOrZero = select(varianceBlackBlack, 0.0, binaryValid && oneColour);
-    let expectedBlackWhite = getFinite(b0 * blackSquares / (n - 1.0));
+    let expectedBlackWhite = getFinite(b0 * blackSquares / f32(count - min(count, 1u)));
     let blackKurtosis = n * (blackFourths / blackSquares) / blackSquares;
-    let blackWhiteScale = b0 * blackSquares / (n - 1.0);
-    let varianceBlackWhite = select(getQuietNaN(3u), getFinite(getGearyMoments(n, b0, b1, b2,
+    let blackWhiteScale = b0 * blackSquares / f32(count - min(count, 1u));
+    let varianceBlackWhite = select(getQuietNaN(3u), getFinite(getGearyMoments(count, b0, b1, b2,
       blackKurtosis).y * blackWhiteScale * blackWhiteScale), binaryValid && !oneColour);
     let varianceBlackWhiteOrZero = select(varianceBlackWhite, 0.0, binaryValid && oneColour);
     let blackBlack = 0.5 * f32(blackBlack2);
     let blackWhite = 0.5 * f32(blackWhite2);
     let zBlackBlack = getZScore(blackBlack, expectedBlackBlack, varianceBlackBlackOrZero);
     let zBlackWhite = getZScore(blackWhite, expectedBlackWhite, varianceBlackWhiteOrZero);
-    let block = array<f32, 12>(blackBlack, blackWhite, 0.5 * f32(whiteWhite2), 0.5 * b0,
+    let statisticBlock = array<f32, 12>(blackBlack, blackWhite, 0.5 * f32(whiteWhite2), 0.5 * b0,
       expectedBlackBlack, varianceBlackBlackOrZero, zBlackBlack, getPValue(zBlackBlack),
       expectedBlackWhite, varianceBlackWhiteOrZero, zBlackWhite, getPValue(zBlackWhite));
     for (var field = 0u; field < 12u; field++) {
-      results[resultsOffset + ${layout.joinCount}u + field] = select(getQuietNaN(field), block[field], enabled);
+      results[resultsOffset + ${layout.joinCount}u + field] = select(getQuietNaN(field), statisticBlock[field], enabled);
     }
   }`;
 }

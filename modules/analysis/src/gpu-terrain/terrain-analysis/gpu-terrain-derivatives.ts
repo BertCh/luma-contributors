@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateTerrainBindings} from '../terrain-processing/terrain-binding-preflight';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -238,6 +239,12 @@ export class GPUTerrainDerivatives implements GPUCommandNodeProducer, GPURasterH
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateTerrainBindings(graph, this.id, this.props, {
+      'gradient scratch':
+        4 *
+        (this.props.grid.width + ((this.props.borderMode ?? 'one-sided') === 'one-sided' ? 2 : 0)) *
+        (this.props.grid.height + ((this.props.borderMode ?? 'one-sided') === 'one-sided' ? 2 : 0))
+    });
     const {id, props} = this;
     const {output} = props;
     const {width, height} = props.grid;

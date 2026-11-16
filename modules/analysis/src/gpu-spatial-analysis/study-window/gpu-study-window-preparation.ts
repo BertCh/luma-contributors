@@ -32,8 +32,11 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView,
-  validateRequirement
+  validateRequirement,
+  validateCapacity,
+  validateGPUStorageBindingByteLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {getPolygonEdgeSlabNodes} from '../../analysis-core/kernels/polygon-edge-slabs';
 import {
   getStudyWindowPackedLayout,
@@ -52,6 +55,17 @@ import {
 const OPERATION = 'GPUStudyWindowPreparation';
 // Ring records: role-signed area, perimeter, edge count, flags, bbox, reversal sign, ownership.
 const RING_STRIDE = 10;
+/** Bounds the resident sampling raster and its compaction planes. */
+const STUDY_WINDOW_MAXIMUM_SAMPLING_CELLS = 1048576;
+/** Raster crossings and slab capacities are emitted as uint32 shader indices. */
+const STUDY_WINDOW_MAXIMUM_CAPACITY = 0xfffffffe;
+/** Default and slot sizing of the shared polygon edge-slab layout, mirrored for preflight. */
+const STUDY_WINDOW_SLAB_MINIMUM_ENTRIES = 1024;
+const STUDY_WINDOW_SLAB_ENTRIES_PER_VERTEX = 4;
+const STUDY_WINDOW_SLAB_VERTICES_PER_SLOT = 4;
+/** Published radix-sort scratch has sixteen buckets per 256-row workgroup. */
+const STUDY_WINDOW_SORT_WORKGROUP_SIZE = 256;
+const STUDY_WINDOW_SORT_BUCKET_COUNT = 16;
 
 /** Compile-time geometry layout and sampler topology of {@link GPUStudyWindowPreparation}. */
 export type GPUStudyWindowPreparationProps = GPUPolygonGeometryFields & {
@@ -153,12 +167,27 @@ export class GPUStudyWindowPreparation implements GPUCommandNodeProducer, GPUPol
     if (
       sampleGrid.length !== 2 ||
       !sampleGrid.every(value => Number.isInteger(value) && value > 0) ||
-      sampleGrid[0] * sampleGrid[1] > 1048576
+      sampleGrid[0] * sampleGrid[1] > STUDY_WINDOW_MAXIMUM_SAMPLING_CELLS
     ) {
       throw new Error(
         `${id} samplingGrid must be two positive integers with a product of at most 1048576`
       );
     }
+    validateCapacity(
+      id,
+      'crossingCapacity',
+      props.crossingCapacity ?? 4 * sampleGrid[1] * (props.ringOffsets.length - 1),
+      2,
+      STUDY_WINDOW_MAXIMUM_CAPACITY
+    );
+    if (props.slabEntryCapacity !== undefined)
+      validateCapacity(
+        id,
+        'slabEntryCapacity',
+        props.slabEntryCapacity,
+        1,
+        STUDY_WINDOW_MAXIMUM_CAPACITY
+      );
     if (props.output?.summary) {
       validateSinglePackedView(props.output.summary, ['float32'], `${id} output.summary`);
       if (props.output.summary.length !== GPU_STUDY_WINDOW_SUMMARY_LENGTH) {
@@ -234,6 +263,55 @@ export class GPUStudyWindowPreparation implements GPUCommandNodeProducer, GPUPol
       props.ringOffsets,
       props.output?.summary
     ]);
+    validateGraphChunkBindingRanges(graph, id, {
+      positions: props.positions,
+      featureOffsets: props.featureOffsets,
+      polygonOffsets: props.polygonOffsets,
+      ringOffsets: props.ringOffsets,
+      summary: props.output?.summary
+    });
+    // The shared slab builder clamps entries to one uint32x2 binding. Packed study-window
+    // consumers additionally bind edges, slabs and sampler cells together, so check that layout too.
+    const slabCapacity = Math.floor(vertexCount / STUDY_WINDOW_SLAB_VERTICES_PER_SLOT) + 1;
+    const slabEntryCapacity = Math.min(
+      Math.max(0, Math.floor(graph.device.limits.maxStorageBufferBindingSize / 8) - vertexCount),
+      props.slabEntryCapacity ??
+        Math.max(
+          STUDY_WINDOW_SLAB_ENTRIES_PER_VERTEX * vertexCount,
+          STUDY_WINDOW_SLAB_MINIMUM_ENTRIES
+        )
+    );
+    const preparedLayout = getStudyWindowPackedLayout({
+      vertexCount,
+      slabOffsetCount: slabCapacity + 1,
+      slabEntryCount: vertexCount + slabEntryCapacity,
+      sampleCellCapacity: cellCount
+    });
+    const crossingCapacity = props.crossingCapacity ?? 4 * sampleGrid[1] * ringCount;
+    for (const [name, byteLength] of [
+      ['ring terms', 9 * vertexCount * 4],
+      ['edges', 4 * vertexCount * 4],
+      ['rings', RING_STRIDE * ringCount * 4],
+      ['sample scan', (cellCount + 1) * 4],
+      ['slab entries', (vertexCount + slabEntryCapacity) * 8],
+      ['slab offsets', (slabCapacity + 1) * 4],
+      ['slab parameters', 24],
+      ['packed window', preparedLayout.length * 4],
+      ['raster crossings', crossingCapacity * 4],
+      [
+        'raster sort histogram',
+        Math.ceil(crossingCapacity / STUDY_WINDOW_SORT_WORKGROUP_SIZE) *
+          STUDY_WINDOW_SORT_BUCKET_COUNT *
+          4
+      ]
+    ] as const)
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        name,
+        byteLength,
+        'reduce vertices, samplingGrid or capacities'
+      );
     this.graph = graph;
     const edges = this.createPersistentView(graph, 'edges', 'float32', 4 * vertexCount);
     const summary = this.createPersistentView(
@@ -628,12 +706,7 @@ ${getStudyWindowSampleCellWGSL(sampleGrid, 'readSummary')}`,
   }`
       })
     );
-    const layout = getStudyWindowPackedLayout({
-      vertexCount,
-      slabOffsetCount: slabs.slabOffsets.length,
-      slabEntryCount: slabs.slabEntries.length,
-      sampleCellCapacity: cellCount
-    });
+    const layout = preparedLayout;
     const packed = this.createPersistentView(graph, 'packed', 'uint32', layout.length);
     // Each copy binds only its source and destination. Binding floats as words preserves all bits.
     for (const [name, source, length] of [

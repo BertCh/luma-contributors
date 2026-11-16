@@ -19,6 +19,46 @@ import {
 import {getCholeskyWGSL, getPivotLimitedCholeskyWGSL} from './spatial-regression-solve';
 import type {GPUSeeminglyUnrelatedRegression} from './gpu-seemingly-unrelated-regression';
 import {getPairwiseSumWGSL} from './pairwise-sum-wgsl';
+import {getRegressionTileLayout} from './regression-row-tiles';
+import {ROUNDED_DIFFERENCE_WGSL} from './rounded-difference-wgsl';
+
+/** One source of truth for every scratch offset and the allocation-free preflight. */
+function getOrdinarySURLayout(equations: number, columns: number, rows: number) {
+  const size = equations * (columns + 1);
+  const {tileRowCount: tileRows, tileCount} = getRegressionTileLayout(rows);
+  const meansStart = 1;
+  const responsesStart = meansStart + equations * columns;
+  const initialStart = responsesStart + equations;
+  const precisionStart = initialStart + equations * columns;
+  const errorScaleStart = precisionStart + equations * equations;
+  const centeredSolutionStart = errorScaleStart + 1;
+  const runtimeZeroSlot = centeredSolutionStart + size;
+  const partialStart = runtimeZeroSlot + 1;
+  const partialStride = size * (size + 1);
+  return {
+    tileRows,
+    tileCount,
+    meansStart,
+    responsesStart,
+    initialStart,
+    precisionStart,
+    errorScaleStart,
+    centeredSolutionStart,
+    runtimeZeroSlot,
+    partialStart,
+    partialStride,
+    length: partialStart + tileCount * partialStride
+  };
+}
+
+/** Exact scratch size shared with the contributor's allocation-free binding preflight. */
+export function getOrdinarySURScratchLength(
+  equationCount: number,
+  predictorCount: number,
+  rowCount: number
+): number {
+  return getOrdinarySURLayout(equationCount, predictorCount, rowCount).length;
+}
 
 /** Bounded row-tile statistics followed by the existing small scaled FGLS solves. */
 export function getOrdinarySURNodes<Parameters>(
@@ -31,22 +71,23 @@ export function getOrdinarySURNodes<Parameters>(
   const rows = props.rowCount;
   const width = columns + 1;
   const size = equations * width;
-  const tileRows = 256;
-  const tileCount = Math.ceil(rows / tileRows);
-  const meansStart = 1;
-  const responsesStart = meansStart + equations * columns;
-  const initialStart = responsesStart + equations;
-  const precisionStart = initialStart + equations * columns;
-  const errorScaleStart = precisionStart + equations * equations;
-  const partialStart = errorScaleStart + 1;
-  const partialStride = size * (size + 1);
-  // Each completed stage reuses the partial region; graph dependencies serialize those lifetimes.
-  const scratch = createTransientView(
-    graph,
-    `${id}-statistics`,
-    'float32',
-    partialStart + tileCount * partialStride
-  );
+  const {
+    tileRows,
+    tileCount,
+    meansStart,
+    responsesStart,
+    initialStart,
+    precisionStart,
+    errorScaleStart,
+    centeredSolutionStart,
+    runtimeZeroSlot,
+    partialStart,
+    partialStride,
+    length
+  } = getOrdinarySURLayout(equations, columns, rows);
+  // The contributor preflights callers and this entire layout before entering the builder.
+  // Each completed stage reuses the partial region; dependencies serialize those lifetimes.
+  const scratch = createTransientView(graph, `${id}-statistics`, 'float32', length);
   const scratchBinding = {
     name: 'scratch',
     view: scratch,
@@ -94,11 +135,14 @@ export function getOrdinarySURNodes<Parameters>(
   ] as const;
   const constants = `${GET_NAN_WGSL}
 ${IS_FINITE_BITS_WGSL}
+${ROUNDED_DIFFERENCE_WGSL}
 const MEANS_START: u32 = ${meansStart}u;
 const RESPONSES_START: u32 = ${responsesStart}u;
 const INITIAL_START: u32 = ${initialStart}u;
 const PRECISION_START: u32 = ${precisionStart}u;
 const ERROR_SCALE_START: u32 = ${errorScaleStart}u;
+const CENTERED_SOLUTION_START: u32 = ${centeredSolutionStart}u;
+const RUNTIME_ZERO_SLOT: u32 = ${runtimeZeroSlot}u;
 const PARTIAL_START: u32 = ${partialStart}u;
 const PARTIAL_STRIDE: u32 = ${partialStride}u;
 // Fixed pairwise sum over the tiles (a float compensation is folded away by the shader compiler).
@@ -124,15 +168,19 @@ fn included(row: u32) -> bool {
 }
 fn predictor(row: u32, equation: u32, column: u32) -> f32 {
   if (column == 0u) { return 1.0; }
-  return predictors[predictorsOffset + (equation * ${rows}u + row) * ${columns}u + column - 1u]
-    - scratch[scratchOffset + MEANS_START + equation * ${columns}u + column - 1u];
+  return getRoundedDifference(
+    predictors[predictorsOffset + (equation * ${rows}u + row) * ${columns}u + column - 1u],
+    scratch[scratchOffset + MEANS_START + equation * ${columns}u + column - 1u],
+    bitcast<u32>(scratch[scratchOffset + RUNTIME_ZERO_SLOT]));
 }
 fn residual(row: u32, equation: u32) -> f32 {
   ${
     props.initialResiduals
       ? `return initialResiduals[initialResidualsOffset + equation * ${rows}u + row];`
       : `
-  var value = responses[responsesOffset + equation * ${rows}u + row] - scratch[scratchOffset + RESPONSES_START + equation];
+  var value = getRoundedDifference(responses[responsesOffset + equation * ${rows}u + row],
+    scratch[scratchOffset + RESPONSES_START + equation],
+    bitcast<u32>(scratch[scratchOffset + RUNTIME_ZERO_SLOT]));
   for (var column = 0u; column < ${columns}u; column++) {
     value -= predictor(row, equation, column + 1u) * scratch[scratchOffset + INITIAL_START + equation * ${columns}u + column];
   }
@@ -196,6 +244,7 @@ for (var slot = 0u; slot < ${size}u; slot++) { scratch[start + 1u + slot] = mean
       constants,
       `
 status[statusOffset] = 1u;
+scratch[scratchOffset + RUNTIME_ZERO_SLOT] = 0.0;
 for (var slot = 0u; slot < ${size}u; slot++) { coefficients[coefficientsOffset + slot] = getNaN(); }
 for (var slot = 0u; slot < ${size * size}u; slot++) { covariance[covarianceOffset + slot] = getNaN(); }
 for (var slot = 0u; slot < ${equations * equations}u; slot++) { residualCovariance[residualCovarianceOffset + slot] = getNaN(); }
@@ -345,6 +394,9 @@ for (var first = 0u; first < ${size}u; first++) {
 var scales:array<f32,${size}>;for(var column=0u;column<${size}u;column++){let diagonal=normal[column*${size + 1}u];if(!(diagonal>0.0)){status[statusOffset]=2u;return;}scales[column]=inverseSqrt(diagonal);right[column]*=scales[column];}
 for(var first=0u;first<${size}u;first++){for(var second=0u;second<${size}u;second++){normal[first*${size}u+second]*=scales[first]*scales[second];}}
 if(!choleskyFactorLimited_${size}(&normal)){status[statusOffset]=2u;return;}choleskySolve_${size}(&normal,&right);
+for (var slot = 0u; slot < ${size}u; slot++) {
+  scratch[scratchOffset + CENTERED_SOLUTION_START + slot] = right[slot] * scales[slot];
+}
 for(var equation=0u;equation<${equations}u;equation++){var intercept=scratch[scratchOffset+RESPONSES_START+equation]+right[equation*${width}u]*scales[equation*${width}u];for(var column=0u;column<${columns}u;column++){let slot=equation*${width}u+column+1u;let coefficient=right[slot]*scales[slot];coefficients[coefficientsOffset+slot]=coefficient;intercept-=scratch[scratchOffset+MEANS_START+equation*${columns}u+column]*coefficient;}coefficients[coefficientsOffset+equation*${width}u]=intercept;}
 for(var targetColumn=0u;targetColumn<${size}u;targetColumn++){var transform:array<f32,${size}>;transform[targetColumn]=1.0;if(targetColumn%${width}u==0u){for(var column=0u;column<${columns}u;column++){transform[targetColumn+column+1u]=-scratch[scratchOffset+MEANS_START+(targetColumn/${width}u)*${columns}u+column];}}for(var column=0u;column<${size}u;column++){transform[column]*=scales[column];}choleskySolve_${size}(&normal,&transform);for(var column=0u;column<${size}u;column++){transform[column]*=scales[column];}
 for(var destination=0u;destination<${size}u;destination++){var value=transform[destination];if(destination%${width}u==0u){for(var column=0u;column<${columns}u;column++){value-=scratch[scratchOffset+MEANS_START+(destination/${width}u)*${columns}u+column]*transform[destination+column+1u];}}covariance[covarianceOffset+destination*${size}u+targetColumn]=value*scratch[scratchOffset+ERROR_SCALE_START];}}
@@ -357,7 +409,7 @@ for(var destination=0u;destination<${size}u;destination++){var value=transform[d
       [
         ...inputs,
         scratchBinding,
-        coefficientsBinding,
+        statusBinding,
         {name: 'residuals', view: props.output.residuals, type: 'f32', access: 'read_write'}
       ],
       inputDeclarations,
@@ -365,9 +417,17 @@ for(var destination=0u;destination<${size}u;destination++){var value=transform[d
 let equation = index / ${rows}u;
 let row = index % ${rows}u;
 var value = getNaN();
-if (included(row)) {
-  value = responses[responsesOffset + index] - coefficients[coefficientsOffset + equation * ${width}u];
-  for (var column = 0u; column < ${columns}u; column++) { value -= predictors[predictorsOffset + index * ${columns}u + column] * coefficients[coefficientsOffset + equation * ${width}u + column + 1u]; }
+if (status[statusOffset] == 0u && included(row)) {
+  // The raw intercept can lose the small centered intercept when predictor means are large.
+  // Predict from the centered fit, rounding the first difference before subtracting small terms.
+  value = getRoundedDifference(responses[responsesOffset + index],
+    scratch[scratchOffset + RESPONSES_START + equation],
+    bitcast<u32>(scratch[scratchOffset + RUNTIME_ZERO_SLOT]));
+  value -= scratch[scratchOffset + CENTERED_SOLUTION_START + equation * ${width}u];
+  for (var column = 0u; column < ${columns}u; column++) {
+    value -= predictor(row, equation, column + 1u)
+      * scratch[scratchOffset + CENTERED_SOLUTION_START + equation * ${width}u + column + 1u];
+  }
 }
 residuals[residualsOffset + index] = value;
 `

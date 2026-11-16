@@ -34,7 +34,18 @@ import {
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {validateAngularTolerance} from '../global-coordinates/spherical-limits';
 import {S2_ANALYSIS_WGSL} from './s2-analysis-wgsl';
-import {getScanCommandNodeCount} from './s2-covering-support';
+import {
+  getScanCommandNodeCount,
+  createS2CoveringRoundParameters,
+  validateS2CoveringRoundParameters
+} from './s2-covering-support';
+import {
+  validateCellDispatchBindings,
+  validateCellDispatchOutputs
+} from '../cell-indexing/cell-dispatch-validation';
+
+/** Storage scalar indices, lengths and serialized count literals must fit uint32. */
+const MAXIMUM_S2_COVERING_COMPONENT_COUNT = 0xffffffff;
 
 /**
  * Largest `level` of the uniform enumeration: each invocation examines all `6 * 4^level` cells of
@@ -169,6 +180,20 @@ export class GPUS2CapCovering implements GPUCommandNodeProducer {
     validateSinglePackedView(props.output.cells, ['uint32x2'], this.id);
     validateSinglePackedView(props.output.counts, ['uint32x2'], this.id);
     validateSinglePackedView(props.output.status, ['uint32'], this.id);
+    validateCapacity(
+      this.id,
+      'output.cells components',
+      props.output.cells.length * 2,
+      0,
+      MAXIMUM_S2_COVERING_COMPONENT_COUNT
+    );
+    validateCapacity(
+      this.id,
+      'caps components',
+      props.caps.length * 4,
+      0,
+      MAXIMUM_S2_COVERING_COMPONENT_COUNT
+    );
     validateRequirement(
       this.id,
       props.refinement === undefined ||
@@ -187,7 +212,13 @@ export class GPUS2CapCovering implements GPUCommandNodeProducer {
         ? GPU_S2_CAP_COVERING_MAXIMUM_REFINED_LEVEL
         : GPU_S2_CAP_COVERING_MAXIMUM_UNIFORM_LEVEL
     );
-    validateCapacity(this.id, 'capacity', props.capacity, 1, 6 * 4 ** props.level);
+    validateCapacity(
+      this.id,
+      'capacity',
+      props.capacity,
+      1,
+      Math.min(MAXIMUM_S2_COVERING_COMPONENT_COUNT, 6 * 4 ** props.level)
+    );
     validateRequirement(
       this.id,
       props.output.cells.length === props.caps.length * props.capacity &&
@@ -229,17 +260,37 @@ export class GPUS2CapCovering implements GPUCommandNodeProducer {
     // Start, cells and publish nodes, then per round a classify, the scan over every frontier row
     // (plus the total row) and a write.
     this.estimatedCommandNodeCount = refined
-      ? 3 +
+      ? 4 +
         (props.level + 1) *
           (2 + getScanCommandNodeCount(props.caps.length * this.frontierCapacity + 1))
       : 1;
     validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
+    validateCellDispatchOutputs(
+      this.id,
+      props.output,
+      refined ? [{counts: props.output.counts, status: props.output.status}] : [props.output]
+    );
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [props.caps]);
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
+    const refined = props.refinement === 'level-synchronous';
+    const rows = props.caps.length * this.frontierCapacity;
+    validateCellDispatchBindings(
+      graph,
+      id,
+      {caps: props.caps, ...props.output},
+      refined
+        ? [
+            ['frontier scratch', rows * 8],
+            ['count and offset scratch', (rows + 1) * 4],
+            ['list count scratch', props.caps.length * 4]
+          ]
+        : []
+    );
+    if (refined) validateS2CoveringRoundParameters(graph, id, props.level + 1);
     validateGraphViewsBelongToGraph(id, graph, [props.caps, ...Object.values(props.output)]);
     if (props.refinement === 'level-synchronous') {
       return this.getLevelSynchronousNodes(graph);
@@ -297,6 +348,7 @@ counts[countsOffset + index * 2u] = min(count, ${props.capacity}u); counts[count
     const roundCount = props.level + 1;
     const toleranceLiteral = getWGSLFloatLiteral(props.tolerance ?? 1e-5);
     const pruningMarginLiteral = getWGSLFloatLiteral(REFINEMENT_PRUNING_MARGIN);
+    const roundParameters = createS2CoveringRoundParameters(graph, id, roundCount);
     const lists = [
       createTransientView(graph, `${id}-frontier-a`, 'uint32x2', rowCount),
       createTransientView(graph, `${id}-frontier-b`, 'uint32x2', rowCount)
@@ -306,6 +358,7 @@ counts[countsOffset + index * 2u] = min(count, ${props.capacity}u); counts[count
     const offsets = createTransientView(graph, `${id}-round-offsets`, 'uint32', rowCount + 1);
     const listCounts = createTransientView(graph, `${id}-list-counts`, 'uint32', capCount);
     const nodes: GPUCommandNode<Parameters>[] = [
+      ...roundParameters.nodes,
       createWGSLKernelNode(graph, {
         id: `${id}-start`,
         operation,
@@ -341,20 +394,25 @@ if (index == 0u) { counts[countsOffset + ${rowCount}u] = 0u; }`
           variant,
           invocationCount: rowCount,
           bindings: [
+            {
+              name: 'roundParameters',
+              view: roundParameters.slots[round],
+              type: 'u32',
+              access: 'read'
+            },
             {name: 'caps', view: props.caps, type: 'f32', access: 'read'},
             {name: 'list', view: input, type: 'u32', access: 'read'},
             {name: 'counts', view: counts, type: 'u32', access: 'read_write'},
             {name: 'listCounts', view: listCounts, type: 'u32', access: 'read'}
           ],
-          declarations: `override ROUND: u32;\n${dggs.source}\n${S2_ANALYSIS_WGSL}`,
-          constants: {ROUND: round},
+          declarations: `${dggs.source}\n${S2_ANALYSIS_WGSL}`,
           body: `let capIndex = index / ${frontierCapacity}u; let slot = index % ${frontierCapacity}u;
 var count = 0u;
 if (slot < min(listCounts[listCountsOffset + capIndex], ${frontierCapacity}u)) {
   let offset = capsOffset + capIndex * 4u; let center = vec3f(caps[offset], caps[offset + 1u], caps[offset + 2u]); let radius = caps[offset + 3u];
   let cell = vec2u(list[listOffset + index * 2u + 1u], list[listOffset + index * 2u]);
   let nearest = s2AnalysisDistance(cell, center);
-  if (ROUND == ${props.level}u) {
+  if (roundParameters[roundParametersOffset] == ${props.level}u) {
     let selected = ${props.mode === 'interior' ? `3.141592653589793 - s2AnalysisDistance(cell, -center) <= radius - ${toleranceLiteral}` : `nearest <= radius + ${toleranceLiteral}`};
     count = select(0u, 1u, selected);
   } else {
@@ -384,8 +442,7 @@ counts[countsOffset + index] = count;`
             {name: 'listCounts', view: listCounts, type: 'u32', access: 'read_write'},
             {name: 'status', view: props.output.status, type: 'atomic<u32>', access: 'read_write'}
           ],
-          declarations: `override ROUND: u32;\n${dggs.source}`,
-          constants: {ROUND: round},
+          declarations: dggs.source,
           body: `let capIndex = index / ${frontierCapacity}u; let slot = index % ${frontierCapacity}u;
 let base = offsets[offsetsOffset + capIndex * ${frontierCapacity}u];
 let count = counts[countsOffset + index]; let start = offsets[offsetsOffset + index] - base;

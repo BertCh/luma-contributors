@@ -18,7 +18,9 @@ import {
   validateFiniteNumber,
   validateGPUStorageBindingByteLength,
   validateMaximumCount,
+  validateGraphViewsBelongToGraph,
   validateRequirement,
+  validateSinglePackedView,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -38,6 +40,8 @@ import {
 
 /** Largest search scratch, in uint32 words: the shader indexes it with a u32. */
 export const TERRAIN_BREACH_MAXIMUM_SCRATCH_WORDS = 0xffffffff;
+// Per-step elevation targets use float32, so the rounded decrement must remain finite.
+const TERRAIN_BREACH_MAXIMUM_ELEVATION_DECREMENT = 3.4028234663852886e38;
 
 export type GPUTerrainBreachProps = {
   id?: string;
@@ -92,9 +96,10 @@ export class GPUTerrainBreach implements GPUCommandNodeProducer {
     validateRequirement(
       this.id,
       Number.isFinite(props.elevationDecrement) &&
+        Math.fround(props.elevationDecrement) <= TERRAIN_BREACH_MAXIMUM_ELEVATION_DECREMENT &&
         props.elevationDecrement > 0 &&
         Math.fround(props.elevationDecrement) > 0,
-      'elevationDecrement must be a positive finite number that is above zero in float32'
+      `elevationDecrement must be a positive finite number that is above zero in float32 and at most TERRAIN_BREACH_MAXIMUM_ELEVATION_DECREMENT (${TERRAIN_BREACH_MAXIMUM_ELEVATION_DECREMENT}) after float32 rounding`
     );
     validateViewLength(this.id, 'output.elevation', props.output.elevation, count);
     validateViewLength(this.id, 'output.cutDepth', props.output.cutDepth, count);
@@ -125,15 +130,53 @@ export class GPUTerrainBreach implements GPUCommandNodeProducer {
     // Search uses two nodes per step; all other search, edit, mask and count passes use at most 15.
     this.estimatedCommandNodeCount = props.pitCells.length > 0 ? 15 + 2 * props.maximumSteps : 6;
     validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
+    const hasPits = props.pitCells.length > 0;
+    for (const view of [
+      props.pitCells,
+      props.output.pathCells,
+      props.output.pathLengths,
+      props.output.pitStatus
+    ]) {
+      validateSinglePackedView(view, [view.format], this.id);
+    }
     checkTerrainViews(
       this.id,
       [
         props.elevation,
-        props.pitCells,
+        ...(hasPits ? [props.pitCells] : []),
         ...(props.burnDepth ? [props.burnDepth] : []),
         ...(props.validity ? [props.validity] : [])
       ],
-      Object.values(props.output)
+      Object.entries(props.output)
+        .filter(([name]) => hasPits || !['pathCells', 'pathLengths', 'pitStatus'].includes(name))
+        .map(([, view]) => view),
+      [
+        {
+          reads: [
+            ...(!props.validity ? [props.elevation] : []),
+            ...(props.burnDepth ? [props.burnDepth] : [])
+          ],
+          writes: [props.output.elevation, props.output.cutDepth, props.output.modificationMask]
+        },
+        {reads: hasPits ? [props.output.pitStatus] : [], writes: [props.output.unresolvedCount]},
+        ...(hasPits
+          ? [
+              {
+                reads: [...(!props.validity ? [props.elevation] : []), props.pitCells],
+                writes: [props.output.pathCells, props.output.pathLengths, props.output.pitStatus]
+              },
+              {
+                reads: [
+                  props.output.elevation,
+                  props.output.modificationMask,
+                  props.output.pathCells,
+                  props.output.pathLengths
+                ],
+                writes: [props.output.pitStatus]
+              }
+            ]
+          : [])
+      ]
     );
   }
   getCommandNodes<Parameters>(
@@ -146,12 +189,23 @@ export class GPUTerrainBreach implements GPUCommandNodeProducer {
     const searchWidth = Math.min(props.grid.width, props.maximumSteps * 2 + 1);
     const searchHeight = Math.min(props.grid.height, props.maximumSteps * 2 + 1);
     const searchCount = searchWidth * searchHeight;
+    validateGraphViewsBelongToGraph(id, graph, [
+      props.elevation,
+      props.pitCells,
+      props.validity,
+      props.burnDepth,
+      ...Object.values(props.output)
+    ]);
     checkTerrainGraph(id, graph, [
       props.elevation,
       ...(props.validity ? [props.validity] : []),
-      props.pitCells,
+      ...(pitCount > 0 ? [props.pitCells] : []),
       ...(props.burnDepth ? [props.burnDepth] : []),
-      ...Object.values(props.output)
+      ...Object.entries(props.output)
+        .filter(
+          ([name]) => pitCount > 0 || !['pathCells', 'pathLengths', 'pitStatus'].includes(name)
+        )
+        .map(([, view]) => view)
     ]);
     const scratchWords = Math.max(1, pitCount * (props.maximumSteps + 1) * searchCount * 2);
     validateGPUStorageBindingByteLength(
@@ -186,24 +240,28 @@ export class GPUTerrainBreach implements GPUCommandNodeProducer {
         ],
         body: `let bits = bitcast<u32>(source[sourceOffset + index]); edits[editsOffset + index] = select(bits ^ 0x80000000u, ~bits, (bits & 0x80000000u) != 0u);`
       }),
-      createWGSLKernelNode(graph, {
-        id: `${id}-edit-proposals`,
-        operation: 'GPUTerrainBreach',
-        invocationCount: pitCount * (props.maximumSteps + 1),
-        bindings: [
-          terrainBinding('source', elevation),
-          terrainBinding('paths', props.output.pathCells),
-          terrainBinding('lengths', props.output.pathLengths),
-          {name: 'edits', view: edits, type: 'atomic<u32>', access: 'read_write'}
-        ],
-        body: `let pitIndex = index / ${props.maximumSteps + 1}u; let step = index % ${props.maximumSteps + 1}u;
+      ...(pitCount > 0
+        ? [
+            createWGSLKernelNode(graph, {
+              id: `${id}-edit-proposals`,
+              operation: 'GPUTerrainBreach',
+              invocationCount: pitCount * (props.maximumSteps + 1),
+              bindings: [
+                terrainBinding('source', elevation),
+                terrainBinding('paths', props.output.pathCells),
+                terrainBinding('lengths', props.output.pathLengths),
+                {name: 'edits', view: edits, type: 'atomic<u32>', access: 'read_write'}
+              ],
+              body: `let pitIndex = index / ${props.maximumSteps + 1}u; let step = index % ${props.maximumSteps + 1}u;
 if (step == 0u || step >= lengths[lengthsOffset + pitIndex]) { return; }
 let start = paths[pathsOffset + pitIndex * ${props.maximumSteps + 1}u];
 let cell = paths[pathsOffset + index];
 let value = source[sourceOffset + start] - f32(step) * ${decrement};
 let bits = bitcast<u32>(value);
 atomicMin(&edits[editsOffset + cell], select(bits ^ 0x80000000u, ~bits, (bits & 0x80000000u) != 0u));`
-      }),
+            })
+          ]
+        : []),
       createWGSLKernelNode(graph, {
         id: `${id}-apply`,
         operation: 'GPUTerrainBreach',
@@ -226,19 +284,21 @@ if (isFiniteValue(original)) {
 }
 elevation[elevationOffset + index] = edited; depth[depthOffset + index] = original - edited; mask[maskOffset + index] = flags;`
       }),
-      createWGSLKernelNode(graph, {
-        id: `${id}-verify-paths`,
-        operation: 'GPUTerrainBreach',
-        invocationCount: pitCount,
-        declarations: TERRAIN_FINITE_WGSL,
-        bindings: [
-          terrainBinding('elevation', props.output.elevation),
-          terrainBinding('mask', props.output.modificationMask),
-          terrainBinding('paths', props.output.pathCells),
-          terrainBinding('lengths', props.output.pathLengths),
-          terrainBinding('status', props.output.pitStatus, 'read_write')
-        ],
-        body: `if (status[statusOffset + index] != 1u) { return; }
+      ...(pitCount > 0
+        ? [
+            createWGSLKernelNode(graph, {
+              id: `${id}-verify-paths`,
+              operation: 'GPUTerrainBreach',
+              invocationCount: pitCount,
+              declarations: TERRAIN_FINITE_WGSL,
+              bindings: [
+                terrainBinding('elevation', props.output.elevation),
+                terrainBinding('mask', props.output.modificationMask),
+                terrainBinding('paths', props.output.pathCells),
+                terrainBinding('lengths', props.output.pathLengths),
+                terrainBinding('status', props.output.pitStatus, 'read_write')
+              ],
+              body: `if (status[statusOffset + index] != 1u) { return; }
 let pathLength = lengths[lengthsOffset + index];
 for (var step = 1u; step < pathLength; step++) {
  let previous = paths[pathsOffset + index * ${props.maximumSteps + 1}u + step - 1u];
@@ -247,7 +307,9 @@ for (var step = 1u; step < pathLength; step++) {
  let currentElevation = elevation[elevationOffset + current];
  if (((mask[maskOffset + previous] | mask[maskOffset + current]) & 4u) != 0u || !isFiniteValue(previousElevation) || !isFiniteValue(currentElevation) || !(currentElevation < previousElevation)) { status[statusOffset + index] = 2u; }
 }`
-      }),
+            })
+          ]
+        : []),
       ...createRasterCountNodes(graph, {
         id: `${id}-status`,
         operation: 'GPUTerrainBreach',

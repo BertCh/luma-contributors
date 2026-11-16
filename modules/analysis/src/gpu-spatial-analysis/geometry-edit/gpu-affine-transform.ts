@@ -7,15 +7,30 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GPUCommandNode,
-  type GraphDataView
+  type GraphDataView,
+  type GraphVectorView,
+  validatePackedView
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
+  getGraphViewChunks,
+  validateCapacity,
+  validateCommandNodeBudget,
+  validateGPUStorageBindingByteLength,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  GRAPH_CHUNK_MAXIMUM_ROW_COUNT,
+  planGraphChunkDispatch,
+  validateDisjointWritableViews,
+  validateGraphChunkBindingRanges,
+  validateGraphChunkDispatchBindings,
+  type GraphChunkDispatchPlan
+} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {createAffineChunkNodes} from './gpu-affine-transform-chunks';
 import {GPUGeometryMeasures} from '../geometry-measures/gpu-geometry-measures';
+import {GEOMETRY_STATS_STRIDE} from '../geometry-measures/geometry-measures-kernels';
 import type {GPUPolygonGeometryFields} from '../../analysis-core/contracts/index';
 import {createAffineTransformNode} from './geometry-edit-kernels';
 import {
@@ -117,13 +132,21 @@ export function getGPUAffineTransformParameterValues(
 }
 
 /** Caller-owned output of {@link GPUAffineTransform}. */
-export type GPUAffineTransformOutput = {
+export type GPUAffineTransformOutput<
+  Rows extends
+    | GraphDataView<'float32x2'>
+    | GraphVectorView<'float32x2'> = GraphDataView<'float32x2'>
+> = {
   /** Transformed vertices, same length and layout as the input `positions`. */
-  positions: GraphDataView<'float32x2'>;
+  positions: Rows;
 };
 
 /** Props shared by every geometry type of {@link GPUAffineTransform}. */
-type GPUAffineTransformSharedProps = {
+type GPUAffineTransformSharedProps<
+  Rows extends
+    | GraphDataView<'float32x2'>
+    | GraphVectorView<'float32x2'> = GraphDataView<'float32x2'>
+> = {
   /** Prefix for generated node and transient IDs. Defaults to `'affine-transform'`. */
   id?: string;
   /**
@@ -133,8 +156,8 @@ type GPUAffineTransformSharedProps = {
    * (`geometry-measures`), and pass the frame's context.
    */
   spatialContext?: GPUSpatialContext;
-  /** Packed planar vertex positions. */
-  positions: GraphDataView<'float32x2'>;
+  /** Packed or chunked planar vertices. Chunked input requires no computed origins. */
+  positions: Rows;
   /** Per-feature origins that `parameters` may select. Default none. */
   origins?: readonly GPUAffineTransformOrigin[];
   /**
@@ -150,7 +173,7 @@ type GPUAffineTransformSharedProps = {
    */
   featureTransforms?: GraphDataView<'float32'>;
   /** Output view. */
-  output: GPUAffineTransformOutput;
+  output: GPUAffineTransformOutput<Rows>;
 };
 
 /**
@@ -168,9 +191,13 @@ type GPUAffineTransformSharedProps = {
  * input buffer. Compile-time: view lengths, `geometryType`, `origins`, and which of `parameters`
  * or `featureTransforms` is used.
  */
-export type GPUAffineTransformProps = GPUAffineTransformSharedProps &
+export type GPUAffineTransformProps<
+  Rows extends
+    | GraphDataView<'float32x2'>
+    | GraphVectorView<'float32x2'> = GraphDataView<'float32x2'>
+> = GPUAffineTransformSharedProps<Rows> &
   (
-    | ({geometryType: 'polygons'} & GPUPolygonGeometryFields)
+    | ({geometryType: 'polygons'} & Omit<GPUPolygonGeometryFields, 'positions'>)
     | {
         geometryType?: 'lines';
         lineOffsets?: GraphDataView<'uint32'>;
@@ -199,11 +226,16 @@ export type GPUAffineTransformProps = GPUAffineTransformSharedProps &
  * ring layout never change, so the input offsets stay valid for the output. Vertices outside every
  * ring use the nearest ring's feature.
  */
-export class GPUAffineTransform implements GPUCommandNodeProducer {
+export class GPUAffineTransform<
+  Rows extends
+    | GraphDataView<'float32x2'>
+    | GraphVectorView<'float32x2'> = GraphDataView<'float32x2'>
+> implements GPUCommandNodeProducer
+{
   /** Prefix for every node and transient ID. */
   readonly id: string;
   /** Validated properties. */
-  readonly props: GPUAffineTransformProps;
+  readonly props: GPUAffineTransformProps<Rows>;
   /** Resolved spatial context (planar only). */
   readonly spatialContext: GPUSpatialContext;
   /** Number of features, or 0 when no ring offsets are given. */
@@ -212,8 +244,11 @@ export class GPUAffineTransform implements GPUCommandNodeProducer {
   readonly geometryType: 'points' | 'lines' | 'polygons';
   /** Resolved per-feature origins. */
   readonly origins: readonly GPUAffineTransformOrigin[];
+  /** Chunk-route bound including the parameter upload; undefined for the existing measurement route. */
+  readonly estimatedCommandNodeCount: number | undefined;
+  private readonly chunkPlan: GraphChunkDispatchPlan;
 
-  constructor(props: GPUAffineTransformProps) {
+  constructor(props: GPUAffineTransformProps<Rows>) {
     this.id = props.id ?? 'affine-transform';
     this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
     this.props = props;
@@ -237,18 +272,44 @@ export class GPUAffineTransform implements GPUCommandNodeProducer {
     if (props.featureTransforms && this.origins.length > 0) {
       throw new Error(`${id} origins apply only to parameters, not featureTransforms`);
     }
-    validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
-    if (props.positions.length < 1) {
-      throw new Error(`${id} needs at least one position`);
+    this.chunkPlan = planGraphChunkDispatch(id, {
+      positions: props.positions,
+      'output.positions': props.output.positions
+    });
+    if (this.origins.length > 0) {
+      validateSinglePackedView(
+        props.positions,
+        ['float32x2'],
+        `${id} positions with computed origins`
+      );
+      validateSinglePackedView(
+        props.output.positions,
+        ['float32x2'],
+        `${id} output.positions with computed origins`
+      );
     }
+    for (const view of [props.positions, props.output.positions]) {
+      for (const chunk of getGraphViewChunks(view))
+        validatePackedView(chunk, ['float32x2'], `${id} positions`);
+    }
+    this.estimatedCommandNodeCount =
+      this.origins.length > 0 ? undefined : this.chunkPlan.nonemptyChunkCount + 1;
+    if (this.estimatedCommandNodeCount !== undefined)
+      validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
+    validateCapacity(
+      id,
+      'positions.length',
+      props.positions.length,
+      1,
+      GRAPH_CHUNK_MAXIMUM_ROW_COUNT
+    );
     const layout = getAffineLayout(props);
     for (const name of ['ringOffsets', 'featureOffsets', 'polygonOffsets'] as const) {
       const view = layout[name];
       if (view) {
         validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
-        if (view.length < 2) {
-          throw new Error(`${id} ${name} must contain at least two rows`);
-        }
+        // Binary-search upper bounds are emitted as u32 literals in both transform routes.
+        validateCapacity(id, `${name}.length`, view.length, 2, GRAPH_CHUNK_MAXIMUM_ROW_COUNT);
       }
     }
     if (props.geometryType === 'lines' && layout.featureOffsets && !layout.ringOffsets) {
@@ -276,7 +337,7 @@ export class GPUAffineTransform implements GPUCommandNodeProducer {
         throw new Error(`${id} featureTransforms must hold 6 rows per feature`);
       }
     }
-    validateSinglePackedView(props.output.positions, ['float32x2'], `${id} output.positions`);
+    validateDisjointWritableViews(id, {'output.positions': props.output.positions});
     if (props.output.positions.length !== props.positions.length) {
       throw new Error(`${id} output.positions length must equal positions length`);
     }
@@ -300,15 +361,47 @@ export class GPUAffineTransform implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id, featureCount, origins} = this;
     const layout = getAffineLayout(props);
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.positions,
-      layout.ringOffsets,
-      layout.featureOffsets,
-      layout.polygonOffsets,
-      props.parameters,
-      props.featureTransforms,
-      props.output.positions
-    ]);
+    validateGraphChunkDispatchBindings(graph, id, this.chunkPlan);
+    validateGraphChunkBindingRanges(graph, id, {
+      ringOffsets: layout.ringOffsets,
+      featureOffsets: layout.featureOffsets,
+      polygonOffsets: layout.polygonOffsets,
+      parameters: props.parameters,
+      featureTransforms: props.featureTransforms
+    });
+    if (
+      origins.length === 0 &&
+      (!('buffer' in props.positions) || !('buffer' in props.output.positions))
+    ) {
+      return createAffineChunkNodes(graph, {
+        id,
+        plan: this.chunkPlan,
+        ...layout,
+        parameters: props.parameters,
+        featureTransforms: props.featureTransforms,
+        featureCount
+      });
+    }
+    for (const [name, byteLength] of [
+      ['bounds', origins.includes('center') ? featureCount * 16 : 0],
+      ['centroids', origins.includes('centroid') ? featureCount * 8 : 0],
+      // GPUGeometryMeasures binds one complete shared-layout statistics record per feature.
+      [
+        'origin feature stats',
+        origins.length > 0
+          ? featureCount * GEOMETRY_STATS_STRIDE * Uint32Array.BYTES_PER_ELEMENT
+          : 0
+      ]
+    ] as const) {
+      validateCapacity(id, `${name} byteLength`, byteLength, 0, graph.device.limits.maxBufferSize);
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        name,
+        byteLength,
+        'reduce the feature count'
+      );
+    }
     const nodes: GPUCommandNode<Parameters>[] = [];
     let bounds: GraphDataView<'float32x4'> | undefined;
     let centroids: GraphDataView<'float32x2'> | undefined;
@@ -326,7 +419,7 @@ export class GPUAffineTransform implements GPUCommandNodeProducer {
         ...new GPUGeometryMeasures({
           spatialContext: {...this.spatialContext, metric: 'native', units: 'native'},
           id: `${id}-measures`,
-          positions: props.positions,
+          positions: props.positions as GraphDataView<'float32x2'>,
           ...getAffineMeasuresLayout(props),
           output: {bounds, centroids}
         }).getCommandNodes(graph)
@@ -336,7 +429,7 @@ export class GPUAffineTransform implements GPUCommandNodeProducer {
       createAffineTransformNode<Parameters>(graph, {
         id: `${id}-transform`,
         operation: OPERATION,
-        positions: props.positions,
+        positions: props.positions as GraphDataView<'float32x2'>,
         ringOffsets: layout.ringOffsets,
         featureOffsets: layout.featureOffsets,
         polygonOffsets: layout.polygonOffsets,
@@ -345,7 +438,7 @@ export class GPUAffineTransform implements GPUCommandNodeProducer {
         bounds,
         centroids,
         featureCount,
-        outputPositions: props.output.positions
+        outputPositions: props.output.positions as GraphDataView<'float32x2'>
       })
     );
     return nodes;
@@ -357,7 +450,9 @@ export class GPUAffineTransform implements GPUCommandNodeProducer {
  * `lineOffsets` as ring offsets and `featureOffsets` as feature-to-ring; a point feature is one
  * ring spanning its points, so `featureOffsets` doubles as the ring offsets.
  */
-function getAffineLayout(props: GPUAffineTransformProps): {
+function getAffineLayout(
+  props: GPUAffineTransformProps<GraphDataView<'float32x2'> | GraphVectorView<'float32x2'>>
+): {
   ringOffsets?: GraphDataView<'uint32'>;
   featureOffsets?: GraphDataView<'uint32'>;
   polygonOffsets?: GraphDataView<'uint32'>;
@@ -377,7 +472,9 @@ function getAffineLayout(props: GPUAffineTransformProps): {
 }
 
 /** The geometry fields `GPUGeometryMeasures` needs to measure the transformed geometry. */
-function getAffineMeasuresLayout(props: GPUAffineTransformProps) {
+function getAffineMeasuresLayout(
+  props: GPUAffineTransformProps<GraphDataView<'float32x2'> | GraphVectorView<'float32x2'>>
+) {
   switch (props.geometryType) {
     case 'polygons':
       return {

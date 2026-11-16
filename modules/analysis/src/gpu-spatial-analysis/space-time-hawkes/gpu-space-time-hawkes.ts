@@ -5,6 +5,7 @@
 import {
   createTransientView,
   GPUSort,
+  getViewBindingRange,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -22,6 +23,7 @@ import {
 } from '../../analysis-core/contracts/index';
 import {
   getStorageBindingElementLimit,
+  validateGPUStorageBindingByteLength,
   validateCapacity,
   validateCommandNodeBudget,
   validateGraphOutputsDisjointFromInputs,
@@ -30,7 +32,12 @@ import {
   validateSinglePackedView,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  validateTrajectoryBindings,
+  validateTrajectoryWritableDispatches
+} from '../trajectory-analysis/trajectory-binding-validation';
 import {GET_ORDERED_KEY_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {SCALED_QUOTIENT_WGSL} from '../../analysis-core/kernels/scaled-quotient-wgsl';
 import {
   createWGSLDispatchGate,
   createWGSLKernelNode,
@@ -52,6 +59,7 @@ import {
   getSpaceTimeHawkesEventWGSL,
   GPU_SPACE_TIME_HAWKES_BRANCHING_RATIO_FLOOR,
   GPU_SPACE_TIME_HAWKES_INTENSITY_FLOOR,
+  GPU_SPACE_TIME_HAWKES_MINIMUM_SPATIAL_VARIANCE,
   SPACE_TIME_HAWKES_STATE_LENGTH,
   SPACE_TIME_HAWKES_STATE_SLOTS,
   SPACE_TIME_HAWKES_SUM_COUNT
@@ -148,6 +156,8 @@ export type GPUSpaceTimeHawkesProps = {
   /**
    * Per-frame float32 view of at least {@link GPU_SPACE_TIME_HAWKES_PARAMETER_LENGTH} values
    * written with `getGPUSpaceTimeHawkesParameterValues`.
+   * The squared starting spatial deviation must be finite normal float32 (at least
+   * {@link GPU_SPACE_TIME_HAWKES_MINIMUM_SPATIAL_VARIANCE}); otherwise the fit is invalid.
    */
   parameters: GraphDataView<'float32'>;
   /**
@@ -157,7 +167,7 @@ export type GPUSpaceTimeHawkesProps = {
    */
   maximumIterations?: number;
   /**
-   * Parent capacity: for each event the most recent `maximumParents` earlier events inside the lag
+   * Parent capacity: for each event the most recent `maximumParents` strictly earlier events inside the lag
    * bound are examined, and an event with more candidates is counted in
    * `output.status.candidateOverflow`. Defaults to
    * {@link GPU_SPACE_TIME_HAWKES_DEFAULT_MAXIMUM_PARENTS}.
@@ -308,11 +318,11 @@ export class GPUSpaceTimeHawkes implements GPUCommandNodeProducer {
       }
     }
     const outputViews = this.getOutputViews();
-    validateRequirement(
-      id,
-      new Set(outputViews.map(view => view.buffer)).size === outputViews.length,
-      'outputs must use separate buffers'
-    );
+    validateTrajectoryWritableDispatches(id, [
+      {estimates: output.estimates, logLikelihood: output.logLikelihood},
+      {backgroundProbability: output.backgroundProbability},
+      {...output.status}
+    ]);
     validateGraphOutputsDisjointFromInputs(id, outputViews, [
       props.positions,
       props.times,
@@ -357,6 +367,52 @@ export class GPUSpaceTimeHawkes implements GPUCommandNodeProducer {
       rowCount,
       getStorageBindingElementLimit(graph.device, 16)
     );
+    const layout = getRegressionTileLayout(rowCount);
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      'state',
+      SPACE_TIME_HAWKES_STATE_LENGTH * 4,
+      'use a device with storage bindings'
+    );
+    for (const [name, view] of Object.entries({
+      positions: props.positions,
+      times: props.times,
+      parameters: props.parameters,
+      'output.estimates': output.estimates,
+      'output.logLikelihood': output.logLikelihood,
+      'output.backgroundProbability': output.backgroundProbability,
+      ...Object.fromEntries(
+        Object.entries(output.status ?? {}).map(([name, view]) => [`output.status.${name}`, view])
+      )
+    })) {
+      if (view) {
+        validateGPUStorageBindingByteLength(
+          graph.device,
+          id,
+          name,
+          getViewBindingRange(view).size,
+          'reduce the view binding range'
+        );
+      }
+    }
+    validateTrajectoryBindings(graph, id, props);
+    // Include sort histograms and all row-proportional intermediates before graph mutation.
+    for (const [name, byteLength] of [
+      ['event table', rowCount * 16],
+      ['sort rows', rowCount * 4],
+      ['sort histograms', 16 * Math.ceil(rowCount / 256) * 4],
+      ['event partials', layout.tileCount * SPACE_TIME_HAWKES_SUM_COUNT * 4],
+      ['iteration dispatch', 6 * 4]
+    ] as const) {
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        name,
+        byteLength,
+        'reduce positions length'
+      );
+    }
     const slots = SPACE_TIME_HAWKES_STATE_SLOTS;
     const state = createTransientView(
       graph,
@@ -434,7 +490,6 @@ export class GPUSpaceTimeHawkes implements GPUCommandNodeProducer {
     );
 
     // 4. Initialization from the parameters, and arming of the iteration gate.
-    const layout = getRegressionTileLayout(rowCount);
     const termCount = SPACE_TIME_HAWKES_SUM_COUNT;
     const partial = createTransientView(
       graph,
@@ -465,7 +520,8 @@ export class GPUSpaceTimeHawkes implements GPUCommandNodeProducer {
           {name: 'state', view: state, type: 'f32', access: 'read_write'},
           gate.binding
         ],
-        declarations: `${stateConstants}\n${IS_FINITE_VALUE_WGSL}\n${getNaNDeclaration()}`,
+        declarations: `${stateConstants}\n${IS_FINITE_VALUE_WGSL}\n${getNaNDeclaration()}
+const MINIMUM_SPATIAL_VARIANCE: f32 = ${getWGSLFloatLiteral(GPU_SPACE_TIME_HAWKES_MINIMUM_SPATIAL_VARIANCE)};`,
         body: `let area = params[paramsOffset];
   let duration = params[paramsOffset + 1u];
   let lag = params[paramsOffset + 2u];
@@ -475,20 +531,24 @@ export class GPUSpaceTimeHawkes implements GPUCommandNodeProducer {
   let branchingRatio = params[paramsOffset + 6u];
   let decayRate = params[paramsOffset + 7u];
   let deviation = params[paramsOffset + 8u];
+  let variance = deviation * deviation;
   let valid = area > 0.0 && duration > 0.0 && lag > 0.0 && distance > 0.0 && tolerance > 0.0 &&
     background > 0.0 && branchingRatio > 0.0 && decayRate > 0.0 && deviation > 0.0 &&
     isFiniteValue(area) && isFiniteValue(duration) && isFiniteValue(lag) && isFiniteValue(distance) &&
-    isFiniteValue(background) && isFiniteValue(branchingRatio) && isFiniteValue(decayRate) && isFiniteValue(deviation);
+    isFiniteValue(tolerance) && isFiniteValue(background) && isFiniteValue(branchingRatio) && isFiniteValue(decayRate) && isFiniteValue(deviation) &&
+    isFiniteValue(variance) && variance >= MINIMUM_SPATIAL_VARIANCE;
   let nan = getNaN();
   state[stateOffset + S_BACKGROUND] = select(nan, background, valid);
   state[stateOffset + S_BRANCHING_RATIO] = select(nan, branchingRatio, valid);
   state[stateOffset + S_DECAY_RATE] = select(nan, decayRate, valid);
-  state[stateOffset + S_SPATIAL_VARIANCE] = select(nan, deviation * deviation, valid);
+  state[stateOffset + S_SPATIAL_VARIANCE] = select(nan, variance, valid);
   state[stateOffset + S_DONE] = select(1.0, 0.0, valid);
   state[stateOffset + S_ITERATION_COUNT] = 0.0;
   state[stateOffset + S_CONVERGED] = 0.0;
   state[stateOffset + S_ITERATION_LIMIT_REACHED] = 0.0;
   state[stateOffset + S_LOG_LIKELIHOOD] = nan;
+  // Reused compiled graphs must not publish statistics from a previous valid fit.
+  ${Array.from({length: SPACE_TIME_HAWKES_SUM_COUNT}, (_, term) => `state[stateOffset + S_SUMS + ${term}u] = 0.0;`).join('\n  ')}
   ${gate.disarmWGSL}
   if (valid) {
     ${gate.armWGSL}
@@ -556,9 +616,10 @@ fn accumulateRow(row: u32, terms: ptr<function, array<f32, TERM_COUNT>>) {
 const INTENSITY_FLOOR: f32 = ${getWGSLFloatLiteral(GPU_SPACE_TIME_HAWKES_INTENSITY_FLOOR)};
 const BRANCHING_RATIO_FLOOR: f32 = ${getWGSLFloatLiteral(GPU_SPACE_TIME_HAWKES_BRANCHING_RATIO_FLOOR)};
 const MAXIMUM_ITERATIONS: f32 = ${maximumIterations}.0;
+${SCALED_QUOTIENT_WGSL}
 fn sumAt(index: u32) -> f32 { return state[stateOffset + S_SUMS + index]; }
 fn relativeChange(next: f32, previous: f32) -> f32 {
-  return abs(next - previous) / max(abs(previous), INTENSITY_FLOOR);
+  return getScaledQuotient(abs(next - previous), max(abs(previous), INTENSITY_FLOOR), 1.0, 0);
 }`,
           body: `if (state[stateOffset + S_DONE] != 0.0) {
     return;
@@ -589,13 +650,13 @@ fn relativeChange(next: f32, previous: f32) -> f32 {
     ${gate.disarmWGSL}
     return;
   }
-  let nextBackground = backgroundSum / (area * duration);
-  let nextBranchingRatio = max(triggeredSum / windowMass, BRANCHING_RATIO_FLOOR);
+  let nextBackground = getScaledQuotient(backgroundSum, area, duration, 0);
+  let nextBranchingRatio = max(getScaledQuotient(triggeredSum, windowMass, 1.0, 0), BRANCHING_RATIO_FLOOR);
   var nextDecayRate = decayRate;
   var nextVariance = variance;
   if (triggeredSum > 1e-6 && lagSum > 0.0 && distanceSum > 0.0) {
-    nextDecayRate = triggeredSum / lagSum;
-    nextVariance = distanceSum / (2.0 * triggeredSum);
+    nextDecayRate = getScaledQuotient(triggeredSum, lagSum, 1.0, 0);
+    nextVariance = getScaledQuotient(distanceSum, triggeredSum, 1.0, -1);
   }
   let change = max(
     max(relativeChange(nextBackground, background), relativeChange(nextBranchingRatio, branchingRatio)),
@@ -638,7 +699,13 @@ fn relativeChange(next: f32, previous: f32) -> f32 {
           invocationCount: rowCount,
           declarations: `${stateConstants}\n${IS_FINITE_VALUE_WGSL}\n${getNaNDeclaration()}\n${eventWGSL}`,
           body: `var probability = getNaN();
-  if (isFiniteValue(events[eventsOffset + 4u * index + 2u])) {
+  // A parentless event returns backgroundWeight / sum = 1 even for NaN estimates.
+  // Check the stored bit patterns before evaluating; NaN arithmetic cannot mark invalid fits.
+  let hasEstimates = isFiniteValue(state[stateOffset + S_BACKGROUND]) &&
+    isFiniteValue(state[stateOffset + S_BRANCHING_RATIO]) &&
+    isFiniteValue(state[stateOffset + S_DECAY_RATE]) &&
+    isFiniteValue(state[stateOffset + S_SPATIAL_VARIANCE]);
+  if (hasEstimates && isFiniteValue(events[eventsOffset + 4u * index + 2u])) {
     probability = evaluateEvent(index).background;
   }
   backgroundProbability[backgroundProbabilityOffset + timeOrder[timeOrderOffset + index]] = probability;`

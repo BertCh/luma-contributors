@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Buffer, Device} from '@luma.gl/core';
-import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {GPUCommandGraph, type GraphDataView, type GraphVectorView} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {
@@ -20,6 +20,7 @@ import {
 } from '../../../src/dataframe-analysis/calendar-buckets/index';
 import {getInt64TimeWords} from '../../../src/dataframe-analysis/time-window-filter/index';
 import {
+  createVectorView,
   createInputBuffer,
   createOutputBuffer,
   readUint32,
@@ -64,7 +65,9 @@ type CalendarResult = Record<string, number[]> & {
 };
 
 /** Counts how often the contributor emits its nodes, which a parameter change must never trigger. */
-class CountingCalendarBuckets extends GPUCalendarBuckets {
+class CountingCalendarBuckets extends GPUCalendarBuckets<
+  GPUCalendarBucketsProps<GraphDataView | GraphVectorView>
+> {
   static nodeBuilds = 0;
   override getCommandNodes<Parameters>(graph: GPUCommandGraph<Parameters>) {
     CountingCalendarBuckets.nodeBuilds++;
@@ -72,7 +75,12 @@ class CountingCalendarBuckets extends GPUCalendarBuckets {
   }
 }
 
-function createFixture(device: Device, scene: Scene, columns: readonly string[] = []) {
+function createFixture(
+  device: Device,
+  scene: Scene,
+  columns: readonly string[] = [],
+  chunkLengths?: readonly number[]
+) {
   const rows = scene.timestamps.length;
   const graph = new GPUCommandGraph(device, {id: 'calendar-graph'});
   const buffers: Buffer[] = [];
@@ -85,7 +93,7 @@ function createFixture(device: Device, scene: Scene, columns: readonly string[] 
     format: 'sint32',
     length: 2
   });
-  const output: Record<string, GraphDataView> = {};
+  const output: Record<string, GraphDataView | GraphVectorView> = {};
   const outputBuffers: Record<string, Buffer> = {};
   for (const [name, , format] of COLUMNS) {
     if (columns.includes(name)) {
@@ -105,7 +113,7 @@ function createFixture(device: Device, scene: Scene, columns: readonly string[] 
       GPU_CALENDAR_BUCKETS_MATRIX_LENGTH
     );
   }
-  const props: GPUCalendarBucketsProps = {
+  const props: GPUCalendarBucketsProps<GraphDataView | GraphVectorView> = {
     id: 'calendar',
     unit: scene.unit,
     timestamps: importGraphBuffer(
@@ -152,8 +160,37 @@ function createFixture(device: Device, scene: Scene, columns: readonly string[] 
         }
       : undefined,
     parameters: parameterBuffer.importToGraph(graph),
-    output: output as GPUCalendarBucketsOutput
+    output: output as GPUCalendarBucketsOutput<GraphDataView | GraphVectorView>
   };
+  if (chunkLengths) {
+    const split = <Format extends 'uint32x2' | 'uint32' | 'sint32'>(
+      name: string,
+      view: GraphDataView<Format>
+    ) => {
+      let rowBase = 0;
+      return createVectorView(
+        name,
+        view.format,
+        chunkLengths.map(length => {
+          const chunk = graph.createDataView(view.buffer, {
+            format: view.format,
+            byteOffset: view.byteOffset + rowBase * view.rowByteLength,
+            length
+          });
+          rowBase += length;
+          return chunk;
+        })
+      );
+    };
+    props.timestamps = split('timestamps', props.timestamps as GraphDataView<'uint32x2'>);
+    if (props.mask) props.mask = split('mask', props.mask as GraphDataView<'uint32'>);
+    if (props.utcOffsets)
+      props.utcOffsets = split('utcOffsets', props.utcOffsets as GraphDataView<'sint32'>);
+    for (const [name] of COLUMNS) {
+      if (output[name])
+        output[name] = split(name, output[name] as GraphDataView<'uint32' | 'sint32'>);
+    }
+  }
   CountingCalendarBuckets.nodeBuilds = 0;
   graph.add(new CountingCalendarBuckets(props));
   const compiled = graph.compile();
@@ -632,5 +669,111 @@ it('GPUCalendarBuckets agrees with the oracle on fuzzed second, microsecond and 
       expect(actual[name], `${unit} ${name}`).toEqual(expected.map(row => row[field]));
     }
     fixture.destroy();
+  }
+});
+
+it('GPUCalendarBuckets matches packed input and the CPU oracle for three uneven, unaligned chunks', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const base = createEdgeScene();
+  const rows = base.timestamps.length;
+  for (const scene of [
+    base,
+    {
+      ...base,
+      mask: Uint32Array.from({length: rows}, (_, row) => (row % 4 === 0 ? 0 : 1)),
+      utcOffsets: Int32Array.from({length: rows}, (_, row) => (row % 5 === 0 ? 1441 : 330))
+    },
+    {...base, timeZone: getReferenceTable('America/New_York')}
+  ]) {
+    const packed = createFixture(device, scene, ALL_OUTPUTS);
+    const chunked = createFixture(device, scene, ALL_OUTPUTS, [1, 7, rows - 8]);
+    try {
+      for (const [offset, firstDay] of [
+        [0, 0],
+        [840, 6],
+        [-720, 2]
+      ]) {
+        const actual = await chunked.run(offset, firstDay);
+        expect(actual).toEqual(await packed.run(offset, firstDay));
+        expectParity(actual, scene, offset, firstDay);
+      }
+    } finally {
+      packed.destroy();
+      chunked.destroy();
+    }
+  }
+});
+
+it('GPUCalendarBuckets counts more than 2^24 timestamp rows across storage-sized chunks', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const graph = new GPUCommandGraph(device);
+  const lengths = [8_388_608, 8_388_607, 2];
+  const inputBuffers = lengths.map(length => createOutputBuffer(device, length * 2));
+  const yearBuffers = lengths.map(length => createOutputBuffer(device, length));
+  const matrixBuffer = createOutputBuffer(device, 168);
+  const expectedCounts = Array<number>(168).fill(0);
+  expectedCounts[3 * 24] = 16_777_217; // Untouched zero timestamps are Thursday midnight, 1970.
+  const markers = lengths.map(
+    (length, chunkIndex) =>
+      new Map(
+        [...new Set([0, Math.floor(length / 2), length - 1])].map((row, markerIndex) => {
+          const year = 2000 + chunkIndex * 10 + markerIndex;
+          const time = Date.UTC(year, 0, 1, markerIndex + 1);
+          inputBuffers[chunkIndex].write(
+            getInt64TimeWords(BigInt64Array.of(BigInt(time))),
+            row * 8
+          );
+          expectedCounts[3 * 24]--;
+          const date = new Date(time);
+          expectedCounts[((date.getUTCDay() + 6) % 7) * 24 + date.getUTCHours()]++;
+          return [row, year];
+        })
+      )
+  );
+  const parameters = new GPUParameterBuffer(device, {
+    id: 'large-calendar-parameters',
+    format: 'sint32',
+    length: 2,
+    values: getGPUCalendarBucketsParameterValues(0, 0)
+  });
+  graph.add(
+    new GPUCalendarBuckets({
+      timestamps: createVectorView(
+        'times',
+        'uint32x2',
+        lengths.map((length, index) =>
+          importGraphBuffer(graph, `times-${index}`, inputBuffers[index], 'uint32x2', length)
+        )
+      ),
+      parameters: parameters.importToGraph(graph),
+      output: {
+        year: createVectorView(
+          'year',
+          'sint32',
+          lengths.map((length, index) =>
+            importGraphBuffer(graph, `year-${index}`, yearBuffers[index], 'sint32', length)
+          )
+        ),
+        hourWeekdayCounts: importGraphBuffer(graph, 'matrix', matrixBuffer, 'uint32', 168)
+      }
+    })
+  );
+  const compiled = graph.compile();
+  try {
+    submitGraph(device, compiled, undefined);
+    const counts = await readUint32(matrixBuffer, 168);
+    expect(counts).toEqual(expectedCounts);
+    for (const [index, buffer] of yearBuffers.entries()) {
+      for (const [row, expectedYear] of markers[index]) {
+        const bytes = await buffer.readAsync(row * 4, 4);
+        expect(new Int32Array(bytes.buffer, bytes.byteOffset, 1)[0]).toBe(expectedYear);
+      }
+    }
+  } finally {
+    compiled.destroy();
+    parameters.destroy();
+    for (const buffer of [...inputBuffers, ...yearBuffers, matrixBuffer]) buffer.destroy();
   }
 });

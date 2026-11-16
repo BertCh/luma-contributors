@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateNetworkViewBindings, validateNetworkWritableViews} from '../network-view-utils';
+
 import {clamp} from '@math.gl/core';
 import type {Device} from '@luma.gl/core';
 import {
@@ -29,7 +31,6 @@ import {
   validateCapacity,
   validateCommandNodeBudget,
   validateMaximumCount,
-  validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -156,6 +157,8 @@ export type GPUNetworkKFunctionOutput = {
     overflow?: GraphDataView<'uint32'>;
     /** Optional one-row flag: 1 when every shortest-path batch reached a fixpoint. */
     converged?: GraphDataView<'uint32'>;
+    /** Optional canonical complement: 1 when any shortest-path batch exhausted its round budget. */
+    iterationLimitReached?: GraphDataView<'uint32'>;
   };
 };
 
@@ -318,6 +321,7 @@ export class GPUNetworkKFunction implements GPUCommandNodeProducer {
   constructor(props: GPUNetworkKFunctionProps) {
     this.id = props.id ?? 'network-k-function';
     this.props = props;
+    validateNetworkWritableViews(this.id, props.output);
     const {id} = this;
     this.spatialContext = resolveGPUSpatialContext(
       id,
@@ -334,7 +338,8 @@ export class GPUNetworkKFunction implements GPUCommandNodeProducer {
       ['output.pairCounts', output.pairCounts],
       ['output.snappedEventCount', output.snappedEventCount],
       ['output.status.overflow', output.status?.overflow],
-      ['output.status.converged', output.status?.converged]
+      ['output.status.converged', output.status?.converged],
+      ['output.status.iterationLimitReached', output.status?.iterationLimitReached]
     ] as const) {
       if (view) {
         validateSinglePackedView(view, ['uint32'], `${id} ${name}`);
@@ -376,7 +381,8 @@ export class GPUNetworkKFunction implements GPUCommandNodeProducer {
       ['networkLength', props.networkLength],
       ['output.snappedEventCount', output.snappedEventCount],
       ['output.status.overflow', output.status?.overflow],
-      ['output.status.converged', output.status?.converged]
+      ['output.status.converged', output.status?.converged],
+      ['output.status.iterationLimitReached', output.status?.iterationLimitReached]
     ] as const) {
       if (view && view.length !== 1) {
         throw new Error(`${id} ${name} must contain exactly one row`);
@@ -428,7 +434,7 @@ export class GPUNetworkKFunction implements GPUCommandNodeProducer {
     const reachabilityNodeCount =
       2 +
       (props.maximumIterations ?? DEFAULT_MAXIMUM_ITERATIONS) +
-      Number(Boolean(output.status?.converged));
+      Number(Boolean(output.status?.converged || output.status?.iterationLimitReached));
     this.estimatedCommandNodeCount =
       SHARED_PRIMITIVE_NODE_ALLOWANCE +
       // event-flags, clear, expand-seeds, block-info, finalize
@@ -438,7 +444,7 @@ export class GPUNetworkKFunction implements GPUCommandNodeProducer {
       batchCount * reachabilityNodeCount +
       this.blockCount +
       Number(Boolean(output.envelope)) +
-      Number(Boolean(output.status?.converged));
+      2 * Number(Boolean(output.status?.converged || output.status?.iterationLimitReached));
     // The rounds of every block are unrolled; lower simulationCount or maximumIterations, or raise
     // rowsPerBlock.
     validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
@@ -463,8 +469,20 @@ export class GPUNetworkKFunction implements GPUCommandNodeProducer {
     const {rowCount, rowsPerBlock, blockCount} = this;
     const {output} = props;
     const {offsets, neighbors, weights} = props.topology;
-    validateGraphViewsBelongToGraph(id, graph, [...getInputs(props), ...getOutputs(props)]);
+    validateNetworkViewBindings(id, graph, [...getInputs(props), ...getOutputs(props)]);
     const seedLaneCount = Math.min(props.laneCount ?? rowsPerBlock, rowsPerBlock);
+    const plannedBatchesPerBlock = Math.ceil(rowsPerBlock / seedLaneCount);
+    validateNetworkViewBindings(id, graph, [], {
+      seedTable: rowCount * 2 * 4,
+      events: eventCount * 4,
+      histogram: (1 + simulationCount) * bandCount * 4,
+      lengthPrefix: (alignElementCount(edgeCount) + getNetworkKFunctionChunkCount(edgeCount)) * 4,
+      blockCosts: plannedBatchesPerBlock * alignElementCount(seedLaneCount * nodeCount) * 4,
+      expandedSeeds: blockCount * plannedBatchesPerBlock * alignElementCount(2 * seedLaneCount) * 4,
+      frontier: seedLaneCount * nodeCount * 8,
+      batchConverged: blockCount * plannedBatchesPerBlock * ALIGNMENT_ELEMENTS * 4,
+      blockInfo: blockCount * ALIGNMENT_ELEMENTS * 4
+    });
     validateMaximumCount(
       id,
       'expanded seed words (rows, rowsPerBlock, laneCount)',
@@ -848,9 +866,10 @@ const SLOT_WORDS: u32 = ${ALIGNMENT_ELEMENTS}u;`,
       })
     );
 
-    const batchConverged = output.status?.converged
-      ? u32('batch-converged', batchCount * ALIGNMENT_ELEMENTS)
-      : undefined;
+    const batchConverged =
+      output.status?.converged || output.status?.iterationLimitReached
+        ? u32('batch-converged', batchCount * ALIGNMENT_ELEMENTS)
+        : undefined;
     for (let block = 0; block < blockCount; block++) {
       for (let batchInBlock = 0; batchInBlock < batchesPerBlock; batchInBlock++) {
         const batch = block * batchesPerBlock + batchInBlock;
@@ -1092,24 +1111,39 @@ const SIMULATION_COUNT: u32 = ${simulationCount}u;`,
       );
     }
 
-    if (output.status?.converged && batchConverged) {
+    if (batchConverged) {
+      const ports = [
+        ...(output.status?.converged ? [{name: 'converged', view: output.status.converged}] : []),
+        ...(output.status?.iterationLimitReached
+          ? [{name: 'iterationLimitReached', view: output.status.iterationLimitReached}]
+          : [])
+      ];
       nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
+        createWGSLKernelNode(graph, {
+          id: `${id}-converged-initialize`,
+          operation: OPERATION,
+          variant: 'converged-initialize',
+          invocationCount: 1,
+          bindings: ports.map(port => ({...port, type: 'u32', access: 'read_write'})),
+          body: `${output.status?.converged ? 'converged[convergedOffset] = 1u;' : ''}
+          ${output.status?.iterationLimitReached ? 'iterationLimitReached[iterationLimitReachedOffset] = 0u;' : ''}`
+        }),
+        createWGSLKernelNode(graph, {
           id: `${id}-converged`,
           operation: OPERATION,
           variant: 'converged',
+          invocationCount: batchCount,
           bindings: [
             {name: 'batchConverged', view: batchConverged, type: 'u32', access: 'read'},
-            {name: 'converged', view: output.status.converged, type: 'u32', access: 'read_write'}
+            ...ports.map(port => ({
+              ...port,
+              type: 'atomic<u32>' as const,
+              access: 'read_write' as const
+            }))
           ],
-          invocationCount: 1,
-          declarations: `const BATCH_COUNT: u32 = ${batchCount}u;
-const SLOT_WORDS: u32 = ${ALIGNMENT_ELEMENTS}u;`,
-          body: `var allDone = 1u;
-  for (var batch = 0u; batch < BATCH_COUNT; batch++) {
-    allDone = min(allDone, batchConverged[batchConvergedOffset + batch * SLOT_WORDS]);
-  }
-  converged[convergedOffset] = allDone;`
+          body: `let done = batchConverged[batchConvergedOffset + index * ${ALIGNMENT_ELEMENTS}u];
+          ${output.status?.converged ? 'atomicMin(&converged[convergedOffset], done);' : ''}
+          ${output.status?.iterationLimitReached ? 'atomicMax(&iterationLimitReached[iterationLimitReachedOffset], 1u - done);' : ''}`
         })
       );
     }
@@ -1138,6 +1172,7 @@ function getOutputs(props: GPUNetworkKFunctionProps): (GraphDataView | undefined
     output.envelope,
     output.snappedEventCount,
     output.status?.overflow,
-    output.status?.converged
+    output.status?.converged,
+    output.status?.iterationLimitReached
   ];
 }

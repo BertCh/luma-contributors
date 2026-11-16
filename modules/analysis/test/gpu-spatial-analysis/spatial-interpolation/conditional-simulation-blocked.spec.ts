@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {Buffer} from '@luma.gl/core';
 import {GraphDataView} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
@@ -10,7 +11,12 @@ import {createWGSLKernelNode} from '../../../src/analysis-core/kernels/wgsl-kern
 import {InterpolationBenchmarkScope} from './interpolation-performance-harness';
 import {calculateConditionalSimulationReference} from './conditional-simulation-reference';
 import {requireTestDevice} from '../../utils/require-test-device';
-import {submitGraph} from '../../utils/gpu-contributor-test-utils';
+import {submitGraph, readUint32} from '../../utils/gpu-contributor-test-utils';
+import {
+  getPhilox4x32,
+  getPhiloxOpenUnitFloat,
+  PHILOX_PURPOSES
+} from '../../../src/analysis-core/kernels/philox-random';
 
 for (const [observationCount, queryCount, reusePreparation] of [
   [129, 129, false],
@@ -145,6 +151,73 @@ for (const [observationCount, queryCount, reusePreparation] of [
           expect(actual['values'][replicate * queryCount + 16]).toBe(
             actual['values'][replicate * queryCount + 15]
           );
+      }
+    } finally {
+      compiled.destroy();
+      contributor.destroy();
+      scope.destroy();
+    }
+  });
+}
+
+for (const reusePreparation of [false, true]) {
+  it(`executes partial blocked tiles with independent prior moments, retained=${reusePreparation}`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const scope = new InterpolationBenchmarkScope(device, 'blocked-independent-prior');
+    const queryCount = 129;
+    const contributor = new GPUConditionalGaussianSimulation({
+      positions: scope.input('positions', new Float32Array([-1e6, -1e6]), 'float32x2'),
+      observations: scope.input('observations', new Float32Array([100, 1, 0, 1]), 'float32x4'),
+      queries: scope.input(
+        'queries',
+        Float32Array.from({length: queryCount * 2}, (_, component) =>
+          component % 2 === 0 ? Math.floor(component / 2) * 1000 : 0
+        ),
+        'float32x2'
+      ),
+      covariance: {model: 'exponential', range: 1, sill: 4},
+      mean: 7,
+      seed: 19,
+      reusePreparation,
+      replicateCount: 3,
+      output: {
+        values: scope.output('values', queryCount * 3, 'float32'),
+        moments: scope.output('moments', queryCount, 'float32x2'),
+        status: scope.output('status', 3, 'uint32')
+      }
+    });
+    scope.graph.add(contributor);
+    const compiled = scope.graph.compile();
+    try {
+      for (const write of scope.initialWrites) write.buffer.write(write.values);
+      let firstValues: number[] | undefined;
+      for (let submission = 0; submission < 2; submission++) {
+        submitGraph(device, compiled, undefined);
+        const actual = await scope.read();
+        expect(actual['status']).toEqual([0, 0, 0]);
+        for (let query = 0; query < queryCount; query++) {
+          // All cross-covariances round to zero. Each posterior is exactly its N(7, 4) prior.
+          expect(actual['moments'][query * 2]).toBeCloseTo(7, 5);
+          expect(actual['moments'][query * 2 + 1]).toBeCloseTo(4, 5);
+        }
+        for (let replicate = 0; replicate < 3; replicate++) {
+          const words = getPhilox4x32(
+            [replicate, 0, 0, 0],
+            [19, PHILOX_PURPOSES.conditionalGaussianSimulation.id]
+          );
+          const normal =
+            Math.sqrt(-2 * Math.log(getPhiloxOpenUnitFloat(words[0]))) *
+            Math.cos((2 * Math.PI * ((words[1] >>> 8) + 0.5)) / 16777216);
+          expect(actual['values'][replicate * queryCount]).toBeCloseTo(7 + 2 * normal, 4);
+        }
+        if (firstValues) expect(actual['values']).toEqual(firstValues);
+        else firstValues = actual['values'];
+        if (reusePreparation) {
+          const statistics = contributor.preparationStatistics?.buffer.defaultBuffer;
+          if (!(statistics instanceof Buffer)) throw new Error('Missing preparation statistics');
+          expect((await readUint32(statistics, 7)).slice(4, 6)).toEqual([1, 1]);
+        }
       }
     } finally {
       compiled.destroy();

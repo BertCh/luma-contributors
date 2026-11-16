@@ -87,11 +87,11 @@ it('keeps the original exports unchanged and adds the other entry points beside 
   ]);
 
   const all = getGPUAnalysisOperatorCatalog();
-  // 225 operators of the other entry points, then the operators of `gpu-spatial-analysis` added
+  // 226 operators of the other entry points, then the operators of `gpu-spatial-analysis` added
   // after the original 261 (spatiotemporal review, fitting kernels, reused analysis operators).
   expect(all.length).toBe(
     261 +
-      225 +
+      226 +
       SPATIOTEMPORAL_REVIEW_OPERATORS.length +
       FITTING_KERNEL_OPERATORS.length +
       REUSED_ANALYSIS_OPERATORS.length
@@ -138,7 +138,7 @@ it('records a tier for every operator and the limits of every reference operator
     ({exportName}) => exportName
   );
   expect(reference).toContain('GPUNetworkFacilityOptimization');
-  expect(reference).toContain('GPUNetworkFlow');
+  expect(reference).not.toContain('GPUNetworkFlow');
   expect(reference).not.toContain('GPUNetworkReachability');
 });
 

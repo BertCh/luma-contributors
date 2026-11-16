@@ -16,7 +16,13 @@ import {
   validateViewLength
 } from '../analysis-core/kernels/gpu-contributor-utils';
 import {GPU_POINT_CLOUD_MAXIMUM_NEIGHBOR_CAPACITY} from './pointcloud-limits';
-import {getPointCloudKernelNodes} from './pointcloud-kernel-nodes';
+import {
+  getPointCloudKernelNodes,
+  validatePointCloudPackedViews,
+  validatePointCloudScratchBindings
+} from './pointcloud-kernel-nodes';
+
+import {validateGraphChunkBindingRanges} from '../analysis-core/kernels/graph-chunk-dispatch';
 
 /** One float32 row: the standard-deviation multiplier. */
 export const GPU_POINT_CLOUD_STATISTICAL_FILTER_PARAMETER_LENGTH = 1;
@@ -74,6 +80,22 @@ export class GPUPointCloudStatisticalFilter implements GPUCommandNodeProducer {
   readonly validity: GraphDataView<'uint32'>;
   constructor(readonly props: GPUPointCloudStatisticalFilterProps) {
     this.id = props.id ?? 'gpu-pointcloud-statistical-filter';
+    validatePointCloudPackedViews(
+      this.id,
+      {
+        squaredDistances: props.squaredDistances,
+        counts: props.counts,
+        parameters: props.parameters
+      },
+      {meanDistances: props.meanDistances, validity: props.validity},
+      [
+        {
+          inputs: {squaredDistances: props.squaredDistances, counts: props.counts},
+          outputs: {meanDistances: props.meanDistances}
+        },
+        {inputs: {meanDistances: props.meanDistances}, outputs: {validity: props.validity}}
+      ]
+    );
     const {validity} = props;
     validateRequirement(this.id, validity !== undefined, 'validity must be given');
     this.validity = validity;
@@ -107,6 +129,18 @@ export class GPUPointCloudStatisticalFilter implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {squaredDistances, counts, capacity, meanDistances} = this.props;
     const parameters = this.props.parameters;
+    if (!counts.length) return [];
+    validateGraphChunkBindingRanges(graph, this.id, {
+      squaredDistances,
+      counts,
+      meanDistances,
+      validity: this.validity,
+      parameters
+    });
+    validatePointCloudScratchBindings(graph, this.id, {
+      'statistical filter row scratch': counts.length * 4,
+      'statistical filter scalars': 4
+    });
     const mask = this.validity;
     const nodes: GPUCommandNode<Parameters>[] = getPointCloudKernelNodes(graph, {
       id: `${this.id}-means`,

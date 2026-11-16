@@ -3,6 +3,16 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  validateDisjointWritableViews,
+  validateGraphChunkBindingRanges
+} from '../../analysis-core/kernels/graph-chunk-dispatch';
+
+import {
+  getStorageTopKAccessors,
+  createStorageTopKNode
+} from '../../analysis-core/kernels/storage-backed-top-k';
+
+import {
   createTransientView,
   GPUGridIndex,
   type GPUCommandGraph,
@@ -13,11 +23,13 @@ import {
   getWGSLFloatLiteral,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
-import {createTiledWGSLKernelNodes} from '../../analysis-core/kernels/wgsl-kernel-tiles';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   getGPUGridIndexMaximumCellCount,
   validateCapacity,
+  validateCommandNodeBudget,
+  validateFiniteNumber,
+  validateGPUStorageBindingByteLength,
   validateMaximumCount,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
@@ -41,8 +53,18 @@ import {
 } from './separation-wgsl';
 
 const OPERATION = 'GPUInverseDistanceWeighting';
-/** Largest compile-time nearest-neighbor capacity; each invocation keeps a private list this long. */
-const MAXIMUM_NEIGHBOR_CAPACITY = 64;
+/** Private lists above this size create excessive per-invocation register pressure. */
+const PRIVATE_NEIGHBOR_CAPACITY = 64;
+/** Per-frame k is float32, which represents every integer through 2^24 exactly. */
+const MAXIMUM_NEIGHBOR_CAPACITY = 0x1000000;
+/** Raster, tile and grid-index dimensions are WGSL uint32 values. */
+const MAXIMUM_DISPATCH_ROWS = 0xffffffff;
+/** Bounds and sphere radii are emitted as WGSL f32 constants. */
+const MAXIMUM_SHADER_FLOAT = 3.4028234663852886e38;
+/** A positive radius must remain nonzero when represented as f32. */
+const MINIMUM_SHADER_POSITIVE_FLOAT = 1.401298464324817e-45;
+/** Upper bound for the fixed grid-index and radix-sort build passes. */
+const INDEX_COMMAND_NODE_ALLOWANCE = 1024;
 
 /** Caller-owned row-major raster outputs of {@link GPUInverseDistanceWeighting}. */
 export type GPUInverseDistanceWeightingOutput = {
@@ -106,7 +128,8 @@ export type GPUInverseDistanceWeightingProps = {
    */
   indexBounds: readonly [number, number, number, number];
   /**
-   * Compile-time capacity of the per-frame nearest-neighbor limit `k`, at most 64. Zero (default)
+   * Compile-time capacity of the per-frame nearest-neighbor limit `k`, at most 2^24. Capacities
+   * above 64 use storage-backed selection in batches sized to the device binding limit. Zero (default)
    * compiles the radius-only kernel and ignores the per-frame `neighborCount`.
    */
   maximumNeighborCount?: number;
@@ -166,6 +189,8 @@ export class GPUInverseDistanceWeighting implements GPUCommandNodeProducer {
   private readonly separation: InterpolationSeparation;
   /** Compile-time nearest-neighbor capacity. */
   readonly maximumNeighborCount: number;
+  /** Upper bound including grid construction and optional gather tiles. */
+  readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPUInverseDistanceWeightingProps) {
     this.id = props.id ?? 'inverse-distance-weighting';
@@ -173,6 +198,15 @@ export class GPUInverseDistanceWeighting implements GPUCommandNodeProducer {
     const {id} = this;
     this.separation = resolveInterpolationSeparation(id, props.spatialContext);
     this.spatialContext = this.separation.context;
+    if (this.separation.geographic) {
+      validateFiniteNumber(
+        id,
+        'spatialContext.sphereRadius',
+        this.separation.sphereRadius,
+        MINIMUM_SHADER_POSITIVE_FLOAT,
+        MAXIMUM_SHADER_FLOAT
+      );
+    }
     this.cellCount = validateRasterGrid(id, props.grid);
     if (props.grid.affine[1] !== 0 || props.grid.affine[3] !== 0) {
       throw new Error(`${id} needs an axis-aligned grid`);
@@ -181,8 +215,17 @@ export class GPUInverseDistanceWeighting implements GPUCommandNodeProducer {
       ['indexGridSize[0]', props.indexGridSize[0]],
       ['indexGridSize[1]', props.indexGridSize[1]]
     ] as const) {
-      validateCapacity(id, name, size, 1, Number.MAX_SAFE_INTEGER);
+      validateCapacity(id, name, size, 1, MAXIMUM_DISPATCH_ROWS);
     }
+    props.indexBounds.forEach((value, index) =>
+      validateFiniteNumber(
+        id,
+        `indexBounds[${index}]`,
+        value,
+        -MAXIMUM_SHADER_FLOAT,
+        MAXIMUM_SHADER_FLOAT
+      )
+    );
     const [minX, minY, maxX, maxY] = props.indexBounds;
     if (
       props.indexBounds.length !== 4 ||
@@ -200,6 +243,36 @@ export class GPUInverseDistanceWeighting implements GPUCommandNodeProducer {
       0,
       MAXIMUM_NEIGHBOR_CAPACITY
     );
+    validateMaximumCount(id, 'grid cells', this.cellCount, MAXIMUM_DISPATCH_ROWS);
+    if (props.invocationTileSize !== undefined) {
+      validateCapacity(
+        id,
+        'invocationTileSize',
+        props.invocationTileSize,
+        1,
+        MAXIMUM_DISPATCH_ROWS
+      );
+    }
+    const scratchStride =
+      this.maximumNeighborCount > PRIVATE_NEIGHBOR_CAPACITY ? 2 + this.maximumNeighborCount * 2 : 2;
+    const scratchRows = Math.max(
+      1,
+      Math.floor(
+        ((props.output.values.buffer.graph as GPUCommandGraph).device.limits
+          .maxStorageBufferBindingSize /
+          4 -
+          1) /
+          scratchStride
+      )
+    );
+    this.estimatedCommandNodeCount =
+      INDEX_COMMAND_NODE_ALLOWANCE +
+      3 *
+        Math.ceil(
+          this.cellCount / Math.min(props.invocationTileSize ?? this.cellCount, scratchRows)
+        ) +
+      1;
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     validateSinglePackedView(props.positions, ['float32x2'], `${id} positions`);
     validateSinglePackedView(props.values, ['float32'], `${id} values`);
     const sampleCount = props.values.length;
@@ -230,10 +303,8 @@ export class GPUInverseDistanceWeighting implements GPUCommandNodeProducer {
       if (props.output.counts.length < this.cellCount) {
         throw new Error(`${id} output.counts must hold grid.width * grid.height rows`);
       }
-      if (props.output.counts.buffer === props.output.values.buffer) {
-        throw new Error(`${id} outputs must not share buffers`);
-      }
     }
+    validateDisjointWritableViews(id, props.output);
     validateGraphOutputsDisjointFromInputs(
       id,
       [props.output.values, props.output.counts],
@@ -262,6 +333,41 @@ export class GPUInverseDistanceWeighting implements GPUCommandNodeProducer {
       indexGridSize[0] * indexGridSize[1],
       getGPUGridIndexMaximumCellCount(graph.device)
     );
+    const storageBacked = maximumNeighborCount > PRIVATE_NEIGHBOR_CAPACITY;
+    const useScratch = storageBacked || (props.invocationTileSize ?? cellCount) < cellCount;
+    // Two result words, then interleaved (row, distance bits); the final word is a tile cursor.
+    const scratchStride = storageBacked ? 2 + maximumNeighborCount * 2 : 2;
+    const maximumScratchRows = Math.floor(
+      (graph.device.limits.maxStorageBufferBindingSize / 4 - 1) / scratchStride
+    );
+    const tileSize = Math.min(
+      props.invocationTileSize ?? cellCount,
+      cellCount,
+      useScratch ? Math.max(1, maximumScratchRows) : cellCount
+    );
+    const scratchWords = tileSize * scratchStride + 1;
+    validateGraphChunkBindingRanges(graph, id, {
+      positions: props.positions,
+      values: props.values,
+      mask: props.mask,
+      parameters: props.parameters,
+      outputValues: output.values,
+      outputCounts: output.counts
+    });
+    for (const [name, bytes] of [
+      ['cellOffsets', (indexGridSize[0] * indexGridSize[1] + 1) * 4],
+      // Grid index and stable row ordering use scalar keys/values and two-word key/value rows.
+      ['sample sorting scratch', props.values.length * 8],
+      ['top-k scratch', useScratch ? scratchWords * 4 : 0]
+    ] as const) {
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        name,
+        bytes,
+        'reduce grid cells, sample count or maximumNeighborCount'
+      );
+    }
     const sampleCount = props.values.length;
     const indexCellCount = indexGridSize[0] * indexGridSize[1];
     const cellOffsets = createTransientView(
@@ -300,6 +406,9 @@ export class GPUInverseDistanceWeighting implements GPUCommandNodeProducer {
     nodes.push(...cellRowOrder.nodes);
     const sortedIds = cellRowOrder.sortedRows;
 
+    const scratch = useScratch
+      ? createTransientView(graph, `${id}-top-k`, 'uint32', scratchWords)
+      : undefined;
     const bindings: WGSLKernelBinding[] = [
       {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
       {name: 'sampleValues', view: props.values, type: 'f32', access: 'read'},
@@ -316,13 +425,17 @@ export class GPUInverseDistanceWeighting implements GPUCommandNodeProducer {
       {name: 'params', view: props.parameters, type: 'f32', access: 'read'},
       {name: 'cellOffsets', view: cellOffsets, type: 'u32', access: 'read'},
       {name: 'sortedIds', view: sortedIds, type: 'u32', access: 'read'},
-      {
-        name: 'valuesOut',
-        view: output.values,
-        type: 'f32',
-        access: 'read_write'
-      },
-      ...(output.counts
+      ...(scratch
+        ? [{name: 'topk', view: scratch, type: 'u32', access: 'read_write'} as const]
+        : [
+            {
+              name: 'valuesOut',
+              view: output.values,
+              type: 'f32',
+              access: 'read_write'
+            } as const
+          ]),
+      ...(!scratch && output.counts
         ? [
             {
               name: 'countsOut',
@@ -334,17 +447,7 @@ export class GPUInverseDistanceWeighting implements GPUCommandNodeProducer {
         : [])
     ];
     const hasNeighborLimit = maximumNeighborCount > 0;
-    nodes.push(
-      ...createTiledWGSLKernelNodes<Parameters>(
-        graph,
-        {
-          id: `${id}-gather`,
-          operation: OPERATION,
-          variant: hasNeighborLimit ? 'gather-nearest' : 'gather-radius',
-          bindings,
-          invocationCount: cellCount,
-          workgroupSize: 64,
-          declarations: `const WIDTH: u32 = ${width}u;
+    const declarations = `const WIDTH: u32 = ${width}u;
 const HEIGHT: u32 = ${height}u;
 const INDEX_WIDTH: u32 = ${indexGridSize[0]}u;
 const INDEX_HEIGHT: u32 = ${indexGridSize[1]}u;
@@ -353,17 +456,93 @@ const DOMAIN_MIN: vec2f = vec2f(${getWGSLFloatLiteral(indexBounds[0])}, ${getWGS
 const DOMAIN_MAX: vec2f = vec2f(${getWGSLFloatLiteral(indexBounds[2])}, ${getWGSLFloatLiteral(indexBounds[3])});
 ${GRID_COORDINATE_WGSL}
 ${getSeparationWGSL(this.separation)}
-${WEIGHT_ACCUMULATOR_WGSL}`,
-          body: getGatherBody(
-            Boolean(props.mask),
-            Boolean(output.counts),
-            hasNeighborLimit,
-            this.separation.geographic
-          )
-        },
-        props.invocationTileSize
-      )
+${WEIGHT_ACCUMULATOR_WGSL}
+const CELL_COUNT: u32 = ${cellCount}u;
+const SCRATCH_STRIDE: u32 = ${scratchStride}u;
+const CURSOR_WORD: u32 = ${tileSize * scratchStride}u;`;
+    const gatherBody = getGatherBody(
+      Boolean(props.mask),
+      Boolean(output.counts),
+      hasNeighborLimit,
+      this.separation.geographic,
+      storageBacked,
+      Boolean(scratch)
     );
+    if (scratch) {
+      nodes.push(
+        createStorageTopKNode(graph, {
+          id: `${id}-reset-cursor`,
+          operation: OPERATION,
+          variant: 'reset-cursor',
+          bindings: [{name: 'topk', view: scratch, type: 'u32', access: 'read_write'}],
+          invocationCount: 1,
+          declarations,
+          body: 'topk[topkOffset + CURSOR_WORD] = 0u;'
+        })
+      );
+    }
+    for (let tile = 0; tile < Math.ceil(cellCount / tileSize); tile++) {
+      nodes.push(
+        createStorageTopKNode(graph, {
+          id: `${id}-gather-${tile}`,
+          operation: OPERATION,
+          variant: hasNeighborLimit ? 'gather-nearest' : 'gather-radius',
+          bindings,
+          invocationCount: Math.min(tileSize, cellCount - tile * tileSize),
+          declarations,
+          body: scratch
+            ? `{ let index = index + topk[topkOffset + CURSOR_WORD];
+  if (index >= CELL_COUNT) { return; }
+  ${gatherBody}
+}`
+            : gatherBody
+        })
+      );
+      if (scratch) {
+        nodes.push(
+          createStorageTopKNode(graph, {
+            id: `${id}-publish-${tile}`,
+            operation: OPERATION,
+            variant: 'publish-storage',
+            bindings: [
+              {name: 'topk', view: scratch, type: 'u32', access: 'read'},
+              {name: 'valuesOut', view: output.values, type: 'f32', access: 'read_write'},
+              ...(output.counts
+                ? [
+                    {
+                      name: 'countsOut',
+                      view: output.counts,
+                      type: 'u32',
+                      access: 'read_write'
+                    } as const
+                  ]
+                : [])
+            ],
+            invocationCount: Math.min(tileSize, cellCount - tile * tileSize),
+            declarations,
+            body: `let globalRow = topk[topkOffset + CURSOR_WORD] + index;
+  if (globalRow >= CELL_COUNT) { return; }
+  let base = topkOffset + index * SCRATCH_STRIDE;
+  valuesOut[valuesOutOffset + globalRow] = bitcast<f32>(topk[base]);
+  ${output.counts ? 'countsOut[countsOutOffset + globalRow] = topk[base + 1u];' : ''}`
+          })
+        );
+      }
+      if (scratch && tile + 1 < Math.ceil(cellCount / tileSize)) {
+        nodes.push(
+          createStorageTopKNode(graph, {
+            id: `${id}-advance-${tile}`,
+            operation: OPERATION,
+            variant: 'advance-cursor',
+            bindings: [{name: 'topk', view: scratch, type: 'u32', access: 'read_write'}],
+            invocationCount: 1,
+            declarations: `const CURSOR_WORD: u32 = ${tileSize * scratchStride}u;
+const TILE_SIZE: u32 = ${tileSize}u;`,
+            body: 'topk[topkOffset + CURSOR_WORD] += TILE_SIZE;'
+          })
+        );
+      }
+    }
     return nodes;
   }
 }
@@ -435,11 +614,24 @@ function getGatherBody(
   hasMask: boolean,
   hasCounts: boolean,
   hasNeighborLimit: boolean,
-  geographic: boolean
+  geographic: boolean,
+  storageBacked: boolean,
+  useScratch: boolean
 ): string {
+  const storageList = getStorageTopKAccessors(
+    'topk',
+    'topkOffset + scratchIndex * SCRATCH_STRIDE + 2u'
+  );
+  const readRow = (slot: string) =>
+    storageBacked ? storageList.readRow(slot) : `nearRows[${slot}]`;
+  const readDistance = (slot: string) =>
+    storageBacked ? storageList.readDistance(slot) : `nearDistances[${slot}]`;
+  const writeRow = (slot: string, value: string) =>
+    storageBacked ? storageList.writeRow(slot, value) : `nearRows[${slot}] = ${value};`;
+  const writeDistance = (slot: string, value: string) =>
+    storageBacked ? storageList.writeDistance(slot, value) : `nearDistances[${slot}] = ${value};`;
   const nearestDeclarations = hasNeighborLimit
-    ? `var nearDistances: array<f32, MAX_NEIGHBORS>;
-  var nearRows: array<u32, MAX_NEIGHBORS>;
+    ? `${storageBacked ? '' : `var nearDistances: array<f32, MAX_NEIGHBORS>;\n  var nearRows: array<u32, MAX_NEIGHBORS>;`}
   var nearCount = 0u;`
     : '';
   const contribute = hasNeighborLimit
@@ -449,23 +641,23 @@ function getGatherBody(
         } else {
           let last = neighborLimit - 1u;
           let isFull = nearCount >= neighborLimit;
-          if (!isFull || distanceSquared < nearDistances[last] ||
-              (distanceSquared == nearDistances[last] && sample < nearRows[last])) {
+          if (!isFull || distanceSquared < ${readDistance('last')} ||
+              (distanceSquared == ${readDistance('last')} && sample < ${readRow('last')})) {
             var position = select(nearCount, last, isFull);
             loop {
               if (position == 0u) { break; }
-              let previousDistance = nearDistances[position - 1u];
-              let previousRow = nearRows[position - 1u];
+              let previousDistance = ${readDistance('position - 1u')};
+              let previousRow = ${readRow('position - 1u')};
               if (previousDistance < distanceSquared ||
                   (previousDistance == distanceSquared && previousRow < sample)) {
                 break;
               }
-              nearDistances[position] = previousDistance;
-              nearRows[position] = previousRow;
+              ${writeDistance('position', 'previousDistance')}
+              ${writeRow('position', 'previousRow')}
               position -= 1u;
             }
-            nearDistances[position] = distanceSquared;
-            nearRows[position] = sample;
+            ${writeDistance('position', 'distanceSquared')}
+            ${writeRow('position', 'sample')}
             nearCount = min(nearCount + 1u, neighborLimit);
           }
         }`
@@ -475,8 +667,8 @@ function getGatherBody(
     ? `if (neighborLimit > 0u) {
     count = nearCount;
     for (var near = 0u; near < nearCount; near++) {
-      let row = nearRows[near];
-      addWeightedSample(&accumulator, power, radius, useTaper, getSquaredMeters(nearDistances[near]), sampleValues[sampleValuesOffset + row]);
+      let row = ${readRow('near')};
+      addWeightedSample(&accumulator, power, radius, useTaper, getSquaredMeters(${readDistance('near')}), sampleValues[sampleValuesOffset + row]);
     }
   }`
     : '';
@@ -495,7 +687,8 @@ function getGatherBody(
           exactValue = value;
         }
         ${contribute}`;
-  return `let column = index % WIDTH;
+  return `${useScratch ? 'let scratchIndex = index - topk[topkOffset + CURSOR_WORD];' : ''}
+  let column = index % WIDTH;
   let rasterRow = index / WIDTH;
   let gridStart = vec2f(params[paramsOffset], params[paramsOffset + 1u]);
   let gridEnd = vec2f(params[paramsOffset + 2u], params[paramsOffset + 3u]);
@@ -547,7 +740,7 @@ function getGatherBody(
     ${
       hasNeighborLimit && !geographic
         ? `if (neighborLimit > 0u) {
-      ${getRingScanWGSL(visit)}
+      ${getRingScanWGSL(visit).replaceAll('nearDistances[neighborLimit - 1u]', readDistance('neighborLimit - 1u'))}
     } else {
       ${getRectangleScanWGSL(visit)}
     }`
@@ -561,6 +754,12 @@ function getGatherBody(
   } else if (count >= minimumNeighbors && !accumulator.isEmpty) {
     result = accumulator.weightedSum / accumulator.weightSum;
   }
-  valuesOut[valuesOutOffset + index] = result;
-  ${hasCounts ? 'countsOut[countsOutOffset + index] = count;' : ''}`;
+  ${
+    useScratch
+      ? `let resultBase = topkOffset + scratchIndex * SCRATCH_STRIDE;
+  topk[resultBase] = bitcast<u32>(result);
+  topk[resultBase + 1u] = count;`
+      : `valuesOut[valuesOutOffset + index] = result;
+  ${hasCounts ? 'countsOut[countsOutOffset + index] = count;' : ''}`
+  }`;
 }

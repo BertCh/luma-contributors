@@ -6,6 +6,7 @@ import type {Buffer} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
+import {getShapeMomentTileNodes} from '../../../src/gpu-spatial-analysis/shape-descriptors/shape-moment-tiles';
 import {createMomentsNode} from '../../../src/gpu-spatial-analysis/shape-descriptors/shape-descriptors-kernels';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -31,78 +32,81 @@ const FIRST_LEG = 4001;
 const SECOND_LEG = 3989;
 const LOOPS = 100000;
 
-it('shape descriptor moments carry the rounding error of every addition', async () => {
-  const device = await getWebGPUTestDevice();
-  requireTestDevice(device);
-  const positions = new Float32Array(6 * LOOPS);
-  for (let loop = 0; loop < LOOPS; loop++) {
-    positions.set(
-      [ANCHOR[0], ANCHOR[1], ANCHOR[0] + FIRST_LEG, ANCHOR[1], ANCHOR[0], ANCHOR[1] + SECOND_LEG],
-      6 * loop
-    );
-  }
-  const rowCount = positions.length / 2;
-  const buffers: Buffer[] = [];
-  const track = (buffer: Buffer) => {
-    buffers.push(buffer);
-    return buffer;
-  };
-  const graph = new GPUCommandGraph(device, {id: 'moments-summation'});
-  const importOffsets = (name: string, values: number[]) =>
-    importGraphBuffer(
-      graph,
-      name,
-      track(createInputBuffer(device, new Uint32Array(values))),
-      'uint32',
-      values.length
-    );
-  const moments = track(createOutputBuffer(device, 4));
-  graph.add(
-    createMomentsNode(graph, {
-      id: 'moments',
-      operation: 'GPUShapeDescriptors',
-      positions: importGraphBuffer(
-        graph,
-        'positions',
-        track(createInputBuffer(device, positions)),
-        'float32x2',
-        rowCount
-      ),
-      ringOffsets: importOffsets('ring-offsets', [0, rowCount]),
-      polygonOffsets: importOffsets('polygon-offsets', [0, 1]),
-      featureOffsets: importOffsets('feature-offsets', [0, 1]),
-      featureCount: 1,
-      centroids: importGraphBuffer(
-        graph,
-        'centroids',
-        track(createInputBuffer(device, new Float32Array(ANCHOR))),
-        'float32x2',
-        1
-      ),
-      moments: importGraphBuffer(graph, 'moments', moments, 'float32x4', 1)
-    })
-  );
-  const compiled = graph.compile();
-  try {
-    submitGraph(device, compiled, undefined);
-    const [momentXX, momentYY, momentXY, firstArea] = await readFloat32(moments, 4);
-    const cross = FIRST_LEG * SECOND_LEG;
-    expect(Math.abs(firstArea / ((LOOPS * cross) / 2) - 1), 'area').toBeLessThan(2e-6);
-    expect(
-      Math.abs(momentXX / ((LOOPS * Math.fround(cross * FIRST_LEG ** 2)) / 12) - 1),
-      'xx'
-    ).toBeLessThan(2e-6);
-    expect(
-      Math.abs(momentYY / ((LOOPS * Math.fround(cross * SECOND_LEG ** 2)) / 12) - 1),
-      'yy'
-    ).toBeLessThan(2e-6);
-    expect(Math.abs(momentXY / ((LOOPS * Math.fround(cross * cross)) / 24) - 1), 'xy').toBeLessThan(
-      2e-6
-    );
-  } finally {
-    compiled.destroy();
-    for (const buffer of buffers) {
-      buffer.destroy();
+for (const method of ['serial', 'tiled'] as const) {
+  it(`shape descriptor ${method} moments carry the rounding error of every addition`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const positions = new Float32Array(6 * LOOPS);
+    for (let loop = 0; loop < LOOPS; loop++) {
+      positions.set(
+        [ANCHOR[0], ANCHOR[1], ANCHOR[0] + FIRST_LEG, ANCHOR[1], ANCHOR[0], ANCHOR[1] + SECOND_LEG],
+        6 * loop
+      );
     }
-  }
-}, 120000);
+    const rowCount = positions.length / 2;
+    const buffers: Buffer[] = [];
+    const track = (buffer: Buffer) => {
+      buffers.push(buffer);
+      return buffer;
+    };
+    const graph = new GPUCommandGraph(device, {id: 'moments-summation'});
+    const importOffsets = (name: string, values: number[]) =>
+      importGraphBuffer(
+        graph,
+        name,
+        track(createInputBuffer(device, new Uint32Array(values))),
+        'uint32',
+        values.length
+      );
+    const moments = track(createOutputBuffer(device, 4));
+    graph.add(
+      (method === 'serial' ? createMomentsNode : getShapeMomentTileNodes)(graph, {
+        id: 'moments',
+        operation: 'GPUShapeDescriptors',
+        positions: importGraphBuffer(
+          graph,
+          'positions',
+          track(createInputBuffer(device, positions)),
+          'float32x2',
+          rowCount
+        ),
+        ringOffsets: importOffsets('ring-offsets', [0, rowCount]),
+        polygonOffsets: importOffsets('polygon-offsets', [0, 1]),
+        featureOffsets: importOffsets('feature-offsets', [0, 1]),
+        featureCount: 1,
+        centroids: importGraphBuffer(
+          graph,
+          'centroids',
+          track(createInputBuffer(device, new Float32Array(ANCHOR))),
+          'float32x2',
+          1
+        ),
+        moments: importGraphBuffer(graph, 'moments', moments, 'float32x4', 1)
+      })
+    );
+    const compiled = graph.compile();
+    try {
+      submitGraph(device, compiled, undefined);
+      const [momentXX, momentYY, momentXY, firstArea] = await readFloat32(moments, 4);
+      const cross = FIRST_LEG * SECOND_LEG;
+      expect(Math.abs(firstArea / ((LOOPS * cross) / 2) - 1), 'area').toBeLessThan(2e-6);
+      expect(
+        Math.abs(momentXX / ((LOOPS * Math.fround(cross * FIRST_LEG ** 2)) / 12) - 1),
+        'xx'
+      ).toBeLessThan(2e-6);
+      expect(
+        Math.abs(momentYY / ((LOOPS * Math.fround(cross * SECOND_LEG ** 2)) / 12) - 1),
+        'yy'
+      ).toBeLessThan(2e-6);
+      expect(
+        Math.abs(momentXY / ((LOOPS * Math.fround(cross * cross)) / 24) - 1),
+        'xy'
+      ).toBeLessThan(2e-6);
+    } finally {
+      compiled.destroy();
+      for (const buffer of buffers) {
+        buffer.destroy();
+      }
+    }
+  }, 120000);
+}

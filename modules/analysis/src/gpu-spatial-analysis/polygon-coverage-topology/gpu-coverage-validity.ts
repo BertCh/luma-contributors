@@ -35,6 +35,16 @@ import {GPU_COVERAGE_VALIDITY_PARAMETER_LENGTH} from './coverage-validity-parame
 import {NODE_OVERLAPS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {EXACT_GEOMETRY_WGSL} from '../../analysis-core/kernels/exact-geometry-wgsl';
 import {getNextPowerOfTwo} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  validateGraphChunkBindingRanges,
+  validateDisjointWritableViews
+} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {
+  validateGeometryReadWriteViews,
+  validateGeometryScratchByteLengths
+} from '../geometry-edit/geometry-storage-validation';
+import {validateSegmentBVHScratch} from '../segment-intersection/segment-storage-validation';
+import {validateGeographicDistributionViews} from '../geographic-distribution/geographic-distribution-validation';
 
 import {
   resolveGPUSpatialContext,
@@ -271,6 +281,27 @@ export class GPUCoverageValidity implements GPUCommandNodeProducer {
         props.parameters
       ]
     );
+    validateGeographicDistributionViews(
+      id,
+      {},
+      {
+        segmentFlags: output.segmentFlags,
+        featureInvalidCounts: output.featureInvalidCounts,
+        invalidCount: output.status?.invalidCount,
+        isValid: output.isValid
+      },
+      []
+    );
+    validateDisjointWritableViews(id, {
+      featureInvalidCounts: output.featureInvalidCounts,
+      invalidCount: output.status?.invalidCount
+    });
+    validateGeometryReadWriteViews(
+      id,
+      [output.segmentFlags],
+      [output.featureInvalidCounts, output.status?.invalidCount]
+    );
+    validateGeometryReadWriteViews(id, [output.status?.invalidCount], [output.isValid]);
   }
 
   /** Returns the coverage-validity nodes in dependency order. */
@@ -279,6 +310,24 @@ export class GPUCoverageValidity implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
     const {positions, ringOffsets, polygonOffsets, featureOffsets, parameters, output} = props;
+    validateGraphChunkBindingRanges(graph, id, {
+      positions,
+      ringOffsets,
+      polygonOffsets,
+      featureOffsets,
+      parameters,
+      segmentFlags: output.segmentFlags,
+      featureInvalidCounts: output.featureInvalidCounts,
+      invalidCount: output.status?.invalidCount,
+      isValid: output.isValid
+    });
+    validateGeometryScratchByteLengths(graph, id, {
+      segmentTable: positions.length * 32,
+      ringOrientation: (ringOffsets.length - 1) * 4,
+      featureCounts: (featureOffsets.length - 1) * 4,
+      scalarCount: 4
+    });
+    validateSegmentBVHScratch(graph, id, positions.length, this.leafCapacity, this.spatialSort);
     validateGraphViewsBelongToGraph(id, graph, [
       positions,
       ringOffsets,

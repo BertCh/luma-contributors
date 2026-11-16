@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateSpatialStatisticsBindings} from './spatial-statistics-bindings';
 import {createSaturatedScanTotalNodes} from '../../analysis-core/kernels/scan-total';
 import {
   createTransientView,
@@ -24,6 +25,7 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
+  validateRequirement,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -224,6 +226,19 @@ export class GPUContiguityWeights implements GPUCommandNodeProducer {
     ) {
       throw new Error(`${id} snapTolerance must be finite and >= 0`);
     }
+    if (props.snapTolerance !== undefined) {
+      validateFiniteNumber(
+        id,
+        'snapTolerance (float32 representability)',
+        Math.fround(props.snapTolerance),
+        0
+      );
+      validateRequirement(
+        id,
+        props.snapTolerance === 0 || Math.fround(props.snapTolerance) > 0,
+        'snapTolerance must be zero or a positive finite float32 value'
+      );
+    }
     if (props.coordinateExtent !== undefined) {
       validateFiniteNumber(id, 'coordinateExtent', props.coordinateExtent, 0);
       if (props.snapTolerance) {
@@ -325,6 +340,10 @@ export class GPUContiguityWeights implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateSpatialStatisticsBindings(graph, this.id, this.props, {
+      'vertex scratch': this.props.polygons.positions.length * 4,
+      'pair scratch': this.getPairCapacity() * 4
+    });
     const {id, props} = this;
     const {output} = props;
     const {ringOffsets, polygonOffsets, featureOffsets} = props.polygons;

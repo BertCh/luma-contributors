@@ -9,6 +9,7 @@ import {
   type GPUCellSetOutlineProps
 } from '../../../src/gpu-spatial-analysis/cell-set-outline/index';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {expectCellStorageScopes} from '../cell-indexing/cell-dispatch-audit';
 
 let serial = 0;
 
@@ -47,7 +48,9 @@ it('GPUCellSetOutline validates its properties', () => {
   const graph = new GPUCommandGraph(createNullWebGPUDevice(), {id: 'outline-validate'});
   const view = <Format extends 'uint32' | 'uint32x2'>(format: Format, length: number) =>
     createTransientView(graph, `validate-${serial++}`, format, length);
-  expect(() => new GPUCellSetOutline(createProps(graph, {family: 's2' as 'h3'}))).toThrow(/family/);
+  expect(() => new GPUCellSetOutline(createProps(graph, {family: 'unknown' as 'h3'}))).toThrow(
+    /family/
+  );
   expect(() => new GPUCellSetOutline(createProps(graph, {groups: view('uint32', 3)}))).toThrow(
     /groups length/
   );
@@ -69,4 +72,45 @@ it('GPUCellSetOutline validates its properties', () => {
   expect(() => new GPUCellSetOutline({...props, cells: props.output.cells})).toThrow(
     /disjoint|alias|share/i
   );
+});
+
+it('outline group gathering rejects mixed physical scopes while allowing independent packed columns', () => {
+  const device = createNullWebGPUDevice();
+  try {
+    const graph = new GPUCommandGraph(device);
+    const props = createProps(graph);
+    const backing = createTransientView(graph, 'outline-groups', 'uint32', 200);
+    const groups = createTransientView(graph, 'source-groups', 'uint32', props.cells.length);
+    const rows = graph.createDataView(backing.buffer, {
+      format: 'uint32',
+      length: 16,
+      byteOffset: 4
+    });
+    const outputGroups = graph.createDataView(backing.buffer, {
+      format: 'uint32',
+      length: 16,
+      byteOffset: 260
+    });
+    expect(
+      () =>
+        new GPUCellSetOutline({
+          ...props,
+          groups,
+          output: {...props.output, rows, groups: outputGroups}
+        })
+    ).toThrow(/physical buffer.*read-only and writable/);
+    const cells = graph.createDataView(backing.buffer, {
+      format: 'uint32x2',
+      length: 16,
+      byteOffset: 4
+    });
+    const contributor = new GPUCellSetOutline({
+      ...props,
+      groups,
+      output: {...props.output, cells, groups: outputGroups}
+    });
+    expectCellStorageScopes(contributor.getCommandNodes(graph));
+  } finally {
+    device.destroy();
+  }
 });

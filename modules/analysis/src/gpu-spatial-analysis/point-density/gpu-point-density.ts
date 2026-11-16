@@ -5,6 +5,7 @@
 import {
   createTransientView,
   GPUConvolution,
+  getGPUConvolutionSupport,
   GPUGridAggregation,
   GPUGridBinning,
   GPUGroupAggregation,
@@ -25,9 +26,13 @@ import {
   getCoreBindingElementLimit,
   getGraphViewChunks,
   validateCapacity,
+  validateCommandNodeBudget,
+  validateFiniteNumber,
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
-  validateSinglePackedView
+  validateRequirement,
+  validateSinglePackedView,
+  validatePowerOfTwo
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
@@ -42,14 +47,37 @@ import {
   createPointDensityHexagonKeysNode,
   createPointDensityMaskedPositionsNode,
   createPointDensityWorkgroupSumNode,
+  createPointDensityScaleNodes,
   type PointDensityResolvedBounds
 } from './point-density-kernels';
 import {
   createFixedPointClearNode,
   createFixedPointDecodeNode,
-  createFixedPointScaleNodes,
   FIXED_POINT_WORD_COUNT
 } from '../../analysis-core/kernels/fixed-point-accumulator';
+
+import {
+  stageDensityOutputViews,
+  validateDensityScratchBindings,
+  validateDensityViewBindings,
+  validateDensityWritableViews
+} from './density-point-passes';
+import {createPointDensityTiles} from './point-density-tiles';
+import {
+  createDensityScalarScratch,
+  getDensityWeightKeySpans,
+  validateDensityPointScratch
+} from './density-scratch';
+
+/** Total accepted rows must fit a uint32 cell counter, even when every row hits one cell. */
+export const GPU_POINT_DENSITY_MAXIMUM_POINT_COUNT = 0xffffffff;
+/** Two scalar position words per tile row must fit a uint32 storage-array length. */
+const POINT_DENSITY_MAXIMUM_TILE_ROW_COUNT = 0x40000000;
+/** Covers padded point/weight/mask gathers, masking, key, count, scale and sum passes per tile. */
+const POINT_DENSITY_TILE_COMMAND_NODE_ALLOWANCE = 32;
+
+/** Published convolution kernels represent kernel dimensions and tap indices as uint32. */
+const POINT_DENSITY_MAXIMUM_SMOOTHING_KERNEL_DIMENSION = 0xffffffff;
 
 /** Spatial contexts supported by this area-measuring operation. */
 const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
@@ -90,6 +118,12 @@ export const GPU_POINT_DENSITY_MAXIMUM_FIXED_POINT_CELL_COUNT = getCoreBindingEl
   4 * FIXED_POINT_WORD_COUNT
 );
 
+/**
+ * Allowance for published grid/group aggregation, convolution, reduction, histogram and texture
+ * nodes with packed cell outputs. Chunk-dependent point passes are counted separately below.
+ */
+const POINT_DENSITY_PRIMITIVE_COMMAND_NODE_ALLOWANCE = 512;
+
 /** Selects the sum implementation: `'auto'` is the deterministic fixed-point `'workgroup'` path. */
 function resolvePointDensitySumAccumulation(
   requested: GPUPointDensitySumAccumulation | undefined
@@ -127,9 +161,9 @@ export type GPUPointDensitySmoothing = {
     /** At least `kernelHeight` float32 rows. */
     vertical: GraphDataView<'float32'>;
   };
-  /** Positive odd kernel width. Compile-time. */
+  /** Positive odd uint32 kernel width. Compile-time; its binding must also fit the device. */
   kernelWidth: number;
-  /** Positive odd kernel height. Compile-time. */
+  /** Positive odd uint32 kernel height. Compile-time; its binding must also fit the device. */
   kernelHeight: number;
   /**
    * Forwarded to `GPUConvolution` for the dense kernel. Defaults to `'auto'`. Ignored with
@@ -150,7 +184,11 @@ function getSmoothingKernelViews(
   return smoothing.kernel ? [smoothing.kernel] : [];
 }
 
-/** Caller-owned results. Every view must belong to the target graph and use its own buffer. */
+/**
+ * Caller-owned packed results, with disjoint aligned bindings and buffers separate from inputs.
+ * Fields may share an allocation: those fields use private working buffers and publish their bits
+ * after computation, avoiding mixed read-only/writable storage usage on one WebGPU buffer.
+ */
 export type GPUPointDensityOutput = {
   /** `cellCount` float32 rows: the selected statistic, smoothed when `smoothing` is set. */
   values: GraphDataView<'float32'>;
@@ -178,21 +216,27 @@ export type GPUPointDensityOutput = {
  *
  * Compile-time: `gridSize`, `binning`, `statistic`, smoothing kernel size, which outputs exist,
  * literal bounds, and a literal radius. Per-frame: positions, weights, GPU bounds, GPU radius, and
- * smoothing kernel weights.
+ * smoothing kernel weights. Input lengths and chunk boundaries are compile-time.
+ * Input view kinds are inferred with packed defaults; outputs always describe a packed cell grid.
  */
-export type GPUPointDensityProps = {
+export type GPUPointDensityProps<
+  Positions extends GPUFloat32Positions = GraphDataView<'float32x2'>,
+  Weights extends GraphDataView<'float32'> | GraphVectorView<'float32'> = GraphDataView<'float32'>
+> = {
   /** Prefix for generated node and transient IDs. Defaults to `'point-density'`. */
   id?: string;
+  /** Optional power-of-two packed tile width for hexagon keys and masked point scratch. */
+  scratchTileSize?: number;
   /**
    * Coordinate and metric contract of positions and bounds. Planar/native only (omitted means
    * planar/native). Longitude/latitude throws at construction: project to a planar frame first, so
    * a cell and a smoothing kernel have a consistent ground size.
    */
   spatialContext?: GPUSpatialContext;
-  /** Packed source positions (single view or chunked vector). */
-  positions: GPUFloat32Positions;
+  /** Packed source positions (single view or chunked vector), at most GPU_POINT_DENSITY_MAXIMUM_POINT_COUNT total rows. */
+  positions: Positions;
   /** Optional per-point float32 weights with the same logical length as `positions`. */
-  weights?: GraphDataView<'float32'> | GraphVectorView<'float32'>;
+  weights?: Weights;
   /**
    * Optional per-row uint32 mask with the same logical length as `positions` (single packed view).
    * Rows whose mask is `0` are excluded from the count, sum, mean, smoothing input, extent, and
@@ -209,7 +253,7 @@ export type GPUPointDensityProps = {
   binning?: GPUPointDensityBinning;
   /**
    * Hexagon center-to-vertex radius in position units. Required for `'hexagon'`. A number is
-   * compile-time; a one-row float32 view is per-frame.
+   * compile-time and must remain positive and finite in float32; a one-row float32 view is per-frame.
    */
   hexagonRadius?: number | GraphDataView<'float32'>;
   /** Compile-time assignment rule. d3 includes its normalized-distance and half-tie semantics. */
@@ -244,13 +288,26 @@ export type GPUPointDensityProps = {
  *
  * Square grids reuse `GPUGridBinning` and `GPUGridAggregation`; hexagons use one keys kernel and
  * `GPUGroupAggregation`. `GPUConvolution`, `GPUReduction`, `GPUHistogram`, and
- * `GPURasterBufferToTexture` are reused unchanged.
+ * `GPURasterBufferToTexture` are reused unchanged. Positions and weights accept chunked
+ * vectors, including different chunk boundaries. Per-chunk row offsets preserve alignment;
+ * the shared fixed-point scale and summed logical row count give bit-identical packed and
+ * chunked deterministic sums. Unmasked grid keys use one scratch binding per position chunk,
+ * so their total may exceed one storage binding. Hexagon keys and masked positions switch
+ * to fixed-width packed tiles when global scratch exceeds one binding; tail points are NaN
+ * and tail weights zero. Published aggregation pipelines therefore use one tile shape. Grid scratch and each individual
+ * input/scratch chunk must still fit the device binding limit.
  */
-export class GPUPointDensity implements GPUCommandNodeProducer {
+export class GPUPointDensity<
+  Positions extends GPUFloat32Positions = GraphDataView<'float32x2'>,
+  Weights extends GraphDataView<'float32'> | GraphVectorView<'float32'> = GraphDataView<'float32'>
+> implements GPUCommandNodeProducer
+{
   /** Prefix for every node and transient ID. */
   readonly id: string;
+  readonly scratchTileSize: number;
+  readonly usesTiledScratch: boolean;
   /** Validated properties. */
-  readonly props: GPUPointDensityProps;
+  readonly props: GPUPointDensityProps<Positions, Weights>;
   /** Resolved coordinate and metric contract (planar/native). */
   readonly spatialContext: GPUSpatialContext;
   /** Resolved cell shape. */
@@ -261,10 +318,12 @@ export class GPUPointDensity implements GPUCommandNodeProducer {
   readonly sumAccumulation: Exclude<GPUPointDensitySumAccumulation, 'auto'>;
   /** `gridSize[0] * gridSize[1]`. */
   readonly cellCount: number;
+  /** Conservative node bound, including published primitives and per-chunk point passes. */
+  readonly estimatedCommandNodeCount: number;
   /** Canonical sampled-surface port for downstream raster and classification contributors. */
   readonly surface: GPUSampledSurfacePort<'float32'>;
 
-  constructor(props: GPUPointDensityProps) {
+  constructor(props: GPUPointDensityProps<Positions, Weights>) {
     this.id = props.id ?? 'point-density';
     this.props = props;
     this.spatialContext = resolveGPUSpatialContext(
@@ -280,6 +339,52 @@ export class GPUPointDensity implements GPUCommandNodeProducer {
     this.sumAccumulation = resolvePointDensitySumAccumulation(props.sumAccumulation);
     this.surface = {values: props.output.values, columns, rows};
     const {output, weights, smoothing, mask} = props;
+    const firstChunk = getGraphViewChunks(props.positions)[0];
+    const limits = firstChunk
+      ? (firstChunk.buffer.graph as GPUCommandGraph).device.limits
+      : undefined;
+    const scratchByteLimit = limits
+      ? Math.min(limits.maxStorageBufferBindingSize, limits.maxBufferSize)
+      : 8;
+    this.scratchTileSize =
+      props.scratchTileSize ??
+      2 **
+        Math.floor(
+          Math.log2(
+            Math.max(1, Math.min(POINT_DENSITY_MAXIMUM_TILE_ROW_COUNT, scratchByteLimit / 8))
+          )
+        );
+    validateCapacity(
+      id,
+      'scratchTileSize',
+      this.scratchTileSize,
+      1,
+      POINT_DENSITY_MAXIMUM_TILE_ROW_COUNT
+    );
+    validatePowerOfTwo(id, 'scratchTileSize', this.scratchTileSize);
+    this.usesTiledScratch =
+      props.scratchTileSize !== undefined
+        ? props.positions.length > this.scratchTileSize
+        : (this.binning === 'hexagon' && props.positions.length * 4 > scratchByteLimit) ||
+          (Boolean(mask) &&
+            this.binning === 'grid' &&
+            props.positions.length * 8 > scratchByteLimit);
+    this.estimatedCommandNodeCount =
+      POINT_DENSITY_PRIMITIVE_COMMAND_NODE_ALLOWANCE +
+      8 *
+        (getGraphViewChunks(props.positions).length +
+          (weights ? getGraphViewChunks(weights).length : 0));
+    if (this.usesTiledScratch)
+      this.estimatedCommandNodeCount +=
+        POINT_DENSITY_TILE_COMMAND_NODE_ALLOWANCE *
+        Math.ceil(props.positions.length / this.scratchTileSize);
+    validateMaximumCount(
+      id,
+      'positions.length',
+      props.positions.length,
+      GPU_POINT_DENSITY_MAXIMUM_POINT_COUNT
+    );
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
 
     if (!['grid', 'hexagon'].includes(this.binning)) {
       throw new Error(`${id} binning must be grid or hexagon`);
@@ -339,9 +444,12 @@ export class GPUPointDensity implements GPUCommandNodeProducer {
         throw new Error(`${id} hexagon binning requires hexagonRadius`);
       }
       if (typeof radius === 'number') {
-        if (!Number.isFinite(radius) || radius <= 0) {
-          throw new Error(`${id} hexagonRadius must be positive and finite`);
-        }
+        validateFiniteNumber(id, 'hexagonRadius', radius, 0);
+        validateRequirement(
+          id,
+          Math.fround(radius) > 0,
+          'hexagonRadius must be positive in float32'
+        );
       } else {
         validateSinglePackedView(radius, ['float32'], `${id} hexagonRadius`);
         if (radius.length < 1) {
@@ -355,8 +463,12 @@ export class GPUPointDensity implements GPUCommandNodeProducer {
       throw new Error(`${id} hexagonRadius requires hexagon binning`);
     }
     if (smoothing) {
-      for (const size of [smoothing.kernelWidth, smoothing.kernelHeight]) {
-        if (!Number.isSafeInteger(size) || size < 1 || size % 2 === 0) {
+      for (const [name, size] of [
+        ['smoothing.kernelWidth', smoothing.kernelWidth],
+        ['smoothing.kernelHeight', smoothing.kernelHeight]
+      ] as const) {
+        validateCapacity(id, name, size, 1, POINT_DENSITY_MAXIMUM_SMOOTHING_KERNEL_DIMENSION);
+        if (size % 2 === 0) {
           throw new Error(`${id} smoothing kernel sizes must be positive odd integers`);
         }
       }
@@ -432,6 +544,15 @@ export class GPUPointDensity implements GPUCommandNodeProducer {
       throw new Error(`${id} output.texture must be r32float with gridSize extent`);
     }
 
+    validateDensityWritableViews(id, {
+      'output.values': output.values,
+      'output.counts': output.counts,
+      'output.sums': output.sums,
+      'output.means': output.means,
+      'output.extent': output.extent,
+      'output.histogram': output.histogram,
+      'output.status.overflow': output.status?.overflow
+    });
     const writableBuffers = [
       output.values,
       output.counts,
@@ -451,10 +572,7 @@ export class GPUPointDensity implements GPUCommandNodeProducer {
       ...(typeof props.hexagonRadius === 'object' ? [props.hexagonRadius] : []),
       ...getSmoothingKernelViews(smoothing)
     ].map(view => view.buffer);
-    if (
-      new Set(writableBuffers).size !== writableBuffers.length ||
-      writableBuffers.some(buffer => inputBuffers.includes(buffer))
-    ) {
+    if (writableBuffers.some(buffer => inputBuffers.includes(buffer))) {
       throw new Error(`${id} outputs must use separate buffers`);
     }
   }
@@ -464,7 +582,89 @@ export class GPUPointDensity implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, statistic, sumAccumulation, cellCount} = this;
-    const {positions, weights, smoothing, output, gridSize, mask} = props;
+    const {smoothing, output: callerOutput, gridSize} = props;
+    let positions: GPUFloat32Positions = props.positions;
+    let weights: GraphDataView<'float32'> | GraphVectorView<'float32'> | undefined = props.weights;
+    let mask = props.mask;
+    let output = callerOutput;
+    validateDensityViewBindings(
+      graph,
+      id,
+      [
+        ['positions', positions],
+        ['weights', weights],
+        ['mask', mask],
+        ['bounds', Array.isArray(props.bounds) ? undefined : (props.bounds as GraphDataView)],
+        [
+          'hexagonRadius',
+          typeof props.hexagonRadius === 'object' ? props.hexagonRadius : undefined
+        ],
+        ...getSmoothingKernelViews(smoothing).map(view => ['smoothing kernel', view] as const),
+        ['output.values', output.values],
+        ['output.counts', output.counts],
+        ['output.sums', output.sums],
+        ['output.means', output.means],
+        ['output.extent', output.extent],
+        ['output.histogram', output.histogram],
+        ['output.status.overflow', output.status?.overflow]
+      ],
+      {skipEmptyChunks: true}
+    );
+    const needsSums =
+      Boolean(weights) && (statistic !== 'count' || Boolean(output.sums || output.means));
+    validateDensityScratchBindings(graph, id, [['grid scratch', cellCount * 4]]);
+    if (output.histogram || output.extent) {
+      validateDensityScratchBindings(graph, id, [['extent scratch', 8]]);
+    }
+    if (output.histogram) {
+      validateDensityScratchBindings(graph, id, [
+        ['histogram scratch', output.histogram.length * 4]
+      ]);
+    }
+    if (needsSums && sumAccumulation === 'workgroup') {
+      validateDensityScratchBindings(graph, id, [
+        ['fixed-point grid scratch', cellCount * 4 * FIXED_POINT_WORD_COUNT]
+      ]);
+    }
+    if (this.usesTiledScratch) {
+      validateDensityScratchBindings(graph, id, [['point tile scratch', this.scratchTileSize * 8]]);
+      validateCapacity(
+        id,
+        'point tile scratch byteLength',
+        this.scratchTileSize * 8,
+        0,
+        graph.device.limits.maxBufferSize
+      );
+    } else if (this.binning === 'hexagon') {
+      validateDensityScratchBindings(graph, id, [['point key scratch', positions.length * 4]]);
+    } else if (needsSums && sumAccumulation === 'workgroup') {
+      validateDensityPointScratch(graph, id, positions, 4);
+    }
+    if (mask && this.binning === 'grid' && !this.usesTiledScratch) {
+      validateDensityScratchBindings(graph, id, [
+        ['masked position scratch', positions.length * 8]
+      ]);
+    }
+    if (smoothing && !smoothing.separableKernel) {
+      const support = getGPUConvolutionSupport(graph.device, {
+        width: gridSize[0],
+        height: gridSize[1],
+        kernelWidth: smoothing.kernelWidth,
+        kernelHeight: smoothing.kernelHeight,
+        strategy: smoothing.strategy ?? 'auto',
+        boundary: 'zero'
+      });
+      if (support.strategy === 'fft' || smoothing.strategy === 'fft') {
+        validateDensityScratchBindings(graph, id, [
+          ['smoothing FFT scratch', support.stats?.fftComplexBufferByteLength ?? 0]
+        ]);
+      }
+      validateRequirement(
+        id,
+        support.supported,
+        `smoothing must fit device limits: ${support.reason ?? ''}`
+      );
+    }
     const boundsView = Array.isArray(props.bounds) ? undefined : (props.bounds as GraphDataView);
     const radiusView = typeof props.hexagonRadius === 'object' ? props.hexagonRadius : undefined;
     validateGraphViewsBelongToGraph(id, graph, [
@@ -486,6 +686,35 @@ export class GPUPointDensity implements GPUCommandNodeProducer {
       throw new Error(`${id} views must belong to the target graph`);
     }
 
+    const staged = stageDensityOutputViews(
+      graph,
+      id,
+      'GPUPointDensity',
+      {
+        values: output.values,
+        counts: output.counts,
+        sums: output.sums,
+        means: output.means,
+        extent: output.extent,
+        histogram: output.histogram,
+        overflow: output.status?.overflow
+      },
+      {overflow: 1}
+    );
+    output = {
+      ...callerOutput,
+      ...staged.views,
+      status: callerOutput.status ? {overflow: staged.views.overflow} : undefined
+    };
+
+    const pointTiles = this.usesTiledScratch
+      ? createPointDensityTiles(graph, id, positions, weights, mask, this.scratchTileSize)
+      : undefined;
+    if (pointTiles) {
+      positions = pointTiles.positions;
+      weights = pointTiles.weights;
+      mask = undefined;
+    }
     const bounds: PointDensityResolvedBounds =
       boundsView && boundsView.format === 'float32'
         ? graph.createDataView(boundsView.buffer, {
@@ -496,8 +725,6 @@ export class GPUPointDensity implements GPUCommandNodeProducer {
         : (props.bounds as PointDensityResolvedBounds);
     const counts =
       output.counts ?? createTransientView(graph, `${id}-counts-scratch`, 'uint32', cellCount);
-    const needsSums =
-      Boolean(weights) && (statistic !== 'count' || Boolean(output.sums || output.means));
     const sums = needsSums
       ? (output.sums ?? createTransientView(graph, `${id}-sums-scratch`, 'float32', cellCount))
       : undefined;
@@ -510,14 +737,21 @@ export class GPUPointDensity implements GPUCommandNodeProducer {
         ? createTransientView(graph, `${id}-extent-scratch`, 'float32', 2)
         : undefined);
 
-    const nodes: GPUCommandNode<Parameters>[] = [];
+    const nodes: GPUCommandNode<Parameters>[] = [...(pointTiles?.nodes ?? [])];
     if (output.status?.overflow) {
       nodes.push(
         createPointDensityClearOverflowNode(graph, `${id}-clear-overflow`, output.status.overflow)
       );
     }
     if (this.binning === 'hexagon') {
-      const keys = createTransientView(graph, `${id}-hexagon-keys`, 'uint32', positions.length);
+      const keys = createDensityScalarScratch(
+        graph,
+        `${id}-hexagon-keys`,
+        positions,
+        'uint32',
+        !this.usesTiledScratch
+      );
+      const keyChunks = getGraphViewChunks(keys);
       let keyStart = 0;
       for (const [chunkIndex, chunk] of getGraphViewChunks(positions).entries()) {
         if (chunk.length > 0) {
@@ -525,8 +759,8 @@ export class GPUPointDensity implements GPUCommandNodeProducer {
             createPointDensityHexagonKeysNode(graph, {
               id: `${id}-hexagon-keys-${chunkIndex}`,
               positions: chunk,
-              keys,
-              keyStart,
+              keys: keyChunks[this.usesTiledScratch ? chunkIndex : 0],
+              keyStart: this.usesTiledScratch ? 0 : keyStart,
               gridSize,
               bounds,
               radius: props.hexagonRadius as number | GraphDataView<'float32'>,
@@ -556,7 +790,16 @@ export class GPUPointDensity implements GPUCommandNodeProducer {
             }).getCommandNodes(graph)
           );
         } else {
-          nodes.push(...createWorkgroupSumNodes(graph, `${id}-sums`, weights, keys, sums));
+          nodes.push(
+            ...createWorkgroupSumNodes(
+              graph,
+              `${id}-sums`,
+              weights,
+              keys,
+              sums,
+              props.positions.length
+            )
+          );
         }
       }
     } else {
@@ -609,24 +852,37 @@ export class GPUPointDensity implements GPUCommandNodeProducer {
             }).getCommandNodes(graph)
           );
         } else {
-          const keys = createTransientView(graph, `${id}-grid-keys`, 'uint32', positions.length);
-          let keyStart = 0;
+          const keys = createDensityScalarScratch(
+            graph,
+            `${id}-grid-keys`,
+            gridPositions,
+            'uint32'
+          );
+          const keyChunks = getGraphViewChunks(keys);
           for (const [chunkIndex, chunk] of getGraphViewChunks(gridPositions).entries()) {
             if (chunk.length > 0) {
               nodes.push(
                 createPointDensityGridKeysNode(graph, {
                   id: `${id}-sums-grid-keys-${chunkIndex}`,
                   positions: chunk,
-                  keys,
-                  keyStart,
+                  keys: keyChunks[chunkIndex],
+                  keyStart: 0,
                   gridSize,
                   bounds
                 })
               );
             }
-            keyStart += chunk.length;
           }
-          nodes.push(...createWorkgroupSumNodes(graph, `${id}-sums`, weights, keys, sums));
+          nodes.push(
+            ...createWorkgroupSumNodes(
+              graph,
+              `${id}-sums`,
+              weights,
+              keys,
+              sums,
+              props.positions.length
+            )
+          );
         }
       }
     }
@@ -694,13 +950,14 @@ export class GPUPointDensity implements GPUCommandNodeProducer {
         }).getCommandNodes(graph)
       );
     }
-    if (output.histogram && extent) {
+    const histogram = output.histogram;
+    if (histogram && extent) {
       nodes.push(
         ...new GPUHistogram({
           id: `${id}-histogram`,
           input: output.values,
           mask: statisticsMask,
-          output: output.histogram,
+          output: histogram,
           domain: extent
         }).getCommandNodes(graph)
       );
@@ -721,6 +978,7 @@ export class GPUPointDensity implements GPUCommandNodeProducer {
         )
       );
     }
+    nodes.push(...staged.publishNodes);
     return nodes;
   }
 }
@@ -758,8 +1016,9 @@ function createWorkgroupSumNodes<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   id: string,
   weights: GraphDataView<'float32'> | GraphVectorView<'float32'>,
-  keys: GraphDataView<'uint32'>,
-  sums: GraphDataView<'float32'>
+  keys: GraphDataView<'uint32'> | GraphVectorView<'uint32'>,
+  sums: GraphDataView<'float32'>,
+  maximumTermCount = weights.length
 ): GPUCommandNode<Parameters>[] {
   const scale = createTransientView(graph, `${id}-scale`, 'uint32', 1);
   const fixedPointSums = createTransientView(
@@ -769,9 +1028,8 @@ function createWorkgroupSumNodes<Parameters>(
     sums.length * FIXED_POINT_WORD_COUNT
   );
   const nodes = [
-    ...createFixedPointScaleNodes<Parameters>(graph, {
+    ...createPointDensityScaleNodes<Parameters>(graph, {
       id: `${id}-scale`,
-      operation: 'GPUPointDensity',
       values: weights,
       scale
     }),
@@ -781,22 +1039,18 @@ function createWorkgroupSumNodes<Parameters>(
       words: fixedPointSums
     })
   ];
-  let keyStart = 0;
-  for (const [chunkIndex, chunk] of getGraphViewChunks(weights).entries()) {
-    if (chunk.length > 0) {
-      nodes.push(
-        createPointDensityWorkgroupSumNode(graph, {
-          id: `${id}-workgroup-${chunkIndex}`,
-          weights: chunk,
-          keys,
-          keyStart,
-          fixedPointSums,
-          scale,
-          rowCount: weights.length
-        })
-      );
-    }
-    keyStart += chunk.length;
+  for (const [chunkIndex, span] of getDensityWeightKeySpans(graph, weights, keys).entries()) {
+    nodes.push(
+      createPointDensityWorkgroupSumNode(graph, {
+        id: `${id}-workgroup-${chunkIndex}`,
+        weights: span.weights,
+        keys: span.keys,
+        keyStart: 0,
+        fixedPointSums,
+        scale,
+        rowCount: maximumTermCount
+      })
+    );
   }
   nodes.push(
     createFixedPointDecodeNode<Parameters>(graph, {
@@ -804,7 +1058,7 @@ function createWorkgroupSumNodes<Parameters>(
       operation: 'GPUPointDensity',
       words: fixedPointSums,
       scale,
-      maximumTermCount: weights.length,
+      maximumTermCount,
       output: sums
     })
   );

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRasterStorageBindings} from '../raster-grid/raster-storage-preflight';
 import {
   createTransientView,
   validatePackedUint32View,
@@ -97,8 +98,9 @@ export type GPULineIntegralConvolutionProps = {
  * adapter. Across adapters, `cos` and `normalize` rounding can move a sample into a neighbouring
  * pixel near a pixel edge.
  *
- * Row direction: the field raster and the output raster place row 0 at the smallest y (`originY` of its extent) and
- * rows advance toward larger y; `v` is the velocity toward larger y. No grid affine is read and
+ * Row direction: with positive cellHeight, the field and output row-zero centers lie half a cell above originY and
+ * rows advance toward larger y; `v` is the velocity toward larger y. Each lattice uses its own
+ * signed cell sizes, which explicitly set index direction; the origin is an outer corner. No grid affine is read and
  * nothing is checked at construction. A north-up field (row 0 at the top, the usual raster order)
  * must have its row order reversed by the caller before upload, or the flow is mirrored north to
  * south. Following a grid affine is deferred (roadmap 12.4).
@@ -177,6 +179,21 @@ export class GPULineIntegralConvolution implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    const storageProps = this.props;
+    const storageCellCount = storageProps.grid.width * storageProps.grid.height;
+    validateRasterStorageBindings(
+      graph,
+      this.id,
+      [
+        storageProps.velocities,
+        storageProps.parameters,
+        storageProps.uint32Parameters,
+        storageProps.output.values,
+        storageProps.output.speeds
+      ],
+      {'noise plane': storageCellCount * 4}
+    );
+
     const {id, props, stepCount} = this;
     const {output} = props;
     const {width, height} = props.grid;

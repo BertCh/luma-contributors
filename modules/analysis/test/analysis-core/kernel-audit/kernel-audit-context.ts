@@ -12,6 +12,7 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import type {GPUVectorFormat} from '@luma.gl/graph/gpu-data';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import type {WGSLDeclaredBinding} from './kernel-audit-wgsl';
 
 /** Fixed-width vector formats a builder can request with {@link KernelAuditContext.view}. */
 export type KernelAuditViewFormat = Exclude<GPUVectorFormat, `${string}-list` | `${string}list`>;
@@ -166,6 +167,8 @@ export type RecordedShaderModule = {
   source: string;
   /** Override constants passed with the pipeline. */
   constants: Readonly<Record<string, number>>;
+  /** Bindings the node explicitly declares; absent layouts fall back to the WGSL declarations. */
+  declaredBindings?: readonly WGSLDeclaredBinding[];
 };
 
 /**
@@ -184,13 +187,23 @@ export function recordShaderModules(
   });
   let nodeId = '';
   Object.defineProperty(device, 'createComputePipeline', {
-    value: (props: {id?: string; shader: {source: string}; constants?: Record<string, number>}) => {
+    value: (props: {
+      id?: string;
+      shader: {source: string};
+      constants?: Record<string, number>;
+      shaderLayout?: {bindings: readonly WGSLDeclaredBinding[]};
+    }) => {
       visitModule({
         nodeId,
         id: props.id ?? '',
         stage: 'compute',
         source: props.shader.source,
-        constants: {...props.constants}
+        constants: {...props.constants},
+        declaredBindings: props.shaderLayout?.bindings.map(({name, group, location}) => ({
+          name,
+          group,
+          location
+        }))
       });
       return {id: props.id ?? '', hash: '', destroy: () => {}};
     }
@@ -202,12 +215,33 @@ export function recordShaderModules(
       vs?: {source: string};
       fs?: {source: string} | null;
       constants?: Record<string, number>;
+      shaderLayout?: {bindings: readonly WGSLDeclaredBinding[]};
     }) => {
       const id = props.id ?? '';
       const constants = {...props.constants};
-      if (props.vs) visitModule({nodeId, id, stage: 'vertex', source: props.vs.source, constants});
+      const declaredBindings = props.shaderLayout?.bindings.map(({name, group, location}) => ({
+        name,
+        group,
+        location
+      }));
+      if (props.vs)
+        visitModule({
+          nodeId,
+          id,
+          stage: 'vertex',
+          source: props.vs.source,
+          constants,
+          declaredBindings
+        });
       if (props.fs && props.fs !== props.vs) {
-        visitModule({nodeId, id, stage: 'fragment', source: props.fs.source, constants});
+        visitModule({
+          nodeId,
+          id,
+          stage: 'fragment',
+          source: props.fs.source,
+          constants,
+          declaredBindings
+        });
       }
       return createRenderPipeline(props as never);
     }

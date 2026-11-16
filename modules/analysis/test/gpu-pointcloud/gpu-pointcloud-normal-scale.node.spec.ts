@@ -121,7 +121,9 @@ it('packs mutable eligibility/orientation settings and rejects parameter shape a
   );
   expect(
     () => new GPUPointCloudNormalScale({...props, normalVariances: props.normalScales})
-  ).toThrow(/distinct buffers/);
+  ).toThrow(
+    /^gpu-pointcloud-normal-scale normalScales and normalVariances logical byte ranges must not overlap$/
+  );
 });
 
 it('bounds the published index allowance at the storage-limited position count', () => {

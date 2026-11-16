@@ -8,18 +8,21 @@ import type {
   GPUCommandNode,
   GPUCommandNodeProducer
 } from '@luma.gl/graph/gpu-core';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  createRasterTimeSeriesNodes,
+  planRasterTimeSeriesChunks,
+  rasterTimeSeriesBinding as rasterBinding,
+  validateRasterTimeSeriesViews as validateRasterViews,
+  validateRasterTimeSeriesGraph as validateRasterGraph,
+  type RasterTimeSeriesScalarView as RasterScalarView,
+  type RasterTimeSeriesView,
+  type RasterTimeSeriesChunkPlan
+} from '../raster-time-series/raster-time-series-chunks-b';
 import {
   validateCapacity,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {
-  RASTER_FINITE_WGSL,
-  rasterBinding,
-  validateRasterViews,
-  validateRasterGraph,
-  getRasterLeastSquaresWGSL
-} from './raster-kernel-utils';
+import {RASTER_FINITE_WGSL, getRasterLeastSquaresWGSL} from './raster-kernel-utils';
 import {
   getGPURasterDateAxisBinding,
   getGPURasterDateAxisDeclarations,
@@ -28,14 +31,14 @@ import {
   type GPURasterIrregularDateAxis
 } from '../raster-time-series/raster-irregular-date-axis';
 
-export type GPURasterTemporalProps = {
+export type GPURasterTemporalProps<Rows extends RasterScalarView = GraphDataView> = {
   id?: string;
   cellCount: number;
   sliceCount: number;
   /** Cell-major regular-time samples; nonfinite samples are missing. */
-  values: GraphDataView<'float32'>;
+  values: RasterTimeSeriesView<'float32', Rows>;
   /** Per observation QA: zero rejects that acquisition for that cell. */
-  mask?: GraphDataView<'uint32'>;
+  mask?: RasterTimeSeriesView<'uint32', Rows>;
   operation: 'mean' | 'minimum' | 'maximum' | 'median' | 'savitzky-golay';
   /** SG only: odd 3–15 complete window, clipped or shifted at domain edges. */
   windowLength?: number;
@@ -48,10 +51,10 @@ export type GPURasterTemporalProps = {
    */
   dateAxis?: GPURasterIrregularDateAxis;
   output: {
-    values: GraphDataView<'float32'>;
-    counts: GraphDataView<'uint32'>;
-    chosenSlice: GraphDataView<'uint32'>;
-    status: GraphDataView<'uint32'>;
+    values: RasterTimeSeriesView<'float32', Rows>;
+    counts: RasterTimeSeriesView<'uint32', Rows>;
+    chosenSlice: RasterTimeSeriesView<'uint32', Rows>;
+    status: RasterTimeSeriesView<'uint32', Rows>;
   };
 };
 /** Time slices: each invocation sorts or fits its slices in a private array of this length (256 floats is 1 KiB), and slice indices stay exact in float32. */
@@ -63,11 +66,19 @@ const MAXIMUM_SAVITZKY_GOLAY_WINDOW = 15;
  * polynomial with QR over valid observations, rather than renormalizing signed coefficients.
  * Status 1=insufficient support, 2=rank failure. Dates use original indices; extrema take the
  * earliest tie and odd medians take the middle stable-sorted observation. Mean, even median
- * and SG have no unique source and write 0xffffffff. */
-export class GPURasterTemporal implements GPUCommandNodeProducer {
+ * and SG have no unique source and write 0xffffffff. *
+ * Cell-major views accept matching chunks of complete cell records; shared tables stay packed.
+ */
+export class GPURasterTemporal<Rows extends RasterScalarView = GraphDataView>
+  implements GPUCommandNodeProducer
+{
   readonly id: string;
+  readonly props: GPURasterTemporalProps<Rows>;
+  readonly chunkPlan: RasterTimeSeriesChunkPlan;
+  readonly estimatedCommandNodeCount: number;
   private readonly ticksPerYear: number;
-  constructor(readonly props: GPURasterTemporalProps) {
+  constructor(props: GPURasterTemporalProps<Rows> & {values: Rows}) {
+    this.props = props;
     this.id = props.id ?? 'raster-temporal';
     this.ticksPerYear = props.dateAxis
       ? resolveGPURasterIrregularDateAxis(this.id, props.dateAxis, props.sliceCount)
@@ -116,49 +127,72 @@ export class GPURasterTemporal implements GPUCommandNodeProducer {
       Object.values(props.output).every(view => view.length >= outputCount),
       'output views must hold one entry per cell (per observation for savitzky-golay)'
     );
-    validateRasterViews(
-      this.id,
-      [props.values, ...(props.mask ? [props.mask] : [])],
-      Object.values(props.output)
-    );
+    this.chunkPlan = planRasterTimeSeriesChunks(this.id, props.cellCount, {
+      values: {view: props.values, entriesPerCell: props.sliceCount},
+      mask: {view: props.mask, entriesPerCell: props.sliceCount},
+      'output.values': {
+        view: props.output.values,
+        entriesPerCell: props.operation === 'savitzky-golay' ? props.sliceCount : 1
+      },
+      'output.counts': {
+        view: props.output.counts,
+        entriesPerCell: props.operation === 'savitzky-golay' ? props.sliceCount : 1
+      },
+      'output.chosenSlice': {
+        view: props.output.chosenSlice,
+        entriesPerCell: props.operation === 'savitzky-golay' ? props.sliceCount : 1
+      },
+      'output.status': {
+        view: props.output.status,
+        entriesPerCell: props.operation === 'savitzky-golay' ? props.sliceCount : 1
+      }
+    });
+    this.estimatedCommandNodeCount = this.chunkPlan.estimatedCommandNodeCount;
+    validateRasterViews(this.id, this.getInputs(), this.getOutputs(), this.chunkPlan);
+  }
+  private getInputs(): RasterScalarView[] {
+    return [
+      ...(this.props.dateAxis && this.props.operation === 'savitzky-golay'
+        ? [this.props.dateAxis.acquisitionTimes]
+        : []),
+      this.props.values,
+      ...(this.props.mask ? [this.props.mask] : [])
+    ];
+  }
+  private getOutputs(): RasterScalarView[] {
+    return Object.values(this.props.output);
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
     const smoothing = props.operation === 'savitzky-golay';
-    validateRasterGraph(
-      id,
-      graph,
-      [props.values, ...(props.mask ? [props.mask] : [])],
-      Object.values(props.output)
-    );
-    if (props.dateAxis) validateGPURasterDateAxisGraph(id, graph, props.dateAxis);
+    validateRasterGraph(id, graph, this.getInputs(), this.getOutputs());
+    if (smoothing && props.dateAxis) validateGPURasterDateAxisGraph(id, graph, props.dateAxis);
     const useDates = smoothing && props.dateAxis !== undefined;
     const window = props.windowLength ?? 7;
     const order = props.polynomialOrder ?? 2;
-    return [
-      createWGSLKernelNode<Parameters>(graph, {
-        id,
-        operation: 'GPURasterTemporal',
-        invocationCount: props.cellCount * (smoothing ? props.sliceCount : 1),
-        workgroupSize: 64,
-        bindings: [
-          rasterBinding('values', props.values),
-          ...(props.mask ? [rasterBinding('mask', props.mask)] : []),
-          ...(useDates ? [getGPURasterDateAxisBinding(props.dateAxis!)] : []),
-          ...Object.entries(props.output).map(([name, view]) =>
-            rasterBinding(`output${name}`, view, true)
-          )
-        ],
-        declarations:
-          RASTER_FINITE_WGSL +
-          (smoothing ? getRasterLeastSquaresWGSL(window, order + 1) : '') +
-          (useDates
-            ? `\n${getGPURasterDateAxisDeclarations(this.ticksPerYear, props.sliceCount)}`
-            : ''),
-        body: smoothing
-          ? `let cell = index / ${props.sliceCount}u; let center = i32(index % ${props.sliceCount}u);
+    return createRasterTimeSeriesNodes<Parameters>(graph, this.chunkPlan, {
+      id,
+      operation: 'GPURasterTemporal',
+      invocationCount: props.cellCount * (smoothing ? props.sliceCount : 1),
+      workgroupSize: 64,
+      bindings: [
+        rasterBinding('values', props.values),
+        ...(props.mask ? [rasterBinding('mask', props.mask)] : []),
+        ...(useDates ? [getGPURasterDateAxisBinding(props.dateAxis!)] : []),
+        ...Object.entries(props.output).map(([name, view]) =>
+          rasterBinding(`output${name}`, view, true)
+        )
+      ],
+      declarations:
+        RASTER_FINITE_WGSL +
+        (smoothing ? getRasterLeastSquaresWGSL(window, order + 1) : '') +
+        (useDates
+          ? `\n${getGPURasterDateAxisDeclarations(this.ticksPerYear, props.sliceCount)}`
+          : ''),
+      body: smoothing
+        ? `let cell = index / ${props.sliceCount}u; let center = i32(index % ${props.sliceCount}u);
 let first = ${props.edgeMode === 'truncate' ? `center - ${Math.floor(window / 2)}` : `clamp(center - ${Math.floor(window / 2)}, 0, ${props.sliceCount - window})`};
 ${
   useDates
@@ -178,7 +212,7 @@ outputcounts[outputcountsOffset + index] = count; outputchosenSlice[outputchosen
 var value = missing(); var status = 1u;
 if (count >= ${order + 1}u) { let fit = leastSquares(design, response); status = 2u; if (fit.valid) { value = fit.coefficients[0]; status = 0u; } }
 outputvalues[outputvaluesOffset + index] = value; outputstatus[outputstatusOffset + index] = status;`
-          : `var observations: array<f32, ${props.sliceCount}>; var dates: array<u32, ${props.sliceCount}>; var count = 0u; var total = 0.0;
+        : `var observations: array<f32, ${props.sliceCount}>; var dates: array<u32, ${props.sliceCount}>; var count = 0u; var total = 0.0;
 for (var slice = 0u; slice < ${props.sliceCount}u; slice++) {
   let source = index * ${props.sliceCount}u + slice; let value = values[valuesOffset + source];
   if (!finite(value) ${props.mask ? '|| mask[maskOffset + source] == 0u' : ''}) { continue; }
@@ -191,7 +225,6 @@ if (count > 0u) {
 ${props.operation === 'mean' ? 'result = total;' : props.operation === 'minimum' ? 'result = observations[0]; chosen = dates[0];' : props.operation === 'maximum' ? 'result = observations[count - 1u]; chosen = dates[count - 1u]; for (var position = 0u; position < count; position++) { if (observations[position] == result) { chosen = min(chosen, dates[position]); } }' : 'result = observations[count / 2u]; if (count % 2u == 0u) { result = result * 0.5 + observations[count / 2u - 1u] * 0.5; } else { chosen = dates[count / 2u]; }'}
 }
 outputvalues[outputvaluesOffset + index] = result; outputcounts[outputcountsOffset + index] = count; outputchosenSlice[outputchosenSliceOffset + index] = chosen; outputstatus[outputstatusOffset + index] = select(1u, 0u, count > 0u);`
-      })
-    ];
+    });
   }
 }

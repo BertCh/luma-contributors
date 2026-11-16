@@ -8,6 +8,12 @@ import {validateCapacity} from '../../analysis-core/kernels/gpu-contributor-util
 /** Number of float32 elements in a spatial-autocorrelation parameter buffer. */
 export const GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH = 8;
 
+/** Extended fixed population counts use two exact 16-bit words, bounded by uint32. */
+export const GPU_SPATIAL_AUTOCORRELATION_MAXIMUM_FIXED_COUNT = 0xffffffff;
+
+/** Float32 represents every integer through this count; legacy slot-2 updates remain exact. */
+export const GPU_SPATIAL_AUTOCORRELATION_MAXIMUM_LEGACY_FIXED_COUNT = 2 ** 24;
+
 /** Declarative layout shared by local Moran and hot-spot analysis. */
 export const GPU_SPATIAL_AUTOCORRELATION_PARAMETER_SCHEMA = defineGPUSpatialParameterSchema({
   id: 'spatial-autocorrelation',
@@ -47,6 +53,33 @@ export const GPU_SPATIAL_AUTOCORRELATION_PARAMETER_SCHEMA = defineGPUSpatialPara
       wordOffset: 4,
       defaultValue: 0,
       minimum: 0,
+      dynamic: true
+    },
+    {
+      name: 'fixedCountHigh',
+      format: 'float32',
+      wordOffset: 5,
+      defaultValue: 0,
+      minimum: 0,
+      maximum: 65535,
+      dynamic: true
+    },
+    {
+      name: 'fixedCountLow',
+      format: 'float32',
+      wordOffset: 6,
+      defaultValue: 0,
+      minimum: 0,
+      maximum: 65535,
+      dynamic: true
+    },
+    {
+      name: 'useExtendedFixedCount',
+      format: 'float32',
+      wordOffset: 7,
+      defaultValue: 0,
+      minimum: 0,
+      maximum: 1,
       dynamic: true
     }
   ]
@@ -121,7 +154,10 @@ export type GPUSpatialAutocorrelationSettings = {
  * Packs spatial-autocorrelation settings into the 8-element float32 layout read by
  * `GPUHotSpotAnalysis`, `GPULocalMoran` and `GPULocalGeary`.
  *
- * Layout: `[significanceLevel, useFixedMoments, fixedCount, fixedMean, fixedVariance, 0, 0, 0]`.
+ * Layout: `[significanceLevel, useFixedMoments, fixedCount, fixedMean, fixedVariance, fixedCountHigh, fixedCountLow, useExtendedFixedCount]`.
+ * Counts through 2^24 retain the legacy layout: words 5–7 are zero and updates to word 2 take effect.
+ * Larger counts explicitly select the exact words 5–6 with word 7 equal to one. To return to legacy
+ * word-2 updates, set word 7 to zero; the packer does this automatically for smaller counts.
  *
  * @param settings Settings to encode.
  * @param target Optional destination of at least 8 elements. A new array is returned when omitted.
@@ -139,30 +175,40 @@ export function getGPUSpatialAutocorrelationParameterValues(
     GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
   );
   const significanceLevel = settings.significanceLevel ?? 0.05;
-  if (!(significanceLevel > 0 && significanceLevel < 1)) {
+  if (!(Math.fround(significanceLevel) > 0 && Math.fround(significanceLevel) < 1)) {
     throw new Error('Spatial autocorrelation significanceLevel must be in (0, 1)');
   }
   const fixedMoments = settings.fixedMoments;
   if (fixedMoments) {
+    validateCapacity(
+      'spatial-autocorrelation',
+      'fixedMoments.count',
+      fixedMoments.count,
+      2,
+      GPU_SPATIAL_AUTOCORRELATION_MAXIMUM_FIXED_COUNT
+    );
     if (
       !Number.isFinite(fixedMoments.count) ||
-      !Number.isFinite(fixedMoments.mean) ||
-      !Number.isFinite(fixedMoments.variance) ||
+      !Number.isFinite(Math.fround(fixedMoments.mean)) ||
+      !Number.isFinite(Math.fround(fixedMoments.variance)) ||
       fixedMoments.count < 2 ||
-      fixedMoments.variance <= 0
+      Math.fround(fixedMoments.variance) <= 0
     ) {
       throw new Error('Spatial autocorrelation fixedMoments are invalid');
     }
   }
+  const useExtendedFixedCount = Boolean(
+    fixedMoments && fixedMoments.count > GPU_SPATIAL_AUTOCORRELATION_MAXIMUM_LEGACY_FIXED_COUNT
+  );
   target.set([
     significanceLevel,
     fixedMoments ? 1 : 0,
     fixedMoments?.count ?? 0,
     fixedMoments?.mean ?? 0,
     fixedMoments?.variance ?? 0,
-    0,
-    0,
-    0
+    useExtendedFixedCount ? Math.floor(fixedMoments!.count / 65536) : 0,
+    useExtendedFixedCount ? fixedMoments!.count % 65536 : 0,
+    useExtendedFixedCount ? 1 : 0
   ]);
   return target;
 }

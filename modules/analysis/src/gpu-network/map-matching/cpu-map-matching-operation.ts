@@ -78,6 +78,7 @@ export type CPUMapMatchingResult = {
   matchedCount: Uint32Array;
   breakCount: Uint32Array;
   overflow: Uint32Array;
+  candidateOverflow: Uint32Array;
   routeOverflow: Uint32Array;
   traversedEdges: Uint32Array;
   traversedCounts: Uint32Array;
@@ -381,6 +382,7 @@ export function computeMapMatchingOnCPU(
     matchedCount: new Uint32Array(1),
     breakCount: new Uint32Array(1),
     overflow: new Uint32Array(1),
+    candidateOverflow: new Uint32Array(1),
     routeOverflow: new Uint32Array(1),
     traversedEdges: new Uint32Array(trackCount * capacity),
     traversedCounts: new Uint32Array(trackCount),

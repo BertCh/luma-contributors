@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateSpatialStatisticsBindings} from './spatial-statistics-bindings';
 import {
+  GraphVectorView,
   createTransientView,
   GPUReduction,
   type GPUCommandGraph,
@@ -88,6 +91,22 @@ export class GPUChunkedSpatialWeightsTransform implements GPUCommandNodeProducer
         validateSinglePackedView(view, ['float32'], `${id} output`);
       }
     }
+    validateDisjointWritableViews(id, {
+      weights: new GraphVectorView({
+        id: `${id}-writable-chunks`,
+        name: 'weights',
+        format: 'float32',
+        length: weights.chunks.reduce((total, chunk) => total + chunk.weights.weights.length, 0),
+        valueLength: weights.chunks.reduce(
+          (total, chunk) => total + chunk.weights.weights.length,
+          0
+        ),
+        stride: 1,
+        byteStride: 4,
+        rowByteLength: 4,
+        data: weights.chunks.map((chunk, index) => output?.[index] ?? chunk.weights.weights)
+      })
+    });
     this.chunkTransforms = weights.chunks.map(
       (chunk, chunkIndex) =>
         new GPUSpatialWeightsTransform({
@@ -143,6 +162,16 @@ export class GPUChunkedSpatialWeightsTransform implements GPUCommandNodeProducer
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateSpatialStatisticsBindings(graph, this.id, this.props, {
+      'row scratch': (this.props.weights.rowCount + 1) * 4,
+      'transpose scratch':
+        this.props.operation === 'symmetrize'
+          ? this.props.weights.chunks.reduce(
+              (total, chunk) => total + chunk.weights.neighbors.length,
+              0
+            ) * 4
+          : 0
+    });
     const {id, props} = this;
     const {weights, operation} = props;
     validateGraphViewsBelongToGraph(id, graph, [

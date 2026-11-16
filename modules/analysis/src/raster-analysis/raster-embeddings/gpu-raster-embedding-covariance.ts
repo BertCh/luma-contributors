@@ -9,15 +9,16 @@ import {
   type GPUCommandNode,
   type GPUCommandNodeProducer
 } from '@luma.gl/graph/gpu-core';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
+  validateGPUStorageBindingByteLength,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   RASTER_FINITE_WGSL,
   rasterBinding,
-  validateRasterGraph,
   validateRasterViews,
   type RasterScalarView
 } from '../remote-sensing/raster-kernel-utils';
@@ -105,7 +106,13 @@ export class GPURasterEmbeddingCovariance implements GPUCommandNodeProducer {
         (!output.usableCount || output.usableCount.length === 1),
       'output.mean must hold dimensions entries, output.covariance dimensions squared and output.usableCount one'
     );
-    validateRasterViews(id, this.getInputs(), this.getOutputs());
+    validateRasterViews(id, this.getInputs(), this.getOutputs(), [
+      {inputs: [], outputs: [output.mean, ...(output.usableCount ? [output.usableCount] : [])]},
+      {
+        inputs: [],
+        outputs: [output.covariance, ...(output.usableCount ? [output.usableCount] : [])]
+      }
+    ]);
   }
 
   private getInputs(): RasterScalarView[] {
@@ -123,7 +130,32 @@ export class GPURasterEmbeddingCovariance implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, rangeCount} = this;
     const {pixelCount, dimensions, output} = props;
-    validateRasterGraph(id, graph, this.getInputs(), this.getOutputs());
+    validateGraphChunkBindingRanges(graph, id, {
+      vectors: props.vectors,
+      mask: props.mask,
+      'output.mean': output.mean,
+      'output.covariance': output.covariance,
+      'output.usableCount': output.usableCount
+    });
+    // Every derived view starts at byte zero and createTransientView requires Buffer.STORAGE.
+    // Check the complete layout before creating even the shared usable-mask scratch.
+    for (const [name, elementCount] of Object.entries({
+      'usable scratch': pixelCount,
+      'partialSums scratch': rangeCount * dimensions,
+      'partialCounts scratch': rangeCount,
+      'partialCovariance scratch': rangeCount * dimensions * dimensions,
+      ...(!output.usableCount ? {'usableCount scratch': 1} : {})
+    })) {
+      const byteLength = elementCount * Uint32Array.BYTES_PER_ELEMENT;
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        name,
+        byteLength,
+        'reduce pixelCount, dimensions or rangeCount'
+      );
+      validateCapacity(id, `${name} byteLength`, byteLength, 1, graph.device.limits.maxBufferSize);
+    }
     const operation = 'GPURasterEmbeddingCovariance';
     const pixelsPerRange = Math.ceil(pixelCount / rangeCount);
     const {usable, node: usableNode} = createRasterEmbeddingUsableMask(graph, {
@@ -242,7 +274,8 @@ partialCovariance[partialCovarianceOffset + index] = total;`
         declarations: RASTER_FINITE_WGSL,
         bindings: [
           rasterBinding('partialCovariance', partialCovariance),
-          rasterBinding('usableCount', usableCount),
+          // The count and covariance may be disjoint writable bindings of one physical buffer.
+          rasterBinding('usableCount', usableCount, true),
           rasterBinding('covariance', output.covariance, true)
         ],
         body: `let row = min(index / ${dimensions}u, index % ${dimensions}u);

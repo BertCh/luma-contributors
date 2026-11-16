@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {getWGSLFloatLiteral} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {SCALED_QUOTIENT_WGSL} from '../../analysis-core/kernels/scaled-quotient-wgsl';
 
 /**
  * Floor of the background rate before it enters a logarithm: the smallest normal float32, because
@@ -14,6 +15,9 @@ export const GPU_SPACE_TIME_HAWKES_INTENSITY_FLOOR = 1.1754944e-38;
 
 /** Floor of the dimensionless branching ratio before it enters a logarithm. */
 export const GPU_SPACE_TIME_HAWKES_BRANCHING_RATIO_FLOOR = 1e-30;
+
+/** Variance must remain normal float32: GPUs may flush subnormal squared deviations to zero. */
+export const GPU_SPACE_TIME_HAWKES_MINIMUM_SPATIAL_VARIANCE = 2 ** -126;
 
 /** Slots of the float32 state buffer of {@link GPUSpaceTimeHawkes}. */
 export const SPACE_TIME_HAWKES_STATE_SLOTS = {
@@ -59,7 +63,8 @@ export const SPACE_TIME_HAWKES_STATE_LENGTH = 17;
  */
 export function getSpaceTimeHawkesEventWGSL(maximumParents: number): string {
   const slots = SPACE_TIME_HAWKES_STATE_SLOTS;
-  return `const MAXIMUM_PARENTS: u32 = ${maximumParents}u;
+  return `${SCALED_QUOTIENT_WGSL}
+const MAXIMUM_PARENTS: u32 = ${maximumParents}u;
 const INTENSITY_FLOOR: f32 = ${getWGSLFloatLiteral(GPU_SPACE_TIME_HAWKES_INTENSITY_FLOOR)};
 const BRANCHING_RATIO_FLOOR: f32 = ${getWGSLFloatLiteral(GPU_SPACE_TIME_HAWKES_BRANCHING_RATIO_FLOOR)};
 struct EventStatistics {
@@ -79,8 +84,7 @@ fn evaluateEvent(row: u32) -> EventStatistics {
   let decayRate = state[stateOffset + ${slots.decayRate}u];
   let variance = state[stateOffset + ${slots.spatialVariance}u];
   let logBackground = log(max(background, INTENSITY_FLOOR));
-  let logProductivity = log(max(branchingRatio, BRANCHING_RATIO_FLOOR)) + log(decayRate) - log(6.2831853 * variance);
-  let inverseTwoVariance = 0.5 / variance;
+  let logProductivity = log(max(branchingRatio, BRANCHING_RATIO_FLOOR)) + log(decayRate) - log(6.2831853) - log(variance);
   let maximumDistance = params[paramsOffset + 3u];
   let maximumDistanceSquared = maximumDistance * maximumDistance;
   // First sorted row whose time is within the maximum lag of this event.
@@ -95,8 +99,22 @@ fn evaluateEvent(row: u32) -> EventStatistics {
       high = middle;
     }
   }
-  if (row - low > MAXIMUM_PARENTS) {
-    low = row - MAXIMUM_PARENTS;
+  let firstCandidate = low;
+  // Simultaneous events cannot trigger each other. Locate the strict upper end before
+  // applying the capacity so a timestamp tie never displaces genuinely earlier parents.
+  high = row;
+  while (low < high) {
+    let middle = low + (high - low) / 2u;
+    if (events[eventsOffset + 4u * middle + 2u] < time) {
+      low = middle + 1u;
+    } else {
+      high = middle;
+    }
+  }
+  let parentEnd = low;
+  low = firstCandidate;
+  if (parentEnd - low > MAXIMUM_PARENTS) {
+    low = parentEnd - MAXIMUM_PARENTS;
     result.cut = 1.0;
   }
   var maximumLog = logBackground;
@@ -104,14 +122,14 @@ fn evaluateEvent(row: u32) -> EventStatistics {
   var parentSum = 0.0;
   var lagSum = 0.0;
   var distanceSum = 0.0;
-  for (var parent = low; parent < row; parent++) {
+  for (var parent = low; parent < parentEnd; parent++) {
     let lag = time - events[eventsOffset + 4u * parent + 2u];
     let delta = position - vec2f(events[eventsOffset + 4u * parent], events[eventsOffset + 4u * parent + 1u]);
     let distanceSquared = dot(delta, delta);
     if (!(lag > 0.0) || distanceSquared > maximumDistanceSquared) {
       continue;
     }
-    let term = logProductivity - decayRate * lag - distanceSquared * inverseTwoVariance;
+    let term = logProductivity - decayRate * lag - getScaledQuotient(distanceSquared, variance, 1.0, -1);
     if (term > maximumLog) {
       let scale = exp(maximumLog - term);
       backgroundWeight = backgroundWeight * scale;

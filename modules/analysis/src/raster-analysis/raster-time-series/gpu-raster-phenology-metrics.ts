@@ -8,19 +8,22 @@ import type {
   GPUCommandNode,
   GPUCommandNodeProducer
 } from '@luma.gl/graph/gpu-core';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  createRasterTimeSeriesNodes,
+  planRasterTimeSeriesChunks,
+  rasterTimeSeriesBinding as rasterBinding,
+  validateRasterTimeSeriesViews as validateRasterViews,
+  validateRasterTimeSeriesGraph as validateRasterGraph,
+  type RasterTimeSeriesScalarView as RasterScalarView,
+  type RasterTimeSeriesView,
+  type RasterTimeSeriesChunkPlan
+} from './raster-time-series-chunks-b';
 import {
   validateCapacity,
   validateFiniteNumber,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {
-  RASTER_FINITE_WGSL,
-  rasterBinding,
-  validateRasterGraph,
-  validateRasterViews,
-  type RasterScalarView
-} from '../remote-sensing/raster-kernel-utils';
+import {RASTER_FINITE_WGSL} from '../remote-sensing/raster-kernel-utils';
 import {
   getGPURasterDateAxisBinding,
   getGPURasterDateAxisDeclarations,
@@ -110,7 +113,7 @@ export function getGPURasterPhenologyMetricsParameterValues(
 }
 
 /** Properties of {@link GPURasterPhenologyMetrics}. */
-export type GPURasterPhenologyMetricsProps = {
+export type GPURasterPhenologyMetricsProps<Rows extends RasterScalarView = GraphDataView> = {
   id?: string;
   cellCount: number;
   /** Slices in `[2, 256]`. */
@@ -121,7 +124,7 @@ export type GPURasterPhenologyMetricsProps = {
    * The smoothed curve `cell * sliceCount + slice`, for example `output.smoothed` of
    * {@link GPURasterWhittakerSmoother}. A non-finite sample gives the cell status 1.
    */
-  smoothed: GraphDataView<'float32'>;
+  smoothed: RasterTimeSeriesView<'float32', Rows>;
   /** Float32, see {@link getGPURasterPhenologyMetricsParameterValues}. */
   parameters: GraphDataView<'float32'>;
   /**
@@ -131,13 +134,13 @@ export type GPURasterPhenologyMetricsProps = {
   dateAxis?: GPURasterIrregularDateAxis;
   output: {
     /** `cellCount * maximumSeasonCount * 10` fields, see {@link GPU_RASTER_PHENOLOGY_METRIC}; NaN for an absent season. */
-    metrics: GraphDataView<'float32'>;
+    metrics: RasterTimeSeriesView<'float32', Rows>;
     /** Per season, bits of {@link GPU_RASTER_PHENOLOGY_FLAG}. */
-    flags: GraphDataView<'uint32'>;
+    flags: RasterTimeSeriesView<'uint32', Rows>;
     /** Seasons found per cell, ordered by peak time in the metrics. */
-    seasonCount: GraphDataView<'uint32'>;
+    seasonCount: RasterTimeSeriesView<'uint32', Rows>;
     /** Per cell: 0 fit, 1 non-finite curve, 2 amplitude below the minimum. */
-    status: GraphDataView<'uint32'>;
+    status: RasterTimeSeriesView<'uint32', Rows>;
   };
 };
 
@@ -155,12 +158,20 @@ export type GPURasterPhenologyMetricsProps = {
  *
  * Per-frame: `parameters` and the contents of the views. Compile-time: `cellCount`, `sliceCount`,
  * `maximumSeasonCount` and whether `dateAxis` exists.
+ *
+ * Cell-major views accept matching chunks of complete cell records; shared tables stay packed.
  */
-export class GPURasterPhenologyMetrics implements GPUCommandNodeProducer {
+export class GPURasterPhenologyMetrics<Rows extends RasterScalarView = GraphDataView>
+  implements GPUCommandNodeProducer
+{
   readonly id: string;
+  readonly props: GPURasterPhenologyMetricsProps<Rows>;
+  readonly chunkPlan: RasterTimeSeriesChunkPlan;
+  readonly estimatedCommandNodeCount: number;
   private readonly ticksPerYear: number;
 
-  constructor(readonly props: GPURasterPhenologyMetricsProps) {
+  constructor(props: GPURasterPhenologyMetricsProps<Rows> & {smoothed: Rows}) {
+    this.props = props;
     const id = props.id ?? 'raster-phenology-metrics';
     this.id = id;
     validateCapacity(id, 'cellCount', props.cellCount);
@@ -200,11 +211,26 @@ export class GPURasterPhenologyMetrics implements GPUCommandNodeProducer {
     this.ticksPerYear = props.dateAxis
       ? resolveGPURasterIrregularDateAxis(id, props.dateAxis, props.sliceCount)
       : 0;
-    validateRasterViews(id, this.getInputs(), this.getOutputs());
+    this.chunkPlan = planRasterTimeSeriesChunks(this.id, props.cellCount, {
+      smoothed: {view: props.smoothed, entriesPerCell: props.sliceCount},
+      'output.metrics': {
+        view: props.output.metrics,
+        entriesPerCell: props.maximumSeasonCount * GPU_RASTER_PHENOLOGY_METRIC_COUNT
+      },
+      'output.flags': {view: props.output.flags, entriesPerCell: props.maximumSeasonCount},
+      'output.seasonCount': {view: props.output.seasonCount, entriesPerCell: 1},
+      'output.status': {view: props.output.status, entriesPerCell: 1}
+    });
+    this.estimatedCommandNodeCount = this.chunkPlan.estimatedCommandNodeCount;
+    validateRasterViews(this.id, this.getInputs(), this.getOutputs(), this.chunkPlan);
   }
 
   private getInputs(): RasterScalarView[] {
-    return [this.props.smoothed, this.props.parameters];
+    return [
+      ...(this.props.dateAxis ? [this.props.dateAxis.acquisitionTimes] : []),
+      this.props.smoothed,
+      this.props.parameters
+    ];
   }
 
   private getOutputs(): RasterScalarView[] {
@@ -227,25 +253,24 @@ export class GPURasterPhenologyMetrics implements GPUCommandNodeProducer {
     // zeros on the test GPU, contributor contract section 11; float tables, such as the one
     // filled from the axis, read right at every size tried.)
     const sliceTime = (slice: string) => (dateAxis ? `times[${slice}]` : `f32(${slice})`);
-    return [
-      createWGSLKernelNode<Parameters>(graph, {
-        id,
-        operation: 'GPURasterPhenologyMetrics',
-        invocationCount: props.cellCount,
-        workgroupSize: 64,
-        bindings: [
-          rasterBinding('smoothed', smoothed),
-          rasterBinding('parameters', parameters),
-          ...(dateAxis ? [getGPURasterDateAxisBinding(dateAxis)] : []),
-          rasterBinding('metrics', output.metrics, true),
-          rasterBinding('flags', output.flags, true),
-          rasterBinding('seasonCount', output.seasonCount, true),
-          rasterBinding('status', output.status, true)
-        ],
-        declarations: `${RASTER_FINITE_WGSL}
+    return createRasterTimeSeriesNodes<Parameters>(graph, this.chunkPlan, {
+      id,
+      operation: 'GPURasterPhenologyMetrics',
+      invocationCount: props.cellCount,
+      workgroupSize: 64,
+      bindings: [
+        rasterBinding('smoothed', smoothed),
+        rasterBinding('parameters', parameters),
+        ...(dateAxis ? [getGPURasterDateAxisBinding(dateAxis)] : []),
+        rasterBinding('metrics', output.metrics, true),
+        rasterBinding('flags', output.flags, true),
+        rasterBinding('seasonCount', output.seasonCount, true),
+        rasterBinding('status', output.status, true)
+      ],
+      declarations: `${RASTER_FINITE_WGSL}
 ${dateAxis ? getGPURasterDateAxisDeclarations(this.ticksPerYear, slices) : ''}
 fn curve(cell: u32, slice: u32) -> f32 { return smoothed[smoothedOffset + cell * ${slices}u + slice]; }`,
-        body: `let startFraction = parameters[parametersOffset];
+      body: `let startFraction = parameters[parametersOffset];
 let endFraction = parameters[parametersOffset + 1u];
 let minimumAmplitude = parameters[parametersOffset + 2u];
 let secondFraction = parameters[parametersOffset + 3u];
@@ -375,7 +400,6 @@ for (var slot = 0u; slot < ${seasons}u; slot++) {
     metrics[metricsOffset + (index * ${seasons}u + slot) * ${fields}u + field] = select(missing(), season[slot][field], slot < found);
   }
 }`
-      })
-    ];
+    });
   }
 }

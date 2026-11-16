@@ -6,6 +6,7 @@ import {clamp} from '@math.gl/core';
 import type {Device} from '@luma.gl/core';
 import {
   createTransientView,
+  getViewBindingRange,
   GPUGroupAggregation,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -22,15 +23,23 @@ import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   getStorageBindingElementLimit,
   validateCapacity,
+  validateMaximumCount,
+  validateRequirement,
+  getGraphOutputViews,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {
+  validateRasterFractionalBindingByteLength,
+  validateRasterFractionalWritableViews
+} from '../fractional-coverage/raster-fractional-tile-kernel';
+import {getRasterZoneDictionaryNodes} from './raster-zone-dictionary';
 import {
   getRasterBandViews,
   getRasterBufferBandNodes,
   validateRasterBandBelongsToGraph,
   validateParameterTarget,
-  validateRasterBuffersDistinct,
   validateRasterGrid,
   validateRasterParameters
 } from '../raster-band-utils';
@@ -101,12 +110,25 @@ export function getGPURasterZonalStatisticsMaximumSortedZoneCapacity(device: Dev
 
 /** Zone ID that marks a cell as belonging to no zone. Default value of `ignoredZone`. */
 export const GPU_RASTER_ZONAL_STATISTICS_NO_ZONE = 0xffffffff;
+/** Dictionary-validation violations plus missing source rows must fit one uint32 count. */
+const MAXIMUM_ZONE_DICTIONARY_VALIDATION_COUNT = 0xffffffff;
 
 /**
  * Caller-owned per-zone result columns. At least one column is required and every column must hold
  * exactly `zoneCapacity` rows. Zones with no contributing cell yield `0` for counts and sums and
  * NaN for `means`, `minimums`, and `maximums`.
  */
+export type GPURasterZonalStatisticsDictionaryOutput = {
+  /** With zoneDictionary: original sparse ID for each dense output row. */
+  sourceZoneIds?: GraphDataView<'uint32'>;
+  /** With zoneDictionary: zero-based dense row, or 0xffffffff for an invalid dictionary. */
+  denseZoneIds?: GraphDataView<'uint32'>;
+  status?: GPURasterZonalStatisticsStatus & {
+    /** Adjacent dictionary ordering violations plus unmapped non-ignored cells. */
+    invalidCount?: GraphDataView<'uint32'>;
+  };
+};
+
 export type GPURasterZonalStatisticsOutput = {
   /** Per zone: cells whose zone ID is in range and not ignored, regardless of value validity. */
   cellCounts?: GraphDataView<'uint32'>;
@@ -129,6 +151,8 @@ export type GPURasterZonalStatisticsStatus = {
   /**
    * One-row flag: 1 when any cell has a zone ID at or above `zoneCapacity` that is not
    * `ignoredZone`, otherwise 0. Presence is compile-time.
+   * With `zoneDictionary`, this checks mapped dense IDs; unmapped source IDs are excluded and
+   * reported through `invalidCount` instead.
    */
   overflow?: GraphDataView<'uint32'>;
 };
@@ -191,6 +215,14 @@ export type GPURasterZonalStatisticsProps = {
    */
   zones: GraphDataView<'uint32'>;
   /**
+   * Optional strictly increasing uint32 source IDs, exactly zoneCapacity rows. Sparse source IDs
+   * are looked up without float conversion; output row i belongs to zoneDictionary[i]. Requires
+   * output.sourceZoneIds, output.denseZoneIds and output.status.invalidCount. Unmapped cells are
+   * excluded and counted as invalid. An invalid dictionary excludes every cell. Contents may
+   * change between encodings. Omitted preserves the original dense-ID interpretation.
+   */
+  zoneDictionary?: GraphDataView<'uint32'>;
+  /**
    * Value band, buffer or texture backed. Validity, `noDataValue`, `scale`, and `offset` are
    * honored. Band configuration is compile-time, contents are per-frame.
    */
@@ -232,7 +264,9 @@ export type GPURasterZonalStatisticsProps = {
    */
   sumOrder?: GPURasterZonalStatisticsSumOrder;
   /** Per-zone result columns, rewritten on every encoding. Which columns exist is compile-time. */
-  output: GPURasterZonalStatisticsOutput & GPURasterZonalStatisticsMomentOutput;
+  output: GPURasterZonalStatisticsOutput &
+    GPURasterZonalStatisticsMomentOutput &
+    GPURasterZonalStatisticsDictionaryOutput;
 };
 
 const COLUMN_OPERATIONS = [
@@ -340,8 +374,8 @@ function hasSortedSums(
  *
  * Non-goals:
  * - No median or percentiles, and no fractional cell coverage of zones.
- * - No sparse or hashed zone IDs: IDs must be dense, so remap upstream (for example with
- *   `GPUBatchHashIndex`).
+ * - No dictionary construction or string IDs: sparse uint32 IDs use the caller-supplied sorted
+ *   `zoneDictionary`, with explicit source-to-dense output rows.
  * - No polygon rasterization: rasterize zones upstream.
  * - Single tile only: no cross-tile merge, although counts, sums, minimums, and maximums are
  *   mergeable by the caller.
@@ -391,6 +425,53 @@ export class GPURasterZonalStatistics implements GPUCommandNodeProducer {
       throw new Error(`${id} parameters need cellSizeMode geographic`);
     }
     const {output} = props;
+    validateRequirement(
+      id,
+      Boolean(props.zoneDictionary) ===
+        Boolean(output.sourceZoneIds || output.denseZoneIds || output.status?.invalidCount),
+      'zoneDictionary must be present exactly when dictionary outputs are requested'
+    );
+    if (props.zoneDictionary) {
+      validateSinglePackedView(props.zoneDictionary, ['uint32'], `${id} zoneDictionary`);
+      validateRequirement(
+        id,
+        props.zoneDictionary.length === props.zoneCapacity,
+        'zoneDictionary must have zoneCapacity entries'
+      );
+      for (const [name, view] of [
+        ['sourceZoneIds', output.sourceZoneIds],
+        ['denseZoneIds', output.denseZoneIds]
+      ] as const) {
+        validateRequirement(id, Boolean(view), `output.${name} is required with zoneDictionary`);
+        validateSinglePackedView(view!, ['uint32'], `${id} output.${name}`);
+        validateRequirement(
+          id,
+          view!.length === props.zoneCapacity,
+          `output.${name} must have zoneCapacity entries`
+        );
+      }
+      validateRequirement(
+        id,
+        Boolean(output.status?.invalidCount),
+        'output.status.invalidCount is required with zoneDictionary'
+      );
+      validateSinglePackedView(
+        output.status!.invalidCount!,
+        ['uint32'],
+        `${id} output.status.invalidCount`
+      );
+      validateRequirement(
+        id,
+        output.status!.invalidCount!.length === 1,
+        'output.status.invalidCount must have one entry'
+      );
+      validateMaximumCount(
+        id,
+        'zones.length + zoneCapacity',
+        cellCount + props.zoneCapacity,
+        MAXIMUM_ZONE_DICTIONARY_VALIDATION_COUNT
+      );
+    }
     const columns = [
       ...COLUMN_OPERATIONS.filter(([name]) => props.output[name]),
       ...MOMENT_COLUMNS.filter(name => props.output[name])
@@ -428,14 +509,91 @@ export class GPURasterZonalStatistics implements GPUCommandNodeProducer {
         throw new Error(`${id} output.status.overflow must contain one uint32 row`);
       }
     }
-    validateRasterBuffersDistinct(
+    const weighted = props.cellSizeMode === 'geographic';
+    const needsVariance = Boolean(output.variances || output.standardDeviations);
+    const momentPath = weighted || needsVariance || Boolean(output.weightSums);
+    const sortedSums = hasSortedSums(this.sumOrder, props);
+    const needsValueCounts =
+      Boolean(output.valueCounts) ||
+      (sortedSums && Boolean(output.means)) ||
+      (momentPath && (Boolean(output.means) || needsVariance));
+    const fusedColumns = [
+      output.cellCounts,
+      needsValueCounts,
+      output.minimums,
+      output.maximums
+    ].filter(Boolean).length;
+    const sourceGraph = props.zones.buffer.graph as GPUCommandGraph;
+    const fused =
+      fusedColumns > 0 &&
+      fusedColumns * 4 * props.zoneCapacity <=
+        sourceGraph.device.limits.maxComputeWorkgroupStorageSize;
+    const input = props.values;
+    const reusedBandViews =
+      input.storage.kind === 'buffer' &&
+      input.format === 'float32' &&
+      input.validity &&
+      input.scale === undefined &&
+      input.offset === undefined &&
+      input.noDataValue === undefined
+        ? getRasterBandViews(input)
+        : [];
+    const denseZones = props.zoneDictionary ? undefined : props.zones;
+    validateRasterFractionalWritableViews(
       id,
+      output,
+      [props.zones, props.zoneDictionary, props.parameters, ...getRasterBandViews(input)],
       [
-        ...COLUMN_OPERATIONS.map(([name]) => props.output[name]),
-        ...MOMENT_COLUMNS.map(name => props.output[name]),
-        overflow
-      ],
-      [props.zones, props.parameters, ...getRasterBandViews(props.values)]
+        ...(fused
+          ? [
+              {
+                writes: [
+                  output.cellCounts,
+                  output.valueCounts,
+                  output.minimums,
+                  output.maximums,
+                  overflow
+                ],
+                reads: [denseZones, ...reusedBandViews]
+              }
+            ]
+          : []),
+        ...COLUMN_OPERATIONS.flatMap(([name]) => {
+          if (
+            (fused && name !== 'sums' && name !== 'means') ||
+            ((sortedSums || momentPath) && (name === 'sums' || name === 'means'))
+          )
+            return [];
+          return [
+            {
+              writes: [output[name]],
+              reads: [denseZones, ...(name === 'cellCounts' ? [] : reusedBandViews)]
+            }
+          ];
+        }),
+        ...(sortedSums || momentPath
+          ? [
+              {writes: [output.sums], reads: sortedSums ? [] : [denseZones]},
+              {writes: [output.weightSums], reads: sortedSums ? [] : [denseZones]},
+              {
+                writes: [output.means],
+                reads: [output.sums, output.valueCounts, weighted ? output.weightSums : undefined]
+              },
+              {
+                writes: [output.variances, output.standardDeviations],
+                reads: [output.valueCounts, weighted ? output.weightSums : undefined]
+              }
+            ]
+          : []),
+        {
+          writes: [output.sourceZoneIds, output.denseZoneIds, output.status?.invalidCount],
+          reads: [props.zoneDictionary]
+        },
+        {writes: [output.status?.invalidCount], reads: [props.zones, props.zoneDictionary]},
+        ...(!fused
+          ? [{writes: [overflow], reads: [denseZones, props.parameters, ...reusedBandViews]}]
+          : [])
+      ]
     );
   }
 
@@ -444,6 +602,35 @@ export class GPURasterZonalStatistics implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
+    this.validateBindings(graph);
+    if (props.zoneDictionary) {
+      const mapping = getRasterZoneDictionaryNodes(graph, {
+        id,
+        zones: props.zones,
+        dictionary: props.zoneDictionary,
+        ignoredZone: props.ignoredZone ?? GPU_RASTER_ZONAL_STATISTICS_NO_ZONE,
+        sourceZoneIds: props.output.sourceZoneIds!,
+        denseZoneIds: props.output.denseZoneIds!,
+        invalidCount: props.output.status!.invalidCount!
+      });
+      const {
+        sourceZoneIds: _sourceZoneIds,
+        denseZoneIds: _denseZoneIds,
+        status,
+        ...columns
+      } = props.output;
+      return [
+        ...mapping.nodes,
+        ...new GPURasterZonalStatistics({
+          ...props,
+          id: `${id}-dense`,
+          zones: mapping.zones,
+          zoneDictionary: undefined,
+          ignoredZone: props.zoneCapacity,
+          output: {...columns, status: status?.overflow ? {overflow: status.overflow} : undefined}
+        }).getCommandNodes(graph)
+      ];
+    }
     const {zones, zoneCapacity, output} = props;
     const overflow = output.status?.overflow;
     const {width, height} = props.grid;
@@ -791,6 +978,57 @@ ${weighted && part.contributions ? getCellWeightWGSL(width, height) : ''}`,
       );
     }
     return nodes;
+  }
+
+  /** Preflights outer and nested dense-analysis storage before any sparse mapping is allocated. */
+  private validateBindings<Parameters>(graph: GPUCommandGraph<Parameters>): void {
+    const {id, props} = this;
+    const sorted = hasSortedSums(this.sumOrder, props);
+    validateCapacity(
+      id,
+      'zoneCapacity',
+      props.zoneCapacity,
+      1,
+      sorted
+        ? getGPURasterZonalStatisticsMaximumSortedZoneCapacity(graph.device)
+        : getGPURasterZonalStatisticsMaximumZoneCapacity(graph.device)
+    );
+    const views = [
+      props.zones,
+      props.zoneDictionary,
+      props.parameters,
+      ...getRasterBandViews(props.values),
+      ...getGraphOutputViews(props.output)
+    ];
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(views.map((view, index) => [`view.${index}`, view]))
+    );
+    validateRasterBandBelongsToGraph(id, graph, props.values, []);
+    for (const view of views)
+      if (view)
+        validateRasterFractionalBindingByteLength(
+          graph.device,
+          id,
+          view.buffer.id,
+          getViewBindingRange(view).size,
+          'reduce the packed raster or zone capacity',
+          view.buffer.byteLength
+        );
+    for (const [name, bytes] of [
+      ['per-cell planes and sort scratch', props.grid.width * props.grid.height * 4],
+      ['zone scratch', props.zoneCapacity * 4],
+      ['sorted segment offsets', sorted ? (props.zoneCapacity + 1) * 4 : 0],
+      ['dictionary validation', props.zoneDictionary ? 4 : 0]
+    ] as const)
+      validateRasterFractionalBindingByteLength(
+        graph.device,
+        id,
+        name,
+        bytes,
+        'reduce grid dimensions or zoneCapacity'
+      );
   }
 
   /**

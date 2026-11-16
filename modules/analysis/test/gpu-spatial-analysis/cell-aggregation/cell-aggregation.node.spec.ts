@@ -210,7 +210,7 @@ it('GPUCellAggregation emits deterministic nodes with one or two key sorts', () 
   const double = getIds(16);
   expect(single.some(id => id.includes('-sort-high'))).toBe(false);
   expect(double.some(id => id.includes('-sort-high'))).toBe(true);
-  expect(single[0]).toBe('agg-15-keys');
+  expect(single[0]).toBe('agg-15-chunk-parameters-upload');
   expect(single.at(-1)).toBe('agg-15-publish');
   device.destroy();
 });

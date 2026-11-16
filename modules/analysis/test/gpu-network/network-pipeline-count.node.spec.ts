@@ -9,6 +9,8 @@ import {GPUNetworkCostMatrix} from '../../src/gpu-network/network-accessibility/
 import {GPUNetworkServiceAreas} from '../../src/gpu-network/network-analysis/index';
 import {GPUNetworkKFunction} from '../../src/gpu-network/network-k-function/index';
 import {GPUNetworkReachability} from '../../src/gpu-network/network-reachability/index';
+import {GPUNetworkTravelTimePercentiles} from '../../src/gpu-network/network-time-geography/gpu-network-travel-time-percentiles';
+import {auditWGSLModule} from '../analysis-core/kernel-audit/kernel-audit-wgsl';
 import {
   createNullWebGPUDevice,
   getGPUCommandNodePipelineKeys,
@@ -16,8 +18,44 @@ import {
 } from '../utils/gpu-contributor-test-utils';
 
 function getDistinctComputePipelineCount(nodes: readonly unknown[]): number {
+  for (const [name, source] of getParsedKernelSources(nodes))
+    expect(auditWGSLModule(source), name).toEqual([]);
   return getGPUCommandNodePipelineKeys(nodes, {includeShaderLayout: true}).size;
 }
+
+it('travel-time departures reuse one solver shader and pipeline with aligned scratch', () => {
+  const counts = [];
+  for (const departureCount of [3, 9, 60]) {
+    const graph = createGraph(`percentiles-${departureCount}`);
+    let nextView = 0;
+    const view = <Format extends 'uint32' | 'float32' | 'uint32x2' | 'float32x2'>(
+      format: Format,
+      length: number
+    ) => createTransientView(graph, `percentile-view-${nextView++}`, format, length);
+    const contributor = new GPUNetworkTravelTimePercentiles({
+      stateVertices: view('uint32', 4),
+      transitions: view('uint32x2', 2),
+      costs: view('float32x2', 2),
+      initialState: view('uint32', 1),
+      window: view('float32', 2),
+      vertexCount: 3,
+      departureCount,
+      percentiles: [50, 100],
+      output: {
+        travelTimes: view('float32', 6),
+        reachedCounts: view('uint32', 3),
+        status: view('uint32', departureCount * 2)
+      }
+    });
+    const nodes = contributor.getCommandNodes(graph);
+    expect(nodes.length).toBe(contributor.estimatedCommandNodeCount);
+    const routing = nodes.filter(node => /-routing-\d+$/.test(node.id));
+    expect(routing).toHaveLength(departureCount);
+    expect(getDistinctComputePipelineCount(routing)).toBe(1);
+    counts.push(getDistinctComputePipelineCount(nodes));
+  }
+  expect(counts).toEqual([3, 3, 3]);
+});
 
 function getDistinctComputePipelineCountMatching(
   nodes: readonly unknown[],

@@ -2,17 +2,25 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {GPUCommandGraph, createTransientView} from '@luma.gl/graph/gpu-core';
-import {expect, it} from 'vitest';
+import {
+  GPUCommandGraph,
+  createTransientView,
+  type GraphDataView,
+  type GraphVectorView
+} from '@luma.gl/graph/gpu-core';
+import {expect, expectTypeOf, it} from 'vitest';
 import type {GPUTemporalContext} from '../../../src/analysis-core/contracts/temporal-context';
 import {GPULocalKriging} from '../../../src/gpu-spatial-analysis/spatial-interpolation/gpu-local-kriging';
-import {GPUSpaceTimeKriging} from '../../../src/gpu-spatial-analysis/spatial-interpolation/gpu-space-time-kriging';
+import {
+  GPUSpaceTimeKriging,
+  type GPUSpaceTimeKrigingProps
+} from '../../../src/gpu-spatial-analysis/spatial-interpolation/gpu-space-time-kriging';
 import {
   getGPULocalKrigingParameterLength,
   getGPUSpaceTimeKrigingParameterValues,
   GPU_SPACE_TIME_KRIGING_PARAMETER_LENGTH
 } from '../../../src/gpu-spatial-analysis/spatial-interpolation/prediction-covariance';
-import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
+import {createNullWebGPUDevice, createVectorView} from '../../utils/gpu-contributor-test-utils';
 
 const CONTEXT: GPUTemporalContext = {
   unit: 'second',
@@ -40,6 +48,36 @@ function createViews() {
   };
   return {graph, view, base};
 }
+
+it('preserves packed public types and infers the supplied query and output view kinds', () => {
+  const {base} = createViews();
+  const packedProps: GPUSpaceTimeKrigingProps = {...base, temporalContext: CONTEXT};
+  const packed: GPUSpaceTimeKriging = new GPUSpaceTimeKriging(packedProps);
+  const inferredPacked = new GPUSpaceTimeKriging(packedProps);
+  expectTypeOf(packed.props.queries).toEqualTypeOf<GraphDataView<'float32x2'>>();
+  expectTypeOf(packed.props.queryTimes).toEqualTypeOf<GraphDataView<'float32'>>();
+  expectTypeOf(packed.props.output.values).toEqualTypeOf<GraphDataView<'float32x4'>>();
+  expectTypeOf(packed.props.output.status).toEqualTypeOf<GraphDataView<'uint32'>>();
+  expectTypeOf(inferredPacked.props.output.values).toEqualTypeOf<GraphDataView<'float32x4'>>();
+  const chunked = new GPUSpaceTimeKriging({
+    ...packedProps,
+    queries: createVectorView('queries', 'float32x2', [base.queries]),
+    queryTimes: createVectorView('query-times', 'float32', [base.queryTimes]),
+    output: {
+      values: createVectorView('values', 'float32x4', [base.output.values]),
+      status: createVectorView('status', 'uint32', [base.output.status])
+    }
+  });
+  expectTypeOf(chunked.props.queries).toEqualTypeOf<GraphVectorView<'float32x2'>>();
+  expectTypeOf(chunked.props.queryTimes).toEqualTypeOf<GraphVectorView<'float32'>>();
+  expectTypeOf(chunked.props.output.values).toEqualTypeOf<GraphVectorView<'float32x4'>>();
+  expectTypeOf(chunked.props.output.status).toEqualTypeOf<GraphVectorView<'uint32'>>();
+  const mixed = new GPUSpaceTimeKriging({...packedProps, output: chunked.props.output});
+  expectTypeOf(mixed.props.queries).toEqualTypeOf<GraphDataView<'float32x2'>>();
+  expectTypeOf(mixed.props.output.values).toEqualTypeOf<GraphVectorView<'float32x4'>>();
+  expect(packed.props.output).toBe(base.output);
+  expect(mixed.props.output).toBe(chunked.props.output);
+});
 
 it('resolves the temporal context and checks sample and query compatibility', () => {
   const {base} = createViews();
@@ -157,7 +195,7 @@ it('rejects a neighbor budget outside the supported capacities', () => {
         neighborSearch: 'staged',
         stagedCandidateCount: 4
       })
-  ).toThrow('invalid neighbor search');
+  ).toThrow('stagedCandidateCount');
   expect(
     () =>
       new GPUSpaceTimeKriging({
@@ -166,7 +204,24 @@ it('rejects a neighbor budget outside the supported capacities', () => {
         neighborSearch: 'octant',
         neighborsPerOctant: 9
       })
-  ).toThrow('invalid neighbor search');
+  ).toThrow('neighborsPerOctant');
+});
+
+it('rejects non-finite, fractional and oversized interpolated capacities at construction', () => {
+  const {base} = createViews();
+  for (const property of ['neighborCount', 'neighborsPerOctant', 'stagedCandidateCount']) {
+    for (const value of [NaN, Infinity, -Infinity, 1e100, 0x100000000, 1.5]) {
+      expect(
+        () =>
+          new GPUSpaceTimeKriging({
+            ...base,
+            id: 'literal-validation',
+            temporalContext: CONTEXT,
+            [property]: value
+          })
+      ).toThrow(`literal-validation ${property} must be an integer in [`);
+    }
+  }
 });
 
 it('fails with a clear error when the kernel would exceed the device storage-binding limit', () => {
@@ -187,7 +242,5 @@ it('fails with a clear error when the kernel would exceed the device storage-bin
       weights: view('float32', 16 * 2)
     }
   });
-  expect(() => graph.add(contributor)).toThrow(
-    /binds 9 storage buffers, more than the device limit of 8/
-  );
+  expect(() => graph.add(contributor)).toThrow('local-kriging storage bindings must be at most 8');
 });

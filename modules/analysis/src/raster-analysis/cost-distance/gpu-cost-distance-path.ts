@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRasterStorageBindings} from '../raster-grid/raster-storage-preflight';
 import {
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -15,7 +16,8 @@ import type {GPUCompactOutput} from '../../analysis-core/kernels/gpu-contributor
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateGraphViewsBelongToGraph,
-  validateSinglePackedView
+  validateSinglePackedView,
+  getGraphOutputViews as getRasterPreflightOutputViews
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {validateRasterBuffersDistinct, validateRasterGrid} from '../raster-band-utils';
 import type {GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
@@ -141,6 +143,19 @@ export class GPUCostDistancePath implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    const storageProps = this.props;
+    validateRasterStorageBindings(
+      graph,
+      this.id,
+      [
+        storageProps.backLinks,
+        storageProps.target,
+        ...getRasterPreflightOutputViews(storageProps.output.path),
+        ...Object.values(storageProps.output.status ?? {})
+      ],
+      {'path total': 4}
+    );
+
     const {id, props} = this;
     const {output} = props;
     const {path} = output;

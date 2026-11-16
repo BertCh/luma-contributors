@@ -7,17 +7,31 @@ import {
   createTransientView,
   type GPUCommandGraph,
   type GPUCommandNode,
+  type GraphVectorView,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateGraphOutputsDisjointFromInputs,
   getStorageBindingElementLimit,
-  validateGraphViewsBelongToGraph,
+  getGraphViewChunks,
+  validateGPUStorageBindingByteLength,
+  validateCommandNodeBudget,
+  validateCapacity,
   validateMaximumCount,
+  validateNonZeroFiniteNumber,
   validateSinglePackedView,
   validatePowerOfTwo
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  planGraphChunkDispatch,
+  validateDisjointWritableViews,
+  validateGraphChunkBindingRanges,
+  type GraphChunkDispatchPlan
+} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateGraphChunkGroupKernelSupport} from '../../analysis-core/kernels/graph-chunk-groups';
+import {createTransientUint32Rows} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {getNearestEstimatedCommandNodeCount} from '../spatial-join/nearest-nodes';
 import {
   getGPUSphereRadius,
   GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
@@ -51,6 +65,8 @@ import {
 } from './linear-referencing-kernels';
 
 const OPERATION = 'GPULinearReferencing';
+/** Upper bound for shared prefix, BVH/sort, candidate scan and finalization nodes of published primitives. */
+const LINEAR_REFERENCING_SHARED_COMMAND_NODE_ALLOWANCE = 2048;
 
 // Line measures and nearest-line offsets measure distance.
 const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
@@ -71,28 +87,50 @@ export type GPULinearReferencingCoordinateSystem = 'planar' | 'spherical';
  * the angular fraction along the great-circle arc, and distances, measures and signed offsets are
  * in sphere-radius units (meters by default).
  */
-export type GPULinearReferencingOutput = {
+export type GPULinearReferencingOutput<
+  LineRows extends GraphDataView<'uint32'> | GraphVectorView<'uint32'> = GraphDataView<'uint32'>,
+  SegmentRows extends GraphDataView<'uint32'> | GraphVectorView<'uint32'> = GraphDataView<'uint32'>,
+  FractionRows extends
+    | GraphDataView<'float32'>
+    | GraphVectorView<'float32'> = GraphDataView<'float32'>,
+  FootPointRows extends
+    | GraphDataView<'float32x2'>
+    | GraphVectorView<'float32x2'> = GraphDataView<'float32x2'>,
+  DistanceRows extends
+    | GraphDataView<'float32'>
+    | GraphVectorView<'float32'> = GraphDataView<'float32'>,
+  MeasureRows extends
+    | GraphDataView<'float32'>
+    | GraphVectorView<'float32'> = GraphDataView<'float32'>,
+  NormalizedMeasureRows extends
+    | GraphDataView<'float32'>
+    | GraphVectorView<'float32'> = GraphDataView<'float32'>,
+  SideRows extends GraphDataView<'sint32'> | GraphVectorView<'sint32'> = GraphDataView<'sint32'>,
+  SignedOffsetRows extends
+    | GraphDataView<'float32'>
+    | GraphVectorView<'float32'> = GraphDataView<'float32'>
+> = {
   /** Index of the nearest line. */
-  lineIndices?: GraphDataView<'uint32'>;
+  lineIndices?: LineRows;
   /** Index of the nearest segment within its line (segment `k` joins vertices `k` and `k + 1`). */
-  segmentIndices?: GraphDataView<'uint32'>;
+  segmentIndices?: SegmentRows;
   /** Position of the foot point along the segment, in `[0, 1]`. */
-  fractions?: GraphDataView<'float32'>;
+  fractions?: FractionRows;
   /** Closest point on the line (turf `nearestPointOnLine`, PostGIS `ST_ClosestPoint`). */
-  footPoints?: GraphDataView<'float32x2'>;
+  footPoints?: FootPointRows;
   /** Distance from the point to the foot point. */
-  distances?: GraphDataView<'float32'>;
+  distances?: DistanceRows;
   /** Distance along the line from its first vertex to the foot point (`ST_LineLocatePoint` times length). */
-  measures?: GraphDataView<'float32'>;
+  measures?: MeasureRows;
   /**
    * `measures` divided by the length of the nearest line, in `[0, 1]` (shapely
    * `line_locate_point(normalized=True)`); `0` for zero-length lines.
    */
-  normalizedMeasures?: GraphDataView<'float32'>;
+  normalizedMeasures?: NormalizedMeasureRows;
   /** `1` left of the segment direction, `-1` right, `0` on the line. */
-  sides?: GraphDataView<'sint32'>;
+  sides?: SideRows;
   /** `side * distance`: signed lateral offset, positive to the left. */
-  signedOffsets?: GraphDataView<'float32'>;
+  signedOffsets?: SignedOffsetRows;
   /** Optional per-vertex cumulative line measure, `positions.length` rows. */
   vertexMeasures?: GraphDataView<'float32'>;
   /**
@@ -118,7 +156,7 @@ export type GPULinearReferencingOutput = {
 };
 
 /**
- * Largest `queryPositions` row count of {@link GPULinearReferencing} on `device`: the packed result
+ * Largest per-chunk `queryPositions` row count of {@link GPULinearReferencing} on `device`: the packed result
  * table holds 9 `uint32` words (36 bytes) per query in one storage binding, so 3728270 on a default
  * device (128 MiB bindings).
  */
@@ -152,7 +190,32 @@ export function getGPULinearReferencingMaximumSphericalPositionCount(device: Dev
  * lengths, the line count, `spatialContext`, `candidateCapacity`, `leafCapacity`,
  * `spatialSort`, and which outputs are present.
  */
-export type GPULinearReferencingProps = GPULineGeometryFields & {
+export type GPULinearReferencingProps<
+  LineRows extends GraphDataView<'uint32'> | GraphVectorView<'uint32'> = GraphDataView<'uint32'>,
+  SegmentRows extends GraphDataView<'uint32'> | GraphVectorView<'uint32'> = GraphDataView<'uint32'>,
+  FractionRows extends
+    | GraphDataView<'float32'>
+    | GraphVectorView<'float32'> = GraphDataView<'float32'>,
+  FootPointRows extends
+    | GraphDataView<'float32x2'>
+    | GraphVectorView<'float32x2'> = GraphDataView<'float32x2'>,
+  DistanceRows extends
+    | GraphDataView<'float32'>
+    | GraphVectorView<'float32'> = GraphDataView<'float32'>,
+  MeasureRows extends
+    | GraphDataView<'float32'>
+    | GraphVectorView<'float32'> = GraphDataView<'float32'>,
+  NormalizedMeasureRows extends
+    | GraphDataView<'float32'>
+    | GraphVectorView<'float32'> = GraphDataView<'float32'>,
+  SideRows extends GraphDataView<'sint32'> | GraphVectorView<'sint32'> = GraphDataView<'sint32'>,
+  SignedOffsetRows extends
+    | GraphDataView<'float32'>
+    | GraphVectorView<'float32'> = GraphDataView<'float32'>,
+  QueryRows extends
+    | GraphDataView<'float32x2'>
+    | GraphVectorView<'float32x2'> = GraphDataView<'float32x2'>
+> = GPULineGeometryFields & {
   /** Prefix for generated node and transient IDs. Defaults to `'linear-referencing'`. */
   id?: string;
   /**
@@ -164,14 +227,14 @@ export type GPULinearReferencingProps = GPULineGeometryFields & {
    */
   spatialContext?: GPUSpatialContext;
   /**
-   * Packed query points (longitude/latitude degrees for a great-circle context), at most
-   * {@link getGPULinearReferencingMaximumQueryCount} rows (3728270 on a default device). Qualified as `queryPositions` because
+   * Packed or chunked query points (longitude/latitude degrees for a great-circle context), at most
+   * {@link getGPULinearReferencingMaximumQueryCount} rows per chunk (3728270 on a default device). Qualified as `queryPositions` because
    * `positions` and `lineOffsets` (the line layout) hold the lines. A great-circle context also
    * limits `positions` to {@link getGPULinearReferencingMaximumSphericalPositionCount} rows
    * (2097152 on a default device), a planar one to
    * {@link getGPULinearReferencingMaximumPlanarPositionCount} (8388608).
    */
-  queryPositions: GraphDataView<'float32x2'>;
+  queryPositions: QueryRows;
   /**
    * Per-frame search radius, one float32 row. NaN, negative or infinite matches nothing.
    * On longitude/latitude this distance arrives as a GPU view, so no short-distance warning is possible;
@@ -196,7 +259,17 @@ export type GPULinearReferencingProps = GPULineGeometryFields & {
    */
   spatialSort?: boolean;
   /** Per-point outputs and status. */
-  output: GPULinearReferencingOutput;
+  output: GPULinearReferencingOutput<
+    LineRows,
+    SegmentRows,
+    FractionRows,
+    FootPointRows,
+    DistanceRows,
+    MeasureRows,
+    NormalizedMeasureRows,
+    SideRows,
+    SignedOffsetRows
+  >;
 };
 
 /**
@@ -226,13 +299,56 @@ export type GPULinearReferencingProps = GPULineGeometryFields & {
  * longitude range, dominated by the f32 longitude/latitude inputs. Arcs spanning more than about
  * 179 degrees are unsupported.
  *
- * Otherwise planar: distances and measures are Euclidean in position units.
+ * Otherwise planar: distances and measures are Euclidean in position units. Query-side fields
+ * may be chunked with identical ordered lengths. Shared geometry, prefix and BVH stages run
+ * once, and each query chunk dispatches its own workgroup count. Result scratch is sized for
+ * the largest chunk. Planar candidate assignment/scan scratch remains one uint32 per total query;
+ * its device binding check also bounds total planar queries. Candidate scalars cover all chunks.
  */
-export class GPULinearReferencing implements GPUCommandNodeProducer {
+export class GPULinearReferencing<
+  LineRows extends GraphDataView<'uint32'> | GraphVectorView<'uint32'> = GraphDataView<'uint32'>,
+  SegmentRows extends GraphDataView<'uint32'> | GraphVectorView<'uint32'> = GraphDataView<'uint32'>,
+  FractionRows extends
+    | GraphDataView<'float32'>
+    | GraphVectorView<'float32'> = GraphDataView<'float32'>,
+  FootPointRows extends
+    | GraphDataView<'float32x2'>
+    | GraphVectorView<'float32x2'> = GraphDataView<'float32x2'>,
+  DistanceRows extends
+    | GraphDataView<'float32'>
+    | GraphVectorView<'float32'> = GraphDataView<'float32'>,
+  MeasureRows extends
+    | GraphDataView<'float32'>
+    | GraphVectorView<'float32'> = GraphDataView<'float32'>,
+  NormalizedMeasureRows extends
+    | GraphDataView<'float32'>
+    | GraphVectorView<'float32'> = GraphDataView<'float32'>,
+  SideRows extends GraphDataView<'sint32'> | GraphVectorView<'sint32'> = GraphDataView<'sint32'>,
+  SignedOffsetRows extends
+    | GraphDataView<'float32'>
+    | GraphVectorView<'float32'> = GraphDataView<'float32'>,
+  QueryRows extends
+    | GraphDataView<'float32x2'>
+    | GraphVectorView<'float32x2'> = GraphDataView<'float32x2'>
+> implements GPUCommandNodeProducer
+{
   /** Prefix for every node and transient ID. */
   readonly id: string;
+  readonly estimatedCommandNodeCount: number;
+  private readonly chunkPlan: GraphChunkDispatchPlan;
   /** Validated properties. */
-  readonly props: GPULinearReferencingProps;
+  readonly props: GPULinearReferencingProps<
+    LineRows,
+    SegmentRows,
+    FractionRows,
+    FootPointRows,
+    DistanceRows,
+    MeasureRows,
+    NormalizedMeasureRows,
+    SideRows,
+    SignedOffsetRows,
+    QueryRows
+  >;
   /** Number of lines. */
   readonly lineCount: number;
   /** Resolved spatial context (planar unless given). */
@@ -242,7 +358,20 @@ export class GPULinearReferencing implements GPUCommandNodeProducer {
   /** Resolved sphere radius in the context's length unit (1 for planar). */
   private readonly sphereRadius: number;
 
-  constructor(props: GPULinearReferencingProps) {
+  constructor(
+    props: GPULinearReferencingProps<
+      LineRows,
+      SegmentRows,
+      FractionRows,
+      FootPointRows,
+      DistanceRows,
+      MeasureRows,
+      NormalizedMeasureRows,
+      SideRows,
+      SignedOffsetRows,
+      QueryRows
+    >
+  ) {
     this.id = props.id ?? 'linear-referencing';
     this.props = props;
     this.spatialContext = resolveGPUSpatialContext(
@@ -254,6 +383,7 @@ export class GPULinearReferencing implements GPUCommandNodeProducer {
       this.spatialContext.coordinateSpace === 'longitude-latitude' ? 'spherical' : 'planar';
     this.sphereRadius =
       this.coordinateSystem === 'spherical' ? getGPUSphereRadius(this.spatialContext) : 1;
+    validateNonZeroFiniteNumber(this.id, 'spatialContext.sphereRadius', this.sphereRadius);
     const {id} = this;
     const {output} = props;
     if (
@@ -266,7 +396,8 @@ export class GPULinearReferencing implements GPUCommandNodeProducer {
     if (props.leafCapacity !== undefined) {
       validatePowerOfTwo(id, 'leafCapacity', props.leafCapacity);
     }
-    validateSinglePackedView(props.queryPositions, ['float32x2'], `${id} queryPositions`);
+    for (const chunk of getGraphViewChunks(props.queryPositions))
+      validateSinglePackedView(chunk, ['float32x2'], `${id} queryPositions`);
     if (props.queryPositions.length < 1) {
       throw new Error(`${id} needs at least one query`);
     }
@@ -296,7 +427,7 @@ export class GPULinearReferencing implements GPUCommandNodeProducer {
     const {status, ...columns} = output;
     for (const [name, view] of Object.entries(columns) as [
       keyof typeof formats,
-      GraphDataView | undefined
+      GraphDataView | GraphVectorView | undefined
     ][]) {
       if (!view) {
         continue;
@@ -304,7 +435,11 @@ export class GPULinearReferencing implements GPUCommandNodeProducer {
       if (!(name in formats)) {
         throw new Error(`${id} output.${name} is not a linear-referencing column`);
       }
-      validateSinglePackedView(view, [formats[name]], `${id} output.${name}`);
+      if (name === 'vertexMeasures')
+        validateSinglePackedView(view, ['float32'], `${id} output.vertexMeasures`);
+      else
+        for (const chunk of getGraphViewChunks(view))
+          validateSinglePackedView(chunk, [formats[name]], `${id} output.${name}`);
       const length = name === 'vertexMeasures' ? props.positions.length : pointCount;
       if (view.length !== length) {
         throw new Error(`${id} output.${name} must hold ${length} rows`);
@@ -326,6 +461,35 @@ export class GPULinearReferencing implements GPUCommandNodeProducer {
         `${id} output.status.requiredCandidateCount`
       );
     }
+    const {vertexMeasures: _vertexMeasures, ...rowColumns} = columns;
+    this.chunkPlan = planGraphChunkDispatch(id, {
+      queryPositions: props.queryPositions,
+      ...rowColumns
+    });
+    validateDisjointWritableViews(id, {...columns, ...status});
+    validateCapacity(id, 'output.status.candidateOverflow rows', status.candidateOverflow.length);
+    if (status.requiredCandidateCount)
+      validateCapacity(
+        id,
+        'output.status.requiredCandidateCount rows',
+        status.requiredCandidateCount.length
+      );
+    if (this.coordinateSystem === 'planar')
+      validateCapacity(id, 'candidateCapacity', props.candidateCapacity as number);
+    const owner = props.positions.buffer.graph as GPUCommandGraph;
+    this.estimatedCommandNodeCount =
+      LINEAR_REFERENCING_SHARED_COMMAND_NODE_ALLOWANCE +
+      this.chunkPlan.nonemptyChunkCount * 3 +
+      (this.coordinateSystem === 'planar'
+        ? getNearestEstimatedCommandNodeCount(
+            pointCount,
+            1,
+            false,
+            this.chunkPlan.chunks.length,
+            owner.device.limits.maxStorageBufferBindingSize
+          )
+        : 0);
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     validateGraphOutputsDisjointFromInputs(
       id,
       [...Object.values(columns), status.candidateOverflow, status.requiredCandidateCount],
@@ -343,19 +507,23 @@ export class GPULinearReferencing implements GPUCommandNodeProducer {
     const {props, id} = this;
     const {output} = props;
     const {status, ...columns} = output;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.queryPositions,
-      props.positions,
-      props.lineOffsets,
-      props.radius,
-      status.candidateOverflow,
-      status.requiredCandidateCount,
-      ...Object.values(columns)
-    ]);
+    validateGraphChunkBindingRanges(graph, id, {
+      queryPositions: props.queryPositions,
+      positions: props.positions,
+      lineOffsets: props.lineOffsets,
+      radius: props.radius,
+      ...columns,
+      ...status
+    });
+    validateGraphChunkGroupKernelSupport(graph, id, 8);
+    const maximumChunkLength = this.chunkPlan.chunks.reduce(
+      (maximum, chunk) => Math.max(maximum, chunk.length),
+      0
+    );
     validateMaximumCount(
       id,
-      'queryPositions rows',
-      props.queryPositions.length,
+      'queryPositions chunk rows',
+      maximumChunkLength,
       getGPULinearReferencingMaximumQueryCount(graph.device)
     );
     validateMaximumCount(
@@ -366,8 +534,38 @@ export class GPULinearReferencing implements GPUCommandNodeProducer {
         ? getGPULinearReferencingMaximumSphericalPositionCount(graph.device)
         : getGPULinearReferencingMaximumPlanarPositionCount(graph.device)
     );
+    const leafCapacity = props.leafCapacity ?? getNextPowerOfTwo(props.positions.length);
+    validatePowerOfTwo(
+      id,
+      'leafCapacity',
+      leafCapacity,
+      1,
+      getGPUNearestFeatureJoinMaximumLeafCapacity(graph.device)
+    );
+    const scratchBytes = {
+      results: maximumChunkLength * LINEAR_REFERENCING_RESULT_STRIDE * 4,
+      vertexMeasures: props.positions.length * 4,
+      segmentBounds: props.positions.length * 8,
+      bvhNodes: (leafCapacity * 2 - 1) * 8,
+      ...(this.coordinateSystem === 'spherical'
+        ? {
+            segmentTable: props.positions.length * SPHERICAL_SEGMENT_TABLE_STRIDE * 4,
+            nodeData: (leafCapacity * 2 - 1) * SPHERICAL_NODE_WORDS * 4
+          }
+        : {
+            queryAssignmentAndScan: props.queryPositions.length * 4,
+            candidatePairsAndPositions: (props.candidateCapacity as number) * 8
+          })
+    };
+    for (const [name, byteLength] of Object.entries(scratchBytes))
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        name,
+        byteLength,
+        'reduce the query chunk, total planar queries, geometry, leafCapacity or candidateCapacity'
+      );
     const rowCount = props.positions.length;
-    const pointCount = props.queryPositions.length;
     const spherical = this.coordinateSystem === 'spherical';
     const vertexMeasures =
       output.vertexMeasures ??
@@ -376,7 +574,7 @@ export class GPULinearReferencing implements GPUCommandNodeProducer {
       graph,
       `${id}-results`,
       'uint32',
-      pointCount * LINEAR_REFERENCING_RESULT_STRIDE
+      maximumChunkLength * LINEAR_REFERENCING_RESULT_STRIDE
     );
     const prefixNode = createLinePrefixNode<Parameters>(graph, {
       id: `${id}-vertex-measures`,
@@ -387,14 +585,18 @@ export class GPULinearReferencing implements GPUCommandNodeProducer {
       radius: spherical ? this.sphereRadius : 1,
       rowMeasures: vertexMeasures
     });
-    const scatterNodes = createPackedScatterNodes<Parameters>(graph, {
-      id: `${id}-output`,
-      operation: OPERATION,
-      rowCount: pointCount,
-      stride: LINEAR_REFERENCING_RESULT_STRIDE,
-      results,
-      columns: getPointProjectionScatterColumns(columns as PointProjectionColumns)
-    });
+    const scatterNodes = (chunkIndex: number) => {
+      const chunk = this.chunkPlan.chunks[chunkIndex];
+      const {queryPositions: _queryPositions, ...chunkColumns} = chunk.views;
+      return createPackedScatterNodes<Parameters>(graph, {
+        id: `${id}${this.chunkPlan.chunks.length === 1 ? '' : `-chunk-${chunkIndex}`}-output`,
+        operation: OPERATION,
+        rowCount: chunk.length,
+        stride: LINEAR_REFERENCING_RESULT_STRIDE,
+        results,
+        columns: getPointProjectionScatterColumns(chunkColumns as PointProjectionColumns)
+      });
+    };
     if (spherical) {
       const table = createTransientView(
         graph,
@@ -404,7 +606,6 @@ export class GPULinearReferencing implements GPUCommandNodeProducer {
       );
       const arcMinima = createTransientView(graph, `${id}-arc-minima`, 'float32x2', rowCount);
       const arcMaxima = createTransientView(graph, `${id}-arc-maxima`, 'float32x2', rowCount);
-      const leafCapacity = props.leafCapacity ?? getNextPowerOfTwo(rowCount);
       const {bvh, nodes: bvhNodes} = getSortedFeatureBVHNodes<Parameters>(
         graph,
         `${id}-arcs`,
@@ -452,32 +653,36 @@ export class GPULinearReferencing implements GPUCommandNodeProducer {
           candidateOverflow: status.candidateOverflow
         }),
         prefixNode,
-        createSphericalProjectionNode<Parameters>(graph, {
-          id: `${id}-project`,
-          operation: OPERATION,
-          points: props.queryPositions,
-          positions: props.positions,
-          lineOffsets: props.lineOffsets,
-          table,
-          vertexMeasures,
-          radius: props.radius,
-          sphereRadius: this.sphereRadius,
-          nodeData,
-          internalNodeCount: bvh.internalNodeCount,
-          levelCount: bvh.levelCount,
-          results
-        }),
-        ...scatterNodes
+        ...this.chunkPlan.chunks
+          .filter(chunk => chunk.length > 0)
+          .flatMap(chunk => [
+            createSphericalProjectionNode<Parameters>(graph, {
+              id: `${id}${this.chunkPlan.chunks.length === 1 ? '' : `-chunk-${chunk.chunkIndex}`}-project`,
+              operation: OPERATION,
+              points: chunk.views['queryPositions'] as GraphDataView<'float32x2'>,
+              positions: props.positions,
+              lineOffsets: props.lineOffsets,
+              table,
+              vertexMeasures,
+              radius: props.radius,
+              sphereRadius: this.sphereRadius,
+              nodeData,
+              internalNodeCount: bvh.internalNodeCount,
+              levelCount: bvh.levelCount,
+              results
+            }),
+            ...scatterNodes(chunk.chunkIndex)
+          ])
       ];
     }
     const segmentStarts = createTransientView(graph, `${id}-segment-starts`, 'float32x2', rowCount);
     const segmentEnds = createTransientView(graph, `${id}-segment-ends`, 'float32x2', rowCount);
-    const nearestSegments = createTransientView(
+    const nearestSegments = createTransientUint32Rows(
       graph,
       `${id}-nearest-segments`,
-      'uint32',
-      pointCount
+      props.queryPositions
     );
+    const nearestSegmentChunks = getGraphViewChunks(nearestSegments);
     return [
       createLineSegmentsNode<Parameters>(graph, {
         id: `${id}-segments`,
@@ -496,6 +701,7 @@ export class GPULinearReferencing implements GPUCommandNodeProducer {
         candidateCapacity: props.candidateCapacity as number,
         leafCapacity: props.leafCapacity,
         spatialSort: props.spatialSort,
+        querySort: false,
         output: {
           nearestFeatureIds: nearestSegments,
           // The join's `overflow` folds in its candidate overflow; with no `matches` it has no
@@ -507,17 +713,21 @@ export class GPULinearReferencing implements GPUCommandNodeProducer {
           }
         }
       }).getCommandNodes(graph),
-      createPointProjectionNode<Parameters>(graph, {
-        id: `${id}-project`,
-        operation: OPERATION,
-        points: props.queryPositions,
-        positions: props.positions,
-        lineOffsets: props.lineOffsets,
-        nearestSegments,
-        vertexMeasures,
-        results
-      }),
-      ...scatterNodes
+      ...this.chunkPlan.chunks
+        .filter(chunk => chunk.length > 0)
+        .flatMap(chunk => [
+          createPointProjectionNode<Parameters>(graph, {
+            id: `${id}${this.chunkPlan.chunks.length === 1 ? '' : `-chunk-${chunk.chunkIndex}`}-project`,
+            operation: OPERATION,
+            points: chunk.views['queryPositions'] as GraphDataView<'float32x2'>,
+            positions: props.positions,
+            lineOffsets: props.lineOffsets,
+            nearestSegments: nearestSegmentChunks[chunk.chunkIndex],
+            vertexMeasures,
+            results
+          }),
+          ...scatterNodes(chunk.chunkIndex)
+        ])
     ];
   }
 }

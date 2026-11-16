@@ -409,6 +409,34 @@ describe('evaluateGPUAnalysisRequirement: value requirements', () => {
     ).toBe('failed');
   });
 
+  it('numeric-range includes its maximum and treats sampled bounds as a universal property', () => {
+    const requirement = spec('numeric-range', {
+      role: 'value',
+      maximum: 255,
+      remedy: 'Use LAS codes in [0,255]'
+    });
+    const evaluateMaximum = (maximum: number | undefined, sampled = false) =>
+      evaluateGPUAnalysisRequirement(
+        requirement,
+        profileWith(makeColumn('value', {maximum, ...(sampled ? {sampleSize: 10} : {})})),
+        bound
+      );
+    expect(evaluateMaximum(255)).toMatchObject({state: 'passed', evidence: 'profile'});
+    expect(evaluateMaximum(256)).toMatchObject({state: 'failed', remedy: requirement.remedy});
+    expect(evaluateMaximum(undefined).state).toBe('unknown');
+    expect(evaluateMaximum(255, true)).toMatchObject({
+      state: 'unknown',
+      evidence: 'sampled-profile'
+    });
+    expect(evaluateMaximum(256, true)).toMatchObject({
+      state: 'failed',
+      evidence: 'sampled-profile'
+    });
+    expect(() =>
+      evaluateGPUAnalysisRequirement(spec('numeric-range', {role: 'value'}), makeProfile(), {})
+    ).toThrow(/numeric-range/);
+  });
+
   it('no-missing-values compares the null count with 0', () => {
     const requirement = spec('no-missing-values', {role: 'value'});
     expect(
@@ -787,8 +815,99 @@ describe('evaluateGPUAnalysisRequirement: not checkable', () => {
   });
 });
 
+describe('numeric-range requirements', () => {
+  const requirement = spec('numeric-range', {
+    role: 'value',
+    minimum: 0,
+    maximum: 16777215,
+    integer: true,
+    remedy: 'Supply exact nonnegative counts'
+  });
+  it('checks inclusive boundaries, fractional values and contrary integer metadata', () => {
+    for (const [minimum, maximum, integral, state] of [
+      [0, 16777215, true, 'passed'],
+      [0, 16777216, true, 'failed'],
+      [-1, 1, true, 'failed'],
+      [0, 0.5, false, 'failed']
+    ] as const) {
+      const result = evaluateGPUAnalysisRequirement(
+        requirement,
+        makeProfile({columns: [makeColumn('value', {minimum, maximum, integral})]}),
+        bound
+      );
+      expect(result.state).toBe(state);
+      if (state === 'failed') expect(result.remedy).toBe(requirement.remedy);
+    }
+    expect(
+      evaluateGPUAnalysisRequirement(
+        requirement,
+        makeProfile({
+          columns: [makeColumn('value', {type: 'integer', minimum: 0, maximum: 1, integral: false})]
+        }),
+        bound
+      ).state
+    ).toBe('failed');
+  });
+
+  it('keeps missing and sampled evidence unknown unless it refutes the range', () => {
+    for (const column of [
+      makeColumn('value', {minimum: 0, maximum: 1}),
+      makeColumn('value', {minimum: 0, integral: true}),
+      makeColumn('value', {minimum: 0, maximum: 1, integral: true, sampleSize: 10})
+    ]) {
+      expect(
+        evaluateGPUAnalysisRequirement(requirement, makeProfile({columns: [column]}), bound).state
+      ).toBe('unknown');
+    }
+    expect(
+      evaluateGPUAnalysisRequirement(
+        requirement,
+        makeProfile({
+          columns: [
+            makeColumn('value', {minimum: 0, maximum: 16777216, integral: true, sampleSize: 10})
+          ]
+        }),
+        bound
+      )
+    ).toMatchObject({state: 'failed', evidence: 'sampled-profile'});
+  });
+
+  it('checks numeric parameters and rejects malformed constraints', () => {
+    const parameter = spec('numeric-range', {
+      parameter: 'minimumSegmentLength',
+      minimum: 3,
+      integer: true
+    });
+    for (const [value, state] of [
+      [2, 'failed'],
+      [3, 'passed'],
+      [3.5, 'failed'],
+      [Infinity, 'failed']
+    ] as const) {
+      expect(
+        evaluateGPUAnalysisRequirement(parameter, makeProfile(), {}, {minimumSegmentLength: value})
+      ).toMatchObject({state, evidence: 'declaration'});
+    }
+    expect(
+      evaluateGPUAnalysisRequirements([parameter], makeProfile(), {}, {minimumSegmentLength: 3})[0]
+        .state
+    ).toBe('passed');
+    expect(evaluateGPUAnalysisRequirement(parameter, makeProfile(), {}).state).toBe('unknown');
+    for (const bad of [
+      spec('numeric-range', {role: 'value'}),
+      {...requirement, minimum: 2, maximum: 1},
+      {...requirement, maximum: Infinity},
+      {...parameter, role: 'value'}
+    ])
+      expect(() => evaluateGPUAnalysisRequirement(bad, makeProfile(), bound)).toThrow(
+        /numeric-range/
+      );
+  });
+});
+
 describe('every requirement id', () => {
   const profile = makeProfile({
+    network: {nodeCount: 4, edgeCount: 3, arcCount: 6},
     coordinates: {model: 'planar', source: 'declared'},
     rowSemantics: {value: 'events', source: 'declared'},
     spacing: makeSpacing(),
@@ -798,15 +917,20 @@ describe('every requirement id', () => {
     'minimum-rows': spec('minimum-rows', {limit: 10}),
     'maximum-rows': spec('maximum-rows', {limit: 10000}),
     'maximum-vertices': spec('maximum-vertices', {limit: 10000}),
+    'maximum-network-edges': spec('maximum-network-edges', {limit: 10000}),
+    'maximum-network-nodes': spec('maximum-network-nodes', {limit: 10000}),
+    'maximum-network-arcs': spec('maximum-network-arcs', {limit: 10000}),
     'planar-coordinates': spec('planar-coordinates'),
     'geographic-coordinates': spec('geographic-coordinates'),
     'declared-coordinates': spec('declared-coordinates'),
     'row-semantics': spec('row-semantics', {expects: ['events']}),
     'positive-values': spec('positive-values', {role: 'value'}),
     'non-negative-values': spec('non-negative-values', {role: 'value'}),
+    'numeric-range': spec('numeric-range', {role: 'value', maximum: 10}),
     'no-missing-values': spec('no-missing-values', {role: 'value'}),
     'varying-values': spec('varying-values', {role: 'value'}),
     'minimum-distinct-values': spec('minimum-distinct-values', {role: 'value', limit: 3}),
+    'maximum-distinct-values': spec('maximum-distinct-values', {role: 'value', limit: 10}),
     'every-row-has-a-neighbor': spec('every-row-has-a-neighbor'),
     'no-duplicate-locations': spec('no-duplicate-locations'),
     'connected-weights': spec('connected-weights'),
@@ -1051,5 +1175,188 @@ describe('reviewed requirement uncertainty', () => {
         bound
       )
     ).toMatchObject({state: 'unknown', evidence: 'sampled-profile'});
+  });
+});
+
+describe('guaranteed distinct bounds and category capacity', () => {
+  const evaluate = (
+    id: 'minimum-distinct-values' | 'maximum-distinct-values' | 'varying-values',
+    column: Partial<GPUAnalysisColumnProfile>,
+    limit = 100
+  ) =>
+    evaluateGPUAnalysisRequirement(
+      spec(id, {role: 'value', limit, remedy: 'Refine the distinct count or aggregate categories'}),
+      makeProfile({columns: [makeColumn('value', {type: 'category', ...column})]}),
+      bound
+    );
+
+  it.each([
+    {lowerBound: 90, upperBound: 99, minimum: 'failed', maximum: 'passed'},
+    {lowerBound: 100, upperBound: 100, minimum: 'passed', maximum: 'passed'},
+    {lowerBound: 101, upperBound: 110, minimum: 'passed', maximum: 'failed'},
+    {lowerBound: 99, upperBound: 101, minimum: 'unknown', maximum: 'unknown'},
+    {lowerBound: 99, upperBound: 100, minimum: 'unknown', maximum: 'passed'},
+    {lowerBound: 100, upperBound: 101, minimum: 'passed', maximum: 'unknown'}
+  ])('decides inclusive bounds $lowerBound..$upperBound at threshold 100', ({
+    lowerBound,
+    upperBound,
+    minimum,
+    maximum
+  }) => {
+    const column = {
+      distinctCount: 100,
+      distinctCountIsEstimate: true,
+      distinctCountLowerBound: lowerBound,
+      distinctCountUpperBound: upperBound
+    };
+    expect(evaluate('minimum-distinct-values', column).state).toBe(minimum);
+    expect(evaluate('maximum-distinct-values', column).state).toBe(maximum);
+    expect(evaluate('maximum-distinct-values', column).message).toContain(
+      'guaranteed population distinct bounds'
+    );
+  });
+
+  it('supports bounds without a display estimate and the varying-values fallback', () => {
+    expect(
+      evaluate('minimum-distinct-values', {
+        distinctCountLowerBound: 100,
+        distinctCountUpperBound: 110
+      }).state
+    ).toBe('passed');
+    expect(
+      evaluate('varying-values', {distinctCountLowerBound: 2, distinctCountUpperBound: 10}).state
+    ).toBe('passed');
+    expect(
+      evaluate(
+        'maximum-distinct-values',
+        {distinctCountLowerBound: 0, distinctCountUpperBound: 0},
+        0
+      ).state
+    ).toBe('passed');
+  });
+
+  it('keeps unbounded estimates and malformed bounds unknown', () => {
+    for (const column of [
+      {distinctCount: 1, distinctCountIsEstimate: true},
+      {distinctCountLowerBound: 1},
+      {distinctCountUpperBound: 1},
+      {distinctCountLowerBound: 10, distinctCountUpperBound: 9},
+      {distinctCountLowerBound: 1001, distinctCountUpperBound: 1001},
+      {distinctCountLowerBound: 1.5, distinctCountUpperBound: 10},
+      {distinctCountLowerBound: 0, distinctCountUpperBound: Infinity}
+    ]) {
+      expect(evaluate('maximum-distinct-values', column).state).toBe('unknown');
+    }
+  });
+
+  it('intersects a loose conservative interval with an exact count', () => {
+    const column = {distinctCount: 5, distinctCountLowerBound: 1, distinctCountUpperBound: 10};
+    expect(evaluate('maximum-distinct-values', column, 100)).toMatchObject({
+      state: 'passed',
+      evidence: 'profile'
+    });
+    expect(evaluate('maximum-distinct-values', column, 4).state).toBe('failed');
+    expect(evaluate('minimum-distinct-values', column, 5).state).toBe('passed');
+    expect(evaluate('minimum-distinct-values', column, 6).state).toBe('failed');
+    expect(evaluate('maximum-distinct-values', column).message).toContain(
+      'guaranteed population distinct bounds [5, 5]'
+    );
+  });
+
+  it('clips a loose upper bound to the non-null row ceiling before deciding', () => {
+    const column = {nullCount: 20, distinctCountLowerBound: 100, distinctCountUpperBound: 10000};
+    expect(evaluate('maximum-distinct-values', column, 50).state).toBe('failed');
+    expect(evaluate('minimum-distinct-values', column, 100).state).toBe('passed');
+    expect(evaluate('maximum-distinct-values', column, 980).state).toBe('passed');
+    expect(evaluate('minimum-distinct-values', column, 981).state).toBe('failed');
+    expect(evaluate('maximum-distinct-values', column, 980).message).toContain(
+      'guaranteed population distinct bounds [100, 980]'
+    );
+  });
+
+  it('intersects sampled evidence before adding the uninspected population', () => {
+    const column = {
+      rowCount: 1000,
+      sampleSize: 100,
+      nullCount: 20,
+      distinctCountLowerBound: 10,
+      distinctCountUpperBound: 10000
+    };
+    expect(evaluate('maximum-distinct-values', column, 980)).toMatchObject({
+      state: 'passed',
+      evidence: 'sampled-profile'
+    });
+    expect(evaluate('maximum-distinct-values', column, 80).state).toBe('unknown');
+    expect(evaluate('minimum-distinct-values', column, 981).state).toBe('failed');
+    const exactSample = {
+      ...column,
+      distinctCount: 5,
+      distinctCountLowerBound: 1,
+      distinctCountUpperBound: 10
+    };
+    expect(evaluate('minimum-distinct-values', exactSample, 5)).toMatchObject({
+      state: 'passed',
+      evidence: 'sampled-profile'
+    });
+    expect(evaluate('maximum-distinct-values', exactSample, 5).state).toBe('unknown');
+    expect(evaluate('maximum-distinct-values', exactSample, 905).state).toBe('passed');
+    expect(evaluate('minimum-distinct-values', exactSample, 906).state).toBe('failed');
+    expect(evaluate('maximum-distinct-values', exactSample, 4).state).toBe('failed');
+  });
+
+  it.each([
+    {distinctCount: 5, distinctCountLowerBound: 6, distinctCountUpperBound: 10},
+    {distinctCount: 5, distinctCountLowerBound: 1, distinctCountUpperBound: 4},
+    {distinctCount: 1001, distinctCountLowerBound: 1, distinctCountUpperBound: 10000},
+    {distinctCountLowerBound: 1001, distinctCountUpperBound: 10000},
+    {nullCount: 1000, distinctCountLowerBound: 1, distinctCountUpperBound: 10},
+    {nullCount: 996, distinctCount: 5, distinctCountLowerBound: 1, distinctCountUpperBound: 10}
+  ])('keeps an empty evidence intersection unknown: %j', column => {
+    expect(evaluate('maximum-distinct-values', column).state).toBe('unknown');
+    expect(evaluate('minimum-distinct-values', column).state).toBe('unknown');
+  });
+
+  it('uses sample bounds only in the safe full-population direction', () => {
+    const column = {
+      rowCount: 1000,
+      sampleSize: 100,
+      distinctCountLowerBound: 50,
+      distinctCountUpperBound: 60,
+      distinctCountIsEstimate: true
+    };
+    expect(evaluate('minimum-distinct-values', column, 50)).toMatchObject({
+      state: 'passed',
+      evidence: 'sampled-profile'
+    });
+    expect(evaluate('minimum-distinct-values', column, 51).state).toBe('unknown');
+    expect(evaluate('maximum-distinct-values', column, 49)).toMatchObject({
+      state: 'failed',
+      evidence: 'sampled-profile'
+    });
+    expect(evaluate('maximum-distinct-values', column, 60).state).toBe('unknown');
+    expect(evaluate('maximum-distinct-values', column, 960)).toMatchObject({
+      state: 'passed',
+      evidence: 'sampled-profile'
+    });
+    expect(evaluate('minimum-distinct-values', column, 961)).toMatchObject({
+      state: 'failed',
+      evidence: 'sampled-profile'
+    });
+  });
+
+  it('keeps blocking capacity unresolved until evidence settles it', () => {
+    const result = evaluate('maximum-distinct-values', {
+      distinctCountLowerBound: 90,
+      distinctCountUpperBound: 110
+    });
+    expect(result.remedy).toBe('Refine the distinct count or aggregate categories');
+    expect(summarizeGPUAnalysisRequirementResults([result]).status).toBe('needs-confirmation');
+    expect(() =>
+      evaluateGPUAnalysisRequirement(
+        spec('maximum-distinct-values', {role: 'value'}),
+        makeProfile(),
+        bound
+      )
+    ).toThrow(/limit/);
   });
 });

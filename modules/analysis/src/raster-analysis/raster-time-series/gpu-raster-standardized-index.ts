@@ -8,25 +8,29 @@ import type {
   GPUCommandNode,
   GPUCommandNodeProducer
 } from '@luma.gl/graph/gpu-core';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  createRasterTimeSeriesNodes,
+  planRasterTimeSeriesChunks,
+  rasterTimeSeriesBinding as rasterBinding,
+  validateRasterTimeSeriesViews as validateRasterViews,
+  validateRasterTimeSeriesGraph as validateRasterGraph,
+  type RasterTimeSeriesScalarView as RasterScalarView,
+  type RasterTimeSeriesView,
+  type RasterTimeSeriesChunkPlan
+} from './raster-time-series-chunks-b';
 import {
   validateCapacity,
   validateRequirement
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {SCALED_QUOTIENT_WGSL} from '../../analysis-core/kernels/scaled-quotient-wgsl';
 import {GET_NORMAL_QUANTILE_WGSL} from '../../analysis-core/kernels/normal-quantile-wgsl';
-import {
-  RASTER_FINITE_WGSL,
-  rasterBinding,
-  validateRasterGraph,
-  validateRasterViews,
-  type RasterScalarView
-} from '../remote-sensing/raster-kernel-utils';
+import {RASTER_FINITE_WGSL} from '../remote-sensing/raster-kernel-utils';
 import {RASTER_REGULARIZED_GAMMA_TAILS_WGSL} from './raster-climate-distribution-wgsl';
-import {
-  MAXIMUM_RASTER_STREAM_CHUNK_SLICE_COUNT,
-  MAXIMUM_RASTER_STREAM_SLOT_COUNT
-} from './gpu-raster-streaming-accumulator';
+import {MAXIMUM_RASTER_STREAM_SLOT_COUNT} from './gpu-raster-streaming-accumulator';
 import type {GPURasterStandardizedIndexDistribution} from './gpu-raster-standardized-index-calibration';
+
+/** Independent sample invocations need no per-cell scratch; activeSliceCount is exact in float32 through 2^24. */
+export const MAXIMUM_STANDARDIZED_INDEX_CHUNK_SLICE_COUNT = 2 ** 24;
 
 /** Standardized index magnitude limit, the float64 bound xclim applies (`+-8.21`). */
 export const GPU_RASTER_STANDARDIZED_INDEX_LIMIT = 8.21;
@@ -45,27 +49,28 @@ export function getGPURasterStandardizedIndexParameterValues(
 }
 
 /** Properties of {@link GPURasterStandardizedIndex}. */
-export type GPURasterStandardizedIndexProps = {
+export type GPURasterStandardizedIndexProps<Rows extends RasterScalarView = GraphDataView> = {
   id?: string;
   cellCount: number;
+  /** Samples per cell, at most 2^24: one independent invocation per sample. */
   chunkSliceCount: number;
   slotCount?: number;
   distribution: GPURasterStandardizedIndexDistribution;
   /** Must match the calibration. */
   zeroInflated?: boolean;
   /** Chunk to evaluate, cell-major; nonfinite samples are missing. */
-  values: GraphDataView<'float32'>;
-  mask?: GraphDataView<'uint32'>;
+  values: RasterTimeSeriesView<'float32', Rows>;
+  mask?: RasterTimeSeriesView<'uint32', Rows>;
   slotIndices?: GraphDataView<'uint32'>;
   /** `[shape, scale, zeroProbability]` per slot, from {@link GPURasterStandardizedIndexCalibration}. */
-  fit: GraphDataView<'float32'>;
+  fit: RasterTimeSeriesView<'float32', Rows>;
   /** Float32, see {@link getGPURasterStandardizedIndexParameterValues}. */
   parameters: GraphDataView<'float32'>;
   output: {
     /** `cell * chunkSliceCount + slice`, standardized index in `[-8.21, 8.21]`, NaN where status is nonzero. */
-    index: GraphDataView<'float32'>;
+    index: RasterTimeSeriesView<'float32', Rows>;
     /** 0 valid, 1 missing input, 2 calibration not usable for the slot. */
-    status: GraphDataView<'uint32'>;
+    status: RasterTimeSeriesView<'uint32', Rows>;
   };
 };
 
@@ -77,11 +82,19 @@ export type GPURasterStandardizedIndexProps = {
  *
  * Per-frame: `parameters` and the view contents. Compile-time: `cellCount`, `chunkSliceCount`,
  * `slotCount`, `distribution`, `zeroInflated`, and which optional views exist.
+ *
+ * Cell-major views accept matching chunks of complete cell records; shared tables stay packed.
  */
-export class GPURasterStandardizedIndex implements GPUCommandNodeProducer {
+export class GPURasterStandardizedIndex<Rows extends RasterScalarView = GraphDataView>
+  implements GPUCommandNodeProducer
+{
   readonly id: string;
+  readonly props: GPURasterStandardizedIndexProps<Rows>;
+  readonly chunkPlan: RasterTimeSeriesChunkPlan;
+  readonly estimatedCommandNodeCount: number;
   readonly slotCount: number;
-  constructor(readonly props: GPURasterStandardizedIndexProps) {
+  constructor(props: GPURasterStandardizedIndexProps<Rows> & {values: Rows}) {
+    this.props = props;
     const id = props.id ?? 'raster-standardized-index';
     this.id = id;
     const slotCount = props.slotCount ?? 1;
@@ -92,7 +105,7 @@ export class GPURasterStandardizedIndex implements GPUCommandNodeProducer {
       'chunkSliceCount',
       props.chunkSliceCount,
       1,
-      MAXIMUM_RASTER_STREAM_CHUNK_SLICE_COUNT
+      MAXIMUM_STANDARDIZED_INDEX_CHUNK_SLICE_COUNT
     );
     validateCapacity(id, 'slotCount', slotCount, 1, MAXIMUM_RASTER_STREAM_SLOT_COUNT);
     validateRequirement(
@@ -125,7 +138,15 @@ export class GPURasterStandardizedIndex implements GPUCommandNodeProducer {
       props.parameters.length >= GPU_RASTER_STANDARDIZED_INDEX_PARAMETER_LENGTH,
       `parameters must hold ${GPU_RASTER_STANDARDIZED_INDEX_PARAMETER_LENGTH} entries`
     );
-    validateRasterViews(id, this.getInputs(), this.getOutputs());
+    this.chunkPlan = planRasterTimeSeriesChunks(this.id, props.cellCount, {
+      values: {view: props.values, entriesPerCell: props.chunkSliceCount},
+      mask: {view: props.mask, entriesPerCell: props.chunkSliceCount},
+      fit: {view: props.fit, entriesPerCell: (props.slotCount ?? 1) * 3},
+      'output.index': {view: props.output.index, entriesPerCell: props.chunkSliceCount},
+      'output.status': {view: props.output.status, entriesPerCell: props.chunkSliceCount}
+    });
+    this.estimatedCommandNodeCount = this.chunkPlan.estimatedCommandNodeCount;
+    validateRasterViews(this.id, this.getInputs(), this.getOutputs(), this.chunkPlan);
   }
 
   private getInputs(): RasterScalarView[] {
@@ -135,7 +156,7 @@ export class GPURasterStandardizedIndex implements GPUCommandNodeProducer {
       fit,
       parameters,
       ...(mask ? [mask] : []),
-      ...(slotIndices ? [slotIndices] : [])
+      ...((this.props.slotCount ?? 1) > 1 && slotIndices ? [slotIndices] : [])
     ];
   }
 
@@ -152,24 +173,24 @@ export class GPURasterStandardizedIndex implements GPUCommandNodeProducer {
     validateRasterGraph(id, graph, this.getInputs(), this.getOutputs());
     const tails =
       props.distribution === 'gamma'
-        ? 'getRegularizedGammaTails(fitShape, positive / fitScale)'
-        : 'getFiskTails(fitShape, positive / fitScale)';
-    return [
-      createWGSLKernelNode<Parameters>(graph, {
-        id,
-        operation: 'GPURasterStandardizedIndex',
-        invocationCount: props.cellCount * chunk,
-        workgroupSize: 64,
-        bindings: [
-          rasterBinding('values', values),
-          rasterBinding('fit', fit),
-          rasterBinding('parameters', parameters),
-          ...(mask ? [rasterBinding('mask', mask)] : []),
-          ...(slotCount > 1 && slotIndices ? [rasterBinding('slotIndices', slotIndices)] : []),
-          rasterBinding('indexOut', output.index, true),
-          rasterBinding('statusOut', output.status, true)
-        ],
-        declarations: `${RASTER_FINITE_WGSL}
+        ? 'getRegularizedGammaTails(fitShape, getScaledQuotient(positive, fitScale, 1.0, 0))'
+        : 'getFiskTails(fitShape, getScaledQuotient(positive, fitScale, 1.0, 0))';
+    return createRasterTimeSeriesNodes<Parameters>(graph, this.chunkPlan, {
+      id,
+      operation: 'GPURasterStandardizedIndex',
+      invocationCount: props.cellCount * chunk,
+      workgroupSize: 64,
+      bindings: [
+        rasterBinding('values', values),
+        rasterBinding('fit', fit),
+        rasterBinding('parameters', parameters),
+        ...(mask ? [rasterBinding('mask', mask)] : []),
+        ...(slotCount > 1 && slotIndices ? [rasterBinding('slotIndices', slotIndices)] : []),
+        rasterBinding('indexOut', output.index, true),
+        rasterBinding('statusOut', output.status, true)
+      ],
+      declarations: `${RASTER_FINITE_WGSL}
+${SCALED_QUOTIENT_WGSL}
 ${props.distribution === 'gamma' ? RASTER_REGULARIZED_GAMMA_TAILS_WGSL : ''}
 ${GET_NORMAL_QUANTILE_WGSL}
 fn getFiskTails(shape: f32, ratio: f32) -> vec2<f32> {
@@ -177,7 +198,7 @@ fn getFiskTails(shape: f32, ratio: f32) -> vec2<f32> {
   let logistic = shape * log(ratio);
   return vec2<f32>(1.0 / (1.0 + exp(-logistic)), 1.0 / (1.0 + exp(logistic)));
 }`,
-        body: `let cell = index / ${chunk}u;
+      body: `let cell = index / ${chunk}u;
 let slice = index % ${chunk}u;
 let source = cell * ${chunk}u + slice;
 var result = missing();
@@ -192,7 +213,7 @@ if (slice < activeSliceCount && finite(value) ${mask ? '&& mask[maskOffset + sou
     let fitShape = fit[fitOffset + 3u * entry];
     let fitScale = fit[fitOffset + 3u * entry + 1u];
     let zeroProbability = fit[fitOffset + 3u * entry + 2u];
-    if (finite(fitShape) && finite(fitScale)) {
+    if (finite(fitShape) && finite(fitScale) && fitShape > 0.0 && fitScale > 0.0) {
       code = 0u;
       var lowerTail = zeroProbability;
       var upperTail = 1.0 - zeroProbability;
@@ -216,7 +237,6 @@ if (slice < activeSliceCount && finite(value) ${mask ? '&& mask[maskOffset + sou
 }
 indexOut[indexOutOffset + index] = result;
 statusOut[statusOutOffset + index] = code;`
-      })
-    ];
+    });
   }
 }

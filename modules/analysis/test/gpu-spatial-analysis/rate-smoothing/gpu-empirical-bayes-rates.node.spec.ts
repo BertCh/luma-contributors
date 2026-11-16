@@ -27,8 +27,8 @@ it('GPUEmpiricalBayesRates validates its props', () => {
     populations,
     output: {standardizedRates: createTransientView(graph, 'z', 'float32', 10)}
   }).getCommandNodes(graph);
-  // partials-a, totals-a, partials-b, summary, rates
-  expect(nodes.length).toBe(5);
+  // Five rate stages plus the exact uint32 count reduction.
+  expect(nodes.length).toBe(7);
 });
 
 it('the empirical-Bayes oracle reproduces esda unclamped and the numpy Marshall clamp', () => {
@@ -57,7 +57,7 @@ it('GPUEmpiricalBayesRates builds the same nodes with and without the clamp', ()
       clampPriorVariance,
       output: {smoothedRates: createTransientView(graph, `s-${clampPriorVariance}`, 'float32', 10)}
     }).getCommandNodes(graph);
-    expect(nodes.length).toBe(5);
+    expect(nodes.length).toBe(7);
   }
 });
 
@@ -68,7 +68,7 @@ it('GPUEmpiricalBayesRates accepts uint32 counts with one conversion node per in
     populations: createTransientView(graph, 'populations', 'uint32', 10),
     output: {smoothedRates: createTransientView(graph, 'smoothed', 'float32', 10)}
   }).getCommandNodes(graph);
-  expect(nodes.length).toBe(7);
+  expect(nodes.length).toBe(9);
   expect(nodes.slice(0, 2).map(node => node.id)).toEqual([
     'empirical-bayes-rates-events-to-float32',
     'empirical-bayes-rates-populations-to-float32'

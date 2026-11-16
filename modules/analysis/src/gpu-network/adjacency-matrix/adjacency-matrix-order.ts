@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateNetworkViewBindings} from '../network-view-utils';
+
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -13,8 +15,7 @@ import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateSinglePackedView,
-  validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 
 /**
@@ -99,8 +100,9 @@ export class GPUAdjacencyMatrixOrder implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
-    validateGraphViewsBelongToGraph(id, graph, [props.groups, props.tieKeys, props.output.order]);
+    validateNetworkViewBindings(id, graph, [props.groups, props.tieKeys, props.output.order]);
     const count = props.groups.length;
+    validateNetworkViewBindings(id, graph, [], {sortRows: count * 4});
     const operation = 'GPUAdjacencyMatrixOrder';
     const transient = (name: string) =>
       createTransientView(graph, `${id}-${name}`, 'uint32', count);

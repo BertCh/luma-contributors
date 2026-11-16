@@ -20,3 +20,11 @@ export * from './raster-embedding-principal-components';
 export * from './gpu-raster-embedding-projection';
 export * from './gpu-raster-embedding-zone-mean';
 export * from './gpu-raster-embedding-pyramid-level';
+
+export {MAXIMUM_REFERENCE_RASTER_EMBEDDING_DIMENSIONS} from './raster-embedding-common';
+export {
+  MAXIMUM_RASTER_EMBEDDING_TILED_TRAINING_COUNT,
+  RASTER_EMBEDDING_TRAINING_TILE_SIZE
+} from './gpu-raster-embedding-knn-classifier';
+
+export {MAXIMUM_RASTER_EMBEDDING_ELEMENT_COUNT} from './raster-embedding-common';

@@ -5,10 +5,16 @@
 import {
   createTransientView,
   GPUGridIndex,
+  GPUReduction,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import {validateGWRBindings, getGWRGridScratchSizes} from './gwr-scalability-utils';
+import {
+  validateCapacity,
+  validateRequirement
+} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {createGridCellRowOrderNodes} from '../shared/grid-cell-row-order';
 import {BIN_INDEX_WGSL} from '../shared/bin-index-wgsl';
@@ -31,6 +37,8 @@ export function getDefaultGWRGridSize(rowCount: number): readonly [number, numbe
 
 /** Rows summed by one thread of the extent pass. */
 const BOUNDS_TILE_ROWS = 256;
+/** Cell offsets need cellCount + 1 words and every cell index must fit uint32. */
+const MAXIMUM_GRID_CELL_COUNT = 0xfffffffe;
 
 /** Views produced by {@link createGridIndexNodes}. @internal */
 export type GridIndexViews = {
@@ -46,7 +54,7 @@ export type GridIndexViews = {
 
 /**
  * Builds the shared GWR-family grid index over `positions`, where a non-finite position excludes
- * the row: the extent of the finite rows, a `GPUGridIndex` over that extent, and an in-cell rank
+ * the row: the extent of the finite rows, a `GPUGridIndex` over that extent, and a stable radix
  * sort that restores ascending row order (the index scatters IDs with atomics, so in-cell order
  * varies between runs and a float sum must not depend on it).
  *
@@ -63,14 +71,21 @@ export function createGridIndexNodes<Parameters>(
   }
 ): {nodes: GPUCommandNode<Parameters>[]} & GridIndexViews {
   const {id, operation, positions, rowCount, gridSize} = props;
+  validateCapacity(id, 'rowCount', rowCount, 0);
+  validateRequirement(id, positions.length === rowCount, 'positions.length must equal rowCount');
+  validateCapacity(id, 'gridSize[0]', gridSize[0], 1, MAXIMUM_GRID_CELL_COUNT);
+  validateCapacity(id, 'gridSize[1]', gridSize[1], 1, MAXIMUM_GRID_CELL_COUNT);
   const tileCount = Math.ceil(rowCount / BOUNDS_TILE_ROWS);
   const cellCount = gridSize[0] * gridSize[1];
+  validateCapacity(id, 'gridSize cell count', cellCount, 1, MAXIMUM_GRID_CELL_COUNT);
+  validateGWRBindings(graph.device, id, [positions], getGWRGridScratchSizes(rowCount, gridSize));
   const transient = <Format extends 'uint32' | 'float32' | 'float32x2'>(
     name: string,
     format: Format,
     length: number
   ) => createTransientView(graph, `${id}-${name}`, format, Math.max(length, 1));
-  const tileBounds = transient('tile-bounds', 'float32', tileCount * 4);
+  const tileStride = Math.ceil(tileCount / 64) * 64;
+  const tileBounds = transient('tile-bounds', 'float32', tileStride * 4);
   const gridBounds = transient('grid-bounds', 'float32', 4);
   const unitPositions = transient('unit-positions', 'float32x2', rowCount);
   const cellOffsets = transient('cell-offsets', 'uint32', cellCount + 1);
@@ -78,6 +93,21 @@ export function createGridIndexNodes<Parameters>(
   const sortedIds = transient('sorted-ids', 'uint32', rowCount + 4);
   const indexCount = transient('index-count', 'uint32', 1);
   const indexOverflow = transient('index-overflow', 'uint32', 1);
+  const componentBounds = ['minimumX', 'minimumY', 'maximumX', 'maximumY'].map(name =>
+    transient(name, 'float32', 1)
+  );
+  const boundReductions = componentBounds.flatMap((output, component) =>
+    new GPUReduction({
+      id: `${id}-extent-component-${component}`,
+      operation: component < 2 ? 'min' : 'max',
+      input: graph.createDataView(tileBounds.buffer, {
+        format: 'float32',
+        length: tileCount,
+        byteOffset: component * tileStride * 4
+      }),
+      output
+    }).getCommandNodes(graph)
+  );
   const common = `const ROW_COUNT: u32 = ${rowCount}u;
 const TILE_ROWS: u32 = ${BOUNDS_TILE_ROWS}u;
 const TILE_COUNT: u32 = ${tileCount}u;
@@ -117,28 +147,27 @@ ${IS_FINITE_BITS_WGSL}`;
     }
   }
   for (var component = 0u; component < 4u; component++) {
-    tileBounds[tileBoundsOffset + 4u * index + component] = bounds[component];
+    tileBounds[tileBoundsOffset + component * ${tileStride}u + index] = bounds[component];
   }`
     }),
+    ...boundReductions,
     // Extent of the included rows; non-finite when there are none, so the index accepts nothing.
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-grid-bounds`,
       operation,
       variant: 'grid-bounds',
       bindings: [
-        {name: 'tileBounds', view: tileBounds, type: 'f32', access: 'read'},
+        ...componentBounds.map((view, component) => ({
+          name: `component${component}`,
+          view,
+          type: 'f32' as const,
+          access: 'read' as const
+        })),
         {name: 'gridBounds', view: gridBounds, type: 'f32', access: 'read_write'}
       ],
       invocationCount: 1,
       declarations: common,
-      body: `var bounds = vec4f(SENTINEL, SENTINEL, -SENTINEL, -SENTINEL);
-  for (var tile = 0u; tile < TILE_COUNT; tile++) {
-    let base = tileBoundsOffset + 4u * tile;
-    bounds = vec4f(
-      min(bounds.x, tileBounds[base]), min(bounds.y, tileBounds[base + 1u]),
-      max(bounds.z, tileBounds[base + 2u]), max(bounds.w, tileBounds[base + 3u])
-    );
-  }
+      body: `let bounds = vec4f(component0[component0Offset], component1[component1Offset], component2[component2Offset], component3[component3Offset]);
   let isEmpty = bounds.x > bounds.z || bounds.y > bounds.w;
   let invalid = bitcast<f32>(0x7fc00000u | (index & 0u));
   for (var component = 0u; component < 4u; component++) {

@@ -188,3 +188,17 @@ export {
   GPU_GAUSSIAN_RANDOM_FIELD_PARAMETER_LENGTH
 } from './gaussian-random-field-parameters';
 export type {GPUGaussianRandomFieldSettings} from './gaussian-random-field-parameters';
+
+export {
+  GPU_SPACE_TIME_KRIGING_MAXIMUM_SAMPLE_COUNT,
+  GPU_SPACE_TIME_KRIGING_BRUTE_FORCE_MAXIMUM_SAMPLE_COUNT,
+  GPU_SPACE_TIME_KRIGING_INDEX_MAXIMUM_SAMPLE_COUNT
+} from './gpu-space-time-kriging';
+
+export {
+  GPU_LOCAL_KRIGING_MAXIMUM_NEIGHBOR_COUNT,
+  GPU_LOCAL_KRIGING_MAXIMUM_SUPPORT_COUNT
+} from './gpu-local-kriging';
+export {GPU_LOCAL_RBF_MAXIMUM_NEIGHBOR_COUNT} from './gpu-local-rbf';
+
+export {GPU_CONDITIONAL_GAUSSIAN_SIMULATION_MAXIMUM_JOINT_ROW_COUNT} from './gpu-conditional-gaussian-simulation';

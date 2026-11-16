@@ -20,8 +20,11 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validateRequirement
+  validateRequirement,
+  validateGPUStorageBindingByteLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateSpatialOutputViews} from '../spatial-clustering/spatial-output-validation';
 import {createStableLexicographicIndexSortNodes} from '../../analysis-core/kernels/stable-lexicographic-index-sort';
 import {PHILOX_PURPOSES, PHILOX_WGSL} from '../../analysis-core/kernels/philox-random';
 import {IS_FINITE_FLOAT_WGSL} from '../../analysis-core/kernels/wgsl-common';
@@ -33,6 +36,9 @@ const MAXIMUM_ROW_COUNT = 4096;
 const MAXIMUM_STRATUM_COUNT = 256;
 /** Stratum IDs are packed beside the 4-bit quadtree level in 32-bit Philox counters. */
 const MAXIMUM_STRATUM_ID_EXCLUSIVE = 16777216;
+/** Published auto sort uses local bitonic through 256 rows, then 16-bucket radix histograms. */
+const BALANCED_SAMPLE_SORT_WORKGROUP_SIZE = 256;
+const BALANCED_SAMPLE_SORT_BUCKET_COUNT = 16;
 
 /** One stratum of the finite-point equal-probability design. */
 export type GPUSpatialSampleAllocation = {stratumId: number; sampleCount: number};
@@ -165,6 +171,9 @@ export class GPUSpatialBalancedSample implements GPUCommandNodeProducer {
     ]);
     // Status is written before publication, so graph hazards cannot reject cross-pass aliases.
     const outputs = Object.values(props.output);
+    validateSpatialOutputViews(id, props.output, [
+      [props.output.frameIds, props.output.inclusionProbabilities, props.output.designWeights]
+    ]);
     for (const [index, output] of outputs.entries()) {
       validateRequirement(
         id,
@@ -195,6 +204,36 @@ export class GPUSpatialBalancedSample implements GPUCommandNodeProducer {
       props.parameters,
       ...Object.values(props.output)
     ]);
+    validateGraphChunkBindingRanges(graph, id, {
+      positions: props.positions,
+      frameIds: props.frameIds,
+      strata: props.strata,
+      inclusionTickets: props.inclusionTickets,
+      parameters: props.parameters,
+      ...Object.fromEntries(
+        Object.entries(props.output).map(([name, view]) => [`output.${name}`, view])
+      )
+    });
+    // Every key, gather, segmented-scan plane and selected-row plane has at most rows words.
+    // GPUScan's recursive carry arrays are no larger than that plane.
+    for (const [name, byteLength] of [
+      ['row and selection scratch', rows * 4],
+      [
+        'sort histogram',
+        rows > BALANCED_SAMPLE_SORT_WORKGROUP_SIZE
+          ? Math.ceil(rows / BALANCED_SAMPLE_SORT_WORKGROUP_SIZE) *
+            BALANCED_SAMPLE_SORT_BUCKET_COUNT *
+            4
+          : 0
+      ]
+    ] as const)
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        name,
+        byteLength,
+        'reduce positions rows'
+      );
     const codes = createTransientView(graph, `${id}-codes`, 'uint32', rows);
     const ranks = createTransientView(graph, `${id}-ranks`, 'uint32', rows);
     const selectedRows = createTransientView(

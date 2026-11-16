@@ -22,6 +22,10 @@ import {
   validateFittingWritableViews
 } from './fitting-utils';
 import {createWGSLKernelNode} from './wgsl-kernel-nodes';
+import {
+  createGraphChunkGroupKernelNode,
+  validateGraphChunkGroupKernelSupport
+} from './graph-chunk-groups';
 
 /** A fixed tile bounds every serial walk; subsequent levels merge pairs in separate dispatches. */
 export const GPU_FITTING_GRADIENT_TILE_ROWS = 256;
@@ -99,6 +103,14 @@ export class GPUFittingGradientSums implements GPUCommandNodeProducer {
       tileCount * parameterCount * 4,
       'reduce the minibatch or parameter count'
     );
+    validateCapacity(
+      id,
+      'gradient partials byteLength',
+      tileCount * parameterCount * Float32Array.BYTES_PER_ELEMENT,
+      0,
+      graph.device.limits.maxBufferSize
+    );
+    if (tileCount > 1) validateGraphChunkGroupKernelSupport(graph, id, 2);
     let partials =
       tileCount === 1
         ? output.sums
@@ -142,7 +154,7 @@ export class GPUFittingGradientSums implements GPUCommandNodeProducer {
               nextCount * parameterCount
             );
       nodes.push(
-        createWGSLKernelNode(graph, {
+        createGraphChunkGroupKernelNode(graph, {
           id: `${id}-merge-${level++}`,
           operation: 'GPUFittingGradientSums',
           variant: 'pairwise-merge',
@@ -154,7 +166,8 @@ export class GPUFittingGradientSums implements GPUCommandNodeProducer {
           body: `let parameter = index % ${parameterCount}u;
   let firstTile = 2u * (index / ${parameterCount}u);
   var total = source[sourceOffset + firstTile * ${parameterCount}u + parameter];
-  if (firstTile + 1u < ${tileCount}u) {
+  let sourceTileCount = (arrayLength(&source) - sourceOffset) / ${parameterCount}u;
+  if (firstTile + 1u < sourceTileCount) {
     total += source[sourceOffset + (firstTile + 1u) * ${parameterCount}u + parameter];
   }
   destination[destinationOffset + index] = total;`

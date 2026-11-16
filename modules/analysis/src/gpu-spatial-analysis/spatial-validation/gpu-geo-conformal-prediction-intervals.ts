@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRegressionAllocations} from '../spatial-regression/spatial-likelihood-allocations';
+
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -15,7 +19,8 @@ import {
   validateSinglePackedView,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {validatePredictionViews} from '../../analysis-core/kernels/gpu-prediction-utils';
+import {validateRegressionOutputDispatches} from '../spatial-regression/regression-output-dispatches';
+import {validateGraphOutputsDisjointFromInputs} from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
   createConformalScoreNodes,
@@ -104,17 +109,14 @@ export class GPUGeoConformalPredictionIntervals implements GPUCommandNodeProduce
       props.neighbors.indices.length
     );
     validateConformalOutput(id, props.parameters, props.output, this.queryRows);
-    validatePredictionViews(
-      id,
-      [
-        ...getConformalInputViews(props.calibration, props.query),
-        props.neighbors.offsets,
-        props.neighbors.indices,
-        props.neighbors.weights,
-        props.parameters
-      ],
-      Object.values(props.output)
-    );
+    validateRegressionOutputDispatches(this.id, props.output, [['intervals', 'status']]);
+    validateGraphOutputsDisjointFromInputs(id, Object.values(props.output), [
+      ...getConformalInputViews(props.calibration, props.query),
+      props.neighbors.offsets,
+      props.neighbors.indices,
+      props.neighbors.weights,
+      props.parameters
+    ]);
   }
 
   getCommandNodes<Parameters>(
@@ -122,6 +124,23 @@ export class GPUGeoConformalPredictionIntervals implements GPUCommandNodeProduce
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, queryRows} = this;
     const {neighbors} = props;
+    validateGraphChunkBindingRanges(graph, id, {
+      ...Object.fromEntries(
+        getConformalInputViews(props.calibration, props.query).map((view, index) => [
+          `input ${index}`,
+          view
+        ])
+      ),
+      neighborOffsets: neighbors.offsets,
+      neighborIndices: neighbors.indices,
+      neighborWeights: neighbors.weights,
+      parameters: props.parameters,
+      ...props.output
+    });
+    validateRegressionAllocations(graph.device, id, {
+      'conformal calibration scores and keys': props.calibration.observations.length,
+      'conformal neighbor scores and weights': neighbors.indices.length
+    });
     validateGraphViewsBelongToGraph(id, graph, [
       ...getConformalInputViews(props.calibration, props.query),
       neighbors.offsets,

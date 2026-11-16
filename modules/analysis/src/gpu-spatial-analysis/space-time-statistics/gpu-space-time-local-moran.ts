@@ -3,6 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  validateTrajectoryBindings,
+  validateTrajectoryOutputRanges,
+  getTrajectoryBindingViews
+} from '../trajectory-analysis/trajectory-binding-validation';
+import {
   createTransientView,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -12,6 +17,7 @@ import {
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   validateCapacity,
+  validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
   validateSinglePackedView,
   validateViewLength
@@ -97,6 +103,13 @@ export class GPUSpaceTimeLocalMoran implements GPUCommandNodeProducer {
     validateCapacity(id, 'period', props.period, lag, props.periodCount - 1);
     validateSinglePackedView(props.cube, ['float32'], `${id} cube`);
     validateViewLength(id, 'cube', props.cube, cellCount * props.periodCount);
+    validateCapacity(id, 'cube rows', cellCount * props.periodCount);
+    validateTrajectoryOutputRanges(id, props.output);
+    validateGraphOutputsDisjointFromInputs(
+      id,
+      Object.values(getTrajectoryBindingViews(props.output)),
+      Object.values(getTrajectoryBindingViews({...props, output: undefined}))
+    );
     if (props.layout !== 'period-major' && props.layout !== 'cell-major') {
       throw new Error(`${id} layout must be 'period-major' or 'cell-major'`);
     }
@@ -109,6 +122,7 @@ export class GPUSpaceTimeLocalMoran implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateTrajectoryBindings(graph, this.id, this.props);
     const {props, id} = this;
     const {cube, layout, periodCount, period, variant, weights, ...testProps} = props;
     const cellCount = weights.offsets.length - 1;

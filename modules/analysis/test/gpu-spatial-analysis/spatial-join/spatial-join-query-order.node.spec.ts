@@ -10,6 +10,7 @@ import {
   GPUPointInPolygonJoin
 } from '../../../src/gpu-spatial-analysis/spatial-join/index';
 import {getNearestNeighborNodes} from '../../../src/gpu-spatial-analysis/spatial-join/nearest-nodes';
+import {getNamedRuntimeBindingSource, getChunkDispatches} from './chunk-dispatch-test-utils';
 import {auditWGSLModule} from '../../analysis-core/kernel-audit/kernel-audit-wgsl';
 import {
   getDefaultQuerySort,
@@ -160,11 +161,11 @@ it('the query order kernel embeds the shared Hilbert WGSL and parses', () => {
   const sources = getGPUCommandNodeKernelSources(nodes);
   const keyKernel = sources.find(kernel => kernel.id === 'order-keys');
   expect(keyKernel).toBeDefined();
-  expect(keyKernel!.source).toContain(HILBERT_INDEX_WGSL);
-  expect(keyKernel!.source).toContain(QUANTIZE_AXIS_WGSL);
+  expect(getNamedRuntimeBindingSource(keyKernel!.source)).toContain(HILBERT_INDEX_WGSL);
+  expect(getNamedRuntimeBindingSource(keyKernel!.source)).toContain(QUANTIZE_AXIS_WGSL);
   // The key kernel reads node 0 of the BVH: root bounds, no reduction pass of its own.
-  expect(keyKernel!.source).toContain('nodeMinima[nodeMinimaOffset]');
-  expect(keyKernel!.source).toContain('0xffffffffu');
+  expect(getNamedRuntimeBindingSource(keyKernel!.source)).toContain('nodeMinima[nodeMinimaOffset]');
+  expect(getNamedRuntimeBindingSource(keyKernel!.source)).toContain('0xffffffffu');
   expect(getStorageBindingCount(keyKernel!.source)).toBeLessThanOrEqual(8);
   for (const kernel of sources) {
     expect(() => new WgslReflect(kernel.source), kernel.id).not.toThrow();
@@ -215,22 +216,48 @@ function buildProbeNodes(options: {chunks: number[]; querySort: boolean; radius?
 it('probe passes read the order per sorted chunk and stay within 8 bindings', () => {
   const {nodes, device} = buildProbeNodes({chunks: [300, 200, 1], querySort: true});
   const sources = getGPUCommandNodeKernelSources(nodes);
-  // Chunks of fewer than two points are not sorted.
-  expect(nodes.filter(node => node.id.endsWith('-order-keys'))).toHaveLength(2);
+  // Runtime key passes cover each chunk at its own size. Two global stable sorts preserve
+  // chunk-local Hilbert order without padded singleton work or per-chunk sort pipelines.
+  const keyNodes = nodes.filter(node => /^probe-order-keys-\d+$/.test(node.id));
+  expect(keyNodes.map(node => node.workload?.maximumInvocationCount)).toEqual([300, 200, 1]);
+  expect(getChunkDispatches(device, keyNodes)).toEqual([
+    [2, 1, 1],
+    [1, 1, 1],
+    [1, 1, 1]
+  ]);
+  const singletonKeys = sources.find(kernel => kernel.id === 'probe-order-keys-2')!;
+  expect(getNamedRuntimeBindingSource(singletonKeys.source)).toContain(
+    'if (SOURCE_ROW_COUNT > 1u)'
+  );
+  expect(
+    nodes.filter(node =>
+      /probe-order-(spatial|chunk)-sort-radix-digit-\d+-histogram$/.test(node.id)
+    )
+  ).toHaveLength(16);
+  const firstProbe = nodes.findIndex(node => node.id === 'probe-0');
+  expect(nodes.findIndex(node => node.id === 'probe-order-regroup-keys')).toBeLessThan(firstProbe);
+  expect(
+    Math.max(...nodes.map((node, index) => (node.id.startsWith('probe-order-') ? index : -1)))
+  ).toBeLessThan(firstProbe);
   const counts = sources.filter(kernel => /probe-\d$/.test(kernel.id));
   const writes = sources.filter(kernel => /probe-\d-write$/.test(kernel.id));
   expect(counts).toHaveLength(3);
   expect(writes).toHaveLength(3);
-  expect(counts.map(kernel => kernel.source.includes('queryOrder['))).toEqual([true, true, false]);
-  expect(writes.map(kernel => kernel.source.includes('queryOrder['))).toEqual([true, true, false]);
+  expect(counts.map(kernel => kernel.source.includes('queryOrder['))).toEqual([true, true, true]);
+  expect(writes.map(kernel => kernel.source.includes('queryOrder['))).toEqual([true, true, true]);
   for (const kernel of sources) {
     expect(() => new WgslReflect(kernel.source), kernel.id).not.toThrow();
     expect(getStorageBindingCount(kernel.source), kernel.id).toBeLessThanOrEqual(8);
   }
   // Results stay addressed by the original row: counts, slots and offsets use `row`.
   const ordered = counts[0].source;
-  expect(ordered).toContain('let row = CHUNK_FIRST_ROW + localRow;');
-  expect(ordered).toContain('pointCounts[pointCountsOffset + row] = found;');
+  expect(getNamedRuntimeBindingSource(ordered)).toContain(
+    'let localRow = queryOrder[queryOrderOffset + index] - CHUNK_FIRST_ROW;'
+  );
+  expect(getNamedRuntimeBindingSource(ordered)).toContain('let row = CHUNK_FIRST_ROW + localRow;');
+  expect(getNamedRuntimeBindingSource(ordered)).toContain(
+    'pointCounts[pointCountsOffset + row] = found;'
+  );
   device.destroy();
 });
 
@@ -247,8 +274,8 @@ it('with a radius the write pass keeps row order so it stays within 8 bindings',
   const sources = getGPUCommandNodeKernelSources(nodes);
   const count = sources.find(kernel => kernel.id === 'probe')!;
   const write = sources.find(kernel => kernel.id === 'probe-write')!;
-  expect(count.source).toContain('queryOrder[');
-  expect(write.source).not.toContain('queryOrder');
+  expect(getNamedRuntimeBindingSource(count.source)).toContain('queryOrder[');
+  expect(getNamedRuntimeBindingSource(write.source)).not.toContain('queryOrder');
   expect(getStorageBindingCount(count.source)).toBe(7);
   expect(getStorageBindingCount(write.source)).toBe(8);
   device.destroy();
@@ -377,8 +404,8 @@ it('nearest traversals read the order, stay within 8 bindings and parse (polygon
     for (const id of expectedIds) {
       expect(ordered.map(kernel => kernel.id)).toContain(id);
     }
-    expect(nodes.findIndex(node => node.id === 'n-order-keys')).toBeGreaterThanOrEqual(0);
-    expect(nodes.findIndex(node => node.id === 'n-order-keys')).toBeLessThan(
+    expect(nodes.findIndex(node => node.id === 'n-query-keys-0')).toBeGreaterThanOrEqual(0);
+    expect(nodes.findIndex(node => node.id === 'n-query-keys-0')).toBeLessThan(
       nodes.findIndex(node => node.id.endsWith('-traverse'))
     );
     device.destroy();
@@ -388,8 +415,12 @@ it('nearest traversals read the order, stay within 8 bindings and parse (polygon
 it('unchunked nearest keeps the original row for topk, columns and filter addressing', () => {
   const {nodes, device} = buildNeighborNodes({queryCount: 300, querySort: true});
   const traverse = getGPUCommandNodeKernelSources(nodes).find(kernel => kernel.id === 'n-traverse');
-  expect(traverse!.source).toContain('let localQuery = queryOrder[queryOrderOffset + index];');
-  expect(traverse!.source).toContain('let header = topkOffset + row * STRIDE;');
+  expect(getNamedRuntimeBindingSource(traverse!.source)).toContain(
+    'let localQuery = queryOrder[queryOrderOffset + index] - CHUNK_FIRST_ROW;'
+  );
+  expect(getNamedRuntimeBindingSource(traverse!.source)).toContain(
+    'let header = topkOffset + row * STRIDE;'
+  );
   device.destroy();
 });
 
@@ -424,13 +455,20 @@ it('sorted nearest shares pipelines across scratch chunks (rule 12)', () => {
   expect(four.distinct).toBe(two.distinct);
 });
 
-it('sorted nearest builds one order per point chunk', () => {
+it('sorted nearest builds runtime keys per point chunk and two global sorts', () => {
   const {nodes, device} = buildNeighborNodes({
     queryCount: 500,
     querySort: true,
     chunks: [300, 200]
   });
-  expect(nodes.filter(node => node.id.endsWith('-order-keys'))).toHaveLength(2);
+  expect(
+    nodes
+      .filter(node => /^n-query-keys-\d+$/.test(node.id))
+      .map(node => node.workload?.maximumInvocationCount)
+  ).toEqual([300, 200]);
+  expect(
+    nodes.filter(node => /^n-query-(hilbert|chunk)-sort-radix-digit-\d+-histogram$/.test(node.id))
+  ).toHaveLength(16);
   device.destroy();
 });
 
@@ -516,10 +554,13 @@ it('GPUPointInPolygonJoin with querySort puts the order nodes before the probe',
       status: {overflow: view('overflow', 'uint32', 1)}
     }
   }).getCommandNodes(graph);
-  const orderIndex = nodes.findIndex(node => node.id === 'pip-probe-order-keys');
+  const orderIndex = nodes.findIndex(node => node.id === 'pip-probe-order-keys-0');
   const probeIndex = nodes.findIndex(node => node.id === 'pip-probe');
   expect(orderIndex).toBeGreaterThan(-1);
   expect(orderIndex).toBeLessThan(probeIndex);
+  expect(
+    Math.max(...nodes.map((node, index) => (node.id.startsWith('pip-probe-order-') ? index : -1)))
+  ).toBeLessThan(probeIndex);
   const sources = getGPUCommandNodeKernelSources(nodes);
   for (const kernel of sources) {
     expect(() => new WgslReflect(kernel.source), kernel.id).not.toThrow();
@@ -556,32 +597,51 @@ for (const queryKind of ['lines', 'polygons'] as const) {
         expect(nodes.findIndex(node => node.id === traversal.id)).toBeGreaterThan(
           Math.max(...nodes.map((node, index) => (node.id.startsWith('n-order-') ? index : -1)))
         );
-        expect(traversal.source).toContain('let row = CHUNK_FIRST_ROW + localQuery;');
+        expect(getNamedRuntimeBindingSource(traversal.source)).toContain(
+          'let row = CHUNK_FIRST_ROW + localQuery;'
+        );
         // Candidate filters use the original row even when the scratch is in sorted order.
-        expect(traversal.source).toContain('row * 2u');
+        expect(getNamedRuntimeBindingSource(traversal.source)).toContain('row * 2u');
         if (queryKind === 'polygons') {
           expect(nodeIndex('query-metadata')).toBeGreaterThan(nodeIndex('query-rings'));
           expect(nodeIndex('query-bounds')).toBeGreaterThan(nodeIndex('query-metadata'));
-          expect(traversal.source).not.toContain('qRingOffsets');
-          expect(traversal.source).toContain('qFeatureRingsOffset + 600u + r');
+          expect(getNamedRuntimeBindingSource(traversal.source)).not.toContain('qRingOffsets');
+          expect(getNamedRuntimeBindingSource(traversal.source)).toContain(
+            'qFeatureRingsOffset + 600u + r'
+          );
           expect(getStorageBindingCount(traversal.source)).toBe(8);
         }
         const foot = sources.find(kernel => kernel.id.endsWith('-foot-points'))!;
         const columns = sources.filter(kernel => kernel.id.endsWith('-columns'));
         if (scratchChunkQueryCount) {
-          expect(traversal.source).toContain('queryOrder[queryOrderOffset + position]');
-          expect(traversal.source).toContain('let header = topkOffset + index * STRIDE;');
-          expect(foot.source).toContain('queryOrder[queryOrderOffset + position]');
-          expect(foot.source).toContain('pairResult(localQuery,');
+          expect(getNamedRuntimeBindingSource(traversal.source)).toContain(
+            'queryOrder[queryOrderOffset + position]'
+          );
+          expect(getNamedRuntimeBindingSource(traversal.source)).toContain(
+            'let header = topkOffset + index * STRIDE;'
+          );
+          expect(getNamedRuntimeBindingSource(foot.source)).toContain(
+            'queryOrder[queryOrderOffset + position]'
+          );
+          expect(getNamedRuntimeBindingSource(foot.source)).toContain('pairResult(localQuery,');
           for (const column of columns) {
-            expect(column.source).toContain('queryOrder[queryOrderOffset + position]');
-            expect(column.source).toContain('let outputIndex = row * CAPACITY + slot;');
+            expect(getNamedRuntimeBindingSource(column.source)).toContain(
+              'queryOrder[queryOrderOffset + position]'
+            );
+            expect(getNamedRuntimeBindingSource(column.source)).toContain(
+              'let outputIndex = row * CAPACITY + slot;'
+            );
           }
         } else {
-          expect(traversal.source).toContain('queryOrder[queryOrderOffset + index]');
-          expect(traversal.source).toContain('let header = topkOffset + row * STRIDE;');
-          expect(foot.source).not.toContain('queryOrder');
-          for (const column of columns) expect(column.source).not.toContain('queryOrder');
+          expect(getNamedRuntimeBindingSource(traversal.source)).toContain(
+            'queryOrder[queryOrderOffset + index]'
+          );
+          expect(getNamedRuntimeBindingSource(traversal.source)).toContain(
+            'let header = topkOffset + row * STRIDE;'
+          );
+          expect(getNamedRuntimeBindingSource(foot.source)).not.toContain('queryOrder');
+          for (const column of columns)
+            expect(getNamedRuntimeBindingSource(column.source)).not.toContain('queryOrder');
         }
         device.destroy();
       }

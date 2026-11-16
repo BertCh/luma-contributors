@@ -14,6 +14,18 @@ import {
   createWGSLKernelNode,
   type WGSLKernelBinding
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {validateSpatialStatisticsBindings} from '../spatial-weights/spatial-statistics-bindings';
+import {createSpatialStatisticsRowNode} from '../spatial-weights/spatial-statistics-row-dispatch';
+import {validateSpatialStatisticsWritableDispatches} from '../spatial-weights/spatial-statistics-writable-dispatches';
+import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {SPATIAL_STATISTICS_COUNTS_WGSL} from '../spatial-weights/spatial-statistics-counts-wgsl';
+import {
+  getLocalVariabilityMomentNodes,
+  LOCAL_VARIABILITY_MAXIMUM_ROWS,
+  LOCAL_VARIABILITY_REFERENCE_MAXIMUM_ROWS,
+  LOCAL_VARIABILITY_MAXIMUM_VARIABLE_COUNT,
+  LOCAL_VARIABILITY_MOMENT_BLOCK_ROWS
+} from './local-variability-moments';
 import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {SCALED_QUOTIENT_WGSL} from '../../analysis-core/kernels/scaled-quotient-wgsl';
 import {
@@ -29,13 +41,16 @@ import {
   getGPUSpatialWeightsOrChunksViews,
   isGPUChunkedSpatialWeights,
   validateGPUSpatialWeightsOrChunks,
-  wrapGPUSpatialWeightsChunkBody,
   type GPUChunkedSpatialWeights,
   type GPUSpatialWeights,
   type GPUSpatialWeightsChunkDispatch
 } from '../spatial-weights/index';
 
 import {createSpatialStatisticsParameterNodes} from '../../analysis-core/kernels/spatial-statistics-parameter-nodes';
+import {
+  resolveStatisticsPopulationCount,
+  type SpatialStatisticsPopulationOutput
+} from '../spatial-weights/spatial-statistics-population-output';
 import * as variabilityParameters from './local-variability-parameters';
 
 /** Per-row status: valid, excluded input, undefined statistic, incomplete weights. */
@@ -71,6 +86,8 @@ export type GPULocalSpatialHeteroscedasticityProps = LocalVariabilityProps & {
   output: LocalVariabilityProps['output'] & {
     /** Optional normalized residual powers for explicit residual-label randomization. */
     normalizedResiduals?: GraphDataView<'float32'>;
+    /** Exact number of finite, non-island residuals in the normalization population. */
+    residualCount?: GraphDataView<'uint32'>;
   };
 };
 
@@ -91,9 +108,40 @@ export class GPULocalSpatialHeteroscedasticity implements GPUCommandNodeProducer
   constructor(readonly props: GPULocalSpatialHeteroscedasticityProps) {
     this.id = props.id ?? 'local-spatial-heteroscedasticity';
     validateProps(this.id, props, 1);
-    const outputs = [props.output.statistic, props.output.status, props.output.normalizedResiduals];
-    for (let index = 0; index < outputs.length; index++) {
-      validateGraphOutputsDisjointFromInputs(this.id, [outputs[index]], outputs.slice(index + 1));
+    const outputs = [
+      props.output.statistic,
+      props.output.status,
+      props.output.normalizedResiduals,
+      props.output.residualCount
+    ];
+    validateSpatialStatisticsWritableDispatches(
+      this.id,
+      {
+        statistic: props.output.statistic,
+        status: props.output.status,
+        normalizedResiduals: props.output.normalizedResiduals,
+        residualCount: props.output.residualCount
+      },
+      [['statistic', 'status']]
+    );
+    if (props.output.residualCount) {
+      validateSinglePackedView(
+        props.output.residualCount,
+        ['uint32'],
+        `${this.id} output.residualCount`
+      );
+      validateCapacity(
+        this.id,
+        'output.residualCount.length',
+        props.output.residualCount.length,
+        1,
+        1
+      );
+      validateGraphOutputsDisjointFromInputs(
+        this.id,
+        [props.output.residualCount],
+        getAllInputViews(props)
+      );
     }
     const residualPower = props.residualPower ?? 2;
     if (typeof residualPower === 'number') {
@@ -136,6 +184,13 @@ export class GPULocalSpatialHeteroscedasticity implements GPUCommandNodeProducer
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
     const rows = getRowCount(props);
+    validateSpatialStatisticsBindings(graph, id, props, {
+      'row scratch': rows * 4,
+      'moment partials':
+        Math.ceil(rows / LOCAL_VARIABILITY_MOMENT_BLOCK_ROWS) *
+        ('variableCount' in props ? Number(props.variableCount) : 1) *
+        12
+    });
     const dispatches = getGPUSpatialWeightsChunkDispatches(props.weights);
     validateGPUStorageBindingByteLength(
       graph.device,
@@ -148,7 +203,8 @@ export class GPULocalSpatialHeteroscedasticity implements GPUCommandNodeProducer
     const residualCounts = createTransientView(graph, `${id}-residual-counts`, 'uint32', rows);
     const maximumResidual = createTransientView(graph, `${id}-maximum-residual`, 'float32', 1);
     const normalizedSum = createTransientView(graph, `${id}-normalized-sum`, 'float32', 1);
-    const residualCount = createTransientView(graph, `${id}-residual-count`, 'uint32', 1);
+    const residualCount =
+      props.output.residualCount ?? createTransientView(graph, `${id}-residual-count`, 'uint32', 1);
     const residuals = createTransientView(graph, `${id}-residuals`, 'float32', rows);
     const mean = createTransientView(graph, `${id}-mean`, 'float32', 1);
     validateGraphViewsBelongToGraph(id, graph, [
@@ -169,7 +225,8 @@ export class GPULocalSpatialHeteroscedasticity implements GPUCommandNodeProducer
     const nodes: GPUCommandNode<Parameters>[] = [
       ...runtime.nodes,
       ...dispatches.map(dispatch =>
-        createWGSLKernelNode(graph, {
+        createSpatialStatisticsRowNode(graph, {
+          rowBase: dispatch.rowStart,
           id: `${id}-residuals${dispatch.idSuffix}`,
           operation: 'GPULocalSpatialHeteroscedasticity',
           variant: 'residuals',
@@ -180,9 +237,7 @@ export class GPULocalSpatialHeteroscedasticity implements GPUCommandNodeProducer
             {name: 'residuals', view: residuals, type: 'f32', access: 'read_write'}
           ],
           declarations: getCommon(props, rows, 1, dispatch),
-          body: wrapGPUSpatialWeightsChunkBody(
-            dispatch,
-            `var result = getNaN();
+          body: `var result = getNaN();
 if (included(index)) {
   var weighted = 0.0;
   var total = 0.0;
@@ -193,7 +248,6 @@ if (included(index)) {
   }
 }
 residuals[residualsOffset + index] = result;`
-          )
         })
       ),
       createWGSLKernelNode(graph, {
@@ -252,6 +306,7 @@ finiteResiduals[finiteResidualsOffset + index] = scaled;`
         id: `${id}-mean`,
         operation: 'GPULocalSpatialHeteroscedasticity',
         variant: 'mean',
+        // contract-allow: single-invocation -- count division takes exactly 64 integer steps.
         invocationCount: 1,
         bindings: [
           {name: 'maximumResidual', view: maximumResidual, type: 'f32', access: 'read'},
@@ -260,18 +315,20 @@ finiteResiduals[finiteResidualsOffset + index] = scaled;`
           {name: 'mean', view: mean, type: 'f32', access: 'read_write'}
         ],
         declarations: `${GET_NAN_WGSL}
+${SPATIAL_STATISTICS_COUNTS_WGSL}
 // 2^126 is finite; splitting larger exponents avoids an overflowing ldexp scale.
 const MAXIMUM_MEAN_SCALE_EXPONENT: i32 = 126;`,
         body: `let count = residualCount[residualCountOffset];
 let maximum = frexp(maximumResidual[maximumResidualOffset]);
 // Keep the maximum's exponent out of float products, including compiler reassociation.
-let fraction = maximum.fract * (normalizedSum[normalizedSumOffset] / f32(count));
+let fraction = maximum.fract * divideBySpatialCount(normalizedSum[normalizedSumOffset], count);
 let firstExponent = min(maximum.exp, MAXIMUM_MEAN_SCALE_EXPONENT);
 let average = ldexp(ldexp(fraction, firstExponent), maximum.exp - firstExponent);
 mean[meanOffset] = select(getNaN(), average, count > 0u);`
       }),
       ...dispatches.map(dispatch =>
-        createWGSLKernelNode(graph, {
+        createSpatialStatisticsRowNode(graph, {
+          rowBase: dispatch.rowStart,
           id: `${id}-finish${dispatch.idSuffix}`,
           operation: 'GPULocalSpatialHeteroscedasticity',
           variant: 'finish',
@@ -296,15 +353,13 @@ mean[meanOffset] = select(getNaN(), average, count > 0u);`
                 ]
               : [])
           ],
-          declarations: `${GET_NAN_WGSL}\n${IS_FINITE_BITS_WGSL}\n${SCALED_QUOTIENT_WGSL}\n${dispatch.constantsWGSL}`,
-          body: wrapGPUSpatialWeightsChunkBody(
-            dispatch,
-            `var resultValue = getNaN(); var state = 1u;
+          declarations: `${GET_NAN_WGSL}\n${IS_FINITE_BITS_WGSL}\n${SCALED_QUOTIENT_WGSL}\n`,
+          body: `var resultValue = getNaN(); var state = 1u;
 if (isFiniteBits(residuals[residualsOffset + index])) {
   var total = 0.0; var weighted = 0.0;
   let rowBegin = offsets[offsetsOffset + ${getLocalRow(dispatch)}];
   let rowEnd = offsets[offsetsOffset + ${getLocalRow(dispatch)} + 1u];
-  for (var slot = rowBegin; slot < min(rowEnd, ${dispatch.weights.neighbors.length}u); slot++) {
+  for (var slot = rowBegin; slot < min(rowEnd, CAPACITY); slot++) {
     let neighbor = neighbors[neighborsOffset + slot]; let weight = weights[weightsOffset + slot];
     if (neighbor >= ${rows}u || neighbor == index || !(weight > 0.0) || !isFiniteBits(weight)) { continue; }
     let residual = residuals[residualsOffset + neighbor];
@@ -323,7 +378,6 @@ if (isFiniteBits(residuals[residualsOffset + index])) {
 ${props.weights.status?.overflow ? 'if (overflow[overflowOffset] != 0u) { state = 3u; resultValue = getNaN(); }' : ''}
 if (!isFiniteBits(resultValue) && state == 0u) { state = 2u; }
 result[resultOffset + index] = resultValue; status[statusOffset + index] = state;`
-          )
         })
       )
     ];
@@ -363,7 +417,12 @@ normalized[normalizedOffset + index] = normalizedValue;`
 }
 
 /** Multivariate local Geary inputs, with population standardization and joint complete-case rows. */
-export type GPUMultivariateLocalGearyProps = LocalVariabilityProps & {variableCount: number};
+export type GPUMultivariateLocalGearyProps = LocalVariabilityProps & {
+  variableCount: number;
+  /** Tiled moments by default; preserve the former serial reference for explicit comparison. */
+  mode?: 'tiled' | 'reference';
+  output: LocalVariabilityProps['output'] & SpatialStatisticsPopulationOutput;
+};
 
 /**
  * Mean across variables of row-standardized local Geary. Each variable uses its population
@@ -373,15 +432,57 @@ export type GPUMultivariateLocalGearyProps = LocalVariabilityProps & {variableCo
  */
 export class GPUMultivariateLocalGeary implements GPUCommandNodeProducer {
   readonly id: string;
+  private readonly populationCount?: GraphDataView<'uint32'>;
   constructor(readonly props: GPUMultivariateLocalGearyProps) {
     this.id = props.id ?? 'multivariate-local-geary';
+    this.populationCount = resolveStatisticsPopulationCount(this.id, props.output);
     validateProps(this.id, props, props.variableCount);
+    if (props.mode !== undefined && props.mode !== 'tiled' && props.mode !== 'reference')
+      throw new Error(`${this.id} mode must be tiled or reference`);
+    if (props.mode === 'reference')
+      validateCapacity(
+        this.id,
+        'weights.rowCount (LOCAL_VARIABILITY_REFERENCE_MAXIMUM_ROWS)',
+        getRowCount(props),
+        1,
+        LOCAL_VARIABILITY_REFERENCE_MAXIMUM_ROWS
+      );
+    if (this.populationCount) {
+      validateSinglePackedView(
+        this.populationCount,
+        ['uint32'],
+        `${this.id} output.${props.output.includedCount ? 'includedCount' : 'count'}`
+      );
+      validateCapacity(
+        this.id,
+        `output.${props.output.includedCount ? 'includedCount' : 'count'}.length`,
+        this.populationCount.length,
+        1
+      );
+      validateGraphOutputsDisjointFromInputs(
+        this.id,
+        [this.populationCount],
+        getAllInputViews(props)
+      );
+    }
+    validateSpatialStatisticsWritableDispatches(
+      this.id,
+      {statistic: props.output.statistic, status: props.output.status, count: this.populationCount},
+      [['statistic', 'status']]
+    );
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
     const rows = getRowCount(props);
+    validateSpatialStatisticsBindings(graph, id, props, {
+      'row scratch': rows * 4,
+      'moment partials':
+        Math.ceil(rows / LOCAL_VARIABILITY_MOMENT_BLOCK_ROWS) *
+        ('variableCount' in props ? Number(props.variableCount) : 1) *
+        12
+    });
     const dispatches = getGPUSpatialWeightsChunkDispatches(props.weights);
     const variance = createTransientView(graph, `${id}-variance`, 'float32', props.variableCount);
     const bindings = getBindings(props, dispatches[0].weights);
@@ -398,26 +499,50 @@ export class GPUMultivariateLocalGeary implements GPUCommandNodeProducer {
       ['values', 'mask', 'overflow'].includes(binding.name)
     );
     const nodes: GPUCommandNode<Parameters>[] = [
-      createWGSLKernelNode(graph, {
-        id: `${id}-moments`,
-        operation: 'GPUMultivariateLocalGeary',
-        variant: 'moments',
-        invocationCount: props.variableCount,
-        bindings: [
-          ...valueBindings,
-          {name: 'variance', view: variance, type: 'f32', access: 'read_write'}
-        ],
-        declarations: common,
-        body: `var count = 0.0; var mean = 0.0; var squared = 0.0;
+      ...(props.mode === 'reference'
+        ? [
+            createWGSLKernelNode<Parameters>(graph, {
+              id: `${id}-moments`,
+              operation: 'GPUMultivariateLocalGeary',
+              variant: 'moments',
+              invocationCount: props.variableCount,
+              bindings: [
+                ...valueBindings,
+                {name: 'variance', view: variance, type: 'f32', access: 'read_write'},
+                ...(this.populationCount
+                  ? [
+                      {
+                        name: 'populationCount',
+                        view: this.populationCount,
+                        type: 'u32' as const,
+                        access: 'read_write' as const
+                      }
+                    ]
+                  : [])
+              ],
+              declarations: common,
+              body: `var count = 0.0; var mean = 0.0; var squared = 0.0;
 for (var row = 0u; row < ${rows}u; row++) {
   if (!included(row)) { continue; }
   let value = values[valuesOffset + row * ${props.variableCount}u + index];
   count += 1.0; let difference = value - mean; mean += difference / count; squared += difference * (value - mean);
 }
-variance[varianceOffset + index] = select(getNaN(), squared / count, count > 0.0);`
-      }),
+variance[varianceOffset + index] = select(getNaN(), squared / count, count > 0.0);
+${this.populationCount ? 'if (index == 0u) { populationCount[populationCountOffset] = u32(count); }' : ''}`
+            })
+          ]
+        : getLocalVariabilityMomentNodes(graph, {
+            id,
+            rows,
+            columns: props.variableCount,
+            bindings: valueBindings,
+            declarations: common,
+            variance,
+            count: this.populationCount
+          })),
       ...dispatches.map(dispatch =>
-        createWGSLKernelNode(graph, {
+        createSpatialStatisticsRowNode(graph, {
+          rowBase: dispatch.rowStart,
           id: `${id}-statistic${dispatch.idSuffix}`,
           operation: 'GPUMultivariateLocalGeary',
           variant: 'statistic',
@@ -428,15 +553,13 @@ variance[varianceOffset + index] = select(getNaN(), squared / count, count > 0.0
             {name: 'result', view: props.output.statistic, type: 'f32', access: 'read_write'},
             {name: 'status', view: props.output.status, type: 'u32', access: 'read_write'}
           ],
-          declarations: getCommon(
+          declarations: `${getCommon(
             {...props, weights: {...props.weights, status: undefined}},
             rows,
             props.variableCount,
             dispatch
-          ),
-          body: wrapGPUSpatialWeightsChunkBody(
-            dispatch,
-            `var state = 1u; var resultValue = getNaN();
+          )}\n${SCALED_QUOTIENT_WGSL}`,
+          body: `var state = 1u; var resultValue = getNaN();
 if (included(index)) {
   var sum = 0.0; var total = 0.0; var defined = true;
   for (var column = 0u; column < ${props.variableCount}u; column++) { defined = defined && variance[varianceOffset + column] > 0.0 && isFiniteBits(variance[varianceOffset + column]); }
@@ -445,7 +568,11 @@ if (included(index)) {
       `var distance = 0.0;
       for (var column = 0u; column < ${props.variableCount}u; column++) {
         let difference = values[valuesOffset + index * ${props.variableCount}u + column] - values[valuesOffset + neighbor * ${props.variableCount}u + column];
-        distance += difference * difference / variance[varianceOffset + column];
+        // Normalize before squaring: the squared raw difference can overflow although the
+        // variance and the dimensionless Geary statistic are finite. Exponent scaling also
+        // prevents Metal's reciprocal lowering from flushing a large denominator to zero.
+        let standardized = getScaledQuotient(difference, sqrt(variance[varianceOffset + column]), 1.0, 0);
+        distance += standardized * standardized;
       }
       sum += weight * distance; total += weight;`,
       dispatch
@@ -455,7 +582,6 @@ if (included(index)) {
   if (defined && total > 0.0) { resultValue = sum / total / ${props.variableCount}.0; state = select(2u, 0u, isFiniteBits(resultValue)); }
 }
 result[resultOffset + index] = resultValue; status[statusOffset + index] = state;`
-          )
         })
       )
     ];
@@ -481,9 +607,31 @@ result[resultOffset + index] = resultValue; status[statusOffset + index] = state
 
 function validateProps(id: string, props: LocalVariabilityProps, variableCount: number): void {
   const rows = validateGPUSpatialWeightsOrChunks(id, props.weights);
-  if (rows >= 16777216) throw new Error(`${id}: float32 moments require fewer than 2^24 rows`);
-  if (!Number.isInteger(variableCount) || variableCount < 1 || variableCount > 32)
-    throw new Error(`${id}: variableCount must be 1 to 32`);
+  validateCapacity(
+    id,
+    'weights.rowCount (LOCAL_VARIABILITY_MAXIMUM_ROWS)',
+    rows,
+    1,
+    LOCAL_VARIABILITY_MAXIMUM_ROWS
+  );
+  validateCapacity(
+    id,
+    'variableCount (LOCAL_VARIABILITY_MAXIMUM_VARIABLE_COUNT)',
+    variableCount,
+    1,
+    LOCAL_VARIABILITY_MAXIMUM_VARIABLE_COUNT
+  );
+  validateCapacity(
+    id,
+    'values.length (uint32 row-major addressing)',
+    props.values.length,
+    1,
+    0xffffffff
+  );
+  validateDisjointWritableViews(id, {
+    statistic: props.output.statistic,
+    status: props.output.status
+  });
   const views = [props.values, props.output.statistic, props.output.status, props.mask];
   const lengths = [rows * variableCount, rows, rows, rows];
   for (let index = 0; index < views.length; index++) {
@@ -514,7 +662,8 @@ function getAllInputViews(
   ];
 }
 function getLocalRow(dispatch: GPUSpatialWeightsChunkDispatch): string {
-  return dispatch.isWhole ? 'index' : 'index - WEIGHTS_ROW_START';
+  void dispatch;
+  return 'index - WEIGHTS_ROW_START';
 }
 function getBindings(
   props: LocalVariabilityProps,
@@ -546,9 +695,10 @@ function getCommon(
   variableCount: number,
   dispatch: GPUSpatialWeightsChunkDispatch
 ): string {
+  void dispatch;
   return `${GET_NAN_WGSL}\n${IS_FINITE_BITS_WGSL}
-const ROWS: u32 = ${rows}u; const SLOTS: u32 = ${dispatch.weights.neighbors.length}u;
-${dispatch.constantsWGSL}
+const ROWS: u32 = ${rows}u;
+
 fn included(row: u32) -> bool {
   if (row >= ROWS) { return false; }
   ${props.mask ? 'if (mask[maskOffset + row] == 0u) { return false; }' : ''}
@@ -561,7 +711,7 @@ fn included(row: u32) -> bool {
 }
 function neighborLoop(action: string, dispatch: GPUSpatialWeightsChunkDispatch): string {
   const localRow = getLocalRow(dispatch);
-  return `for (var slot = offsets[offsetsOffset + ${localRow}]; slot < min(offsets[offsetsOffset + ${localRow} + 1u], SLOTS); slot++) {
+  return `for (var slot = offsets[offsetsOffset + ${localRow}]; slot < min(offsets[offsetsOffset + ${localRow} + 1u], CAPACITY); slot++) {
     let neighbor = neighbors[neighborsOffset + slot]; let weight = weights[weightsOffset + slot];
     if (neighbor == index || !included(neighbor) || !(weight > 0.0) || !isFiniteBits(weight)) { continue; }
     ${action}

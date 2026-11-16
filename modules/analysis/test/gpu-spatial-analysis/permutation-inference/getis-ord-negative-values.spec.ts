@@ -9,12 +9,60 @@ import {
   GPU_LOCAL_PERMUTATION_NOT_TESTED
 } from '../../../src/gpu-spatial-analysis/permutation-inference/index';
 import {createGlobalPermutationHarness, createLocalPermutationHarness} from './permutation-harness';
-import {createKnnWeights, createSeededRandom} from './permutation-oracle';
+import {createKnnWeights, createSeededRandom, createWeights} from './permutation-oracle';
 import {requireTestDevice} from '../../utils/require-test-device';
 
 const R = GPU_GLOBAL_PERMUTATION_SUMMARY;
 const ROWS = 60;
 const PARAMETERS = {seed: 7, permutationCount: 99, significanceLevel: 0.05};
+
+for (const permutationBatchSize of [undefined, 2]) {
+  it(`global G recovers across valid, negative and valid frames (${permutationBatchSize ? 'materialized' : 'inline'})`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const values = Float32Array.of(1, 2, 3, 4);
+    const harness = createGlobalPermutationHarness(device, {
+      scene: {values, weights: createWeights([[[1, 1]], [[2, 1]], [[3, 1]], [[0, 1]]])},
+      statistic: 'getisOrdG',
+      parameters: {...PARAMETERS, permutationCount: 3},
+      maximumPermutations: 3,
+      permutationBatchSize
+    });
+    try {
+      for (const negative of [false, true, false]) {
+        const result = await harness.run(undefined, {
+          values: negative ? Float32Array.of(-1, 2, 3, 4) : values
+        });
+        expect(result.invalidCount).toBe(negative ? 1 : 0);
+        expect(result.results[R.analysisCount]).toBe(4);
+        if (negative) {
+          for (const field of [
+            'observed',
+            'pseudoPValue',
+            'exceedances',
+            'simulatedMean',
+            'simulatedStandardDeviation',
+            'zSimulated',
+            'pZSimulated',
+            'minimum',
+            'maximum'
+          ] as const)
+            expect(result.results[R[field]], field).toBeNaN();
+          expect(result.referenceDistribution.every(Number.isNaN)).toBe(true);
+          expect(result.histogram.every(count => count === 0)).toBe(true);
+        } else {
+          // Directed cycle: 1*2 + 2*3 + 3*4 + 4*1 = 24; ordered distinct products sum to 70.
+          expect(result.results[R.observed]).toBeCloseTo(12 / 35, 6);
+          expect(result.referenceDistribution.every(Number.isFinite)).toBe(true);
+          expect(result.histogram.reduce((sum, count) => sum + count, 0)).toBe(3);
+        }
+      }
+      expect(harness.buildCount).toBe(1);
+    } finally {
+      harness.destroy();
+    }
+  });
+}
 
 function createScene(negativeRows: number[]) {
   const random = createSeededRandom(3);

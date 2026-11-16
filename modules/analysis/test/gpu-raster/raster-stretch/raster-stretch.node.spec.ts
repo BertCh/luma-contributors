@@ -221,7 +221,7 @@ it('GPURasterStretch validates props', () => {
         })
     ).toThrow(/noDataValue/);
     expect(() => new GPURasterStretch({...base, output: {stretched: values as never}})).toThrow(
-      /share buffers/
+      /logical byte ranges.*overlap/
     );
     expect(
       () =>

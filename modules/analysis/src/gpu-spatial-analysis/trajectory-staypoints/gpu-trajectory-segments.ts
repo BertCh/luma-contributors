@@ -3,6 +3,12 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  validateTrajectoryBindings,
+  validateTrajectoryScratch,
+  validateTrajectoryOutputRanges,
+  validateTrajectoryWritableDispatches
+} from '../trajectory-analysis/trajectory-binding-validation';
+import {
   createTransientView,
   GPUCompaction,
   type GPUCommandGraph,
@@ -76,10 +82,10 @@ export function getGPUTrajectorySegmentsParameterValues(
 ): Float32Array {
   const maximumGap = settings.maximumGap ?? 0;
   const {activityMinimumDuration} = settings;
-  if (!Number.isFinite(maximumGap) || maximumGap < 0) {
+  if (!Number.isFinite(Math.fround(maximumGap)) || maximumGap < 0) {
     throw new Error('Segment maximumGap must be finite and non-negative');
   }
-  if (!Number.isFinite(activityMinimumDuration) || activityMinimumDuration < 0) {
+  if (!Number.isFinite(Math.fround(activityMinimumDuration)) || activityMinimumDuration < 0) {
     throw new Error('Segment activityMinimumDuration must be finite and non-negative');
   }
   target.set([maximumGap, activityMinimumDuration, 0, 0]);
@@ -239,6 +245,38 @@ export class GPUTrajectorySegments implements GPUCommandNodeProducer {
         );
       }
     }
+    validateTrajectoryOutputRanges(this.id, this.props.output);
+    validateTrajectoryWritableDispatches(id, [
+      {
+        ids: output.triplegs.ids,
+        startRows: output.triplegs.startRows,
+        endRows: output.triplegs.endRows
+      },
+      {...output.triplegs.status},
+      ...(output.trips && props.staypoints
+        ? [
+            {
+              startRows: output.trips.startRows,
+              finishRows: output.trips.finishRows,
+              originStaypoints: output.trips.originStaypoints,
+              destinationStaypoints: output.trips.destinationStaypoints
+            },
+            {...output.trips.status}
+          ]
+        : [])
+    ]);
+    validateGraphOutputsDisjointFromInputs(
+      id,
+      [output.triplegs.rowTriplegIds],
+      [output.triplegs.startRows, output.triplegs.endRows]
+    );
+    if (output.trips && props.staypoints) {
+      validateGraphOutputsDisjointFromInputs(
+        id,
+        [output.trips.triplegTripIds],
+        [output.triplegs.startRows, output.trips.startRows, output.trips.finishRows]
+      );
+    }
     validateGraphOutputsDisjointFromInputs(id, this.getOutputViews(), this.getInputViews());
   }
 
@@ -296,6 +334,16 @@ export class GPUTrajectorySegments implements GPUCommandNodeProducer {
       rowCount * 8,
       'split the tracks over several graphs'
     );
+    validateTrajectoryBindings(graph, this.id, this.props);
+    validateTrajectoryScratch(graph, id, {
+      'track offsets': (trackCount + 1) * 4,
+      ...(output.trips && props.staypoints
+        ? {
+            'trip records': output.trips.ids.length * 16,
+            'merged trip events': (props.staypoints.startRows.length + triplegCapacity) * 4
+          }
+        : {})
+    });
     const timeMode = getTrajectoryTimeMode(props);
     const timeSource = getTrajectoryTimeSource(timeMode);
 

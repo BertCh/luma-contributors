@@ -3,6 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  validateCellDispatchBindings,
+  validateCellDispatchOutputs
+} from '../cell-indexing/cell-dispatch-validation';
+import {
   createTransientView,
   GPUGather,
   GPUScan,
@@ -27,6 +31,8 @@ import {HEALPIX_MAXIMUM_ORDER} from './healpix-index-wgsl';
 import type {GPUHealpixIndexScheme} from './gpu-healpix-point-to-cell';
 
 const OPERATION = 'GPUHealpixCellAggregation';
+/** Two-word keys, offset sentinels and scalar row IDs use uint32 indexing. */
+const MAXIMUM_HEALPIX_AGGREGATION_ROWS = 0x7fffffff;
 
 /** Properties for {@link GPUHealpixCellAggregation}. */
 export type GPUHealpixCellAggregationProps = {
@@ -101,16 +107,21 @@ export class GPUHealpixCellAggregation implements GPUCommandNodeProducer {
     this.props = props;
     const {output} = props;
     validateCapacity(id, 'order', props.order, 0, HEALPIX_MAXIMUM_ORDER);
-    validateCapacity(id, 'cellCapacity', props.cellCapacity);
+    validateCapacity(id, 'cellCapacity', props.cellCapacity, 1, MAXIMUM_HEALPIX_AGGREGATION_ROWS);
+    validateRequirement(
+      id,
+      props.scheme === undefined || ['nested', 'uniq'].includes(props.scheme),
+      "scheme must be 'nested' or 'uniq'"
+    );
     validateSinglePackedView(props.cells, ['uint32x2'], `${id} cells`);
     const rows = props.cells.length;
-    validateRequirement(id, rows >= 1, 'needs at least one row');
+    validateCapacity(id, 'cells.length', rows, 1, MAXIMUM_HEALPIX_AGGREGATION_ROWS);
     for (const [name, view] of [
       ['mask', props.mask],
       ['values', props.values]
     ] as const) {
       if (view) {
-        validateSinglePackedView(view, [view.format], `${id} ${name}`);
+        validateSinglePackedView(view, [name === 'mask' ? 'uint32' : 'float32'], `${id} ${name}`);
         validateRequirement(id, view.length === rows, `${name} length must equal the row count`);
       }
     }
@@ -133,6 +144,24 @@ export class GPUHealpixCellAggregation implements GPUCommandNodeProducer {
         );
       }
     }
+    for (const [name, view] of Object.entries(output.status)) {
+      if (view) {
+        validateSinglePackedView(view, ['uint32'], `${id} output.status.${name}`);
+        validateRequirement(id, view.length >= 1, `output.status.${name} must hold one row`);
+      }
+    }
+    validateCellDispatchOutputs(
+      id,
+      {
+        cells: output.cells,
+        counts: output.counts,
+        sums: output.sums,
+        minimums: output.minimums,
+        maximums: output.maximums,
+        ...output.status
+      },
+      [{cells: output.cells, counts: output.counts}, {...output.status}]
+    );
     validateGraphOutputsDisjointFromInputs(
       id,
       [
@@ -153,6 +182,26 @@ export class GPUHealpixCellAggregation implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
     const {output} = props;
+    validateCellDispatchBindings(
+      graph,
+      id,
+      {
+        cells: props.cells,
+        values: props.values,
+        mask: props.mask,
+        outputCells: output.cells,
+        counts: output.counts,
+        sums: output.sums,
+        minimums: output.minimums,
+        maximums: output.maximums,
+        ...output.status
+      },
+      [
+        ['row sort scratch', 2 ** Math.ceil(Math.log2(Math.max(props.cells.length, 1))) * 4],
+        ['run offsets scratch', (props.cellCapacity + 1) * 4],
+        ['status scratch', 8]
+      ]
+    );
     validateGraphViewsBelongToGraph(id, graph, [
       props.cells,
       props.mask,

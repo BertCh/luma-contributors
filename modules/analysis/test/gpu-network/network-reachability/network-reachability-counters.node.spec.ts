@@ -132,7 +132,7 @@ it('GPUNetworkReachability validates the counter views', () => {
     );
   }
   const shared = base.output.status?.relaxationCount;
-  expect(() => create({reachedEdgeCount: shared})).toThrow(/separate buffers/);
+  expect(() => create({reachedEdgeCount: shared})).toThrow(/logical byte ranges must not overlap/);
   device.destroy();
 });
 
@@ -140,4 +140,59 @@ it('getGPUNetworkReachabilityInflation combines low and high words', () => {
   expect(getGPUNetworkReachabilityInflation([30, 0], [10, 0])).toBe(3);
   expect(getGPUNetworkReachabilityInflation(Uint32Array.from([0, 2]), [0, 1])).toBe(2);
   expect(getGPUNetworkReachabilityInflation([5, 0], [0, 0])).toBeNaN();
+});
+
+it('reachability accepts aligned packed writable counter fields in one buffer handle', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const base = createCountedProps(graph);
+  const storage = createTransientView(graph, 'packed-status', 'uint32', 130).buffer;
+  const costs = graph.createDataView(storage, {format: 'float32', length: NODE_COUNT});
+  const relaxationCount = graph.createDataView(storage, {
+    format: 'uint32',
+    length: 2,
+    byteOffset: 32
+  });
+  const reachedEdgeCount = graph.createDataView(storage, {
+    format: 'uint32',
+    length: 2,
+    byteOffset: 256
+  });
+  const converged = graph.createDataView(storage, {format: 'uint32', length: 1, byteOffset: 512});
+  try {
+    expect(() =>
+      graph.add(
+        new GPUNetworkReachability({
+          ...base,
+          output: {...base.output, costs, status: {relaxationCount, reachedEdgeCount, converged}}
+        })
+      )
+    ).not.toThrow();
+    const overlapping = graph.createDataView(storage, {
+      format: 'uint32',
+      length: 2,
+      byteOffset: 40
+    });
+    expect(
+      () =>
+        new GPUNetworkReachability({
+          ...base,
+          output: {...base.output, status: {relaxationCount, reachedEdgeCount: overlapping}}
+        })
+    ).toThrow(/aligned binding byte ranges must not overlap/);
+    const limitReached = graph.createDataView(storage, {
+      format: 'uint32',
+      length: 1,
+      byteOffset: 516
+    });
+    expect(
+      () =>
+        new GPUNetworkReachability({
+          ...base,
+          output: {...base.output, status: {converged, iterationLimitReached: limitReached}}
+        })
+    ).toThrow(/must not share buffers with inputs/);
+  } finally {
+    device.destroy();
+  }
 });

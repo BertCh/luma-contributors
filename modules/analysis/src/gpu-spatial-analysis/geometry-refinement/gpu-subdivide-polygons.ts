@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateOutlineOutputPasses} from '../outline-geometry/validate-outline-output-passes';
+import {validateRefinementScratchByteLengths} from './refinement-storage-validation';
+import {getRectilinearSubdivisionScratchByteLengths} from './rectilinear-subdivision';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -13,13 +17,13 @@ import type {GPUPolygonGeometryFields} from '../../analysis-core/contracts/index
 import type {GPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
 import {
   GPUPolygonTriangulation,
-  getPolygonTriangulationIndexCount
+  getPolygonTriangulationIndexCount,
+  validatePolygonTriangulationScratch
 } from '../polygon-triangulation/gpu-polygon-triangulation';
 import {
   validateCapacity,
   validateSinglePackedView,
-  validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph
+  validateGraphOutputsDisjointFromInputs
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {GPUScan} from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
@@ -81,6 +85,7 @@ export class GPUSubdividePolygons implements GPUCommandNodeProducer {
     ) {
       throw new Error('Subdivision output capacity mismatch');
     }
+    validateOutlineOutputPasses(this.id, props.output, [['positions', 'pieces'], ['status']]);
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
       props.positions,
       props.ringOffsets,
@@ -92,16 +97,47 @@ export class GPUSubdividePolygons implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id, maximumVertices} = this;
-    if (props.method === 'rectilinear') {
-      return getRectilinearSubdivisionNodes(graph, this);
-    }
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.positions,
-      props.ringOffsets,
-      props.polygonOffsets,
-      props.featureOffsets,
-      ...Object.values(props.output)
-    ]);
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(
+        [
+          props.positions,
+          props.ringOffsets,
+          props.polygonOffsets,
+          props.featureOffsets,
+          ...Object.values(props.output)
+        ].map((view, index) => [`binding.${index}`, view])
+      )
+    );
+    const inputPolygonCount = props.polygonOffsets.length - 1;
+    validatePolygonTriangulationScratch(
+      graph.device,
+      id,
+      props.positions.length,
+      props.ringOffsets.length - 1,
+      inputPolygonCount
+    );
+    validateRefinementScratchByteLengths(graph, id, {
+      indices:
+        Math.max(
+          3,
+          getPolygonTriangulationIndexCount(
+            props.positions.length,
+            props.ringOffsets.length - 1,
+            inputPolygonCount
+          )
+        ) * 4,
+      polygonInfo: inputPolygonCount * 8,
+      triangleOffsets: (inputPolygonCount + 1) * 4,
+      ...(props.method === 'rectilinear'
+        ? getRectilinearSubdivisionScratchByteLengths(
+            props.positions.length,
+            props.ringOffsets.length - 1
+          )
+        : {})
+    });
+    if (props.method === 'rectilinear') return getRectilinearSubdivisionNodes(graph, this);
     const polygonCount = props.polygonOffsets.length - 1;
     const indexCapacity = Math.max(
       3,

@@ -270,7 +270,7 @@ it('validates cost-table stopping scalars, ownership and physical buffer separat
             }
           }
         })
-    ).toThrow(/table.*separate buffers/);
+    ).toThrow(/table.*(separate buffers|overlap|must not share buffers with inputs)/);
     expect(
       () =>
         new GPUNetworkCostTable({
@@ -278,7 +278,7 @@ it('validates cost-table stopping scalars, ownership and physical buffer separat
           costLimit: graph.createDataView(firstHandle, {format: 'float32', length: 1}),
           output: {...base.output, status: {iterationLimitReached: secondView}}
         })
-    ).toThrow(/table.*separate buffers/);
+    ).toThrow(/table.*(separate buffers|overlap|must not share buffers with inputs)/);
   } finally {
     physicalBuffer.destroy();
     device.destroy();

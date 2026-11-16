@@ -5,6 +5,7 @@
 import {clamp} from '@math.gl/core';
 import {
   createTransientView,
+  getViewBindingRange,
   GPUScan,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -15,7 +16,6 @@ import type {WGSLKernelBinding} from '../../analysis-core/kernels/wgsl-kernel-no
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   getRasterAlgebraValueWGSL,
-  validateRasterAlgebraAliasing,
   validateRasterAlgebraCount,
   validateRasterAlgebraGraph,
   validateRasterAlgebraNoData,
@@ -27,6 +27,12 @@ import {
   GPU_RASTER_STRETCH_STATISTICS_LENGTH
 } from './raster-stretch-parameters';
 import {validateCapacity} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {SCALED_QUOTIENT_WGSL} from '../../analysis-core/kernels/scaled-quotient-wgsl';
+import {
+  validateRasterFractionalBindingByteLength,
+  validateRasterFractionalWritableViews
+} from '../fractional-coverage/raster-fractional-tile-kernel';
 import {validateRasterGrid} from '../raster-band-utils';
 import type {GPURasterBand, GPURasterMetadata} from '@luma.gl/graph/gpu-raster';
 import {
@@ -37,6 +43,8 @@ import {
 import {
   getRasterAlgebraInputNodes,
   getRasterAlgebraInputViews,
+  getRasterAlgebraInputBindingViews,
+  validateRasterAlgebraInputBindings,
   isRasterAlgebraBand,
   validateRasterAlgebraInput
 } from '../raster-algebra/raster-algebra-input';
@@ -48,6 +56,35 @@ const MAXIMUM_PALETTE_SIZE = 65536;
 const STATISTICS_WORKGROUP_SIZE = 256;
 /** Cells each thread folds into registers before the workgroup combines its tile. */
 const REDUCE_CELLS_PER_THREAD = 16;
+
+/** Normalize endpoints before differencing; opposite finite extremes can have an infinite span. */
+const STRETCH_DOMAIN_WGSL = /* wgsl */ `
+${SCALED_QUOTIENT_WGSL}
+fn getStretchDomainFraction(value: f32, lower: f32, upper: f32) -> f32 {
+  if (!(upper > lower) || value <= lower) { return 0.0; }
+  if (value >= upper) { return 1.0; }
+  let exponent = frexp(max(abs(lower), abs(upper))).exp;
+  let scaledLower = ldexp(lower, -exponent);
+  let scaledUpper = ldexp(upper, -exponent);
+  let scaledValue = ldexp(value, -exponent);
+  return getScaledQuotient(scaledValue - scaledLower, scaledUpper - scaledLower, 1.0, 0);
+}
+fn getStretchDomainStep(lower: f32, upper: f32, divisor: f32) -> f32 {
+  if (!(upper > lower)) { return 0.0; }
+  let exponent = frexp(max(abs(lower), abs(upper))).exp;
+  let scaledLower = ldexp(lower, -exponent);
+  let scaledUpper = ldexp(upper, -exponent);
+  return getScaledQuotient(scaledUpper - scaledLower, divisor, 1.0, exponent);
+}
+fn getStretchDomainValue(fraction: f32, lower: f32, upper: f32) -> f32 {
+  if (fraction <= 0.0) { return lower; }
+  if (fraction >= 1.0) { return upper; }
+  let exponent = frexp(max(abs(lower), abs(upper))).exp;
+  let scaledLower = ldexp(lower, -exponent);
+  let scaledUpper = ldexp(upper, -exponent);
+  return ldexp(mix(scaledLower, scaledUpper, fraction), exponent);
+}
+`;
 
 /** Caller-owned outputs of {@link GPURasterStretch}. At least one is required. */
 export type GPURasterStretchOutput = {
@@ -63,6 +100,8 @@ export type GPURasterStretchOutput = {
   histogram?: GraphDataView<'uint32'>;
   /** Eight rows `[domainMinimum, domainMaximum, lo, hi, validCount, binWidth, 0, 0]` (see `GPU_RASTER_STRETCH_STATISTICS_INDEX`). */
   statistics?: GraphDataView<'float32'>;
+  /** Exact included finite-cell count as one uint32, including counts above 2^24. */
+  validCount?: GraphDataView<'uint32'>;
 };
 
 /**
@@ -197,22 +236,34 @@ export class GPURasterStretch implements GPUCommandNodeProducer {
       'float32',
       GPU_RASTER_STRETCH_STATISTICS_LENGTH
     );
-    validateRasterAlgebraAliasing(
+    validateRasterAlgebraView(id, 'output.validCount', output.validCount, 'uint32', 1);
+    const palette = output.colors || output.lutColors ? props.palette : undefined;
+    const rawValues = isRasterAlgebraBand(props.values) ? undefined : props.values;
+    validateRasterFractionalWritableViews(
       id,
+      output,
       [
-        output.stretched,
-        output.colors,
-        output.lut,
-        output.lutColors,
-        output.histogram,
-        output.statistics
-      ],
-      [
-        ...getRasterAlgebraInputViews(props.values),
+        ...getRasterAlgebraInputBindingViews(props.values, cellCount),
         props.mask,
         props.regionMask,
         props.parameters,
-        props.palette
+        palette
+      ],
+      [
+        {
+          writes: [output.stretched, output.colors],
+          reads: [rawValues, props.mask, props.parameters, output.colors ? palette : undefined]
+        },
+        {
+          writes: [output.lut, output.lutColors],
+          reads: [props.parameters, output.lutColors ? palette : undefined]
+        },
+        {writes: [output.statistics], reads: [props.parameters]},
+        {writes: [output.validCount], reads: [props.parameters]},
+        {
+          writes: [output.histogram],
+          reads: [rawValues, props.mask, props.regionMask, props.parameters]
+        }
       ]
     );
   }
@@ -225,24 +276,61 @@ export class GPURasterStretch implements GPUCommandNodeProducer {
     const {output} = props;
     const {width, height} = props.grid;
     const cellCount = width * height;
+    validateRasterAlgebraInputBindings(graph, id, [props.values], props.grid);
+    const callerViews = [
+      props.mask,
+      props.regionMask,
+      props.parameters,
+      ...(output.colors || output.lutColors ? [props.palette] : []),
+      ...Object.values(output)
+    ];
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(callerViews.map((view, index) => [`view.${index}`, view]))
+    );
+    for (const view of callerViews)
+      if (view)
+        validateRasterFractionalBindingByteLength(
+          graph.device,
+          id,
+          view.buffer.id,
+          getViewBindingRange(view).size,
+          'reduce the packed view length',
+          view.buffer.byteLength
+        );
+    for (const [name, bytes] of [
+      ['canonical band', isRasterAlgebraBand(props.values) ? cellCount * 4 : 0],
+      ['histogram/CDF', binCount * 4],
+      ['statistics state', 10 * 4],
+      ['statistics keys', 4 * 4]
+    ] as const)
+      validateRasterFractionalBindingByteLength(
+        graph.device,
+        id,
+        name,
+        bytes,
+        'reduce grid dimensions or binCount'
+      );
     validateRasterAlgebraGraph(id, graph, [
       ...getRasterAlgebraInputViews(props.values),
       props.mask,
       props.regionMask,
       props.parameters,
-      props.palette,
+      output.colors || output.lutColors ? props.palette : undefined,
       output.stretched,
       output.colors,
       output.lut,
       output.lutColors,
       output.histogram,
-      output.statistics
+      output.statistics,
+      output.validCount
     ]);
     const source = getRasterAlgebraInputNodes(graph, `${id}-input`, props.values, props.grid);
     const nodes: GPUCommandNode<Parameters>[] = [...source.nodes];
     const keys = createTransientView(graph, `${id}-keys`, 'uint32', 4);
-    // Rows 0 to 7: domain minimum and maximum, bin scale, bin width, lo, hi, in-domain count,
-    // valid count. Rows 8 and 9: the count of the first occupied bin as two 16-bit halves (each
+    // Rows 0 to 5: domain minimum and maximum, reserved, bin width, lo, hi; 6 and 7 reserved.
+    // Counts stay in uint32 keys/CDF storage. Rows 8 and 9: first-bin count as two 16-bit halves (each
     // exact in float32), read by the equalization.
     const state = createTransientView(graph, `${id}-state`, 'float32', 10);
     const histogram =
@@ -250,7 +338,8 @@ export class GPURasterStretch implements GPUCommandNodeProducer {
     const cdf = createTransientView(graph, `${id}-cdf`, 'uint32', binCount);
     const needsApply = Boolean(output.stretched || output.colors);
     const needsLut = Boolean(output.lut || output.lutColors);
-    const paletteSize = props.palette?.length ?? 0;
+    const needsPalette = Boolean(output.colors || output.lutColors);
+    const paletteSize = needsPalette ? props.palette!.length : 0;
     // The histogram is privatized per workgroup whenever one copy fits in workgroup storage.
     const privatizeHistogram = binCount * 4 <= graph.device.limits.maxComputeWorkgroupStorageSize;
     const histogramCellsPerThread = clamp(Math.ceil(binCount / 32), 8, 64);
@@ -291,6 +380,7 @@ fn readCellValue(index: u32, value: ptr<function, f32>) -> bool {
   return isValid;
 }`;
     const statisticsWGSL = `${valueWGSL}
+${STRETCH_DOMAIN_WGSL}
 // Statistics include cells inside the window, in the region mask, valid and finite.
 fn readStatisticsValue(index: u32, value: ptr<function, f32>) -> bool {
   let column = index % WIDTH;
@@ -352,15 +442,14 @@ ${GET_ORDERED_KEY_WGSL}`,
   let tileStart = (index - localInvocationIndex) * CELLS_PER_THREAD;
   for (var step = 0u; step < CELLS_PER_THREAD; step++) {
     let cell = tileStart + step * ${STATISTICS_WORKGROUP_SIZE}u + localInvocationIndex;
-    if (cell >= CELL_COUNT) {
-      break;
-    }
     var value = 0.0;
-    if (readStatisticsValue(cell, &value)) {
-      let key = getOrderedKey(value);
-      minimumKey = min(minimumKey, key);
-      maximumKey = max(maximumKey, key);
-      includedCount++;
+    if (cell < CELL_COUNT) {
+      if (readStatisticsValue(cell, &value)) {
+        let key = getOrderedKey(value);
+        minimumKey = min(minimumKey, key);
+        maximumKey = max(maximumKey, key);
+        includedCount++;
+      }
     }
   }
   tileMinimum[localInvocationIndex] = minimumKey;
@@ -391,11 +480,22 @@ ${GET_ORDERED_KEY_WGSL}`,
         bindings: [
           paramsBinding,
           {name: 'keys', view: keys, type: 'u32', access: 'read'},
-          {name: 'state', view: state, type: 'f32', access: 'read_write'}
+          {name: 'state', view: state, type: 'f32', access: 'read_write'},
+          ...(output.validCount
+            ? [
+                {
+                  name: 'validCountOut',
+                  view: output.validCount,
+                  type: 'u32' as const,
+                  access: 'read_write' as const
+                }
+              ]
+            : [])
         ],
         invocationCount: 1,
         declarations: `const BIN_COUNT: u32 = ${binCount}u;
-${DECODE_ORDERED_KEY_WGSL}`,
+${DECODE_ORDERED_KEY_WGSL}
+${STRETCH_DOMAIN_WGSL}`,
         body: `let count = keys[keysOffset + 2u];
   var domainMinimum = 0.0;
   var domainMaximum = 0.0;
@@ -406,16 +506,16 @@ ${DECODE_ORDERED_KEY_WGSL}`,
     domainMinimum = decodeOrderedKey(keys[keysOffset]);
     domainMaximum = decodeOrderedKey(keys[keysOffset + 1u]);
   }
-  let hasRange = domainMaximum > domainMinimum;
-  let range = domainMaximum - domainMinimum;
   state[stateOffset] = domainMinimum;
   state[stateOffset + 1u] = domainMaximum;
-  state[stateOffset + 2u] = select(0.0, f32(BIN_COUNT) / range, hasRange);
-  state[stateOffset + 3u] = select(0.0, range / f32(BIN_COUNT), hasRange);
+  // Do not store the reciprocal bin scale: it can overflow for normal tiny domains.
+  state[stateOffset + 2u] = 0.0;
+  state[stateOffset + 3u] = getStretchDomainStep(domainMinimum, domainMaximum, f32(BIN_COUNT));
   state[stateOffset + 4u] = domainMinimum;
   state[stateOffset + 5u] = domainMaximum;
   state[stateOffset + 6u] = 0.0;
-  state[stateOffset + 7u] = f32(count);`
+  state[stateOffset + 7u] = 0.0;
+  ${output.validCount ? 'validCountOut[validCountOutOffset] = count;' : ''}`
       }),
       // 3. Histogram (cleared every encoding, transient buffers are not zero-initialised).
       // Not GPURasterHistogram: although it reads a raw band with validity, it has no per-frame
@@ -459,17 +559,16 @@ var<workgroup> localHistogram: array<atomic<u32>, ${binCount}>;`
   workgroupBarrier();
   let domainMinimum = state[stateOffset];
   let domainMaximum = state[stateOffset + 1u];
-  let binScale = state[stateOffset + 2u];
   let tileStart = (index - localInvocationIndex) * CELLS_PER_THREAD;
   for (var step = 0u; step < CELLS_PER_THREAD; step++) {
     let cell = tileStart + step * ${STATISTICS_WORKGROUP_SIZE}u + localInvocationIndex;
-    if (cell >= CELL_COUNT) {
-      break;
-    }
     var value = 0.0;
-    if (readStatisticsValue(cell, &value) && value >= domainMinimum && value <= domainMaximum) {
-      let bin = min(u32((value - domainMinimum) * binScale), BIN_COUNT - 1u);
-      atomicAdd(&localHistogram[bin], 1u);
+    if (cell < CELL_COUNT) {
+      if (readStatisticsValue(cell, &value) && value >= domainMinimum && value <= domainMaximum) {
+        let position = getStretchDomainFraction(value, domainMinimum, domainMaximum) * f32(BIN_COUNT);
+        let bin = min(u32(position), BIN_COUNT - 1u);
+        atomicAdd(&localHistogram[bin], 1u);
+      }
     }
   }
   workgroupBarrier();
@@ -488,7 +587,7 @@ var<workgroup> localHistogram: array<atomic<u32>, ${binCount}>;`
   if (value < domainMinimum || value > domainMaximum) {
     return;
   }
-  let position = (value - domainMinimum) * state[stateOffset + 2u];
+  let position = getStretchDomainFraction(value, domainMinimum, domainMaximum) * f32(BIN_COUNT);
   let bin = min(u32(position), BIN_COUNT - 1u);
   atomicAdd(&histogram[histogramOffset + bin], 1u);`
       }),
@@ -505,6 +604,7 @@ var<workgroup> localHistogram: array<atomic<u32>, ${binCount}>;`
     const finalizeBindings: WGSLKernelBinding[] = [
       paramsBinding,
       {name: 'state', view: state, type: 'f32', access: 'read_write'},
+      {name: 'keys', view: keys, type: 'u32', access: 'read'},
       {name: 'cdf', view: cdf, type: 'u32', access: 'read'}
     ];
     if (output.statistics) {
@@ -523,6 +623,7 @@ var<workgroup> localHistogram: array<atomic<u32>, ${binCount}>;`
         bindings: finalizeBindings,
         invocationCount: 1,
         declarations: `${constants}
+${STRETCH_DOMAIN_WGSL}
 ${getRasterAlgebraValueWGSL(undefined)}
 // Smallest bin whose cumulative count exceeds rank. The last bin holds the total, so any rank
 // below the total is found.
@@ -559,11 +660,11 @@ fn getPercentileValue(fraction: f32, total: u32) -> f32 {
     return domainMinimum;
   }
   let rank = min(u32(floor(f32(total - 1u) * fraction)), total - 1u);
-  return domainMinimum + (f32(getRankBin(rank)) + 0.5) * (domainMaximum - domainMinimum) / f32(BIN_COUNT);
+  return getStretchDomainValue((f32(getRankBin(rank)) + 0.5) / f32(BIN_COUNT), domainMinimum, domainMaximum);
 }`,
         body: `let domainMinimum = state[stateOffset];
   let domainMaximum = state[stateOffset + 1u];
-  let validCount = state[stateOffset + 7u];
+  let validCount = keys[keysOffset + 2u];
   let total = cdf[cdfOffset + BIN_COUNT - 1u];
   let mode = u32(params[paramsOffset + 7u]);
   var lo = domainMinimum;
@@ -581,18 +682,18 @@ fn getPercentileValue(fraction: f32, total: u32) -> f32 {
   }
   state[stateOffset + 4u] = lo;
   state[stateOffset + 5u] = hi;
-  state[stateOffset + 6u] = f32(total);
+  state[stateOffset + 6u] = 0.0;
   state[stateOffset + 8u] = f32(firstCount & 0xffffu);
   state[stateOffset + 9u] = f32(firstCount >> 16u);
   ${
     output.statistics
-      ? `let isEmpty = params[paramsOffset + 4u] == 0.0 && validCount == 0.0;
+      ? `let isEmpty = params[paramsOffset + 4u] == 0.0 && validCount == 0u;
   let nan = getNaN();
   statisticsOut[statisticsOutOffset] = select(domainMinimum, nan, isEmpty);
   statisticsOut[statisticsOutOffset + 1u] = select(domainMaximum, nan, isEmpty);
   statisticsOut[statisticsOutOffset + 2u] = select(lo, nan, isEmpty);
   statisticsOut[statisticsOutOffset + 3u] = select(hi, nan, isEmpty);
-  statisticsOut[statisticsOutOffset + 4u] = validCount;
+  statisticsOut[statisticsOutOffset + 4u] = f32(validCount);
   statisticsOut[statisticsOutOffset + 5u] = select(state[stateOffset + 3u], nan, isEmpty);
   statisticsOut[statisticsOutOffset + 6u] = 0.0;
   statisticsOut[statisticsOutOffset + 7u] = 0.0;`
@@ -605,14 +706,14 @@ fn getPercentileValue(fraction: f32, total: u32) -> f32 {
       return nodes;
     }
     const stretchWGSL = `${getStretchWGSL()}
-${props.palette ? getPaletteWGSL() : ''}`;
+${needsPalette ? getPaletteWGSL() : ''}`;
     const stretchInputs: WGSLKernelBinding[] = [
       paramsBinding,
       {name: 'state', view: state, type: 'f32', access: 'read'},
       {name: 'cdf', view: cdf, type: 'u32', access: 'read'}
     ];
-    const paletteBinding: WGSLKernelBinding[] = props.palette
-      ? [{name: 'palette', view: props.palette, type: 'u32', access: 'read'}]
+    const paletteBinding: WGSLKernelBinding[] = needsPalette
+      ? [{name: 'palette', view: props.palette!, type: 'u32', access: 'read'}]
       : [];
 
     // 6. Lookup table.
@@ -641,7 +742,7 @@ ${props.palette ? getPaletteWGSL() : ''}`;
 ${stretchWGSL}`,
           body: `let lo = state[stateOffset + 4u];
   let hi = state[stateOffset + 5u];
-  let value = lo + (f32(index) + 0.5) / f32(LUT_SIZE) * (hi - lo);
+  let value = getStretchDomainValue((f32(index) + 0.5) / f32(LUT_SIZE), lo, hi);
   let t = getStretchedValue(value);
   ${output.lut ? 'lutOut[lutOutOffset + index] = t;' : ''}
   ${output.lutColors ? 'lutColorsOut[lutColorsOutOffset + index] = getPaletteColor(t);' : ''}`
@@ -692,6 +793,7 @@ ${stretchWGSL}`,
 /** WGSL `getStretchedValue(value)`: mode, gamma and sigmoid over `params`, `state` and `cdf`. */
 function getStretchWGSL(): string {
   return /* wgsl */ `
+${STRETCH_DOMAIN_WGSL}
 fn applyCurve(unit: f32) -> f32 {
   var t = unit;
   let gamma = params[paramsOffset + 10u];
@@ -731,14 +833,14 @@ fn getStretchedValue(value: f32) -> f32 {
     let cumulativeWidth = total - min(total, firstCount);
     if (cumulativeWidth > 0u) {
       // The bin the histogram counted this value in; values outside the domain use an end bin.
-      let position = clamp((value - domainMinimum) * state[stateOffset + 2u], 0.0, f32(BIN_COUNT));
+      let position = getStretchDomainFraction(value, domainMinimum, domainMaximum) * f32(BIN_COUNT);
       let cumulative = cdf[cdfOffset + min(u32(position), BIN_COUNT - 1u)];
       unit = f32(cumulative - min(cumulative, firstCount)) / f32(cumulativeWidth);
     } else {
-      unit = clamp((value - domainMinimum) / (domainMaximum - domainMinimum), 0.0, 1.0);
+      unit = getStretchDomainFraction(value, domainMinimum, domainMaximum);
     }
   } else {
-    unit = clamp((value - lo) / (hi - lo), 0.0, 1.0);
+    unit = getStretchDomainFraction(value, lo, hi);
   }
   return applyCurve(unit);
 }`;

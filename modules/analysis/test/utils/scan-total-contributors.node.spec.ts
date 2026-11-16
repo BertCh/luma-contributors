@@ -39,25 +39,11 @@ const SCAN_SITES = [
     totalRead: 'let total = scanTotal[scanTotalOffset];'
   },
   {
-    exportName: 'GPUNetworkLineGraph',
-    cases: ['planar, banned turns, every output', 'no bans, no arc count'],
-    prefix: 'network-line-graph',
-    consumer: 'network-line-graph-publish',
-    totalRead: 'let total = scanTotal[scanTotalOffset];'
-  },
-  {
     exportName: 'GPUPolygonRasterization',
     cases: ['every output, single sort', 'every output, two sorts'],
     prefix: 'polygon-rasterization',
     consumer: 'polygon-rasterization-publish',
     totalRead: 'let crossings = total[totalOffset];'
-  },
-  {
-    exportName: 'GPUCellCompaction',
-    cases: ['quadbin uncompact depth 15 every option', 'h3 uncompact depth 11 every option'],
-    prefix: 'cell-compaction',
-    consumer: 'cell-compaction-expand',
-    totalRead: 'let totalCells = scanTotal[scanTotalOffset];'
   },
   {
     exportName: 'GPULineDensity',
@@ -201,6 +187,20 @@ it('polygon edge slabs detect carry before clearing counts and disable wrapped i
 });
 
 for (const site of [
+  ...['planar, banned turns, every output', 'no bans, no arc count'].map(caseName => ({
+    exportName: 'GPUNetworkLineGraph',
+    caseName,
+    scans: ['network-line-graph-scan'],
+    consumers: ['network-line-graph-publish']
+  })),
+  ...['quadbin uncompact depth 15 every option', 'h3 uncompact depth 11 every option'].map(
+    caseName => ({
+      exportName: 'GPUCellCompaction',
+      caseName,
+      scans: ['cell-compaction-scan'],
+      consumers: ['cell-compaction-expand']
+    })
+  ),
   {
     exportName: 'GPUNeighborSearch',
     caseName: 'radius planar self join rowStandardize undefined every output',
@@ -220,7 +220,7 @@ for (const site of [
     consumers: ['subdivide-polygons-rectilinear-status']
   }
 ]) {
-  it(`${site.exportName} uses monotonic saturated offsets and totals before capacity publication`, () => {
+  it(`${site.exportName} uses monotonic saturated offsets and totals before capacity publication${site.exportName === 'GPUCellCompaction' ? ` (${site.caseName})` : ''}`, () => {
     const auditCase = CASES.find(
       candidate =>
         candidate.exportName === site.exportName &&
@@ -250,6 +250,29 @@ for (const site of [
           usage: 'storage-read'
         });
         expect(sources.get(`${scan}-saturate`)).toContain('high[highOffset + index - 1u] != 0u');
+      }
+      if (site.exportName === 'GPUCellCompaction') {
+        const saturate = nodes[ids.indexOf('cell-compaction-scan-saturate')];
+        const expand = nodes[ids.indexOf('cell-compaction-expand')];
+        // Expansion binary-searches these same monotone offsets, not the wrapped low words.
+        for (const resource of saturate.resources!.filter(
+          resource => resource.usage === 'storage-read-write'
+        )) {
+          expect(expand.resources).toContainEqual({...resource, usage: 'storage-read'});
+        }
+        const saturationSource = sources.get('cell-compaction-scan-saturate')!;
+        expect(saturationSource).toContain(
+          'sum = select(low[lowOffset + ROW_COUNT - 1u], 0xffffffffu, high[highOffset + ROW_COUNT - 1u] != 0u);'
+        );
+        expect(saturationSource).toContain(
+          'offset = select(low[lowOffset + index - 1u], 0xffffffffu, high[highOffset + index - 1u] != 0u);'
+        );
+        expect(saturationSource).toContain('offsets[offsetsOffset + index] = offset;');
+        const expansionSource = sources.get('cell-compaction-expand')!;
+        expect(expansionSource).toContain('let totalCells = scanTotal[scanTotalOffset];');
+        expect(expansionSource).toContain('if (offsets[offsetsOffset + middle] <= index)');
+        expect(expansionSource).toContain('totalOut[totalOutOffset] = totalCells;');
+        expect(expansionSource).toContain('totalCells > CAPACITY');
       }
       if (site.exportName === 'GPUIsobands') {
         expect(sources.get('isobands-scatter')).toContain('if (start < CAPACITY)');

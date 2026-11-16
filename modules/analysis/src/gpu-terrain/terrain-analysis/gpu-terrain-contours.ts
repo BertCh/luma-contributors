@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateTerrainBindings} from '../terrain-processing/terrain-binding-preflight';
 import {
   createTransientView,
   type DrawCommandBufferView,
@@ -158,6 +159,9 @@ export class GPUTerrainContours implements GPUCommandNodeProducer, GPURasterHalo
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateTerrainBindings(graph, this.id, this.props, {
+      'contour scratch': 4 * this.props.grid.width * this.props.grid.height
+    });
     const {id, props} = this;
     const {width, height} = props.grid;
     const {overflow} = props.output.status;

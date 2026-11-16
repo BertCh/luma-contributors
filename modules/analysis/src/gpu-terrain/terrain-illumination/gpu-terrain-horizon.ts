@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateTerrainBindings} from '../terrain-processing/terrain-binding-preflight';
 import {clamp} from '@math.gl/core';
 import {
   createTransientView,
@@ -837,6 +838,31 @@ export class GPUTerrainHorizon implements GPUCommandNodeProducer, GPURasterHaloS
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateTerrainBindings(graph, this.id, this.props, {
+      'canonical and hull planes': 4 * this.props.grid.width * this.props.grid.height,
+      'horizon map':
+        !this.props.output.horizon && this.props.output.irradianceSkyViewFactor
+          ? 4 * this.props.grid.width * this.props.grid.height * this.directionCount
+          : 0,
+      'sector table':
+        this.algorithm === 'sweep' ||
+        (this.horizonFormat === 'unorm16' && this.directionCount % 2 === 1)
+          ? 256 * this.directionCount
+          : 256 *
+            Math.ceil(
+              this.directionCount /
+                Math.max(
+                  1,
+                  Math.min(
+                    this.directionCount,
+                    Math.floor(
+                      (this.props.maximumStepsPerDispatch ?? FUSED_MARCH_STEP_BUDGET) /
+                        (this.props.grid.width * this.props.grid.height * this.stepDistances.length)
+                    )
+                  )
+                )
+            )
+    });
     const {id, props, directionCount} = this;
     const {output} = props;
     const {width, height} = props.grid;
@@ -1298,12 +1324,10 @@ function createHorizonSectorRanges<Parameters>(
     operation: 'GPUTerrainHorizon',
     variant: 'sector-ranges',
     bindings: [{name: 'ranges', view: table, type: 'u32', access: 'read_write'}],
-    invocationCount: 1,
-    body: `for (var range = 0u; range < ${rangeCount}u; range++) {
-    let first = range * ${sectorsPerRange}u;
-    ranges[rangesOffset + range * ${SECTOR_RANGE_STRIDE}u] = first;
-    ranges[rangesOffset + range * ${SECTOR_RANGE_STRIDE}u + 1u] = min(${directionCount}u, first + ${sectorsPerRange}u);
-  }`
+    invocationCount: rangeCount,
+    body: `let first = index * ${sectorsPerRange}u;
+  ranges[rangesOffset + index * ${SECTOR_RANGE_STRIDE}u] = first;
+  ranges[rangesOffset + index * ${SECTOR_RANGE_STRIDE}u + 1u] = min(${directionCount}u, first + ${sectorsPerRange}u);`
   });
   const getRange = (range: number): GraphDataView<'uint32'> =>
     graph.createDataView(table.buffer, {

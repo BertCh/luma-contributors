@@ -114,7 +114,8 @@ export const POINTCLOUD_REJECTIONS: readonly KernelAuditRejection[] = [
     name: 'inverse-distance power one above 8',
     kind: 'dispatch',
     limit: 8,
-    rejects: /^Error: gpu-pointcloud-height interpolation\.power must be in \(0, 8\]$/
+    rejects:
+      /^Error: gpu-pointcloud-height interpolation\.power must be positive in float32 and at most GPU_POINT_CLOUD_MAXIMUM_IDW_POWER \(8\)$/
   },
   {
     exportName: 'GPUPointCloudChange',

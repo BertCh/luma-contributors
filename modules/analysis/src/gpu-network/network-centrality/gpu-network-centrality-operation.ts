@@ -11,7 +11,7 @@ import {GPUNetworkCentrality, type GPUNetworkCentralityProps} from './gpu-networ
 /** Graph value names replacing views; counts formerly inferred from views are explicit. */
 export type NetworkCentralityOperationProps = Pick<
   GPUNetworkCentralityProps,
-  'id' | 'laneCount' | 'maximumIterations' | 'localIterations' | 'betweennessScale'
+  'id' | 'laneCount' | 'maximumIterations' | 'localIterations' | 'betweennessScale' | 'sampling'
 > & {
   nodeCount: number;
   edgeCount: number;
@@ -27,7 +27,12 @@ export type NetworkCentralityOperationProps = Pick<
     closeness?: string;
     harmonicCloseness?: string;
     reachedCounts?: string;
-    status?: {converged?: string; zeroWeightCycle?: string; iterationLimitReached?: string};
+    status?: {
+      converged?: string;
+      zeroWeightCycle?: string;
+      iterationLimitReached?: string;
+      approximation?: string;
+    };
   };
 };
 
@@ -113,6 +118,10 @@ export class GPUNetworkCentralityOperation extends GPUContributorOperation {
                 ? getView<'uint32'>('reachedCounts')
                 : undefined,
             status: {
+              approximation:
+                props.output.status?.approximation !== undefined
+                  ? getView<'uint32'>('approximation')
+                  : undefined,
               converged:
                 props.output.status?.converged !== undefined
                   ? getView<'uint32'>('converged')

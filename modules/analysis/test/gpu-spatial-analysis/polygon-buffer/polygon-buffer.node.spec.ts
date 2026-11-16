@@ -6,7 +6,7 @@ import type {GPUSpatialContext} from '../../../src/analysis-core/contracts/spati
 import type {Device} from '@luma.gl/core';
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {WgslReflect} from 'wgsl_reflect';
-import {expect, it} from 'vitest';
+import {expect, it, vi} from 'vitest';
 import {
   GPUBufferSurface,
   GPUPolygonOverlay,
@@ -219,7 +219,7 @@ it('GPUPolygonOverlay validates fillRule and defaults to even-odd', () => {
   ).toThrow('polygon-overlay output.geometry.sourceIds is not written');
 });
 
-function createPolygonBufferNodes(
+function createPolygonBufferHarness(
   device: Device,
   vertexCount: number = 5,
   spatialContext?: GPUSpatialContext
@@ -267,6 +267,15 @@ function createPolygonBufferNodes(
       }
     }
   });
+  return {graph, surface};
+}
+
+function createPolygonBufferNodes(
+  device: Device,
+  vertexCount: number = 5,
+  spatialContext?: GPUSpatialContext
+) {
+  const {graph, surface} = createPolygonBufferHarness(device, vertexCount, spatialContext);
   return surface.getCommandNodes(graph);
 }
 
@@ -285,22 +294,36 @@ it('GPUBufferSurface derives its boundary maximum from the graph device', () => 
   const getVertexCount = (boundaryRows: number) =>
     Math.floor((boundaryRows - 64 - 3) / (1 + 2 * rowsPerVertex));
   expect(getGPUBufferSurfaceMaximumBoundaryRowCount(device)).toBe(2 ** 20);
-  const coreVertices = getVertexCount(2 ** 20);
-  expect(() => createPolygonBufferNodes(device, coreVertices)).not.toThrow();
-  expect(() => createPolygonBufferNodes(device, coreVertices + 1)).toThrow(
-    'buffer-surface boundary rows must be at most 1048512'
-  );
+  const assertBoundaryLimit = (maximumHotPixels: number) => {
+    const maximumVertices = getVertexCount(maximumHotPixels);
+    const boundaryRows = (1 + 2 * rowsPerVertex) * maximumVertices + 3;
+    expect(boundaryRows + 64).toBeLessThanOrEqual(maximumHotPixels);
+    expect(boundaryRows + (1 + 2 * rowsPerVertex) + 64).toBeGreaterThan(maximumHotPixels);
+    expect(() => createPolygonBufferNodes(device, maximumVertices)).not.toThrow();
+    const {graph, surface} = createPolygonBufferHarness(device, maximumVertices + 1);
+    const allocate = vi.spyOn(graph, 'createTransientBuffer');
+    const requiredBytes = (boundaryRows + (1 + 2 * rowsPerVertex) + 64) * 128;
+    try {
+      // The nested scratch preflight now diagnoses this unchanged limit before the row-count
+      // guard. Pin the exact 128-byte hot-pixel layout and require a mutation-free failure.
+      expect(() => surface.getCommandNodes(graph)).toThrow(
+        `buffer-surface hotPixelSegmentTables needs ${requiredBytes} bytes in one binding (limit ${device.limits.maxStorageBufferBindingSize})`
+      );
+      expect(allocate).not.toHaveBeenCalled();
+    } finally {
+      allocate.mockRestore();
+    }
+    return maximumVertices;
+  };
+  const coreVertices = assertBoundaryLimit(2 ** 20);
   Object.assign(device.limits, {
     maxStorageBufferBindingSize: 2 ** 30,
     maxBufferSize: 2 ** 30
   });
   expect(getGPUBufferSurfaceMaximumBoundaryRowCount(device)).toBe(2 ** 23);
   expect(() => createPolygonBufferNodes(device, coreVertices + 1)).not.toThrow();
-  const largeVertices = getVertexCount(2 ** 23);
-  expect(() => createPolygonBufferNodes(device, largeVertices)).not.toThrow();
-  expect(() => createPolygonBufferNodes(device, largeVertices + 1)).toThrow(
-    'buffer-surface boundary rows must be at most 8388544'
-  );
+  assertBoundaryLimit(2 ** 23);
+  device.destroy();
 });
 
 it('GPUBufferSurface buffers polygons as the polygon and its ring strokes (D-02)', () => {

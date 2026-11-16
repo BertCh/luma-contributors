@@ -69,7 +69,7 @@ export function getGPUTrajectoryPlayheadParameterValues(
     throw new Error('Float32 playheads must be numbers, not bigints');
   }
   const maximumGap = getMaximumGap(playhead);
-  if (!Number.isFinite(playhead.playhead)) {
+  if (!Number.isFinite(Math.fround(playhead.playhead))) {
     throw new Error('Trajectory playhead must be finite');
   }
   target.set([playhead.playhead, maximumGap, 0, 0]);
@@ -103,7 +103,7 @@ export function getGPUTrajectoryPlayheadWordParameterValues(
 
 function getMaximumGap(playhead: GPUTrajectoryPlayheadSettings): number {
   const maximumGap = playhead.maximumGap ?? 0;
-  if (!Number.isFinite(maximumGap) || maximumGap < 0) {
+  if (!Number.isFinite(Math.fround(maximumGap)) || maximumGap < 0) {
     throw new Error('Playhead maximumGap must be finite and non-negative');
   }
   return maximumGap;

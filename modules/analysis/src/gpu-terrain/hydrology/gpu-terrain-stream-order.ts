@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  validateTerrainBindings,
+  getTerrainGateScratchByteLength
+} from '../terrain-processing/terrain-binding-preflight';
 import {clamp} from '@math.gl/core';
 import {
   createTransientView,
@@ -197,6 +201,14 @@ export class GPUTerrainStreamOrder implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateTerrainBindings(graph, this.id, this.props, {
+      'forest scratch':
+        8 * this.props.grid.width * this.props.grid.height <=
+        graph.device.limits.maxStorageBufferBindingSize
+          ? 8 * this.props.grid.width * this.props.grid.height
+          : 4 * this.props.grid.width * this.props.grid.height,
+      'gate table': getTerrainGateScratchByteLength(Math.max(this.props.maximumIterations ?? 64, 4))
+    });
     const {width, height} = this.props.grid;
     return 8 * width * height <= graph.device.limits.maxStorageBufferBindingSize
       ? this.getTourCommandNodes(graph)

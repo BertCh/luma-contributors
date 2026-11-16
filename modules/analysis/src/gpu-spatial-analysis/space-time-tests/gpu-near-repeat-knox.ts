@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  validateTrajectoryBindings,
+  validateTrajectoryOutputRanges
+} from '../trajectory-analysis/trajectory-binding-validation';
 import {PHILOX_PURPOSES} from '../../analysis-core/kernels/philox-random';
 import {
   createTransientView,
@@ -227,6 +231,7 @@ export class GPUNearRepeatKnox implements GPUCommandNodeProducer {
         `${id} output.summary needs cells * ${GPU_NEAR_REPEAT_CELL_SUMMARY_LENGTH} rows`
       );
     }
+    validateTrajectoryOutputRanges(this.id, this.props.output);
     validateGraphOutputsDisjointFromInputs(
       id,
       [props.output.counts, props.output.summary],
@@ -262,6 +267,7 @@ export class GPUNearRepeatKnox implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateTrajectoryBindings(graph, this.id, this.props);
     const {id, props, rows, cells, timeBands} = this;
     const {pairs, times, parameters, maximumPermutations} = props;
     const {counts, summary} = props.output;

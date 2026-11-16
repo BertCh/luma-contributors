@@ -24,6 +24,10 @@ import {
 } from '../../analysis-core/contracts/spatial-context';
 import {GUARDED_ATAN2_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
+  validateGraphChunkBindingRanges,
+  validateDisjointWritableViews
+} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {
   GPU_SPHERICAL_CONVEX_INTERSECTION_MAXIMUM_CAPACITY,
   GPU_SPHERICAL_CONVEX_MAXIMUM_VERTICES,
   GPU_SPHERICAL_CONVEX_MINIMUM_VERTICES,
@@ -134,11 +138,20 @@ export class GPUSphericalConvexIntersection implements GPUCommandNodeProducer {
       props.firstOffsets,
       props.secondOffsets
     ]);
+    validateDisjointWritableViews(this.id, props.output);
   }
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
+    // Candidates live in a bounded private array; there is no derived GPU storage binding.
+    validateGraphChunkBindingRanges(graph, id, {
+      firstPositions: props.firstPositions,
+      secondPositions: props.secondPositions,
+      firstOffsets: props.firstOffsets,
+      secondOffsets: props.secondOffsets,
+      ...props.output
+    });
     validateGraphViewsBelongToGraph(id, graph, [
       props.firstPositions,
       props.secondPositions,

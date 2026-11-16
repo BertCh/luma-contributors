@@ -21,7 +21,6 @@ import {
   validateGPUStorageBindingByteLength,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validateRequirement,
   validateSinglePackedView,
   validateViewLength,
   getGraphOutputViews
@@ -36,6 +35,10 @@ import type {
   GPUIterationStatusPort
 } from '../../analysis-core/contracts/status';
 import {getBinarySearchWGSL} from '../../analysis-core/kernels/binary-search-wgsl';
+import {
+  validateDisjointWritableViews,
+  validateGraphChunkBindingRanges
+} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {GPUNetworkReachability} from '../network-reachability/gpu-network-reachability';
 import {getKShortestPathsWGSL} from './k-shortest-paths-wgsl';
 import {gateKShortestPathSearchNodes} from './k-shortest-paths-search-gate';
@@ -187,10 +190,9 @@ export class GPUKShortestPaths implements GPUCommandNodeProducer {
       validateViewLength(id, `output.${name}`, scalar, expected);
     }
     const outputViews = getGraphOutputViews(props.output);
-    validateRequirement(
+    validateDisjointWritableViews(
       id,
-      new Set(outputViews.map(view => view.buffer)).size === outputViews.length,
-      'output views must use distinct buffers'
+      Object.fromEntries(outputViews.map((view, index) => [`output views ${index}`, view]))
     );
     validateGraphOutputsDisjointFromInputs(id, outputViews, [
       ...getGPUNetworkTopologyViews(props.topology),
@@ -229,12 +231,23 @@ export class GPUKShortestPaths implements GPUCommandNodeProducer {
     ]);
     // Validate all row-proportional bindings before constructing any command node. Reachability's
     // two-slot frontier is larger than its costs/predecessors and bounds their binding sizes too.
+    validateGraphChunkBindingRanges(graph, id, {
+      sources: props.sources,
+      targets: props.targets,
+      ...Object.fromEntries(
+        [...getGPUNetworkTopologyViews(props.topology), ...getGraphOutputViews(props.output)].map(
+          (view, index) => [`view ${index}`, view]
+        )
+      )
+    });
     for (const [name, bytes] of Object.entries({
       frontier: expandedNodes * 8,
       offsets: (expandedNodes + 1) * 4,
       neighbors: expandedEdges * 4,
       state: queryCount * queryWords * 4,
       starts: laneCount * 4,
+      sources: getViewBindingRange(props.sources).size,
+      targets: getViewBindingRange(props.targets).size,
       ...Object.fromEntries(
         getGraphOutputViews(props.output).map((view, index) => [
           `output ${index}`,
@@ -341,14 +354,15 @@ export class GPUKShortestPaths implements GPUCommandNodeProducer {
       })
     );
     for (let route = 0; route < props.routeCount; route++) {
-      const roundDeclarations = declarations + `\nconst ROUND: u32 = ${route}u;`;
+      // Every active query has accepted exactly one path per completed round. Read that count
+      // from GPU state, keeping every round on the same shader and pipeline (also at 8 bindings).
       nodes.push(
         createWGSLKernelNode(graph, {
           id: `${id}-${route}-starts`,
           operation: 'GPUKShortestPaths',
           variant: 'starts',
           invocationCount: laneCount,
-          declarations: roundDeclarations,
+          declarations,
           bindings: [
             stateBinding,
             {name: 'sources', view: props.sources, type: 'u32', access: 'read'},
@@ -358,12 +372,13 @@ export class GPUKShortestPaths implements GPUCommandNodeProducer {
           ],
           body: `let query = index / SPUR_COUNT; let spur = index % SPUR_COUNT;
           let base = stateOffset + query * QUERY_WORDS;
+          let round = state[base];
           starts[startsOffset + index] = NONE; startCosts[startCostsOffset + index] = 0.0;
           if (state[base + 1u] == 0u) { return; }
           var source = sources[sourcesOffset + query]; var cost = 0.0;
-          if (ROUND == 0u) { if (spur > 0u) { return; } }
+          if (round == 0u) { if (spur > 0u) { return; } }
           else {
-            let previous = accepted(base, max(ROUND, 1u) - 1u);
+            let previous = accepted(base, max(round, 1u) - 1u);
             if (spur + 1u >= state[previous + 1u]) { return; }
             source = state[previous + 2u + spur];
             for (var slot = 0u; slot < spur; slot++) { cost += weights[weightsOffset + state[previous + 2u + PATH_LENGTH + slot]]; }
@@ -392,7 +407,7 @@ export class GPUKShortestPaths implements GPUCommandNodeProducer {
           operation: 'GPUKShortestPaths',
           variant: 'edges',
           invocationCount: expandedEdges,
-          declarations: roundDeclarations + getBinarySearchWGSL('offsets'),
+          declarations: declarations + getBinarySearchWGSL('offsets'),
           bindings: [
             stateBinding,
             {name: 'offsets', view: props.topology.offsets, type: 'u32', access: 'read'},
@@ -404,21 +419,22 @@ export class GPUKShortestPaths implements GPUCommandNodeProducer {
           body: `let lane = index / max(EDGE_COUNT, 1u); let edge = index % max(EDGE_COUNT, 1u);
           let query = lane / SPUR_COUNT; let spur = lane % SPUR_COUNT;
           let base = stateOffset + query * QUERY_WORDS;
+          let round = state[base];
           expandedNeighbors[expandedNeighborsOffset + index] = NONE;
           expandedWeights[expandedWeightsOffset + index] = -1.0;
           if (state[base + 1u] == 0u || edge < offsets[offsetsOffset] || edge >= offsets[offsetsOffset + NODE_COUNT]) { return; }
           let vertex = upperBoundOffsets(0u, NODE_COUNT + 1u, edge) - 1u;
           let neighbor = neighbors[neighborsOffset + edge]; let weight = weights[weightsOffset + edge];
           if (neighbor >= NODE_COUNT || !(weight >= 0.0) || !isFiniteValue(weight)) { return; }
-          if (ROUND == 0u) { if (spur > 0u) { return; } }
+          if (round == 0u) { if (spur > 0u) { return; } }
           else {
-            let previous = accepted(base, max(ROUND, 1u) - 1u);
+            let previous = accepted(base, max(round, 1u) - 1u);
             if (spur + 1u >= state[previous + 1u]) { return; }
             for (var slot = 0u; slot < spur; slot++) {
               let rootVertex = state[previous + 2u + slot];
               if (vertex == rootVertex || neighbor == rootVertex) { return; }
             }
-            for (var route = 0u; route < ROUND; route++) {
+            for (var route = 0u; route < round; route++) {
               let other = accepted(base, route);
               if (state[other + 1u] <= spur + 1u) { continue; }
               var same = true;
@@ -456,7 +472,7 @@ export class GPUKShortestPaths implements GPUCommandNodeProducer {
           operation: 'GPUKShortestPaths',
           variant: 'proposals',
           invocationCount: laneCount,
-          declarations: roundDeclarations,
+          declarations,
           bindings: [
             stateBinding,
             {name: 'targets', view: props.targets, type: 'u32', access: 'read'},
@@ -469,6 +485,7 @@ export class GPUKShortestPaths implements GPUCommandNodeProducer {
           ],
           body: `let query = index / SPUR_COUNT; let spur = index % SPUR_COUNT;
           let base = stateOffset + query * QUERY_WORDS; let proposal = proposed(base, spur);
+          let round = state[base];
           state[proposal + 1u] = 0u;
           let source = starts[startsOffset + index];
           if (source == NONE || state[base + 1u] == 0u) { return; }
@@ -506,8 +523,8 @@ export class GPUKShortestPaths implements GPUCommandNodeProducer {
             let saved = state[first + 1u]; state[first + 1u] = state[last + 1u]; state[last + 1u] = saved;
           }
           for (var slot = 0u; slot + 1u < length; slot++) { state[proposal + 2u + PATH_LENGTH + spur + slot] = state[proposal + 2u + PATH_LENGTH + spur + slot + 1u]; }
-          if (ROUND > 0u) {
-            let previous = accepted(base, max(ROUND, 1u) - 1u);
+          if (round > 0u) {
+            let previous = accepted(base, max(round, 1u) - 1u);
             for (var slot = 0u; slot < spur; slot++) {
               state[proposal + 2u + slot] = state[previous + 2u + slot];
               state[proposal + 2u + PATH_LENGTH + slot] = state[previous + 2u + PATH_LENGTH + slot];
@@ -523,7 +540,7 @@ export class GPUKShortestPaths implements GPUCommandNodeProducer {
           variant: 'merge',
           invocationCount: queryCount,
           declarations:
-            roundDeclarations +
+            declarations +
             '\nfn stopQuery(base: u32) { state[base + 1u] = 0u; atomicSub(&activeQueries[activeQueriesOffset], 1u); }',
           bindings: [
             stateBinding,
@@ -531,6 +548,7 @@ export class GPUKShortestPaths implements GPUCommandNodeProducer {
             {name: 'converged', view: converged, type: 'u32', access: 'read'}
           ],
           body: `let base = stateOffset + index * QUERY_WORDS;
+          let round = state[base];
           if (state[base + 1u] == 0u) { return; }
           state[base + 4u]++;
           if (converged[convergedOffset] == 0u) { state[base + 2u] = 1u; stopQuery(base); return; }
@@ -544,7 +562,7 @@ export class GPUKShortestPaths implements GPUCommandNodeProducer {
               if (state[candidate + 1u] == 0u) { if (empty == NONE) { empty = candidate; } }
               else if (samePath(proposal, candidate)) { duplicate = true; break; }
             }
-            for (var slot = 0u; slot < ROUND && !duplicate; slot++) { duplicate = samePath(proposal, accepted(base, slot)); }
+            for (var slot = 0u; slot < round && !duplicate; slot++) { duplicate = samePath(proposal, accepted(base, slot)); }
             if (duplicate) { continue; }
             if (empty == NONE) { state[base + 3u] = 1u; stopQuery(base); return; }
             copyPath(proposal, empty);
@@ -555,7 +573,7 @@ export class GPUKShortestPaths implements GPUCommandNodeProducer {
             if (state[candidate + 1u] != 0u && (best == NONE || precedes(candidate, best))) { best = candidate; }
           }
           if (best == NONE) { stopQuery(base); return; }
-          copyPath(best, accepted(base, ROUND)); state[best + 1u] = 0u;
+          copyPath(best, accepted(base, round)); state[best + 1u] = 0u;
           state[base]++;
           if (state[base] == ROUTE_COUNT) { stopQuery(base); }`
         })

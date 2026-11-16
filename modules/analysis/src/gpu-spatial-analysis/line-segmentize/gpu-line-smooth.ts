@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateGeometryReadWriteViews} from '../geometry-edit/geometry-storage-validation';
+
 import {
   resolveGPUSpatialContext,
   type GPUSpatialContext
@@ -17,9 +19,17 @@ import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
-  validateSinglePackedView
+  validateSinglePackedView,
+  validateGPUStorageBindingByteLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateOutlineOutputPasses} from '../outline-geometry/validate-outline-output-passes';
+import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  createSmoothMetadataPrepareNode,
+  createSmoothMetadataPublishNode
+} from './line-smooth-metadata';
+import {createLinePrefixNode} from './line-segmentize-kernels';
 import {createIdentitySourceLineIndicesNode} from './line-segmentize-kernels';
 import {
   createSmoothLevelNode,
@@ -35,6 +45,12 @@ import {
 } from './line-geometry-output';
 
 const OPERATION = 'GPULineSmooth';
+/** Position bindings index two scalar coordinates per row with uint32. */
+const MAXIMUM_POSITION_COUNT = 0x7fffffff;
+/** Four words per metadata row must have addressable uint32 scalar indices. */
+const MAXIMUM_METADATA_ROW_COUNT = 0x3fffffff;
+/** Scan totals and all level offsets must remain representable by uint32. */
+const MAXIMUM_REQUIRED_VERTEX_COUNT = 0xffffffff;
 
 /** Largest accepted number of Chaikin iterations. */
 export const GPU_LINE_SMOOTH_MAXIMUM_ITERATIONS = 10;
@@ -102,8 +118,10 @@ export type GPULineSmoothProps = {
    */
   parameters: GraphDataView<'float32'>;
   /**
-   * Smoothed lines, one per input line. `output.status.count` and `requiredCount` count lines (the input line count); `vertexCount` and `requiredVertexCount` count vertices. `sourceRows` and `measures` are not supported (a smoothed
-   * vertex blends several input vertices).
+   * Smoothed lines, one per input line. `output.status.count` and `requiredCount` count lines (the input line count); `vertexCount` and `requiredVertexCount` count vertices. `sourceRows` identifies the original segment containing the interpolated source parameter;
+   * `measures` interpolates chainage along the original geometry with the same Chaikin weights.
+   * Closed-ring chainage unwraps across the seam, so the closing vertex has one perimeter more
+   * than the first. This parameterization does not assert that a smoothed point lies on its source segment.
    */
   output: GPULineGeometryOutput;
 };
@@ -121,8 +139,8 @@ export type GPULineSmoothProps = {
  * Output sizes depend only on the input layout, so two exclusive scans of per-line counts give
  * every level's line offsets in closed form; each level is one kernel over the capacity whose
  * slots find their line by binary search and blend two vertices of the previous level. Levels
- * ping-pong through two capacity-sized graph transients, which is enough because a vertex past the
- * capacity at one level only feeds vertices past the capacity at the next. Deterministic.
+ * ping-pong through two graph transients. Closed multi-iteration prefixes retain one extra
+ * look-ahead row for interpolation, including a one-row output capacity. Deterministic.
  *
  * Planar only: a longitude/latitude `spatialContext` throws at construction.
  */
@@ -154,9 +172,13 @@ export class GPULineSmooth implements GPUCommandNodeProducer {
       throw new Error(`${id} lineOffsets needs two rows`);
     }
     const lineCount = props.lineOffsets.length - 1;
-    if (rowCount * 2 ** iterationCount + lineCount > 0xffffffff) {
-      throw new Error(`${id} positions.length * 2^iterationCount must fit in 32 bits`);
-    }
+    validateCapacity(
+      id,
+      'positions.length * 2^iterationCount + lineCount',
+      rowCount * 2 ** iterationCount + lineCount,
+      1,
+      MAXIMUM_REQUIRED_VERTEX_COUNT
+    );
     validateSinglePackedView(props.parameters, ['float32'], `${id} parameters`);
     if (props.parameters.length < GPU_LINE_SMOOTH_PARAMETER_LENGTH) {
       throw new Error(
@@ -164,9 +186,59 @@ export class GPULineSmooth implements GPUCommandNodeProducer {
       );
     }
     validateLineGeometryOutput(id, props.output, lineCount);
-    if (props.output.sourceRows || props.output.measures) {
-      throw new Error(`${id} output.sourceRows and output.measures are not supported`);
-    }
+    validateCapacity(
+      id,
+      'output.positions.length',
+      props.output.positions.length,
+      1,
+      MAXIMUM_POSITION_COUNT
+    );
+    if (props.output.sourceRows || props.output.measures)
+      validateCapacity(
+        id,
+        'metadata row count',
+        Math.max(rowCount, props.output.positions.length),
+        1,
+        MAXIMUM_METADATA_ROW_COUNT
+      );
+    validateOutlineOutputPasses(
+      id,
+      {
+        positions: props.output.positions,
+        lineOffsets: props.output.lineOffsets,
+        ...props.output.status,
+        sourceRows: props.output.sourceRows,
+        measures: props.output.measures,
+        sourceLineIndices: props.output.sourceLineIndices
+      },
+      [
+        ['lineOffsets', 'overflow', 'vertexCount', 'requiredVertexCount'],
+        ['count', 'requiredCount'],
+        ['lineOffsets', 'sourceRows', 'measures'],
+        ['positions'],
+        ['sourceLineIndices']
+      ]
+    );
+    validateCapacity(
+      id,
+      'level position count',
+      props.output.positions.length + Number(this.closed && props.iterationCount > 1),
+      1,
+      MAXIMUM_POSITION_COUNT
+    );
+    if (props.output.sourceRows || props.output.measures)
+      validateCapacity(
+        id,
+        'level metadata row count',
+        props.output.positions.length + Number(this.closed && props.iterationCount > 1),
+        1,
+        MAXIMUM_METADATA_ROW_COUNT
+      );
+    validateGeometryReadWriteViews(
+      id,
+      [props.output.lineOffsets],
+      [props.output.sourceRows, props.output.measures]
+    );
     validateGraphOutputsDisjointFromInputs(id, getLineGeometryOutputViews(props.output), [
       props.positions,
       props.lineOffsets,
@@ -183,12 +255,39 @@ export class GPULineSmooth implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id, closed} = this;
     const {output, iterationCount} = props;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.positions,
-      props.lineOffsets,
-      props.parameters,
-      ...getLineGeometryOutputViews(output)
-    ]);
+    validateGraphChunkBindingRanges(graph, id, {
+      positions: props.positions,
+      lineOffsets: props.lineOffsets,
+      parameters: props.parameters,
+      ...Object.fromEntries(
+        getLineGeometryOutputViews(output).map((view, index) => [`output.${index}`, view])
+      )
+    });
+    // A truncated closed prefix still needs the next vertex for its final interpolation.
+    // One look-ahead row suffices at every doubling level, including a one-row output capacity.
+    const levelCapacity = output.positions.length + Number(closed && iterationCount > 1);
+    const withMetadata = Boolean(output.sourceRows || output.measures);
+    for (const [name, byteLength] of Object.entries({
+      lineColumnsAndScan: props.lineOffsets.length * 4,
+      inputCopy: props.positions.length * 8,
+      levelPositions: levelCapacity * 8,
+      ...(withMetadata
+        ? {
+            inputMetadata: props.positions.length * 16,
+            levelMetadata: levelCapacity * 16,
+            sourceMeasures: props.positions.length * 4
+          }
+        : {})
+    })) {
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        name,
+        byteLength,
+        'split lines or reduce output capacity'
+      );
+      validateCapacity(id, `${name} byteLength`, byteLength, 1, graph.device.limits.maxBufferSize);
+    }
     const lineCount = props.lineOffsets.length - 1;
     const capacity = output.positions.length;
     const column = (name: string) =>
@@ -230,23 +329,85 @@ export class GPULineSmooth implements GPUCommandNodeProducer {
         }).getCommandNodes(graph)
       );
     }
-    // Two ping-pong level buffers, only as many as the intermediate levels need.
-    const levelBuffers = [0, 1]
-      .slice(0, Math.min(iterationCount - 1, 2))
-      .map(index => createTransientView(graph, `${id}-level-${index}`, 'float32x2', capacity));
-    const levelState = createTransientView(graph, `${id}-level-state`, 'uint32', 1);
+    // Every level binds aligned arrays. Copying with a kernel supports STORAGE-only callers and
+    // prevents caller byte offsets from specializing the first/final level's shader.
+    const inputCopy = createTransientView(
+      graph,
+      `${id}-input-copy`,
+      'float32x2',
+      props.positions.length
+    );
+    const levelBuffers = [0, 1].map(index =>
+      createTransientView(graph, `${id}-level-${index}`, 'float32x2', levelCapacity)
+    );
+    const levelState = createTransientView(graph, `${id}-level-state`, 'uint32', 2);
+    const copyPositions = (
+      name: string,
+      source: GraphDataView<'float32x2'>,
+      destination: GraphDataView<'float32x2'>
+    ) =>
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-${name}`,
+        operation: OPERATION,
+        variant: 'copy-positions',
+        invocationCount: destination.length,
+        bindings: [
+          {name: 'source', view: source, type: 'f32', access: 'read'},
+          {name: 'destination', view: destination, type: 'f32', access: 'read_write'}
+        ],
+        body: 'destination[destinationOffset + index * 2u] = source[sourceOffset + index * 2u]; destination[destinationOffset + index * 2u + 1u] = source[sourceOffset + index * 2u + 1u];'
+      });
+    nodes.push(copyPositions('copy-input', props.positions, inputCopy));
+    const metadataLevels = withMetadata
+      ? [0, 1].map(index =>
+          createTransientView(graph, `${id}-metadata-${index}`, 'uint32x4', levelCapacity)
+        )
+      : [];
+    let metadataSource = withMetadata
+      ? createTransientView(graph, `${id}-input-metadata`, 'uint32x4', props.positions.length)
+      : undefined;
+    if (metadataSource) {
+      const rowMeasures = createTransientView(
+        graph,
+        `${id}-source-measures`,
+        'float32',
+        props.positions.length
+      );
+      nodes.push(
+        createLinePrefixNode(graph, {
+          id,
+          operation: OPERATION,
+          positions: props.positions,
+          lineOffsets: props.lineOffsets,
+          coordinateSystem: 'planar',
+          radius: 1,
+          rowMeasures
+        })
+      );
+      nodes.push(
+        createSmoothMetadataPrepareNode(graph, {
+          id,
+          positions: props.positions,
+          lineOffsets: props.lineOffsets,
+          rowMeasures,
+          destination: metadataSource,
+          closed
+        })
+      );
+    }
     nodes.push(
       createSmoothLevelStateNode<Parameters>(graph, {
         id: `${id}-level-reset`,
         operation: OPERATION,
         levelState,
+        iterationCount,
         reset: true
       })
     );
-    let source: GraphDataView<'float32x2'> = props.positions;
+    let source: GraphDataView<'float32x2'> = inputCopy;
     for (let level = 0; level < iterationCount; level++) {
       const isFinal = level === iterationCount - 1;
-      const destination = isFinal ? output.positions : levelBuffers[level % 2];
+      const destination = levelBuffers[level % 2];
       nodes.push(
         createSmoothLevelNode<Parameters>(graph, {
           id: `${id}-level-${level}`,
@@ -265,6 +426,29 @@ export class GPULineSmooth implements GPUCommandNodeProducer {
           destination
         })
       );
+      if (metadataSource) {
+        const metadataDestination = metadataLevels[level % 2];
+        nodes.push(
+          createSmoothLevelNode(graph, {
+            id: `${id}-metadata-level-${level}`,
+            operation: OPERATION,
+            level,
+            levelState,
+            isFinal,
+            closed,
+            lineCount,
+            source: metadataSource,
+            destination: metadataDestination,
+            metadata: true,
+            lineOffsets: props.lineOffsets,
+            smoothStarts,
+            plainStarts,
+            smoothFlagStarts,
+            parameters: props.parameters
+          })
+        );
+        metadataSource = metadataDestination;
+      }
       if (!isFinal) {
         nodes.push(
           createSmoothLevelStateNode<Parameters>(graph, {
@@ -300,6 +484,19 @@ export class GPULineSmooth implements GPUCommandNodeProducer {
         lineCapacity: lineCount
       })
     );
+    nodes.push(copyPositions('copy-output', source, output.positions));
+    if (metadataSource)
+      nodes.push(
+        createSmoothMetadataPublishNode(graph, {
+          id,
+          metadata: metadataSource,
+          lineOffsets: props.lineOffsets,
+          smoothStarts,
+          output,
+          closed,
+          iterationCount
+        })
+      );
     if (output.sourceLineIndices) {
       nodes.push(
         createIdentitySourceLineIndicesNode<Parameters>(graph, {

@@ -47,7 +47,7 @@ export type MapMatchingOperationProps = Pick<
     trackLogLikelihoods?: string;
     matchedCount?: string;
     breakCount?: string;
-    status?: {overflow?: string; routeOverflow?: string};
+    status?: {overflow?: string; routeOverflow?: string; candidateOverflow?: string};
     traversedEdges?: {edges: string; counts: string; status?: {overflow?: string}};
   };
 };
@@ -100,7 +100,7 @@ export class GPUMapMatchingOperation extends GPUContributorOperation {
           length: port === 'breaks' ? props.pointCount : 1
         };
     }
-    for (const port of ['overflow', 'routeOverflow'] as const) {
+    for (const port of ['overflow', 'routeOverflow', 'candidateOverflow'] as const) {
       const value = output.status?.[port];
       if (value !== undefined) outputs[port] = {value, format: 'uint32', length: 1};
     }
@@ -187,6 +187,10 @@ export class GPUMapMatchingOperation extends GPUContributorOperation {
             breakCount:
               output.breakCount === undefined ? undefined : getView<'uint32'>('breakCount'),
             status: {
+              candidateOverflow:
+                output.status?.candidateOverflow === undefined
+                  ? undefined
+                  : getView<'uint32'>('candidateOverflow'),
               overflow:
                 output.status?.overflow === undefined ? undefined : getView<'uint32'>('overflow'),
               routeOverflow:

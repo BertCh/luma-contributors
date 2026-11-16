@@ -2,8 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 import type {Buffer, VertexFormat} from '@luma.gl/core';
-import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import type {GPUVectorFormat} from '@luma.gl/graph/gpu-data';
+import {createTransientView, GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
@@ -130,7 +129,7 @@ async function runLocalKriging(
   const graph = new GPUCommandGraph(device);
   const buffers: Buffer[] = [];
   let nextBuffer = 0;
-  const input = <Format extends GPUVectorFormat>(
+  const input = <Format extends GraphDataView['format']>(
     data: readonly number[],
     format: Format,
     components: number
@@ -419,8 +418,11 @@ it('local kriging sampleIndex resolves auto by sample count and rejects contradi
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const graph = new GPUCommandGraph(device);
-  const view = <Format extends GPUVectorFormat>(name: string, format: Format, length: number) =>
-    importGraphBuffer(graph, name, createOutputBuffer(device, length * 4), format, length);
+  const view = <Format extends GraphDataView['format']>(
+    name: string,
+    format: Format,
+    length: number
+  ) => importGraphBuffer(graph, name, createOutputBuffer(device, length * 4), format, length);
   const create = (sampleCount: number, overrides: Partial<GPULocalKrigingProps> = {}) =>
     new GPULocalKriging({
       positions: view(`positions-${sampleCount}`, 'float32x2', sampleCount),
@@ -540,11 +542,11 @@ it('local kriging explicit grid rejects bindings beyond the device limits by nam
     });
   // External drift, parameters and weights: nine kriging bindings on an eight-binding device.
   expect(() => create(64, 8, true).getCommandNodes(graph)).toThrow(
-    /^GPULocalKriging: kernel local-kriging-\d+ binds 9 storage buffers, more than the device limit of 8$/
+    /^local-kriging-\d+ storage bindings must be at most 8$/
   );
-  // Samples plus queries beyond 2^24 float32x2 search targets: above one 128 MiB binding.
+  // A packed output above 128 MiB is rejected before allocating the shared sample index.
   expect(() => create(2 ** 23, 2 ** 23 + 1, false).getCommandNodes(graph)).toThrow(
-    /^local-kriging-\d+ sampleIndex 'grid' search targets \(samples plus queries, float32x2\) needs 134217736 bytes in one binding \(limit 134217728\)/
+    /^local-kriging-\d+ values chunk 0 needs 134217744 bytes in one binding \(limit 134217728\)/
   );
   // Within the limits the explicit grid builds; its candidate rows are chunked to fit.
   expect(create(64, 8, false).getCommandNodes(graph).length).toBeGreaterThan(1);

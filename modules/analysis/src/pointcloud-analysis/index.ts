@@ -32,3 +32,14 @@ export type {PointCloudGrid} from './pointcloud-grid-index';
 export * from './pointcloud-limits';
 export * from './pointcloud-local-origin';
 export * from './pointcloud-sampling-covariance';
+export {
+  GPU_POINT_CLOUD_HEIGHT_PARAMETER_LENGTH,
+  GPU_POINT_CLOUD_SURFACES_PARAMETER_LENGTH,
+  getGPUPointCloudHeightParameterValues,
+  getGPUPointCloudSurfacesParameterValues
+} from './gpu-pointcloud-surfaces';
+export type {
+  GPUPointCloudHeightSettings,
+  GPUPointCloudSurfacesSettings
+} from './gpu-pointcloud-surfaces';
+export * from './pointcloud-grid-parameters';

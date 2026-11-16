@@ -114,6 +114,7 @@ function buildGlobalStatistics(
   const inspected = createInspectedGraph('global-limits');
   const {view, graph} = inspected;
   const nodes = new GPUGlobalSpatialStatistics({
+    mode: 'reference',
     weights: {
       offsets: view('uint32', rows + 1),
       neighbors: view('uint32', capacity),

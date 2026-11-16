@@ -19,7 +19,7 @@ import type {GPUCompactOutput} from '../../analysis-core/kernels/gpu-contributor
 import {
   validateCompactOutput,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
+  validateGPUStorageBindingByteLength,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -33,6 +33,12 @@ import {GPU_DOT_DENSITY_PARAMETER_LENGTH} from './dot-density-parameters';
 import {PHILOX_PURPOSES, PHILOX_WGSL} from '../../analysis-core/kernels/philox-random';
 import {IS_FINITE_FLOAT_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {getReadPointWGSL} from '../shared/spatial-wgsl-point-helpers';
+
+import {
+  validateDisjointWritableViews,
+  validateGraphChunkBindingRanges
+} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateDotSamplingLogicalOutputs} from './dot-density-sampling';
 
 const OPERATION = 'GPURandomPointsOnLine';
 const NONE = '0xffffffffu';
@@ -146,6 +152,16 @@ export class GPURandomPointsOnLine implements GPUCommandNodeProducer {
         throw new Error(`${id} output.fractions must have capacity rows`);
       }
     }
+    validateDotSamplingLogicalOutputs(
+      id,
+      Object.fromEntries(getOutputs(props).map((view, index) => [`output ${index}`, view]))
+    );
+    validateDisjointWritableViews(id, {positions: output.positions, fractions: output.fractions});
+    validateDisjointWritableViews(id, {
+      count: output.points.status.count,
+      overflow: output.points.status.overflow,
+      requiredCount: output.points.status.requiredCount
+    });
     validateGraphOutputsDisjointFromInputs(id, getOutputs(props), getInputs(props));
   }
 
@@ -155,7 +171,25 @@ export class GPURandomPointsOnLine implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, lineCount} = this;
     const {output} = props;
-    validateGraphViewsBelongToGraph(id, graph, [...getInputs(props), ...getOutputs(props)]);
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries([
+        ...getInputs(props).map((view, index) => [`input ${index}`, view] as const),
+        ...getOutputs(props).map((view, index) => [`output ${index}`, view] as const)
+      ])
+    );
+    for (const [name, byteLength] of [
+      ['line prefix scratch', Math.max(props.positions.length, lineCount, 1) * 4],
+      ['point slot scratch', output.positions.length * 8]
+    ] as const)
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        name,
+        byteLength,
+        'reduce line rows or output capacity'
+      );
     const capacity = output.positions.length;
     const limit = getDotSlotCountLimit(lineCount, capacity);
     const lengths = createTransientView(graph, `${id}-lengths`, 'float32', lineCount);
@@ -220,7 +254,7 @@ fn segmentLength(vertex: u32) -> f32 {
           {name: 'sourceCounts', view: props.counts, type: 'u32', access: 'read'},
           {name: 'lengths', view: lengths, type: 'f32', access: 'read'},
           {name: 'lineCounts', view: lineCounts, type: 'u32', access: 'read_write'},
-          {name: 'clampFlag', view: clampFlag, type: 'u32', access: 'read_write'}
+          {name: 'clampFlag', view: clampFlag, type: 'atomic<u32>', access: 'read_write'}
         ],
         invocationCount: lineCount,
         declarations: `const LINE_LIMIT: u32 = ${limit}u;
@@ -229,7 +263,7 @@ ${IS_FINITE_FLOAT_WGSL}`,
   var count = select(0u, sourceCounts[sourceCountsOffset + index], isFiniteFloat(lineLength) && lineLength > 0.0);
   if (count > LINE_LIMIT) {
     count = LINE_LIMIT;
-    clampFlag[clampFlagOffset] = 1u;
+    atomicStore(&clampFlag[clampFlagOffset], 1u);
   }
   lineCounts[lineCountsOffset + index] = count;`
       }),

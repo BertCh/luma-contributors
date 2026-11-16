@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateOutlineOutputPasses} from '../outline-geometry/validate-outline-output-passes';
+import {validateRefinementScratchByteLengths} from './refinement-storage-validation';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -10,15 +13,15 @@ import {
 } from '@luma.gl/graph/gpu-core';
 import {
   GPUDelaunayTessellation,
-  getDelaunayMaximumTriangleCount
+  getDelaunayMaximumTriangleCount,
+  validateDelaunayScratch
 } from '../delaunay-tessellation/gpu-delaunay-tessellation';
 import type {GPUConcaveHullProps} from '../concave-hull/gpu-concave-hull';
 import {
   validateSinglePackedView,
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  getGraphOutputViews,
-  validateGraphViewsBelongToGraph
+  getGraphOutputViews
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {createTriangleEdgeAdjacencyNodes} from '../shared/triangle-edge-adjacency';
@@ -88,6 +91,11 @@ export class GPURatioConcaveHull implements GPUCommandNodeProducer {
     ) {
       throw new Error('Hull output capacity mismatch');
     }
+    validateOutlineOutputPasses(
+      this.id,
+      {...props.output, status: undefined, converged: props.output.status.converged},
+      [['triangleValidity', 'converged'], ['boundaryEdges', 'edgeValidity'], ['triangles']]
+    );
     validateGraphOutputsDisjointFromInputs(this.id, getGraphOutputViews(props.output), [
       props.positions
     ]);
@@ -98,7 +106,22 @@ export class GPURatioConcaveHull implements GPUCommandNodeProducer {
     const {props, id} = this;
     const {output} = props;
     const capacity = output.triangles.length;
-    validateGraphViewsBelongToGraph(id, graph, [props.positions, ...getGraphOutputViews(output)]);
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(
+        [props.positions, ...getGraphOutputViews(output)].map((view, index) => [
+          `binding.${index}`,
+          view
+        ])
+      )
+    );
+    const topologyCapacity = validateDelaunayScratch(graph.device, id, props.positions.length);
+    validateRefinementScratchByteLengths(graph, id, {
+      delaunayTopology: topologyCapacity * 16,
+      adjacencyAndSort: capacity * 3 * 4,
+      work: (3 * props.positions.length + capacity + 4) * 4
+    });
     const count = createTransientView(graph, `${id}-count`, 'uint32', 1);
     const requiredCount = createTransientView(graph, `${id}-required`, 'uint32', 1);
     const overflow = createTransientView(graph, `${id}-overflow`, 'uint32', 1);

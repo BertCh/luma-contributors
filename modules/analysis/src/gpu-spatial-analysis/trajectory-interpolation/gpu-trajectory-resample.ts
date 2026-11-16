@@ -3,6 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  validateTrajectoryBindings,
+  validateTrajectoryWritableDispatches,
+  validateTrajectoryOutputRanges
+} from '../trajectory-analysis/trajectory-binding-validation';
+import {
   resolveGPUSpatialContext,
   GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
   getGPUGreatCircleRadius
@@ -237,13 +242,21 @@ export class GPUTrajectoryResample implements GPUCommandNodeProducer {
         throw new Error(`${id} ${name} length must equal trackCount * sampleCount`);
       }
     }
+    validateTrajectoryOutputRanges(this.id, this.props.output);
+    validateTrajectoryWritableDispatches(this.id, [
+      {
+        samples: output.samples,
+        sampleElevations: output.sampleElevations,
+        sampleTimes: this.spacing === 'clock' && props.maximumGap ? undefined : output.sampleTimes
+      }
+    ]);
     validateGraphOutputsDisjointFromInputs(
       id,
       [output.samples, output.sampleElevations, output.sampleTimes],
       [
         props.positions,
-        props.elevations,
-        props.timestamps,
+        output.sampleElevations ? props.elevations : undefined,
+        this.spacing !== 'arc-length' || output.sampleTimes ? props.timestamps : undefined,
         props.trackOffsets,
         props.clock,
         props.maximumGap
@@ -255,6 +268,14 @@ export class GPUTrajectoryResample implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateTrajectoryBindings(graph, this.id, {
+      ...this.props,
+      elevations: this.props.output.sampleElevations ? this.props.elevations : undefined,
+      timestamps:
+        this.spacing !== 'arc-length' || this.props.output.sampleTimes
+          ? this.props.timestamps
+          : undefined
+    });
     const {props, id} = this;
     const {output} = props;
     validateGraphViewsBelongToGraph(id, graph, [

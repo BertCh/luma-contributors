@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getGraphOutputViews as getRasterPreflightOutputViews} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateRasterStorageBindings} from '../raster-grid/raster-storage-preflight';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -30,7 +32,8 @@ import {
   getRasterAlgebraInputNodes,
   getRasterAlgebraInputViews,
   isRasterAlgebraBand,
-  validateRasterAlgebraInput
+  validateRasterAlgebraInput,
+  validateRasterAlgebraInputBindings
 } from '../raster-algebra/raster-algebra-input';
 import {GPU_ISOBANDS_PARAMETER_LENGTH} from './isobands-parameters';
 import {getIsobandsCellWGSL} from './isobands-wgsl';
@@ -146,7 +149,7 @@ export type GPUIsobandsProps = {
  * float64 crossing (1.2 cm at 100 km); add the origin back on the CPU or as the layer's coordinate
  * origin.
  *
- * Row direction: row 0 of the raster is placed at `minY` of the per-frame extent and rows advance
+ * Row direction: row-zero sample centers are half a cell above `minY` of the outer extent; rows advance
  * toward larger y. Placement uses only the width and height of `grid`; `grid.affine` is checked
  * for finite values at construction but is not used for placement. A north-up grid (row 0 at the top, the default of
  * `makeGPURasterMetadata`) therefore comes out mirrored north to south unless the caller reverses
@@ -298,6 +301,24 @@ export class GPUIsobands implements GPUCommandNodeProducer, GPURasterHaloStage {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    const storageProps = this.props;
+    validateRasterAlgebraInputBindings(graph, this.id, [storageProps.values], storageProps.grid);
+    validateRasterStorageBindings(
+      graph,
+      this.id,
+      [
+        storageProps.mask,
+        storageProps.breaks,
+        storageProps.parameters,
+        ...getRasterPreflightOutputViews(storageProps.output)
+      ],
+      {
+        'cell counts and offsets':
+          storageProps.output.triangles || storageProps.output.edges ? this.cellCount * 4 : 0,
+        'geometry totals': storageProps.output.triangles || storageProps.output.edges ? 4 : 0
+      }
+    );
+
     const {id, props, maximumBreakCount, cellCount, triangleCapacity, edgeCapacity} = this;
     const {output} = props;
     const {width, height} = props.grid;

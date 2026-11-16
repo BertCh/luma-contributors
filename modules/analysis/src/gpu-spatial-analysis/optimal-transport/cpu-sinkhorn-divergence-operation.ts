@@ -114,7 +114,7 @@ function computeSoftMinimum(
  *   No finite masked-log cutoff or capped exponential discards a term. The explicit solver
  *   budget is retained, including iterationLimitReached; its GPU maximum of 1000 is dropped.
  * - The GPU's grid-side, row-count and storage-binding limits are dropped; uint32 grid dimensions
- *   and diagnostic counts remain. A 1x1 grid is accepted (the GPU's default radius rejects it).
+ *   and diagnostic counts remain. A 1x1 grid is accepted by both routes.
  * - Subnormals and intermediates outside float32 range are retained. Invalid masses are counted
  *   and zeroed as on the GPU; zero total mass or invalid packed parameters gives NaN values.
  *

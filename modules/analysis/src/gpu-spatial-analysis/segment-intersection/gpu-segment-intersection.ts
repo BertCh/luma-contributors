@@ -17,7 +17,6 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {createScanCarryNode} from '../../analysis-core/kernels/scan-total';
 import {
-  validateGraphViewsBelongToGraph,
   validateSinglePackedView,
   validateMaximumCount,
   validatePowerOfTwo
@@ -37,6 +36,10 @@ import {
   resolveGPUSpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
+
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+
+import {validateSegmentIntersectionScratch} from '../segment-intersection/segment-storage-validation';
 
 const OPERATION = 'GPUSegmentIntersection';
 
@@ -282,7 +285,16 @@ export class GPUSegmentIntersection implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, isSelfMode, leftSlotCount, rightSlotCount, pairCapacity} = this;
     const {pairs} = props.output;
-    validateGraphViewsBelongToGraph(id, graph, [...this.getInputViews(), ...this.getOutputViews()]);
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(
+        [...this.getInputViews(), ...this.getOutputViews()].map((view, index) => [
+          String(index),
+          view
+        ])
+      )
+    );
     for (const [name, geometry] of [
       ['left', props.left],
       ['right', props.right]
@@ -296,6 +308,15 @@ export class GPUSegmentIntersection implements GPUCommandNodeProducer {
         );
       }
     }
+    validateSegmentIntersectionScratch(
+      graph,
+      id,
+      leftSlotCount,
+      rightSlotCount,
+      pairCapacity,
+      this.leafCapacity,
+      this.spatialSort
+    );
     const nodes: GPUCommandNode<Parameters>[] = [];
 
     // Segment tables, with bounds for the indexed (right) side.

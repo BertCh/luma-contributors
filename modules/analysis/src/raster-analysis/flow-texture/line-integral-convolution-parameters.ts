@@ -18,13 +18,18 @@ export const LINE_INTEGRAL_CONVOLUTION_NOISE_PURPOSE =
 /** Per-frame settings of {@link GPULineIntegralConvolution}. */
 export type GPULineIntegralConvolutionSettings = {
   /**
-   * Field placement `[originX, originY, cellWidth, cellHeight]`; row 0 has the smallest y. A cell
-   * size that is zero or not finite throws.
+   * Field placement `[originX, originY, cellWidth, cellHeight]`, not min/max bounds. The origin
+   * is an outer corner; sample `(column, row)` is at origin + `(column + 0.5, row + 0.5)` times
+   * cell size. Positive cellHeight places row zero at the smallest y; signed cell sizes set the
+   * direction of increasing indices. Zero or non-finite sizes throw. The field is sampled
+   * bilinearly between centers, with edge clamping inside its half-open outer bounds.
    */
   fieldExtent: readonly [number, number, number, number];
   /**
-   * Output raster placement `[originX, originY, cellWidth, cellHeight]`; row 0 has the smallest y.
-   * A cell size that is zero or not finite throws.
+   * Output raster placement `[originX, originY, cellWidth, cellHeight]`. LIC starts at each
+   * output center, origin + `(column + 0.5, row + 0.5)` times cell size, independently of the
+   * field lattice. Signed cell sizes set row/column direction; zero or non-finite sizes throw.
+   * grid.affine and pixelInterpretation do not change this placement.
    */
   outputExtent: readonly [number, number, number, number];
   /**

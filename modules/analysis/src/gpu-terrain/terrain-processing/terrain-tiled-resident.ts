@@ -9,6 +9,10 @@ import {
   type GPUCommandNode
 } from '@luma.gl/graph/gpu-core';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  createGraphChunkGroupKernelNode,
+  GRAPH_CHUNK_GROUP_EXTRA_PARAMETER_OFFSET
+} from '../../analysis-core/kernels/graph-chunk-groups';
 import {getTerrainFlowTracingWGSL} from '../hydrology/terrain-flow-tracing';
 import {GPUTerrainBranchingFlow} from './gpu-terrain-branching-flow';
 import type {GPUTerrainTiledFlowProps} from './gpu-terrain-tiled-flow';
@@ -35,15 +39,27 @@ export function createTerrainResidentTileNodes<Parameters>(
   // the same test as stream order, stream network, flow distance and height above drainage.
   const declarations = `${getTerrainFlowTracingWGSL(props.grid.width, props.grid.height, props.directionEncoding)}\n${TERRAIN_FINITE_WGSL}
 fn isStreamWord(word: u32) -> bool { return word != 0u && word < UNRESOLVED_DIRECTION; }`;
+  const tileDeclarations = `${declarations}
+fn getTileParameter(word: u32) -> u32 { return getChunkParameter(${GRAPH_CHUNK_GROUP_EXTRA_PARAMETER_OFFSET}u + word); }`;
   const nodes: GPUCommandNode<Parameters>[] = [];
   props.tiles.forEach((tile, tileIndex) => {
     const [column, row, width, height] = tile.owned;
     nodes.push(
-      createWGSLKernelNode(graph, {
+      createGraphChunkGroupKernelNode(graph, {
         id: `${id}-exchange-owned-${tileIndex}`,
+        pipelineId: `${id}-exchange-owned`,
         operation: 'GPUTerrainTiledFlow',
         invocationCount: width * height,
-        declarations,
+        declarations: tileDeclarations,
+        parameterValues: [
+          tile.width,
+          column,
+          row,
+          width,
+          height,
+          tile.column + column,
+          tile.row + row
+        ],
         bindings: [
           terrainBinding('directions', tile.flowDirections),
           ...(tile.fractions ? [terrainBinding('inputFractions', tile.fractions)] : []),
@@ -53,8 +69,9 @@ fn isStreamWord(word: u32) -> bool { return word != 0u && word < UNRESOLVED_DIRE
           terrainBinding('runoff', runoff, 'read_write'),
           terrainBinding('streams', streams, 'read_write')
         ],
-        body: `let local = (index / ${width}u + ${row}u) * ${tile.width}u + index % ${width}u + ${column}u;
-let cell = (index / ${width}u + ${tile.row + row}u) * GRID_WIDTH + index % ${width}u + ${tile.column + column}u;
+        body: `let ownedWidth = getTileParameter(3u);
+let local = (index / ownedWidth + getTileParameter(2u)) * getTileParameter(0u) + index % ownedWidth + getTileParameter(1u);
+let cell = (index / ownedWidth + getTileParameter(6u)) * GRID_WIDTH + index % ownedWidth + getTileParameter(5u);
 let stream = inputStreams[inputStreamsOffset + local];
 let code = getFlowDirectionCode(directions[directionsOffset + local]);
 var valid = stream < UNRESOLVED_DIRECTION;
@@ -122,11 +139,21 @@ reach[reachOffset + index] = parent;`
   props.tiles.forEach((tile, tileIndex) => {
     const [column, row, width, height] = tile.owned;
     nodes.push(
-      createWGSLKernelNode(graph, {
+      createGraphChunkGroupKernelNode(graph, {
         id: `${id}-publish-${tileIndex}`,
+        pipelineId: `${id}-publish`,
         operation: 'GPUTerrainTiledFlow',
         invocationCount: tile.width * tile.height,
-        declarations,
+        declarations: tileDeclarations,
+        parameterValues: [
+          tile.width,
+          column,
+          row,
+          width,
+          height,
+          tile.column + column,
+          tile.row + row
+        ],
         bindings: [
           terrainBinding('values', accumulation),
           terrainBinding('globalStatus', status),
@@ -135,11 +162,12 @@ reach[reachOffset + index] = parent;`
           terrainBinding('status', tile.output.status, 'read_write'),
           terrainBinding('reachIds', tile.output.reachIds, 'read_write')
         ],
-        body: `let column = index % ${tile.width}u; let row = index / ${tile.width}u;
-let owned = column >= ${column}u && column < ${column + width}u && row >= ${row}u && row < ${row + height}u;
+        body: `let column = index % getTileParameter(0u); let row = index / getTileParameter(0u);
+let ownedColumn = getTileParameter(1u); let ownedRow = getTileParameter(2u);
+let owned = column >= ownedColumn && column - ownedColumn < getTileParameter(3u) && row >= ownedRow && row - ownedRow < getTileParameter(4u);
 var value = getNaN(); var state = 0u; var reach = NO_CELL;
 if (owned) {
- let cell = u32(i32(row) + ${tile.row}) * GRID_WIDTH + u32(i32(column) + ${tile.column});
+ let cell = (row - ownedRow + getTileParameter(6u)) * GRID_WIDTH + column - ownedColumn + getTileParameter(5u);
  value = values[valuesOffset + cell]; state = globalStatus[globalStatusOffset + cell]; reach = globalReach[globalReachOffset + cell];
 }
 accumulation[accumulationOffset + index] = value; status[statusOffset + index] = state; reachIds[reachIdsOffset + index] = reach;`

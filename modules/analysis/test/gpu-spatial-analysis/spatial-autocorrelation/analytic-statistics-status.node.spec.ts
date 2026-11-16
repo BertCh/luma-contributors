@@ -3,7 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {createTransientView, GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
+import {Buffer} from '@luma.gl/core';
+import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {expect, it, vi} from 'vitest';
+import {WgslReflect} from 'wgsl_reflect';
 import {
   GPUHotSpotAnalysis,
   GPULocalMoran,
@@ -43,6 +46,63 @@ function setupStatusValidation(chunked: boolean) {
 }
 
 for (const contributorClass of [GPULocalMoran, GPUHotSpotAnalysis, GPULocalGeary]) {
+  it(`${contributorClass.name} accepts disjoint writable fields in one imported layout`, () => {
+    const {device, graph, props} = setupStatusValidation(false);
+    const storage = device.createBuffer({byteLength: 133 * 4, usage: Buffer.STORAGE});
+    try {
+      const packed = importGraphBuffer(graph, 'packed-writable', storage, 'float32', 133);
+      const result = graph.createDataView(packed.buffer, {format: 'float32', length: 4});
+      const globalStatistics = graph.createDataView(packed.buffer, {
+        format: 'float32',
+        length: 5,
+        byteOffset: 256
+      });
+      const neighborCounts = graph.createDataView(packed.buffer, {
+        format: 'uint32',
+        length: 4,
+        byteOffset: 512
+      });
+      const output =
+        contributorClass === GPULocalGeary
+          ? {statistic: result, globalStatistics}
+          : {zScores: result, globalStatistics, neighborCounts};
+      const contributor = new contributorClass({...props, output: {...props.output, ...output}});
+      expect(() => graph.add(contributor)).not.toThrow();
+    } finally {
+      storage.destroy();
+      device.destroy();
+    }
+  });
+
+  it(`${contributorClass.name} ignores unused output fields in a shared caller configuration`, () => {
+    const {device, graph, props, view} = setupStatusValidation(false);
+    try {
+      const result = view('float32', 4);
+      // Only one spelling is a port of each class. The other is an unused extra property.
+      const contributor = new contributorClass({
+        ...props,
+        output: {
+          zScores: result,
+          statistic: result,
+          status: {invalidCount: view('uint32', 1), overflow: view('uint32', 1)}
+        }
+      });
+      const records = getGPUCommandNodeKernelSources(contributor.getCommandNodes(graph));
+      for (const record of records) {
+        const reflection = new WgslReflect(record.source);
+        const used = reflection.entry.compute.flatMap(entry =>
+          entry.resources.map(resource => resource.name)
+        );
+        expect(
+          [...reflection.storage, ...reflection.uniforms].map(binding => binding.name).sort(),
+          record.id
+        ).toEqual([...new Set(used)].sort());
+      }
+    } finally {
+      device.destroy();
+    }
+  });
+
   for (const chunked of [false, true]) {
     it(`${contributorClass.name} rejects nonscalar invalidCount at construction and permits ${chunked ? 'chunked' : 'whole'} retry`, () => {
       const {device, graph, view, props} = setupStatusValidation(chunked);

@@ -7,7 +7,8 @@ import {
   GPUSort,
   type GPUCommandGraph,
   type GPUCommandNode,
-  type GraphDataView
+  GraphDataView,
+  GraphVectorView
 } from '@luma.gl/graph/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
@@ -17,10 +18,17 @@ import {
 import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
+  validateGPUStorageBindingByteLength,
   validateMaximumCount,
-  validateSinglePackedView
+  validateSinglePackedView,
+  validateRequirement,
+  validateCommandNodeBudget,
+  getGraphViewChunks
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  validateGraphChunkBindingRanges,
+  validateDisjointWritableViews
+} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {
   GPU_INEQUALITY_GLOBAL_SUMMARY_LENGTH,
   getGPUInequalityMaximumLorenzKnotTotal,
@@ -46,7 +54,19 @@ import {
   INEQUALITY_ZONE_KEYS_BODY
 } from './inequality-wgsl';
 
+import {createInequalityParallelStatisticsNodes} from './inequality-parallel-statistics';
+import {INEQUALITY_PREFIX_TILE_ROWS} from './inequality-lorenz-prefix';
+import {validateGraphChunkGroupKernelSupport} from '../../analysis-core/kernels/graph-chunk-groups';
+import {getBoundedDispatchLayout} from '@luma.gl/graph/gpu-core';
+
 const OPERATION = 'GPUInequality';
+
+/** Both published GPUSort passes accept at most 2^31 keys; reject larger metadata at construction. */
+const MAXIMUM_ROW_COUNT = 0x80000000;
+/** Two 32-bit published sorts, including their hierarchical histogram scans; conservatively bounded at 2^31 keys. */
+const SORT_COMMAND_NODE_ALLOWANCE = 2048;
+/** Four Lorenz summary levels plus carries, six term reductions and publication. */
+const STATISTICS_COMMAND_NODE_ALLOWANCE = 64;
 
 /** Smallest number of Lorenz knots. */
 const MINIMUM_LORENZ_KNOT_COUNT = 2;
@@ -93,6 +113,8 @@ export type GPUInequalityOutput = {
 export type GPUInequalityProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'inequality'`. */
   id?: string;
+  /** Parallel segmented Lorenz coordinates by default. Reference retains the original serial zone walk. */
+  mode?: 'parallel' | 'reference';
   /** Packed float32 incomes. Negative and non-finite rows are excluded. */
   values: GraphDataView<'float32'>;
   /** Packed uint32 zone per row. `0xffffffff` or any value `>= zoneCount` excludes the row. */
@@ -152,27 +174,16 @@ export type GPUInequalityProps = {
  *   population share `p_g`; total equals between plus within up to f32 rounding. Pooled Gini
  *   comes from the globally value-sorted rows.
  *
- * Algorithm: rows are sorted by an order-preserving u32 value key with `GPUSort`, re-keyed by zone
- * and sorted again with a stable radix `GPUSort`, so each zone owns one value-ordered segment.
- * One thread per zone binary-searches its segment in the sorted zone keys and walks it twice in
- * fixed order. No atomics are used at all, so results are bitwise reproducible on one adapter.
- *
- * Cost: one thread walks a whole zone, O(segment length) serial work, so one zone holding most
- * rows serializes the pass; the global sums and the pooled Gini finish use one 256-lane workgroup with strided
- * reads and a fixed binary tree (depth zones / 256 + 8; the pooled Gini is tiled: rows / 256 per tile). Sums are plain f32 in sorted order, so precision degrades for segments of
- * millions of rows.
- *
- * Scaling limit (contract rule 2, not yet met): the per-zone walk is a serial loop over the
- * zone's rows, twice, on one invocation. It becomes the bottleneck at about 2^20 rows in one zone
- * (a single global Gini over a million rows already takes milliseconds on one lane while the
- * device idles) and its f32 running sums lose roughly one digit per decade of segment length, so
- * past about 2^22 rows the Lorenz trapezoids and Theil sums stop matching the float64 PySAL
- * references. Replacement design: after the two sorts, a segmented inclusive `GPUScan` of `w` and
- * `w x` gives every row its cumulative population and income, the trapezoid, Theil, Atkinson and
- * Hoover terms become row-parallel, and `sorted-segment-sums` (or the fixed-point accumulator, for
- * order-independent exact sums) reduces them per zone. Lorenz knots and Palma cuts are then a
- * binary search of the cumulative population per zone. It is not done here because it rewrites
- * every statistic of this contributor and its PySAL fixture tolerances have to be re-established.
+ * Algorithm: stable value and zone sorts give each zone a value-ordered segment. The default
+ * parallel route builds segmented population/income prefixes from bounded 256-row Lorenz walks,
+ * hierarchical tail summaries and reverse carries. Row terms use shared fixed-order segment
+ * reductions; Lorenz knots and Palma cuts binary-search the cumulative population. No float
+ * atomics are used. Float64-oracle tolerances are scaled by `max(1, abs(expected))`: 1e-4 for
+ * means, 2e-4 for Gini/Hoover/Lorenz, 5e-4 for Theil/Atkinson/Palma and 1e-3 for global summaries.
+ * The parallel route changes the float32 summation order within these tolerances.
+ * `mode: 'reference'` retains the original two serial walks and their rounding order, bounded by
+ * the published sort maximum of 2^31 rows. Prefer the CPU twin for that reference route.
+ * Every scalar row scratch binding and aligned caller binding must fit the device.
  */
 export class GPUInequality implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -183,11 +194,22 @@ export class GPUInequality implements GPUCommandNodeProducer {
   readonly rowCount: number;
   /** Lorenz knots per zone. */
   readonly lorenzKnotCount: number;
+  readonly mode: 'parallel' | 'reference';
+  readonly estimatedCommandNodeCount: number;
 
   constructor(props: GPUInequalityProps) {
     this.id = props.id ?? 'inequality';
     this.props = props;
     const id = this.id;
+    this.mode = props.mode ?? 'parallel';
+    validateRequirement(
+      id,
+      this.mode === 'parallel' || this.mode === 'reference',
+      'mode must be parallel or reference'
+    );
+    this.estimatedCommandNodeCount =
+      SORT_COMMAND_NODE_ALLOWANCE + STATISTICS_COMMAND_NODE_ALLOWANCE;
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
     const {output, zoneCount} = props;
     // The device-dependent maximum is checked at declaration.
     validateCapacity(id, 'zoneCount', zoneCount, 1, 0xfffffffe);
@@ -202,9 +224,7 @@ export class GPUInequality implements GPUCommandNodeProducer {
     validateSinglePackedView(props.values, ['float32'], `${id} values`);
     validateSinglePackedView(props.zoneIds, ['uint32'], `${id} zoneIds`);
     this.rowCount = props.values.length;
-    if (this.rowCount < 1) {
-      throw new Error(`${id} needs at least one row`);
-    }
+    validateCapacity(id, 'values length', this.rowCount, 1, MAXIMUM_ROW_COUNT);
     if (props.zoneIds.length !== this.rowCount) {
       throw new Error(`${id} zoneIds length must equal the row count`);
     }
@@ -253,6 +273,56 @@ export class GPUInequality implements GPUCommandNodeProducer {
     if (outputCount === 0) {
       throw new Error(`${id} needs at least one output`);
     }
+    {
+      const writableOutputs: Readonly<Record<string, GraphDataView | GraphVectorView | undefined>> =
+        output;
+      const publicationPasses: readonly (readonly (
+        | GraphDataView
+        | GraphVectorView
+        | undefined
+      )[])[] = [
+        [output.gini, output.theilT, output.theilL, output.atkinson],
+        [output.hoover, output.palma, output.mean],
+        ...(this.mode === 'reference' ? [[output.counts, output.lorenzKnots]] : []),
+        ...(output.globalSummary ? [[output.counts, output.globalSummary]] : [])
+      ];
+      // Model all logical writes as separate chunks; only the explicit publication groups coexist.
+      const writableWordChunks = Object.values(writableOutputs)
+        .flatMap(view => (view ? getGraphViewChunks(view) : []))
+        .map(
+          view =>
+            new GraphDataView(view.buffer, {
+              format: 'uint32',
+              length: (view.length * view.rowByteLength) / 4,
+              byteOffset: view.byteOffset,
+              byteStride: 4,
+              rowByteLength: 4
+            })
+        );
+      const writableWordCount = writableWordChunks.reduce(
+        (total, chunk) => total + chunk.length,
+        0
+      );
+      validateDisjointWritableViews(id, {
+        outputs: new GraphVectorView({
+          id: `${id}-writable-ranges`,
+          name: 'outputs',
+          format: 'uint32',
+          length: writableWordCount,
+          valueLength: writableWordCount,
+          stride: 1,
+          byteStride: 4,
+          rowByteLength: 4,
+          data: writableWordChunks
+        })
+      });
+      for (const fields of publicationPasses) {
+        validateDisjointWritableViews(
+          id,
+          Object.fromEntries(fields.map((view, index) => [String(index), view]))
+        );
+      }
+    }
     validateGraphOutputsDisjointFromInputs(
       id,
       lengths.map(([name]) => output[name]),
@@ -278,14 +348,63 @@ export class GPUInequality implements GPUCommandNodeProducer {
       zoneCount * lorenzKnotCount,
       getGPUInequalityMaximumLorenzKnotTotal(graph.device)
     );
-    validateGraphViewsBelongToGraph(id, graph, [
+    validateGraphChunkBindingRanges(graph, id, {
       values,
       zoneIds,
       weights,
       mask,
       parameters,
-      ...Object.values(output)
-    ]);
+      ...output
+    });
+    // Row sort planes, zone statistics and Lorenz knots are separate storage bindings.
+    const tileCount = Math.ceil(rowCount / INEQUALITY_GINI_TILE_ROWS);
+    for (const [name, length] of [
+      ['row scratch', rowCount],
+      ['stats scratch', zoneCount * INEQUALITY_STATS_STRIDE],
+      ['counts scratch', zoneCount],
+      ['lorenz scratch', zoneCount * lorenzKnotCount],
+      ...(output.globalSummary
+        ? ([['Gini tile scratch', Math.max(2, 2 * tileCount)]] as const)
+        : [])
+    ] as const) {
+      validateMaximumCount(id, `${name} byteLength`, length * 4, graph.device.limits.maxBufferSize);
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        name,
+        length * 4,
+        'reduce values length, zoneCount or lorenzKnotCount'
+      );
+    }
+    if (this.mode === 'parallel') {
+      validateGraphChunkGroupKernelSupport(graph, id, 8);
+      for (const length of [rowCount, zoneCount, zoneCount * lorenzKnotCount]) {
+        getBoundedDispatchLayout(
+          id,
+          length,
+          256,
+          graph.device.limits.maxComputeWorkgroupsPerDimension
+        );
+      }
+      for (const [name, length] of [
+        ['zone offset scratch', zoneCount + 1],
+        ['Lorenz summary scratch', 2 * Math.ceil(rowCount / INEQUALITY_PREFIX_TILE_ROWS)]
+      ] as const) {
+        validateGPUStorageBindingByteLength(
+          graph.device,
+          id,
+          name,
+          length * 4,
+          'reduce row count or zoneCount'
+        );
+        validateMaximumCount(
+          id,
+          `${name} byteLength`,
+          length * 4,
+          graph.device.limits.maxBufferSize
+        );
+      }
+    }
     const transient = <Format extends 'uint32' | 'float32'>(
       name: string,
       format: Format,
@@ -380,26 +499,44 @@ ${INEQUALITY_HELPERS_WGSL}`;
         keyBits: Math.min(32, zoneKeyBits)
       }).getCommandNodes(graph)
     );
-    nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-zone-stats`,
-        operation: OPERATION,
-        variant: 'zone-stats',
-        bindings: [
-          read('sortedZones', sortedZoneKeys, 'u32'),
-          read('sortedRows', zoneSortedRows, 'u32'),
-          read('values', values, 'f32'),
-          ...(weights ? [read('weights', weights, 'f32')] : []),
-          read('params', parameters, 'f32'),
-          write('stats', stats, 'f32'),
-          write('lorenz', lorenz, 'f32'),
-          write('counts', counts, 'u32')
-        ],
-        invocationCount: zoneCount,
-        declarations,
-        body: getInequalityZoneStatsBody(weightExpression)
-      })
-    );
+    if (this.mode === 'parallel') {
+      nodes.push(
+        ...createInequalityParallelStatisticsNodes(graph, {
+          id,
+          sortedZones: sortedZoneKeys,
+          sortedRows: zoneSortedRows,
+          values,
+          weights,
+          zoneCount,
+          parameters,
+          stats,
+          counts,
+          lorenz,
+          knotCount: lorenzKnotCount
+        })
+      );
+    } else {
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-zone-stats`,
+          operation: OPERATION,
+          variant: 'zone-stats',
+          bindings: [
+            read('sortedZones', sortedZoneKeys, 'u32'),
+            read('sortedRows', zoneSortedRows, 'u32'),
+            read('values', values, 'f32'),
+            ...(weights ? [read('weights', weights, 'f32')] : []),
+            read('params', parameters, 'f32'),
+            write('stats', stats, 'f32'),
+            write('lorenz', lorenz, 'f32'),
+            write('counts', counts, 'u32')
+          ],
+          invocationCount: zoneCount,
+          declarations,
+          body: getInequalityZoneStatsBody(weightExpression)
+        })
+      );
+    }
 
     const publish = (
       step: string,
@@ -449,7 +586,7 @@ ${INEQUALITY_HELPERS_WGSL}`;
           variant: 'global-sums',
           bindings: [
             read('stats', stats, 'f32'),
-            read('counts', counts, 'u32'),
+            write('counts', counts, 'u32'),
             write('summary', output.globalSummary, 'f32')
           ],
           invocationCount: INEQUALITY_REDUCTION_LANES,

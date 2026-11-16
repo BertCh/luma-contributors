@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateNetworkOptimizationInputOutputBuffers} from './network-optimization-bindings';
+
+import {validateNetworkLouvainBindings} from './network-louvain-bindings';
 import {gateNetworkLouvainPrimitive} from './network-louvain-dispatch';
 import {
   createTransientView,
@@ -19,7 +22,6 @@ import {
   validateSinglePackedView,
   validateCommandNodeBudget,
   validateGraphViewsBelongToGraph,
-  validateGraphOutputsDisjointFromInputs,
   validateGPUStorageBindingByteLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -33,32 +35,46 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   getSortedSegmentSumNodes,
-  createSegmentSumNode
+  createSegmentSumNode,
+  getSortKeyBits
 } from '../../analysis-core/kernels/sorted-segment-sums';
+import {createStableLexicographicIndexSortNodes} from '../../analysis-core/kernels/stable-lexicographic-index-sort';
 import {getSortedSegmentOffsetNodes} from '../../analysis-core/kernels/sorted-segment-offsets';
 import {getBinarySearchWGSL} from '../../analysis-core/kernels/binary-search-wgsl';
 import {GET_NAN_WGSL, IS_FINITE_VALUE_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {getNetworkLouvainOutputViews, type GPUNetworkLouvainProps} from './gpu-network-louvain';
 
-/** Pair keys source * nodeCount + destination must leave 0xffffffff available for padding. */
-const MAXIMUM_SPARSE_NODE_COUNT = 65535;
-/** Two weak-neighbor records per CSR slot bound sort/scan scratch and dispatch size. */
-const MAXIMUM_SPARSE_EDGE_COUNT = 1048576;
+/** The retained packed-key reference reserves 0xffffffff above every source * nodeCount + destination. */
+const MAXIMUM_PACKED_REFERENCE_NODE_COUNT = 65535;
+/** Four strength words per node must remain addressable by a uint32 shader index. */
+const MAXIMUM_SPARSE_NODE_COUNT = Math.floor(0xffffffff / 4);
+/** Two two-word weak-neighbor records per CSR slot must remain uint32-addressable.
+ * This also keeps the record count below the published GPUSort bound of 2^31 rows. */
+const MAXIMUM_SPARSE_EDGE_COUNT = Math.floor(0xffffffff / 4);
 /** Limits compilation of unrolled multilevel schedules, independently of graph size. */
 const MAXIMUM_LEVEL_COUNT = 32;
 /** Limits the number of unrolled parallel local-moving rounds at each level. */
 const MAXIMUM_ROUND_COUNT = 64;
-/** Radix sort (8 digits, <=9 nodes/digit), scans, gathers and reductions, including gates.
- * The node spec checks this allowance at the maximum shape as well as small/empty shapes. */
-const INITIAL_NODE_ALLOWANCE = 256;
-const ROUND_NODE_ALLOWANCE = 224;
-const AGGREGATION_NODE_ALLOWANCE = 112;
+/** Fixed fill dispatch covers every supported trace without a schedule-dependent pipeline override. */
+const MAXIMUM_TRACE_ROW_COUNT = 1 + MAXIMUM_LEVEL_COUNT * MAXIMUM_ROUND_COUNT;
+/** The state keeps the original eight status words plus round-in-level and current-level counters. */
+const SPARSE_STATE_WORD_COUNT = 10;
+/** Two-component radix sorts (16 digits, <=9 nodes/digit), scans, gathers and reductions,
+ * including gates. The node spec checks these allowances at binding-sized and small shapes. */
+const INITIAL_NODE_ALLOWANCE = 352;
+const ROUND_NODE_ALLOWANCE = 320;
+const AGGREGATION_NODE_ALLOWANCE = 208;
+/** Measured from emitted graph metadata at the uint32 shape (no GPU buffers allocated):
+ * 35,283 nodes for 8 levels x 16 rounds, exceeding the shared 32,768 budget; 53,483 nodes for
+ * 16 x 12, with a conservative estimate of 65,121. The node spec pins all three counts and
+ * the 348/264/163 initialization/round/aggregation counts, justifying this 65,536 ceiling. */
+const MAXIMUM_SPARSE_COMMAND_NODE_COUNT = 65536;
 
 type SparseProps = GPUNetworkLouvainProps & {
   topology: NonNullable<GPUNetworkLouvainProps['topology']>;
 };
-type WordView = GraphDataView<'uint32'>;
 type FloatView = GraphDataView<'float32'>;
+type PairView = GraphDataView<'uint32' | 'uint32x2'>;
 const OPERATION = 'GPUNetworkLouvain';
 
 /** @internal */
@@ -88,7 +104,7 @@ export function validateSparseNetworkLouvain(
   validateCapacity(id, 'maximumLevels', props.maximumLevels ?? 8, 1, MAXIMUM_LEVEL_COUNT);
   validateCapacity(id, 'maximumIterations', props.maximumIterations ?? 16, 1, MAXIMUM_ROUND_COUNT);
   validateCapacity(id, 'seed', props.seed ?? 0, 0, 0xffffffff);
-  validateCommandNodeBudget(id, estimate);
+  validateCommandNodeBudget(id, estimate, MAXIMUM_SPARSE_COMMAND_NODE_COUNT);
   for (const [name, view, format, length] of [
     ['parameters', props.parameters, 'float32', 2],
     ['output.communities', props.output.communities, 'uint32', props.nodeCount],
@@ -103,7 +119,7 @@ export function validateSparseNetworkLouvain(
     validateSinglePackedView(view, [format], id);
     validateRequirement(id, view.length === length, `${name} must hold ${length} rows`);
   }
-  validateGraphOutputsDisjointFromInputs(id, getNetworkLouvainOutputViews(props.output), [
+  validateNetworkOptimizationInputOutputBuffers(id, getNetworkLouvainOutputViews(props.output), [
     ...getGPUNetworkTopologyViews(props.topology),
     props.parameters
   ]);
@@ -112,22 +128,36 @@ export function validateSparseNetworkLouvain(
 /** Sparse multilevel moving with fixed-order reductions and community-disjoint commits.
  * No per-invocation graph walk or per-thread neighborhood table. Quotient edges are sorted
  * and reduced by (source,destination); their storage never exceeds twice the original CSR capacity.
+ * The internal `packed-reference` encoding retains the previous uint32 keys and full-width
+ * radix sort for same-device bitwise regression checks, capped at 65,535 nodes.
  * @internal
  */
 export function getSparseNetworkLouvainNodes<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   id: string,
-  props: SparseProps
+  props: SparseProps,
+  pairKeyEncoding: 'two-word' | 'packed-reference' = 'two-word'
 ): GPUCommandNode<Parameters>[] {
   const nodeCount = props.nodeCount;
+  const packedReference = pairKeyEncoding === 'packed-reference';
+  if (packedReference) {
+    validateCapacity(
+      id,
+      'packed-reference nodeCount',
+      nodeCount,
+      1,
+      MAXIMUM_PACKED_REFERENCE_NODE_COUNT
+    );
+  }
   const edgeCount = props.topology.neighbors.length;
   const recordCount = Math.max(2 * edgeCount, 1);
-  // Radix histograms use 16 words per 256-row block; the largest allocation is the payload.
+  // Pair keys keep destination (low word), source (high word); no node-count multiplication.
+  // Radix histograms use 16 words per 256-row block; the pair payload is larger.
   validateGPUStorageBindingByteLength(
     graph.device,
     id,
     'sparse edge scratch',
-    (recordCount + 1) * 4,
+    Math.max(recordCount * 2, recordCount + 1) * 4,
     'reduce topology edge capacity'
   );
   validateGPUStorageBindingByteLength(
@@ -137,6 +167,25 @@ export function getSparseNetworkLouvainNodes<Parameters>(
     Math.max(nodeCount * 4, nodeCount + 1) * 4,
     'reduce nodeCount'
   );
+  validateNetworkLouvainBindings(graph, id, props);
+  // Transients begin at byte zero: their aligned ranges equal their allocation sizes. The
+  // payload bounds above cover all row-sized scan/gather/reduction buffers; small shapes also
+  // need radix histogram blocks, runtime budget views, state and dispatch-gate records.
+  for (const [name, byteLength] of [
+    ['sparse radix histograms', 16 * Math.ceil(Math.max(nodeCount, recordCount) / 256) * 4],
+    ['sparse runtime state', SPARSE_STATE_WORD_COUNT * 4],
+    ['sparse round budget', (props.maximumIterations ?? 16) * 4],
+    ['sparse level budget', (props.maximumLevels ?? 8) * 4],
+    ['sparse dispatch gate allowance', ROUND_NODE_ALLOWANCE * 3 * 4]
+  ] as const) {
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      name,
+      byteLength,
+      'reduce the schedule or graph shape'
+    );
+  }
   validateGraphViewsBelongToGraph(id, graph, [
     ...getGPUNetworkTopologyViews(props.topology),
     props.parameters,
@@ -145,6 +194,17 @@ export function getSparseNetworkLouvainNodes<Parameters>(
   const nodes: GPUCommandNode<Parameters>[] = [];
   const word = (name: string, length: number) =>
     createTransientView(graph, `${id}-${name}`, 'uint32', length);
+  const pairViews = new Set<GraphDataView>();
+  const pair = (name: string): PairView => {
+    const view = createTransientView(
+      graph,
+      `${id}-${name}`,
+      packedReference ? 'uint32' : 'uint32x2',
+      recordCount
+    );
+    pairViews.add(view);
+    return view;
+  };
   const float = (name: string, length: number) =>
     createTransientView(graph, `${id}-${name}`, 'float32', length);
   const read = (name: string, view: GraphDataView): WGSLKernelBinding => ({
@@ -159,7 +219,7 @@ export function getSparseNetworkLouvainNodes<Parameters>(
     type: atomic ? 'atomic<u32>' : view.format === 'float32' ? 'f32' : 'u32',
     access: 'read_write'
   });
-  const declarations = `const NODE_COUNT: u32 = ${nodeCount}u;\nconst RECORD_COUNT: u32 = ${recordCount}u;\nconst NONE: u32 = 0xffffffffu;\n${IS_FINITE_VALUE_WGSL}`;
+  const declarations = `const NODE_COUNT: u32 = ${nodeCount}u;\nconst RECORD_COUNT: u32 = ${recordCount}u;\nconst NONE: u32 = 0xffffffffu;\nconst NO_PAIR: vec2<u32> = vec2<u32>(NODE_COUNT);\n${IS_FINITE_VALUE_WGSL}`;
   const kernel = (
     name: string,
     count: number,
@@ -172,11 +232,47 @@ export function getSparseNetworkLouvainNodes<Parameters>(
       operation: OPERATION,
       invocationCount: count,
       bindings,
-      declarations: `${declarations}\n${extra}`,
+      declarations: `${declarations}\n${bindings
+        .filter(binding => pairViews.has(binding.view))
+        .map(binding => {
+          const name = binding.name;
+          const suffix = name.charAt(0).toUpperCase() + name.slice(1);
+          return `fn get${suffix}Pair(position: u32) -> vec2<u32> {
+  ${
+    packedReference
+      ? `let packedKey = ${name}[${name}Offset + position];
+  if (packedKey == NONE) { return NO_PAIR; }
+  return vec2<u32>(packedKey / NODE_COUNT, packedKey % NODE_COUNT);`
+      : `return vec2<u32>(${name}[${name}Offset + 2u * position + 1u], ${name}[${name}Offset + 2u * position]);`
+  }
+}
+${
+  binding.access === 'read_write'
+    ? `fn set${suffix}Pair(position: u32, key: vec2<u32>) {
+  ${
+    packedReference
+      ? `${name}[${name}Offset + position] = select(key.x * NODE_COUNT + key.y, NONE, key.x == NODE_COUNT);`
+      : `${name}[${name}Offset + 2u * position] = key.y;
+  ${name}[${name}Offset + 2u * position + 1u] = key.x;`
+  }
+}`
+    : ''
+}`;
+        })
+        .join('\n')}\n${extra}`,
       body
     });
-  const state = word('state', 8);
-  // [running, roundActive, levelChanged, unused, valid, converged, levels, rounds]
+  const pairSearch = packedReference
+    ? `${getBinarySearchWGSL('pairKeys', 'u32', 'PackedPairKeys')}
+fn lowerBoundPairKeys(first: u32, last: u32, key: vec2<u32>) -> u32 {
+  return lowerBoundPackedPairKeys(first, last, key.x * NODE_COUNT + key.y);
+}`
+    : getBinarySearchWGSL('pairKeys', 'u64');
+  const state = word('state', SPARSE_STATE_WORD_COUNT);
+  const roundBudget = word('round-budget', props.maximumIterations ?? 16);
+  const levelBudget = word('level-budget', props.maximumLevels ?? 8);
+  // [running, roundActive, levelChanged, unused, valid, converged, levels, rounds,
+  //  roundsInLevel, currentLevel]. Budget views are read only through arrayLength.
   const stage = (
     name: string,
     commands: readonly GPUCommandNode<Parameters>[],
@@ -219,7 +315,7 @@ export function getSparseNetworkLouvainNodes<Parameters>(
   const degreeIn = float('degree-in', nodeCount);
   const totalsOut = float('totals-out', nodeCount);
   const totalsIn = float('totals-in', nodeCount);
-  const edgeKeys = word('edge-keys', recordCount);
+  const edgeKeys = pair('edge-keys');
   const edgeWeights = float('edge-weights', recordCount);
   const sourceKeys = word('source-keys', Math.max(edgeCount, 1));
   const targetKeys = word('destination-keys', Math.max(edgeCount, 1));
@@ -232,7 +328,7 @@ export function getSparseNetworkLouvainNodes<Parameters>(
   const proposals = word('proposals', nodeCount);
   const reservations = word('reservations', nodeCount);
   const accepted = word('accepted', nodeCount);
-  const proposalKeys = word('proposal-keys', recordCount);
+  const proposalKeys = pair('proposal-keys');
   const proposalWeights = float('proposal-weights', recordCount);
 
   const collectTotals = (prefix: string) =>
@@ -261,9 +357,9 @@ export function getSparseNetworkLouvainNodes<Parameters>(
           read('labels', labels),
           write('internal', internal)
         ],
-        `let key = edgeKeys[edgeKeysOffset + index];
+        `let key = getEdgeKeysPair(index);
 var value = 0.0;
-if (key != NONE && labels[labelsOffset + key / NODE_COUNT] == labels[labelsOffset + key % NODE_COUNT]) { value = 0.5 * edgeWeights[edgeWeightsOffset + index]; }
+if (key.x != NODE_COUNT && labels[labelsOffset + key.x] == labels[labelsOffset + key.y]) { value = 0.5 * edgeWeights[edgeWeightsOffset + index]; }
 internal[internalOffset + index] = value;`
       ),
       kernel(
@@ -297,35 +393,74 @@ trace[traceOffset + ${initial ? '0u' : 'state[stateOffset + 7u] + 1u'}] = value;
 
   // Arbitrary pair keys become consecutive segment numbers through the published scan.
   // A fixed tree then reduces each segment cooperatively, including arbitrarily high degree.
-  const aggregatePairs = (prefix: string, keys: WordView, weights: FloatView) => {
+  const aggregatePairs = (prefix: string, keys: PairView, weights: FloatView) => {
     const order = word(`${prefix}-order`, recordCount);
-    const sortedKeys = word(`${prefix}-sorted-keys`, recordCount);
-    const sortedOrder = word(`${prefix}-sorted-order`, recordCount);
+    const sortedKeys = pair(`${prefix}-sorted-keys`);
+    const primaryKeys = word(`${prefix}-primary-keys`, recordCount);
+    const secondaryKeys = word(`${prefix}-secondary-keys`, recordCount);
     const sortedWeights = float(`${prefix}-sorted-weights`, recordCount);
     const flags = word(`${prefix}-flags`, recordCount);
     const ranks = word(`${prefix}-ranks`, recordCount);
     const offsets = word(`${prefix}-offsets`, recordCount + 1);
-    const pairKeys = word(`${prefix}-pair-keys`, recordCount);
+    const pairKeys = pair(`${prefix}-pair-keys`);
     const pairWeights = float(`${prefix}-pair-weights`, recordCount);
+    const sortedOrder = word(`${prefix}-sorted-order`, recordCount);
+    const sortNodes: GPUCommandNode<Parameters>[] = [];
+    let sortedIndices = sortedOrder;
+    if (packedReference) {
+      sortNodes.push(
+        ...new GPUSort({
+          id: `${id}-${prefix}-sort`,
+          keys: keys as GraphDataView<'uint32'>,
+          values: order,
+          outputKeys: sortedKeys as GraphDataView<'uint32'>,
+          outputValues: sortedOrder,
+          algorithm: 'radix'
+        }).getCommandNodes(graph)
+      );
+    } else {
+      const sorted = createStableLexicographicIndexSortNodes(graph, {
+        id: `${id}-${prefix}-sort`,
+        operation: OPERATION,
+        indices: order,
+        indicesAreIdentity: true,
+        algorithm: 'radix',
+        keys: [
+          {view: primaryKeys, keyBits: getSortKeyBits(nodeCount)},
+          {view: secondaryKeys, keyBits: getSortKeyBits(nodeCount)}
+        ]
+      });
+      sortNodes.push(
+        ...sorted.nodes,
+        ...new GPUGather({
+          id: `${id}-${prefix}-gather-keys`,
+          source: keys,
+          indices: sorted.sortedIndices,
+          output: sortedKeys
+        }).getCommandNodes(graph)
+      );
+      sortedIndices = sorted.sortedIndices;
+    }
     const commands: GPUCommandNode<Parameters>[] = [
       kernel(
         `${prefix}-order`,
         recordCount,
-        [write('order', order)],
-        'order[orderOffset + index] = index;'
+        [
+          read('keys', keys),
+          write('order', order),
+          write('primaryKeys', primaryKeys),
+          write('secondaryKeys', secondaryKeys)
+        ],
+        `let key = getKeysPair(index);
+order[orderOffset + index] = index;
+primaryKeys[primaryKeysOffset + index] = key.x;
+secondaryKeys[secondaryKeysOffset + index] = key.y;`
       ),
-      ...new GPUSort({
-        id: `${id}-${prefix}-sort`,
-        keys,
-        values: order,
-        outputKeys: sortedKeys,
-        outputValues: sortedOrder,
-        algorithm: 'radix'
-      }).getCommandNodes(graph),
+      ...sortNodes,
       ...new GPUGather({
         id: `${id}-${prefix}-gather`,
         source: weights,
-        indices: sortedOrder,
+        indices: sortedIndices,
         output: sortedWeights
       }).getCommandNodes(graph),
       kernel(
@@ -338,11 +473,11 @@ trace[traceOffset + ${initial ? '0u' : 'state[stateOffset + 7u] + 1u'}] = value;
           write('pairKeys', pairKeys)
         ],
         `var starts = index == 0u;
-if (index > 0u) { starts = sortedKeys[sortedKeysOffset + index] != sortedKeys[sortedKeysOffset + index - 1u]; }
+if (index > 0u) { starts = any(getSortedKeysPair(index) != getSortedKeysPair(index - 1u)); }
 flags[flagsOffset + index] = select(0u, 1u, starts);
 offsets[offsetsOffset + index] = RECORD_COUNT;
 if (index == 0u) { offsets[offsetsOffset + RECORD_COUNT] = RECORD_COUNT; }
-pairKeys[pairKeysOffset + index] = NONE;`
+setPairKeysPair(index, NO_PAIR);`
       ),
       ...new GPUScan({
         id: `${id}-${prefix}-scan`,
@@ -363,7 +498,7 @@ pairKeys[pairKeysOffset + index] = NONE;`
         `if (flags[flagsOffset + index] != 0u) {
 let segment = ranks[ranksOffset + index] - 1u;
 offsets[offsetsOffset + segment] = index;
-pairKeys[pairKeysOffset + segment] = sortedKeys[sortedKeysOffset + index];
+setPairKeysPair(segment, getSortedKeysPair(index));
 }`
       ),
       createSegmentSumNode(graph, {
@@ -381,10 +516,10 @@ pairKeys[pairKeysOffset + segment] = sortedKeys[sortedKeysOffset + index];
   nodes.push(
     kernel(
       'initialize-state',
-      Math.max(props.output.objectiveTrace.length, 8),
+      MAXIMUM_TRACE_ROW_COUNT,
       [write('state', state), write('trace', props.output.objectiveTrace)],
-      `if (index < 8u) { state[stateOffset + index] = 0u; }
-if (index < ${props.output.objectiveTrace.length}u) { trace[traceOffset + index] = getNaN(); }`,
+      `if (index < arrayLength(&state) - stateOffset) { state[stateOffset + index] = 0u; }
+if (index < arrayLength(&trace) - traceOffset) { trace[traceOffset + index] = getNaN(); }`,
       GET_NAN_WGSL
     )
   );
@@ -498,7 +633,7 @@ labels[labelsOffset + index] = index; groups[groupsOffset + index] = index; comm
         write('edgeKeys', edgeKeys),
         write('edgeWeights', edgeWeights)
       ],
-      `edgeKeys[edgeKeysOffset + index] = NONE; edgeWeights[edgeWeightsOffset + index] = 0.0;
+      `setEdgeKeysPair(index, NO_PAIR); edgeWeights[edgeWeightsOffset + index] = 0.0;
 let slot = index / 2u;
 if (slot >= ${edgeCount}u) { return; }
 let source = sourceKeys[sourceKeysOffset + slot]; let destination = targetKeys[targetKeysOffset + slot];
@@ -506,7 +641,7 @@ let mass = total[totalOffset];
 if (rawWeights[rawWeightsOffset + slot] == 0.0 || source >= NODE_COUNT || destination >= NODE_COUNT || !(mass > 0.0) || !isFiniteValue(mass)) { return; }
 var first = source; var second = destination;
 if (index % 2u == 1u) { first = destination; second = source; }
-edgeKeys[edgeKeysOffset + index] = first * NODE_COUNT + second;
+setEdgeKeysPair(index, vec2<u32>(first, second));
 edgeWeights[edgeWeightsOffset + index] = rawWeights[rawWeightsOffset + slot] / mass;`
     )
   );
@@ -523,11 +658,11 @@ edgeWeights[edgeWeightsOffset + index] = rawWeights[rawWeightsOffset + slot] / m
           write('proposalKeys', proposalKeys),
           write('proposalWeights', proposalWeights)
         ],
-        `proposalKeys[proposalKeysOffset + index] = NONE; proposalWeights[proposalWeightsOffset + index] = 0.0;
+        `setProposalKeysPair(index, NO_PAIR); proposalWeights[proposalWeightsOffset + index] = 0.0;
 if (index >= ${edgeCount}u) { return; }
 let source = sourceKeys[sourceKeysOffset + index]; let destination = targetKeys[targetKeysOffset + index];
 if (source >= NODE_COUNT || destination >= NODE_COUNT) { return; }
-proposalKeys[proposalKeysOffset + index] = source * NODE_COUNT + destination;
+setProposalKeysPair(index, vec2<u32>(source, destination));
 proposalWeights[proposalWeightsOffset + index] = rawWeights[rawWeightsOffset + index];`
       )
     );
@@ -544,14 +679,14 @@ proposalWeights[proposalWeightsOffset + index] = rawWeights[rawWeightsOffset + i
           write('failures', failures)
         ],
         `failures[failuresOffset + index] = 0u;
-let key = pairKeys[pairKeysOffset + index]; if (key == NONE) { return; }
-let reverseKey = (key % NODE_COUNT) * NODE_COUNT + key / NODE_COUNT;
+let key = getPairKeysPair(index); if (key.x == NODE_COUNT) { return; }
+let reverseKey = key.yx;
 let position = lowerBoundPairKeys(0u, RECORD_COUNT, reverseKey);
 var reverseWeight = 0.0;
-if (position < RECORD_COUNT && pairKeys[pairKeysOffset + position] == reverseKey) { reverseWeight = pairWeights[pairWeightsOffset + position]; }
+if (position < RECORD_COUNT && all(getPairKeysPair(position) == reverseKey)) { reverseWeight = pairWeights[pairWeightsOffset + position]; }
 let weight = pairWeights[pairWeightsOffset + index];
 if (abs(weight - reverseWeight) > 0.000001 * max(abs(weight), abs(reverseWeight))) { failures[failuresOffset + index] = 1u; }`,
-        getBinarySearchWGSL('pairKeys')
+        pairSearch
       ),
       ...new GPUReduction({
         id: `${id}-symmetry-invalid-count`,
@@ -614,11 +749,11 @@ state[stateOffset + 5u] = select(0u, 1u, valid && total[totalOffset] == 0.0);`
             write('proposalKeys', proposalKeys),
             write('proposalWeights', proposalWeights)
           ],
-          `let key = edgeKeys[edgeKeysOffset + index];
-proposalKeys[proposalKeysOffset + index] = NONE; proposalWeights[proposalWeightsOffset + index] = 0.0;
-if (key == NONE) { return; }
-let source = key / NODE_COUNT; let destination = key % NODE_COUNT;
-proposalKeys[proposalKeysOffset + index] = source * NODE_COUNT + labels[labelsOffset + destination];
+          `let key = getEdgeKeysPair(index);
+setProposalKeysPair(index, NO_PAIR); proposalWeights[proposalWeightsOffset + index] = 0.0;
+if (key.x == NODE_COUNT) { return; }
+let source = key.x; let destination = key.y;
+setProposalKeysPair(index, vec2<u32>(source, labels[labelsOffset + destination]));
 // A self-loop is invariant under a move and must not enter its connection gain.
 if (source != destination) { proposalWeights[proposalWeightsOffset + index] = edgeWeights[edgeWeightsOffset + index]; }`
         )
@@ -661,21 +796,21 @@ strengths[strengthsOffset + index * 4u + 3u] = totalsIn[totalsInOffset + index];
             write('gains', gains),
             write('nodeKeys', nodeKeys)
           ],
-          `let key = pairKeys[pairKeysOffset + index];
+          `let key = getPairKeysPair(index);
 gains[gainsOffset + index] = 0.0; nodeKeys[nodeKeysOffset + index] = NODE_COUNT;
-if (key == NONE) { return; }
-let source = key / NODE_COUNT; let destination = key % NODE_COUNT; let original = labels[labelsOffset + source];
+if (key.x == NODE_COUNT) { return; }
+let source = key.x; let destination = key.y; let original = labels[labelsOffset + source];
 nodeKeys[nodeKeysOffset + index] = source;
 if (destination == original) { return; }
-let originalKey = source * NODE_COUNT + original;
+let originalKey = vec2<u32>(source, original);
 let position = lowerBoundPairKeys(0u, RECORD_COUNT, originalKey);
 var connection = 0.0;
-if (position < RECORD_COUNT && pairKeys[pairKeysOffset + position] == originalKey) { connection = pairWeights[pairWeightsOffset + position]; }
+if (position < RECORD_COUNT && all(getPairKeysPair(position) == originalKey)) { connection = pairWeights[pairWeightsOffset + position]; }
 let outgoing = strengths[strengthsOffset + source * 4u]; let incoming = strengths[strengthsOffset + source * 4u + 1u];
 let penalty = outgoing * (strengths[strengthsOffset + destination * 4u + 3u] - strengths[strengthsOffset + original * 4u + 3u] + incoming) + incoming * (strengths[strengthsOffset + destination * 4u + 2u] - strengths[strengthsOffset + original * 4u + 2u] + outgoing);
 let gain = pairWeights[pairWeightsOffset + index] - connection - parameters[parametersOffset] * penalty;
 if (isFiniteValue(gain) && gain > parameters[parametersOffset + 1u]) { gains[gainsOffset + index] = gain; }`,
-          getBinarySearchWGSL('pairKeys')
+          pairSearch
         )
       );
       commands.push(
@@ -708,9 +843,9 @@ if (isFiniteValue(gain) && gain > parameters[parametersOffset + 1u]) { gains[gai
             read('bestGain', bestGain),
             write('proposals', proposals, true)
           ],
-          `let key = pairKeys[pairKeysOffset + index]; if (key == NONE) { return; }
-let source = key / NODE_COUNT; let gain = gains[gainsOffset + index];
-if (gain > 0.0 && gain == bestGain[bestGainOffset + source]) { atomicMin(&proposals[proposalsOffset + source], key % NODE_COUNT); }`
+          `let key = getPairKeysPair(index); if (key.x == NODE_COUNT) { return; }
+let source = key.x; let gain = gains[gainsOffset + index];
+if (gain > 0.0 && gain == bestGain[bestGainOffset + source]) { atomicMin(&proposals[proposalsOffset + source], key.y); }`
         )
       );
       commands.push(
@@ -774,16 +909,22 @@ accepted[acceptedOffset + index] = acceptedCommunity; changed[changedOffset + in
         kernel(
           `${prefix}-control`,
           1,
-          [write('state', state), read('anyChanged', anyChanged)],
+          [
+            write('state', state),
+            read('anyChanged', anyChanged),
+            read('roundBudget', roundBudget),
+            read('levelBudget', levelBudget)
+          ],
           `if (state[stateOffset] == 0u || state[stateOffset + 1u] == 0u) { return; }
-state[stateOffset + 6u] = ${level + 1}u; state[stateOffset + 7u]++;
+state[stateOffset + 6u] = state[stateOffset + 9u] + 1u; state[stateOffset + 7u] = state[stateOffset + 7u] + 1u;
+state[stateOffset + 8u] = state[stateOffset + 8u] + 1u;
 if (anyChanged[anyChangedOffset] == 0u) {
   state[stateOffset + 1u] = 0u;
   if (state[stateOffset + 2u] == 0u) { state[stateOffset + 5u] = 1u; state[stateOffset] = 0u; }
-  ${level + 1 === maximumLevels ? 'state[stateOffset] = 0u;' : ''}
+  if (state[stateOffset + 6u] >= arrayLength(&levelBudget) - levelBudgetOffset) { state[stateOffset] = 0u; }
 } else {
   state[stateOffset + 2u] = 1u;
-  ${round + 1 === maximumIterations ? 'state[stateOffset] = 0u;' : ''}
+  if (state[stateOffset + 8u] >= arrayLength(&roundBudget) - roundBudgetOffset) { state[stateOffset] = 0u; }
 }`
         )
       );
@@ -795,9 +936,9 @@ if (anyChanged[anyChangedOffset] == 0u) {
           `${prefix}-keys`,
           recordCount,
           [read('edgeKeys', edgeKeys), read('labels', labels), write('proposalKeys', proposalKeys)],
-          `let key = edgeKeys[edgeKeysOffset + index]; var next = NONE;
-if (key != NONE) { next = labels[labelsOffset + key / NODE_COUNT] * NODE_COUNT + labels[labelsOffset + key % NODE_COUNT]; }
-proposalKeys[proposalKeysOffset + index] = next;`
+          `let key = getEdgeKeysPair(index); var next = NO_PAIR;
+if (key.x != NODE_COUNT) { next = vec2<u32>(labels[labelsOffset + key.x], labels[labelsOffset + key.y]); }
+setProposalKeysPair(index, next);`
         )
       ];
       const pairs = aggregatePairs(prefix, proposalKeys, edgeWeights);
@@ -812,7 +953,7 @@ proposalKeys[proposalKeysOffset + index] = next;`
             write('edgeKeys', edgeKeys),
             write('edgeWeights', edgeWeights)
           ],
-          'edgeKeys[edgeKeysOffset + index] = pairKeys[pairKeysOffset + index]; edgeWeights[edgeWeightsOffset + index] = pairWeights[pairWeightsOffset + index];'
+          'setEdgeKeysPair(index, getPairKeysPair(index)); edgeWeights[edgeWeightsOffset + index] = pairWeights[pairWeightsOffset + index];'
         )
       );
       commands.push(
@@ -837,7 +978,7 @@ proposalKeys[proposalKeysOffset + index] = next;`
           `${prefix}-control`,
           1,
           [write('state', state)],
-          'if (state[stateOffset] != 0u && state[stateOffset + 1u] == 0u) { state[stateOffset + 1u] = 1u; state[stateOffset + 2u] = 0u; }'
+          'if (state[stateOffset] != 0u && state[stateOffset + 1u] == 0u) { state[stateOffset + 1u] = 1u; state[stateOffset + 2u] = 0u; state[stateOffset + 8u] = 0u; state[stateOffset + 9u] = state[stateOffset + 9u] + 1u; }'
         )
       );
     }

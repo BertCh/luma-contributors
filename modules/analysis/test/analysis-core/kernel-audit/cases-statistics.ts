@@ -665,24 +665,44 @@ const GLOBAL_CASES: KernelAuditCase[] = [
   }
 ];
 
-const MULTIPLE_TESTING_CASES = METHODS.flatMap((method): KernelAuditCase[] =>
-  [70000, GPU_MULTIPLE_TESTING_MAXIMUM_ROWS - 1].map(rows => ({
+function buildMultipleTesting(
+  {graph, view}: KernelAuditContext,
+  method: GPUMultipleTestingMethod,
+  rows: number
+) {
+  graph.add(
+    new GPUMultipleTestingAdjustment({
+      pValues: view('float32', rows),
+      method,
+      // Exercise the full integer family-size range independently of row-buffer capacity.
+      minimumFamilySize: GPU_MULTIPLE_TESTING_MAXIMUM_ROWS - 1,
+      output: {adjustedPValues: view('float32', rows), testedCount: view('uint32', 1)}
+    })
+  );
+}
+
+const MULTIPLE_TESTING_CASES = METHODS.flatMap((method): KernelAuditCase[] => [
+  {
     exportName: 'GPUMultipleTestingAdjustment',
-    name: `${method} ${rows} rows`,
-    build: ({graph, view}) =>
-      graph.add(
-        new GPUMultipleTestingAdjustment({
-          pValues: view('float32', rows),
-          method,
-          minimumFamilySize: GPU_MULTIPLE_TESTING_MAXIMUM_ROWS - 1,
-          output: {
-            adjustedPValues: view('float32', rows),
-            testedCount: view('uint32', 1)
-          }
-        })
+    name: `${method} 70000 rows`,
+    build: context => buildMultipleTesting(context, method, 70000)
+  },
+  {
+    exportName: 'GPUMultipleTestingAdjustment',
+    name: `${method} rows at the binding limit`,
+    build: context =>
+      buildMultipleTesting(
+        context,
+        method,
+        Math.min(context.maximumRows(4), GPU_MULTIPLE_TESTING_MAXIMUM_ROWS - 1)
       )
-  }))
-);
+  },
+  {
+    exportName: 'GPUMultipleTestingAdjustment',
+    name: `${method} one row above the binding limit`,
+    build: context => buildMultipleTesting(context, method, context.maximumRows(4) + 1)
+  }
+]);
 
 const ALL_NEIGHBORHOOD_STATISTICS: GPUNeighborhoodSummaryStatistic[] = [
   'count',
@@ -1784,7 +1804,7 @@ function buildWeightsTraces(
 }
 
 function buildGWR(
-  {graph, view}: KernelAuditContext,
+  {graph, view, device}: KernelAuditContext,
   rows: number,
   options: {
     greatCircle?: boolean;
@@ -1807,13 +1827,22 @@ function buildGWR(
     ? (options.maximumSearchIterations ?? 30) + 1
     : (1 + passes) * ladder;
   const coefficientCount = k + 1;
+  // The named indexed maximum is achievable with smaller designs. Every output here has all
+  // twelve columns, so its packed binding (and backing allocation) bounds this maximal case.
+  const rowCount = Math.min(
+    rows,
+    Math.floor(
+      Math.min(device.limits.maxStorageBufferBindingSize, device.limits.maxBufferSize) /
+        (coefficientCount * 4)
+    )
+  );
   graph.add(
     new GPUGeographicallyWeightedRegression({
-      positions: view('float32x2', rows),
-      predictors: view('float32', rows * k),
+      positions: view('float32x2', rowCount),
+      predictors: view('float32', rowCount * k),
       predictorCount: k,
-      response: view('float32', rows),
-      mask: view('uint32', rows),
+      response: view('float32', rowCount),
+      mask: view('uint32', rowCount),
       parameters: view('float32', getGPUGeographicallyWeightedRegressionParameterLength(ladder)),
       maximumBandwidthCount: ladder,
       maximumNeighborCount: GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_NEIGHBOR_COUNT,
@@ -1826,16 +1855,17 @@ function buildGWR(
         ? {coordinateSpace: 'longitude-latitude', metric: 'great-circle'}
         : undefined,
       output: {
-        coefficients: view('float32', rows * coefficientCount),
-        standardErrors: view('float32', rows * coefficientCount),
-        tValues: view('float32', rows * coefficientCount),
-        significant: view('uint32', rows * coefficientCount),
-        localR2: view('float32', rows),
-        fitted: view('float32', rows),
-        residuals: view('float32', rows),
-        hatDiagonal: view('float32', rows),
-        localStatus: view('uint32', rows),
-        localConditionNumber: view('float32', rows),
+        coefficients: view('float32', rowCount * coefficientCount),
+        standardErrors: view('float32', rowCount * coefficientCount),
+        tValues: view('float32', rowCount * coefficientCount),
+        significant: view('uint32', rowCount * coefficientCount),
+        localR2: view('float32', rowCount),
+        fitted: view('float32', rowCount),
+        residuals: view('float32', rowCount),
+        hatDiagonal: view('float32', rowCount),
+        localStatus: view('uint32', rowCount),
+        localConditionNumber: view('float32', rowCount),
+        status: {approximation: view('uint32', 1)},
         bandwidthScores: view('float32', ladder),
         bandwidthSingularRowCounts: view('uint32', ladder),
         candidateTable: view(
@@ -2088,7 +2118,7 @@ const REGRESSION_CASES: KernelAuditCase[] = [
   ]),
   {
     exportName: 'GPUGeographicallyWeightedRegression',
-    name: 'golden-section search, maximum indexed rows, Gaussian cutoff',
+    name: 'golden-section search, maximum device-supported indexed rows, Gaussian cutoff',
     build: context =>
       buildGWR(context, GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_INDEXED_ROW_COUNT, {
         ladderLength: 2,
@@ -2103,7 +2133,7 @@ const REGRESSION_CASES: KernelAuditCase[] = [
   },
   {
     exportName: 'GPUGeographicallyWeightedRegression',
-    name: 'maximum indexed rows 16 bandwidths',
+    name: 'maximum device-supported indexed rows 16 bandwidths',
     build: context =>
       buildGWR(context, GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_INDEXED_ROW_COUNT, {
         ladderLength: 16

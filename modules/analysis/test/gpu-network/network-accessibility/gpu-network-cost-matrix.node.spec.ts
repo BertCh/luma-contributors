@@ -65,7 +65,7 @@ function getNodeIds(rowCount: number, targetCount?: number) {
   return {contributor, nodes: contributor.getCommandNodes(graph)};
 }
 
-/** Node IDs before `targetNodes` existed; the default path must keep them. */
+/** Stable traversal IDs, followed by initialization and parallel convergence reduction. */
 const SNAPSHOT_IDS = [
   'matrix-expand-seeds',
   'matrix-batch-info',
@@ -90,11 +90,15 @@ const SNAPSHOT_IDS = [
   'matrix-batch-2-relax-2',
   'matrix-batch-2-finalize',
   'matrix-batch-2-copy',
+  'matrix-converged-initialize',
   'matrix-converged'
 ];
 
 it('GPUNetworkCostMatrix without targetNodes keeps its node list', () => {
   const {contributor, nodes} = getNodeIds(5);
+  expect(nodes.find(node => node.id === 'matrix-converged')?.workload?.maximumInvocationCount).toBe(
+    contributor.batchCount
+  );
   expect(contributor.columnCount).toBe(NODE_COUNT);
   expect(nodes.map(node => node.id)).toEqual(SNAPSHOT_IDS);
 });

@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Device} from '@luma.gl/core';
+import {createAZPObjectiveReductionNode} from './azp-objective-reduction';
 import {HASH_UINT32_WGSL} from '../shared/hash-uint32';
 import {
   createTransientView,
@@ -24,8 +25,11 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateMaximumCount,
   validateGraphViewsBelongToGraph,
-  validateSinglePackedView
+  validateSinglePackedView,
+  validateGPUStorageBindingByteLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateSpatialOutputViews} from '../spatial-clustering/spatial-output-validation';
 import {type GPUSpatialWeights, validateGPUSpatialWeights} from '../spatial-weights/index';
 import {IS_FINITE_FLOAT_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import {
@@ -35,8 +39,46 @@ import {
   REGIONALIZATION_SEED_PARAMETER_LENGTH,
   validateRegionalizationParameters,
   getGPURegionalizationMaximumSlotCount,
-  validateRegionalizationSlotCount
+  validateRegionalizationSlotCount,
+  validateSymmetricAdjacencyScratch
 } from './regionalization-inputs';
+
+/** Published auto sort uses a local workgroup through 256 rows, then 16 radix buckets. */
+const AZP_SORT_WORKGROUP_SIZE = 256;
+const AZP_SORT_BUCKET_COUNT = 16;
+
+/** Shape-only scratch checks shared with max-p's nested constrained AZP refinement. @internal */
+export function validateAZPRegionScratch<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  id: string,
+  rows: number,
+  columns: number,
+  regionCapacity: number,
+  constrained: boolean
+): void {
+  for (const [name, byteLength] of [
+    ['AZP attribute table', rows * columns * 4],
+    ['AZP region records', regionCapacity * (columns + 1 + Number(constrained)) * 4],
+    ['AZP state', (constrained ? rows + 3 : 2) * 4],
+    ['AZP move records', rows * 8],
+    ['AZP claims', regionCapacity * 16],
+    ['AZP region offsets', (regionCapacity + 1) * 4],
+    [
+      'AZP sort histogram',
+      rows > AZP_SORT_WORKGROUP_SIZE
+        ? Math.ceil(rows / AZP_SORT_WORKGROUP_SIZE) * AZP_SORT_BUCKET_COUNT * 4
+        : 0
+    ],
+    ['AZP iteration dispatch', 24]
+  ] as const)
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      name,
+      byteLength,
+      'reduce rows, columns or regionCapacity'
+    );
+}
 
 export const GPU_AZP_MAXIMUM_COLUMNS = 8;
 export const GPU_AZP_MAXIMUM_ITERATIONS = 256;
@@ -261,6 +303,12 @@ export class GPUAZPRegions implements GPUCommandNodeProducer {
         props.extensiveThreshold
       ]
     );
+    validateSpatialOutputViews(id, output, [
+      [output.labels, output.status],
+      [output.objective, output.status],
+      {read: [output.labels], write: [output.status]},
+      {read: [output.status], write: [output.objective]}
+    ]);
   }
 
   getCommandNodes<Parameters>(
@@ -281,10 +329,30 @@ export class GPUAZPRegions implements GPUCommandNodeProducer {
       output.objective,
       output.status
     ]);
+    validateGraphChunkBindingRanges(graph, id, {
+      parameters: props.parameters,
+      offsets: props.weights.offsets,
+      neighbors: props.weights.neighbors,
+      weights: props.weights.weights,
+      values: props.values,
+      initialLabels: props.initialLabels,
+      extensiveValues: props.extensiveValues,
+      extensiveThreshold: props.extensiveThreshold,
+      ...output
+    });
     validateRegionalizationSlotCount(
       id,
       props.weights,
       getGPURegionalizationMaximumSlotCount(graph.device)
+    );
+    validateSymmetricAdjacencyScratch(graph, id, props.weights, rowCount);
+    validateAZPRegionScratch(
+      graph,
+      id,
+      rowCount,
+      columnCount,
+      props.regionCapacity,
+      Boolean(props.extensiveValues)
     );
     // The attribute table and the region record table are the widest bindings.
     const maximumTableWordCount = getGPUAZPMaximumTableWordCount(graph.device);
@@ -1105,21 +1173,11 @@ fn isRemovalSafe(row: u32, source: u32) -> bool {
     while (objectiveCount > 1) {
       const nextCount = Math.ceil(objectiveCount / 2);
       nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
+        createAZPObjectiveReductionNode(graph, {
           id: `${id}-objective-reduce-${objectiveLevel}`,
-          operation: 'GPUAZPRegions',
-          variant: 'deterministic-objective-reduction',
-          invocationCount: nextCount,
-          bindings: [
-            {name: 'valuesIn', view: objectiveSource, type: 'f32', access: 'read'},
-            {name: 'valuesOut', view: objectiveDestination, type: 'f32', access: 'read_write'}
-          ],
-          declarations: `const INPUT_COUNT: u32 = ${objectiveCount}u;`,
-          body: `let left = 2u * index;
-  let right = left + 1u;
-  var total = valuesIn[valuesInOffset + left];
-  if (right < INPUT_COUNT) { total += valuesIn[valuesInOffset + right]; }
-  valuesOut[valuesOutOffset + index] = total;`
+          input: objectiveSource,
+          output: objectiveDestination,
+          inputCount: objectiveCount
         })
       );
       objectiveCount = nextCount;

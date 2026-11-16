@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+export * from './gpu-analysis-contiguity-statistics';
+
 export {
   GPUIslandAttachment,
   GPU_ISLAND_ATTACHMENT_SCAN_MAXIMUM_ROW_COUNT

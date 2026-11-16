@@ -56,7 +56,8 @@ export function createTerrainBreachSearchNodes<Parameters>(
   const declarations = `${getTerrainFlowTracingWGSL(props.grid.width, props.grid.height)}
 ${TERRAIN_FINITE_WGSL}
 fn searchOrigin(pit: u32) -> vec2<u32> {
- return vec2<u32>(u32(clamp(i32(pit % GRID_WIDTH) - ${props.maximumSteps}, 0, ${props.grid.width - searchWidth})), u32(clamp(i32(pit / GRID_WIDTH) - ${props.maximumSteps}, 0, ${props.grid.height - searchHeight})));
+ let column = pit % GRID_WIDTH; let row = pit / GRID_WIDTH;
+ return min(vec2<u32>(select(0u, column - ${props.maximumSteps}u, column >= ${props.maximumSteps}u), select(0u, row - ${props.maximumSteps}u, row >= ${props.maximumSteps}u)), vec2<u32>(${props.grid.width - searchWidth}u, ${props.grid.height - searchHeight}u));
 }
 fn searchCell(localCell: u32, origin: vec2<u32>) -> u32 {
  return (origin.y + localCell / ${searchWidth}u) * GRID_WIDTH + origin.x + localCell % ${searchWidth}u;

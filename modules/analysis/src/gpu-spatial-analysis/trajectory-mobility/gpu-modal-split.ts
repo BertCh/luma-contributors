@@ -3,6 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  validateTrajectoryBindings,
+  validateTrajectoryScratch,
+  validateTrajectoryOutputRanges
+} from '../trajectory-analysis/trajectory-binding-validation';
+import {
   createTransientView,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -162,6 +167,11 @@ export class GPUModalSplit implements GPUCommandNodeProducer {
     if (modeSpeedBreaks) {
       validateRequirement(
         id,
+        modeSpeedBreaks.every(value => Number.isFinite(Math.fround(value)) || value === Infinity),
+        'modeSpeedBreaks must contain finite float32 values or positive Infinity'
+      );
+      validateRequirement(
+        id,
         modeSpeedBreaks.length === modeCount,
         'modeSpeedBreaks must hold modeCount values'
       );
@@ -179,9 +189,13 @@ export class GPUModalSplit implements GPUCommandNodeProducer {
       validateSinglePackedView(modes!, ['uint32'], `${id} modes`);
       validateViewLength(id, 'modes', modes!, capacity);
     }
+    validateTrajectoryOutputRanges(this.id, this.getUsedProps().output);
+    if (modeSpeedBreaks) {
+      validateGraphOutputsDisjointFromInputs(id, [output.modalSplit], [output.predictedModes]);
+    }
     validateGraphOutputsDisjointFromInputs(
       id,
-      [output.modalSplit, output.predictedModes],
+      [output.modalSplit, modeSpeedBreaks ? output.predictedModes : undefined],
       [
         positions,
         timestamps,
@@ -190,9 +204,21 @@ export class GPUModalSplit implements GPUCommandNodeProducer {
         triplegs.startRows,
         triplegs.endRows,
         triplegs.status.count,
-        modes
+        modeSpeedBreaks ? undefined : modes
       ]
     );
+  }
+
+  private getUsedProps(): GPUModalSplitProps {
+    const {props} = this;
+    return {
+      ...props,
+      modes: props.modeSpeedBreaks ? undefined : props.modes,
+      output: {
+        ...props.output,
+        predictedModes: props.modeSpeedBreaks ? props.output.predictedModes : undefined
+      }
+    };
   }
 
   getCommandNodes<Parameters>(
@@ -208,9 +234,9 @@ export class GPUModalSplit implements GPUCommandNodeProducer {
       triplegs.startRows,
       triplegs.endRows,
       triplegs.status.count,
-      props.modes,
+      modeSpeedBreaks ? undefined : props.modes,
       output.modalSplit,
-      output.predictedModes
+      modeSpeedBreaks ? output.predictedModes : undefined
     ]);
     const capacity = triplegs.tracks.length;
     const trackCount = trackOffsets.length - 1;
@@ -221,6 +247,8 @@ export class GPUModalSplit implements GPUCommandNodeProducer {
       trackCount * modeCount * 4,
       'reduce modeCount or the track count'
     );
+    validateTrajectoryBindings(graph, this.id, this.getUsedProps());
+    validateTrajectoryScratch(graph, id, {'tripleg track offsets': (trackCount + 1) * 4});
     const radius = getGPUGreatCircleRadius(this.spatialContext);
     const timeMode = getTrajectoryTimeMode(props);
     const tripTrackOffsets = createTransientView(
@@ -229,10 +257,9 @@ export class GPUModalSplit implements GPUCommandNodeProducer {
       'uint32',
       trackCount + 1
     );
-    const modes =
-      props.modes ??
-      output.predictedModes ??
-      createTransientView(graph, `${id}-modes`, 'uint32', capacity);
+    const modes = modeSpeedBreaks
+      ? (output.predictedModes ?? createTransientView(graph, `${id}-modes`, 'uint32', capacity))
+      : props.modes!;
     const nodes: GPUCommandNode<Parameters>[] = [
       createTrackTableOffsetsNode<Parameters>(graph, {
         id: `${id}-offsets`,

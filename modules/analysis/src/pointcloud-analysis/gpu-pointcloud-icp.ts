@@ -25,9 +25,14 @@ import {
 import {
   createPointCloudGridIndex,
   validatePointCloudSearchGrid,
+  validatePointCloudGridIndexBindings,
   type PointCloudGrid
 } from './pointcloud-grid-index';
-import {getPointCloudKernelNodes} from './pointcloud-kernel-nodes';
+import {
+  getPointCloudKernelNodes,
+  validatePointCloudPackedViews,
+  validatePointCloudScratchBindings
+} from './pointcloud-kernel-nodes';
 import {
   GPU_POINT_CLOUD_MAXIMUM_ICP_ITERATIONS,
   GPU_POINT_CLOUD_MAXIMUM_UNINDEXED_WORK
@@ -37,11 +42,28 @@ import {
   getPointCloudLocalTransform
 } from './pointcloud-local-origin';
 
+import {
+  getPointCloudRuntimeKernelNodes,
+  validatePointCloudDispatchParameterBindings
+} from './pointcloud-chunk-kernel-nodes';
+import {
+  getPointCloudICPMergeSource,
+  POINT_CLOUD_ICP_MERGE_BLOCK_COUNT
+} from './pointcloud-icp-reduction';
+import {validateCommandNodeBudget} from '../analysis-core/kernels/gpu-contributor-utils';
+
+// A public grid sort/build uses fewer than 512 nodes at uint32 lengths.
+const POINT_CLOUD_ICP_INDEX_NODE_ALLOWANCE = 512;
+// Solver/reducer slots include three common words, two settings and up to seven offsets.
+const POINT_CLOUD_ICP_MAXIMUM_DISPATCH_WORD_COUNT = 12;
+
 // Eight sweeps cover 48 four-axis pair rotations, the previous rotation budget.
 const POINT_CLOUD_ICP_MAXIMUM_EIGEN_SWEEPS = 8;
 
 /** Six scalar settings followed by the local column-major 4x4 initial transform. */
 export const GPU_POINT_CLOUD_ICP_PARAMETER_LENGTH = 22;
+
+import {validateGraphChunkBindingRanges} from '../analysis-core/kernels/graph-chunk-dispatch';
 
 export type GPUPointCloudICPSettings = {
   /** Positive inclusive correspondence distance with a finite, nonzero float32 square. */
@@ -244,15 +266,43 @@ function getPointCloudICPInitialTransform(
  * Bounded GPU point-to-point ICP with distance rejection and Horn's rigid least-squares solve.
  * Per-frame: input contents and parameters (maximumDistance, robust scale, convergence tolerances
  * and initialTransform). Compile-time: iterations, metric, robust method, targetGrid, origin and
- * view shapes. Without parameters, numeric props retain their constructor-time behavior.
+ * view shapes. Centered block moments merge through a fixed-order, bounded 256-way tree;
+ * floating-point rounding may differ from a serial sum. Without parameters, numeric props
+ * retain their constructor-time behavior.
  */
 export class GPUPointCloudICP implements GPUCommandNodeProducer {
   readonly id: string;
   readonly iterations: number;
+  readonly estimatedCommandNodeCount: number;
   /** Initial transform in the local frame of `origin` (identity origin when omitted). */
   private readonly localInitialTransform: readonly number[];
   constructor(readonly props: GPUPointCloudICPProps) {
     this.id = props.id ?? 'gpu-pointcloud-icp';
+    validatePointCloudPackedViews(
+      this.id,
+      {
+        source: props.source,
+        target: props.target,
+        targetNormals: props.metric === 'point-to-plane' ? props.targetNormals : undefined,
+        parameters: props.parameters
+      },
+      {
+        transform: props.transform,
+        history: props.history,
+        inlierMask: props.inlierMask,
+        status: props.status
+      },
+      [
+        {outputs: {transform: props.transform, status: props.status}},
+        {inputs: {parameters: props.parameters}, outputs: {history: props.history}},
+        {
+          inputs: {
+            targetNormals: props.metric === 'point-to-plane' ? props.targetNormals : undefined
+          },
+          outputs: {inlierMask: props.inlierMask}
+        }
+      ]
+    );
     this.iterations = props.iterations ?? 20;
     validateCapacity(
       this.id,
@@ -261,6 +311,17 @@ export class GPUPointCloudICP implements GPUCommandNodeProducer {
       1,
       GPU_POINT_CLOUD_MAXIMUM_ICP_ITERATIONS
     );
+    let partialCount = Math.ceil(props.source.length / POINT_CLOUD_ICP_MERGE_BLOCK_COUNT);
+    let mergeLevels = 0;
+    while (partialCount > 1) {
+      partialCount = Math.ceil(partialCount / POINT_CLOUD_ICP_MERGE_BLOCK_COUNT);
+      mergeLevels++;
+    }
+    this.estimatedCommandNodeCount =
+      4 +
+      this.iterations * (4 + mergeLevels * 2) +
+      (props.targetGrid ? POINT_CLOUD_ICP_INDEX_NODE_ALLOWANCE : 0);
+    validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
     validateFiniteNumber(this.id, 'maximumDistance', props.maximumDistance);
     validateRequirement(
       this.id,
@@ -329,6 +390,33 @@ export class GPUPointCloudICP implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {source, target, transform, history, inlierMask, status, parameters} = this.props;
+    validateGraphChunkBindingRanges(graph, this.id, {
+      source,
+      target,
+      transform,
+      history,
+      inlierMask,
+      status,
+      parameters,
+      targetNormals: this.props.metric === 'point-to-plane' ? this.props.targetNormals : undefined
+    });
+    validatePointCloudScratchBindings(graph, this.id, {
+      'ICP matches': source.length * 12,
+      'ICP weights and match IDs': source.length * 4,
+      'ICP block moments':
+        Math.ceil(source.length / 256) *
+        (this.props.metric === 'point-to-plane' ? POINT_CLOUD_PLANE_ICP_BLOCK_WORDS : 18) *
+        4,
+      'ICP state': 17 * 4
+    });
+    if (this.props.targetGrid)
+      validatePointCloudGridIndexBindings(graph, this.id, target, this.props.targetGrid.dimensions);
+    validatePointCloudDispatchParameterBindings(
+      graph,
+      this.id,
+      POINT_CLOUD_ICP_MAXIMUM_DISPATCH_WORD_COUNT,
+      1
+    );
     const states = [0, 1].map(value =>
       createTransientView(graph, `${this.id}-state-${value}`, 'float32', 17)
     );
@@ -345,6 +433,22 @@ export class GPUPointCloudICP implements GPUCommandNodeProducer {
       'float32',
       blockCount * (pointToPlane ? POINT_CLOUD_PLANE_ICP_BLOCK_WORDS : 18)
     );
+    const momentLevels = [moments];
+    const mergeCounts: number[] = [];
+    let partialCount = blockCount;
+    while (partialCount > 1) {
+      mergeCounts.push(partialCount);
+      partialCount = Math.ceil(partialCount / POINT_CLOUD_ICP_MERGE_BLOCK_COUNT);
+      momentLevels.push(
+        createTransientView(
+          graph,
+          `${this.id}-moment-level-${momentLevels.length}`,
+          'float32',
+          partialCount * (pointToPlane ? POINT_CLOUD_PLANE_ICP_BLOCK_WORDS : 18)
+        )
+      );
+    }
+    const rootMoments = momentLevels.at(-1)!;
     const initial = this.localInitialTransform;
     const nodes = getPointCloudKernelNodes(graph, {
       id: `${this.id}-initialize`,
@@ -368,8 +472,8 @@ let translation = vec3f(readState(12u),readState(13u),readState(14u));`;
       // Clamp in floating point before integer conversion; large radius/cell ratios and
       // queries outside the grid must not overflow signed cell coordinates.
       candidateStart = `let displacement=position-vec3f(${grid.origin.map(Math.fround).join(',')});
-let lower=vec3i(clamp(floor((displacement-vec3f(${parameters ? 'readParameters(0u)' : Math.fround(this.props.maximumDistance)}))/${Math.fround(grid.cellSize)})-vec3f(1.0),vec3f(0.0),vec3f(${grid.dimensions.join(',')})));
-let upper=vec3i(clamp(floor((displacement+vec3f(${parameters ? 'readParameters(0u)' : Math.fround(this.props.maximumDistance)}))/${Math.fround(grid.cellSize)})+vec3f(1.0),vec3f(-1.0),vec3f(${grid.dimensions.map(value => value - 1).join(',')})));
+let lower=vec3i(clamp(floor(getPointCloudQuotient3(displacement-vec3f(${parameters ? 'readParameters(0u)' : Math.fround(this.props.maximumDistance)}),${Math.fround(grid.cellSize)}))-vec3f(1.0),vec3f(0.0),vec3f(${grid.dimensions.join(',')})));
+let upper=vec3i(clamp(floor(getPointCloudQuotient3(displacement+vec3f(${parameters ? 'readParameters(0u)' : Math.fround(this.props.maximumDistance)}),${Math.fround(grid.cellSize)}))+vec3f(1.0),vec3f(-1.0),vec3f(${grid.dimensions.map(value => value - 1).join(',')})));
 for(var depth=lower.z;depth<=upper.z;depth++){for(var row=lower.y;row<=upper.y;row++){for(var column=lower.x;column<=upper.x;column++){
 let cell=(u32(depth)*${grid.dimensions[1]}u+u32(row))*${grid.dimensions[0]}u+u32(column);
 for(var slot=readOffsets(cell);slot<readOffsets(cell+1u);slot++){let candidate=readSortedIndices(slot);`;
@@ -379,8 +483,8 @@ for(var slot=readOffsets(cell);slot<readOffsets(cell+1u);slot++){let candidate=r
     const weightExpression = !robust
       ? '1.0'
       : robust.method === 'huber'
-        ? `min(1.0,${parameters ? 'readParameters(2u)' : Math.fround(robust.scale)}/max(sqrt(distanceSquared),1e-30))`
-        : `pow(max(0.0,1.0-distanceSquared/${parameters ? 'readParameters(3u)' : Math.fround(robust.scale ** 2)}),2.0)`;
+        ? `min(1.0,getScaledQuotient(${parameters ? 'readParameters(2u)' : Math.fround(robust.scale)},max(sqrt(distanceSquared),1e-30),1.0,0))`
+        : `pow(max(0.0,1.0-getScaledQuotient(distanceSquared,${parameters ? 'readParameters(3u)' : Math.fround(robust.scale ** 2)},1.0,0)),2.0)`;
     const correspondence = (iteration: number) =>
       getPointCloudKernelNodes(graph, {
         id: `${this.id}-match-${iteration}`,
@@ -443,18 +547,35 @@ for(var axis=0u;axis<3u;axis++){writeMoments(base+3u+axis,sourceMean[axis]);writ
 for(var column=0u;column<3u;column++){for(var row=0u;row<3u;row++){writeMoments(base+9u+column*3u+row,covariance[column][row]);}}`
         })
       );
+      for (const [level, inputCount] of mergeCounts.entries()) {
+        nodes.push(
+          ...getPointCloudRuntimeKernelNodes(graph, {
+            id: `${this.id}-merge-${iteration}-${level}`,
+            length: Math.ceil(inputCount / POINT_CLOUD_ICP_MERGE_BLOCK_COUNT),
+            inputs: {partials: momentLevels[level]},
+            outputs: {moments: momentLevels[level + 1]},
+            runtimeWords: [inputCount],
+            body: getPointCloudICPMergeSource(pointToPlane)
+          })
+        );
+      }
       nodes.push(
-        ...getPointCloudKernelNodes(graph, {
+        ...getPointCloudRuntimeKernelNodes(graph, {
           id: `${this.id}-solve-${iteration}`,
           length: 1,
-          inputs: {moments, state: states[iteration % 2], ...(parameters ? {parameters} : {})},
+          runtimeWords: [iteration, blockCount ? 1 : 0],
+          inputs: {
+            moments: rootMoments,
+            state: states[iteration % 2],
+            ...(parameters ? {parameters} : {})
+          },
           outputs: {next: states[(iteration + 1) % 2], history},
           declarations: pointToPlane ? undefined : IS_FINITE_VALUE_WGSL + getSymmetricEigenWGSL(4),
           body: pointToPlane
             ? getPlaneSolveSource(
                 loadTransform,
-                blockCount,
-                iteration,
+                'readDispatchParameter(1u)',
+                'readDispatchParameter(0u)',
                 parameters ? 'readParameters(4u)' : (this.props.translationTolerance ?? 1e-5),
                 parameters ? 'readParameters(5u)' : (this.props.rotationTolerance ?? 1e-5)
               )
@@ -462,7 +583,7 @@ for(var column=0u;column<3u;column++){for(var row=0u;row<3u;row++){writeMoments(
 for (var entry = 0u; entry < 17u; entry++) { writeNext(entry, readState(entry)); }
 var count=0u;var weightSum=0.0;var residualSum=0.0;var sourceMean=vec3f(0.0);var targetMean=vec3f(0.0);
 var covariance=mat3x3f(vec3f(0.0),vec3f(0.0),vec3f(0.0));
-for(var batchIndex=0u;batchIndex<${blockCount}u;batchIndex++){
+for(var batchIndex=0u;batchIndex<readDispatchParameter(1u);batchIndex++){
  let base=batchIndex*18u;let weight=readMoments(base+1u);if(weight<=0.0){continue;}
  count+=u32(readMoments(base));residualSum+=readMoments(base+2u);
  let firstMean=vec3f(readMoments(base+3u),readMoments(base+4u),readMoments(base+5u));
@@ -474,7 +595,7 @@ for(var batchIndex=0u;batchIndex<${blockCount}u;batchIndex++){
  sourceMean+=firstDelta*(weight/nextWeight);targetMean+=secondDelta*(weight/nextWeight);weightSum=nextWeight;
 }
 let residual=sqrt(residualSum/max(weightSum,1e-30));
-writeHistory(${iteration}u,vec3f(f32(count),residual,0.0));
+writeHistory(readDispatchParameter(0u),vec3f(f32(count),residual,0.0));
 if(readState(16u)!=1.0){return;}if(count<3u||weightSum<=0.0){writeNext(16u,${GPU_POINT_CLOUD_ICP_STATUS_INSUFFICIENT_MATCHES}.0);return;}
 covariance*=1.0/weightSum;
 let trace = covariance[0][0] + covariance[1][1] + covariance[2][2];
@@ -506,7 +627,7 @@ writeNext(12u,updatedTranslation.x); writeNext(13u,updatedTranslation.y); writeN
 let step = length(deltaTranslation);
 let rotationStep = max(max(length(deltaRotation[0]-vec3f(1,0,0)),length(deltaRotation[1]-vec3f(0,1,0))),length(deltaRotation[2]-vec3f(0,0,1)));
 if (step <= ${parameters ? 'readParameters(4u)' : Math.fround(this.props.translationTolerance ?? 1e-5)} && rotationStep <= ${parameters ? 'readParameters(5u)' : Math.fround(this.props.rotationTolerance ?? 1e-5)}) { writeNext(16u,${GPU_POINT_CLOUD_ICP_STATUS_CONVERGED}.0); }
-writeHistory(${iteration}u,vec3f(f32(count),residual,step));`
+writeHistory(readDispatchParameter(0u),vec3f(f32(count),residual,step));`
         })
       );
     }

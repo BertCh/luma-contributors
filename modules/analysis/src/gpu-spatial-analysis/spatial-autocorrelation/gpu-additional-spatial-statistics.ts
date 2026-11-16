@@ -11,10 +11,8 @@ import {
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {
-  createWGSLKernelNode,
-  type WGSLKernelBinding
-} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {type WGSLKernelBinding} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {createStatisticsKernelNode as createWGSLKernelNode} from '../spatial-weights/statistics-kernel-node';
 import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
@@ -32,19 +30,22 @@ import {
   getGPUSpatialWeightsOrChunksViews,
   isGPUSpatialWeightsRowStandardized,
   resolveGPUIslandPolicy,
-  wrapGPUSpatialWeightsChunkBody,
   type GPUChunkedSpatialWeights,
   type GPUIslandPolicy,
   type GPUSpatialWeights,
   type GPUSpatialWeightsChunkDispatch,
   validateGPUSpatialWeightsOrChunks
 } from '../spatial-weights/index';
+import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateSpatialStatisticsBindings} from '../spatial-weights/spatial-statistics-bindings';
+import {createSpatialStatisticsCollectiveNode} from '../spatial-weights/spatial-statistics-collective-node';
+import {createSpatialStatisticsRowNode} from '../spatial-weights/spatial-statistics-row-dispatch';
 import {
-  getSpatialAutocorrelationConstantsWGSL,
   getSpatialAutocorrelationInputNodes,
   getSpatialWeightsNeighborLoopWGSL,
   SPATIAL_AUTOCORRELATION_FLOAT_WGSL,
-  validateSpatialAutocorrelationInputs
+  validateSpatialAutocorrelationInputs,
+  validateSpatialAutocorrelationBindings
 } from './spatial-autocorrelation-kernels';
 
 import {
@@ -94,6 +95,8 @@ export type GPULocalGearyOutput = {
   statistic: GraphDataView<'float32'>;
   /** Optional `[n, mean, variance, standardDeviation, islandCount]` used this frame. */
   globalStatistics?: GraphDataView<'float32'>;
+  /** Exact uint32 [populationCount, islandCount]; populationCount uses fixedMoments.count when supplied. */
+  globalCounts?: GraphDataView<'uint32'>;
 };
 
 /** Properties for {@link GPULocalGeary}. */
@@ -211,6 +214,7 @@ export class GPULocalGeary implements GPUCommandNodeProducer {
     const rows = validateSpatialAutocorrelationInputs({
       ...props,
       id: this.id,
+      globalCounts: props.output.globalCounts,
       globalStatistics: props.output.globalStatistics
     });
     validateSinglePackedView(props.output.statistic, ['float32'], `${this.id} output.statistic`);
@@ -226,6 +230,7 @@ export class GPULocalGeary implements GPUCommandNodeProducer {
       [
         props.output.statistic,
         props.output.globalStatistics,
+        props.output.globalCounts,
         ...Object.values(props.output.status ?? {})
       ],
       [
@@ -236,6 +241,13 @@ export class GPULocalGeary implements GPUCommandNodeProducer {
         props.mask
       ]
     );
+    validateDisjointWritableViews(this.id, {
+      statistic: props.output.statistic,
+      globalStatistics: props.output.globalStatistics,
+      globalCounts: props.output.globalCounts,
+      status: undefined,
+      ...props.output.status
+    });
   }
 
   getCommandNodes<Parameters>(
@@ -251,12 +263,20 @@ export class GPULocalGeary implements GPUCommandNodeProducer {
       props.mask,
       props.output.statistic,
       props.output.globalStatistics,
+      props.output.globalCounts,
+      ...Object.values(props.output.status ?? {})
+    ]);
+    validateSpatialAutocorrelationBindings(graph, {...props, id}, [
+      props.output.statistic,
+      props.output.globalStatistics,
+      props.output.globalCounts,
       ...Object.values(props.output.status ?? {})
     ]);
     const statusNodes = getSpatialAutocorrelationStatusNodes(graph, id, 'GPULocalGeary', props);
     const rows = props.values.length;
     const inputs = getSpatialAutocorrelationInputNodes(graph, {
       ...props,
+      globalCounts: props.output.globalCounts,
       globalStatistics: props.output.globalStatistics,
       id,
       islands: this.islands,
@@ -264,7 +284,8 @@ export class GPULocalGeary implements GPUCommandNodeProducer {
     });
     inputs.nodes.push(
       ...dispatches.map(dispatch =>
-        createWGSLKernelNode(graph, {
+        createSpatialStatisticsRowNode(graph, {
+          rowBase: dispatch.rowStart,
           id: `${id}-statistic${dispatch.idSuffix}`,
           operation: 'GPULocalGeary',
           variant: 'local-geary',
@@ -277,11 +298,10 @@ export class GPULocalGeary implements GPUCommandNodeProducer {
             {name: 'result', view: props.output.statistic, type: 'f32', access: 'read_write'}
           ],
           declarations: `${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}
-${getSpatialAutocorrelationConstantsWGSL(rows, dispatch.weights.neighbors.length, dispatch.isWhole ? undefined : dispatch.rowStart)}
+const ROWS: u32 = ${rows}u;
+const MOMENTS: u32 = ${rows}u;
 const STANDARDIZE: bool = ${isGPUSpatialWeightsRowStandardized(props.weights)};`,
-          body: wrapGPUSpatialWeightsChunkBody(
-            dispatch,
-            `let focus = statistics[statisticsOffset + index];
+          body: `let focus = statistics[statisticsOffset + index];
   if (!isFiniteFloat(focus)) {
     result[resultOffset + index] = getQuietNaN(index);
     return;
@@ -294,7 +314,7 @@ const STANDARDIZE: bool = ${isGPUSpatialWeightsRowStandardized(props.weights)};`
     let difference = focus - other;
     sum += weight * difference * difference;
     weightSum += weight;`,
-    dispatch.rowStartWGSL
+    'WEIGHTS_ROW_START'
   )}
   if (STANDARDIZE && weightSum > 0.0) {
     // Row-standardized weights are divided by what remains of their row sum.
@@ -302,7 +322,6 @@ const STANDARDIZE: bool = ${isGPUSpatialWeightsRowStandardized(props.weights)};`
   }
   // A constant variable has no standardized values: the statistic is undefined, not zero.
   result[resultOffset + index] = select(getQuietNaN(index), sum / variance, variance > 0.0 && isFiniteFloat(variance));`
-          )
         })
       )
     );
@@ -468,6 +487,19 @@ function createEdgeAssociationNodes<Parameters>(
   props: GPUEdgeAssociationProps,
   operation: 'pearson' | GPUGammaOperation
 ): GPUCommandNode<Parameters>[] {
+  const dispatches = getGPUSpatialWeightsChunkDispatches(props.weights);
+  const chunkGroups = dispatches.map(dispatch =>
+    clamp(
+      Math.ceil(dispatch.rowCount / EDGE_ASSOCIATION_WORKGROUP_SIZE),
+      1,
+      EDGE_ASSOCIATION_MAXIMUM_GROUPS
+    )
+  );
+  const totalGroups = chunkGroups.reduce((sum, count) => sum + count, 0);
+  validateSpatialStatisticsBindings(graph, id, props, {
+    'converted values': props.values.length * 4,
+    'edge moment partials': totalGroups * EDGE_ASSOCIATION_PARTIAL_WORDS * 4
+  });
   validateGraphViewsBelongToGraph(id, graph, [
     ...getGPUSpatialWeightsOrChunksViews(props.weights),
     props.values,
@@ -483,15 +515,6 @@ function createEdgeAssociationNodes<Parameters>(
   // Each chunk reduces its own rows with up to EDGE_ASSOCIATION_MAXIMUM_GROUPS workgroups; the
   // partial regions of the chunks are consecutive, so the final fixed-order tree combines them in
   // chunk order. A whole CSR is one chunk.
-  const dispatches = getGPUSpatialWeightsChunkDispatches(props.weights);
-  const chunkGroups = dispatches.map(dispatch =>
-    clamp(
-      Math.ceil(dispatch.rowCount / EDGE_ASSOCIATION_WORKGROUP_SIZE),
-      1,
-      EDGE_ASSOCIATION_MAXIMUM_GROUPS
-    )
-  );
-  const totalGroups = chunkGroups.reduce((sum, count) => sum + count, 0);
   const partials = createTransientView(
     graph,
     `${id}-partials`,
@@ -517,17 +540,13 @@ function createEdgeAssociationNodes<Parameters>(
           ? 'abs(x - y)'
           : '0.0';
   const operationName = operation === 'pearson' ? 'GPUSpatialPearson' : 'GPUGammaStatistic';
-  const getDeclarations = (
-    dispatch: GPUSpatialWeightsChunkDispatch,
-    groups: number,
-    groupBase: number
-  ) => `${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}
+  const getDeclarations = () => `${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}
 const ROWS: u32 = ${rows}u;
-const CHUNK_ROWS: u32 = ${dispatch.rowCount}u;
-const ROW_START: u32 = ${dispatch.rowStart}u;
+var<private> CHUNK_ROWS: u32;
+var<private> ROW_START: u32;
 const LANES: u32 = ${EDGE_ASSOCIATION_WORKGROUP_SIZE}u;
-const GROUPS: u32 = ${groups}u;
-const GROUP_BASE: u32 = ${groupBase}u;
+var<private> GROUPS: u32;
+var<private> GROUP_BASE: u32;
 const TOTAL_GROUPS: u32 = ${totalGroups}u;
 const PARTIAL_WORDS: u32 = ${EDGE_ASSOCIATION_PARTIAL_WORDS}u;
 var<workgroup> sharedA: array<f32, ${EDGE_ASSOCIATION_WORKGROUP_SIZE}>;
@@ -585,16 +604,20 @@ var<workgroup> sharedC: array<f32, ${EDGE_ASSOCIATION_WORKGROUP_SIZE}>;
 
   // Workgroup g of a chunk strides the chunk's rows g * LANES + lane, step GROUPS * LANES.
   const momentsNodes = chunkPlans.map(({dispatch, groups, groupBase: base}) =>
-    createWGSLKernelNode(graph, {
+    createSpatialStatisticsCollectiveNode(graph, {
       id: `${id}-moments${dispatch.idSuffix}`,
       operation: operationName,
       variant: `${operation}-moments`,
       workgroupSize: EDGE_ASSOCIATION_WORKGROUP_SIZE,
       invocationCount: groups * EDGE_ASSOCIATION_WORKGROUP_SIZE,
-      guardIndex: false,
+      parameterValues: [dispatch.rowCount, dispatch.rowStart, groups, base],
       bindings: [...getEdgeBindings(dispatch), partialsBinding('read_write')],
-      declarations: getDeclarations(dispatch, groups, base),
-      body: filters(`let lane = localInvocationIndex;
+      declarations: getDeclarations(),
+      body: filters(`CHUNK_ROWS = getChunkParameter(36u);
+  ROW_START = getChunkParameter(37u);
+  GROUPS = getChunkParameter(38u);
+  GROUP_BASE = getChunkParameter(39u);
+  let lane = localInvocationIndex;
   let group = GROUP_BASE + index / LANES;
   var laneWeight = 0.0;
   var laneX = 0.0;
@@ -624,17 +647,21 @@ var<workgroup> sharedC: array<f32, ${EDGE_ASSOCIATION_WORKGROUP_SIZE}>;
   );
 
   const centeredNodes = chunkPlans.map(({dispatch, groups, groupBase: base}) =>
-    createWGSLKernelNode(graph, {
+    createSpatialStatisticsCollectiveNode(graph, {
       id: `${id}-centered${dispatch.idSuffix}`,
       operation: operationName,
       variant: `${operation}-centered`,
       workgroupSize: EDGE_ASSOCIATION_WORKGROUP_SIZE,
       invocationCount: groups * EDGE_ASSOCIATION_WORKGROUP_SIZE,
-      guardIndex: false,
+      parameterValues: [dispatch.rowCount, dispatch.rowStart, groups, base],
       // The moment words (0..2) are only read and the centered words (3..5) only written.
       bindings: [...getEdgeBindings(dispatch), partialsBinding('read_write')],
-      declarations: getDeclarations(dispatch, groups, base),
-      body: filters(`let lane = localInvocationIndex;
+      declarations: getDeclarations(),
+      body: filters(`CHUNK_ROWS = getChunkParameter(36u);
+  ROW_START = getChunkParameter(37u);
+  GROUPS = getChunkParameter(38u);
+  GROUP_BASE = getChunkParameter(39u);
+  let lane = localInvocationIndex;
   let group = GROUP_BASE + index / LANES;
   ${loadPartialsWGSL(0)}
   let weightTotal = sharedA[0];
@@ -681,7 +708,7 @@ var<workgroup> sharedC: array<f32, ${EDGE_ASSOCIATION_WORKGROUP_SIZE}>;
       partialsBinding('read'),
       {name: 'result', view: props.output.statistic, type: 'f32', access: 'read_write'}
     ],
-    declarations: getDeclarations(dispatches[0], chunkGroups[0], 0),
+    declarations: getDeclarations(),
     body: `let lane = localInvocationIndex;
   ${loadPartialsWGSL(0)}
   let weightTotal = sharedA[0];

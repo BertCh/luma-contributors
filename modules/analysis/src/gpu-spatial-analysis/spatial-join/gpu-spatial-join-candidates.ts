@@ -16,9 +16,9 @@ import {
 } from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {
   getStorageBindingElementLimit,
-  validateGraphViewsBelongToGraph,
   validatePowerOfTwo,
   validateCapacity,
+  validateFiniteNumber,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -50,8 +50,15 @@ import {
   type SpatialJoinCandidateTree
 } from './spatial-join-candidates';
 import {validateGPUCompactPairPort} from '../../analysis-core/contracts/index';
+import {
+  validateSpatialJoinBindings,
+  validateSpatialJoinReadWriteBindings
+} from './spatial-join-binding-preflight';
+import {validateGraphChunkGroupKernelSupport} from '../../analysis-core/kernels/graph-chunk-groups';
 
 const OPERATION = 'GPUSpatialJoinCandidates';
+/** Compile-time distance is emitted as an f32 literal; larger JS values round to infinity. */
+const GPU_SPATIAL_JOIN_CANDIDATES_MAXIMUM_DISTANCE = 3.4028234663852886e38;
 
 /**
  * Largest candidate pair capacity (`output.leftIds.length`) of {@link GPUSpatialJoinCandidates} on
@@ -153,6 +160,15 @@ export class GPUSpatialJoinCandidates implements GPUCommandNodeProducer {
     ) {
       throw new Error(`${id} distance must be finite and non-negative`);
     }
+    if (typeof props.distance === 'number') {
+      validateFiniteNumber(
+        id,
+        'distance',
+        props.distance,
+        0,
+        GPU_SPATIAL_JOIN_CANDIDATES_MAXIMUM_DISTANCE
+      );
+    }
     if (props.distance !== undefined && typeof props.distance !== 'number') {
       validateSinglePackedView(props.distance, ['float32'], `${id} distance`);
       if (props.distance.length < 1) {
@@ -190,7 +206,12 @@ export class GPUSpatialJoinCandidates implements GPUCommandNodeProducer {
       [
         ...getSpatialJoinGeometryViews(props.left),
         ...getSpatialJoinGeometryViews(props.right),
-        typeof props.distance === 'number' ? undefined : props.distance
+        typeof props.distance === 'number' ? undefined : props.distance,
+        ...Object.values(
+          prepared?.isDeclaredIn(props.left.positions.buffer.graph)
+            ? prepared.storage
+            : (prepared?.props.storage ?? {})
+        )
       ],
       [
         pairs.leftIds,
@@ -200,6 +221,23 @@ export class GPUSpatialJoinCandidates implements GPUCommandNodeProducer {
         pairs.status.requiredCount
       ]
     );
+    if (prepared)
+      validateSpatialJoinReadWriteBindings(
+        id,
+        [
+          (prepared.isDeclaredIn(props.left.positions.buffer.graph)
+            ? prepared.storage
+            : prepared.props.storage
+          )?.overflow
+        ],
+        [
+          pairs.leftIds,
+          pairs.rightIds,
+          pairs.status.count,
+          pairs.status.overflow,
+          pairs.status.requiredCount
+        ]
+      );
   }
 
   /** Returns bounds, optional BVH build, candidate probe and finalize nodes in order. */
@@ -208,17 +246,9 @@ export class GPUSpatialJoinCandidates implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, leftCount, rightCount, candidateCapacity} = this;
     const {left, right, prepared, output: pairs} = props;
-    validateGraphViewsBelongToGraph(id, graph, [
-      ...getSpatialJoinGeometryViews(left),
-      ...getSpatialJoinGeometryViews(right),
-      typeof props.distance === 'number' ? undefined : props.distance,
-      pairs.leftIds,
-      pairs.rightIds,
-      pairs.status.count,
-      pairs.status.overflow,
-      pairs.status.requiredCount
-    ]);
-    // Candidate pairs are stored as two words each in one scratch binding.
+    if (prepared && !prepared.isDeclaredIn(graph))
+      throw new Error(`${id} requires prepared to be added to the graph first`);
+    // Keep the public pair-capacity diagnostic before checking the allocation envelope.
     validateCapacity(
       id,
       'output.leftIds.length',
@@ -226,9 +256,32 @@ export class GPUSpatialJoinCandidates implements GPUCommandNodeProducer {
       1,
       getGPUSpatialJoinCandidatesMaximumPairCapacity(graph.device)
     );
-    if (prepared && !prepared.isDeclaredIn(graph)) {
-      throw new Error(`${id} requires prepared to be added to the graph first`);
-    }
+    const boundViews = [
+      ...getSpatialJoinGeometryViews(left),
+      ...getSpatialJoinGeometryViews(right),
+      typeof props.distance === 'number' ? undefined : props.distance,
+      pairs.leftIds,
+      pairs.rightIds,
+      pairs.status.count,
+      pairs.status.overflow,
+      pairs.status.requiredCount,
+      ...Object.values(prepared?.storage ?? {})
+    ];
+    validateSpatialJoinBindings(
+      graph,
+      id,
+      Object.fromEntries(boundViews.map((view, index) => [`binding[${index}]`, view])),
+      {
+        state: 16,
+        'left bounds and feature rings': leftCount * 8,
+        'right bounds and feature rings': prepared ? 0 : rightCount * 8,
+        'BVH node bounds/children': prepared ? 0 : (2 * this.leafCapacity - 1) * 8,
+        'BVH leaf IDs': prepared ? 0 : this.leafCapacity * 4,
+        'candidate pairs': candidateCapacity * 8,
+        'candidate probe counts/offsets/scan': leftCount * 4
+      }
+    );
+    validateGraphChunkGroupKernelSupport(graph, id, 8);
     const nodes: GPUCommandNode<Parameters>[] = [];
 
     const leftMinima = createTransientView(graph, `${id}-left-minima`, 'float32x2', leftCount);

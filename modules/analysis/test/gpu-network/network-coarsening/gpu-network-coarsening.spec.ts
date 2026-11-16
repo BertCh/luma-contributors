@@ -530,3 +530,178 @@ it('GPUNetworkCoarsening saturates a term too large for a fixed fixedPointScale'
   expectMatches(result, fixture);
   fixture.destroy();
 });
+
+it('coarsens above 65535 groups with separate source and target keys', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  if (!device) return;
+  const labels = new Uint32Array([0, 32768, 65536, 131071, 65536, 0]);
+  const csr = buildCoarseningCSR(6, [
+    [0, 1, 2],
+    [2, 1, 3],
+    [2, 1, 4],
+    [1, 3, 5],
+    [4, 5, 6],
+    [3, 2, 7],
+    [0, 0, 9]
+  ]);
+  for (const directed of [false, true]) {
+    for (const edgeCapacity of [2, 8]) {
+      const fixture = new Fixture(device, {
+        nodeCount: 6,
+        csr,
+        labels,
+        groupCapacity: 131072,
+        edgeCapacity,
+        directed,
+        weighted: true
+      });
+      try {
+        const result = await fixture.run();
+        expectMatches(result, fixture);
+        if (directed) {
+          // Independent expected tuple order, including two source IDs whose old packed keys collide.
+          expect(result.total).toBe(5);
+          expect(result.edgeIds.slice(0, result.count)).toEqual(
+            [0, 32768, 65536, 65536, 131071].slice(0, edgeCapacity)
+          );
+          expect(result.edgeTargets.slice(0, result.count)).toEqual(
+            [32768, 131071, 0, 32768, 65536].slice(0, edgeCapacity)
+          );
+          expect(result.edgeCounts.slice(0, result.count)).toEqual(
+            [1, 1, 1, 2, 1].slice(0, edgeCapacity)
+          );
+          expect(result.edgeWeights.slice(0, result.count)).toEqual(
+            [2, 5, 6, 7, 7].slice(0, edgeCapacity)
+          );
+        }
+        expect(result.groupVertexCount[65536]).toBe(2);
+        expect(result.groupVertexCount[0]).toBe(2);
+        expectMatches(await fixture.run(), fixture);
+      } finally {
+        fixture.destroy();
+      }
+    }
+  }
+});
+
+it('coarsening tuple runs cross 15/16, 255/256 and 511/512 with truncation and repeated encoding', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  if (!device) return;
+  const labels = new Uint32Array([0, 32768, 65536, 131071]);
+  for (const lengths of [
+    [18, 13],
+    [18, 240, 7, 257]
+  ]) {
+    const tuples = [
+      [0, 1],
+      [1, 2],
+      [2, 0],
+      [2, 3]
+    ];
+    const edges: [number, number, number][] = [];
+    for (const [group, length] of lengths.entries())
+      for (let row = 0; row < length; row++)
+        edges.push([tuples[group][0], tuples[group][1], 0.125]);
+    for (const edgeCapacity of [1, 6]) {
+      const fixture = new Fixture(device, {
+        nodeCount: 4,
+        csr: buildCoarseningCSR(4, edges),
+        labels,
+        groupCapacity: 131072,
+        edgeCapacity,
+        directed: true,
+        weighted: true
+      });
+      try {
+        for (let encoding = 0; encoding < 2; encoding++) {
+          const result = await fixture.run();
+          expectMatches(result, fixture);
+          const count = Math.min(edgeCapacity, lengths.length);
+          expect(result.total).toBe(lengths.length);
+          expect(result.count).toBe(count);
+          expect(result.edgeIds.slice(0, count)).toEqual([0, 32768, 65536, 65536].slice(0, count));
+          expect(result.edgeTargets.slice(0, count)).toEqual(
+            [32768, 65536, 0, 131071].slice(0, count)
+          );
+          expect(result.edgeCounts.slice(0, count)).toEqual(lengths.slice(0, count));
+          expect(result.edgeWeights.slice(0, count)).toEqual(
+            lengths.slice(0, count).map(length => length / 8)
+          );
+        }
+      } finally {
+        fixture.destroy();
+      }
+    }
+  }
+});
+
+it('coarsening shared edge buffers reject adjacent slices and accept aligned independent columns', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  if (!device) return;
+  for (const stride of [4, 256]) {
+    const graph = new GPUCommandGraph(device);
+    const buffers: Buffer[] = [];
+    const input = (name: string, values: Uint32Array) => {
+      const buffer = createInputBuffer(device, values);
+      buffers.push(buffer);
+      return importGraphBuffer(graph, name, buffer, 'uint32', values.length);
+    };
+    const output = (name: string, length: number) => {
+      const buffer = createOutputBuffer(device, length);
+      buffers.push(buffer);
+      return {buffer, view: importGraphBuffer(graph, name, buffer, 'uint32', length)};
+    };
+    const columns = output('shared-edge-columns', 129);
+    const count = output('shared-edge-count', 1);
+    const overflow = output('shared-edge-overflow', 1);
+    const groups = output('shared-group-counts', 131072);
+    const props = {
+      groupCapacity: 131072,
+      directed: true,
+      topology: {
+        offsets: input('shared-offsets', new Uint32Array([0, 1, 1])),
+        neighbors: input('shared-neighbors', new Uint32Array([1]))
+      },
+      labels: input('shared-labels', new Uint32Array([65536, 131071])),
+      output: {
+        groupNodeCount: groups.view,
+        edges: {
+          ids: graph.createDataView(columns.view.buffer, {format: 'uint32' as const, length: 1}),
+          status: {count: count.view, overflow: overflow.view}
+        },
+        edgeTargetGroups: graph.createDataView(columns.view.buffer, {
+          format: 'uint32' as const,
+          byteOffset: stride,
+          length: 1
+        }),
+        edgeCounts: graph.createDataView(columns.view.buffer, {
+          format: 'uint32' as const,
+          byteOffset: 512,
+          length: 1
+        })
+      }
+    };
+    try {
+      if (stride === 4) {
+        expect(() => new GPUNetworkCoarsening(props)).toThrow(/aligned binding byte ranges/);
+      } else {
+        graph.add(new GPUNetworkCoarsening(props));
+        const compiled = graph.compile();
+        try {
+          submitGraph(device, compiled, undefined);
+          const values = await readUint32(columns.buffer, 129);
+          expect([values[0], values[64], values[128]]).toEqual([65536, 131071, 1]);
+          expect(await readUint32(count.buffer, 1)).toEqual([1]);
+          expect(await readUint32(overflow.buffer, 1)).toEqual([0]);
+        } finally {
+          compiled.destroy();
+        }
+      }
+    } finally {
+      for (const buffer of buffers) buffer.destroy();
+    }
+  }
+});

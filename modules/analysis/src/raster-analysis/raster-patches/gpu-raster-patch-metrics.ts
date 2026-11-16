@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRasterStorageBindings} from '../raster-grid/raster-storage-preflight';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -21,7 +22,8 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateRequirement,
   validateGraphViewsBelongToGraph,
-  validateSinglePackedView
+  validateSinglePackedView,
+  getGraphOutputViews as getRasterPreflightOutputViews
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   resolveGPURasterContext,
@@ -218,6 +220,26 @@ export class GPURasterPatchMetrics implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    const storageProps = this.props;
+    const storageCellCount = storageProps.grid.width * storageProps.grid.height;
+    validateRasterStorageBindings(
+      graph,
+      this.id,
+      [
+        ...getPatchLabelViews(storageProps),
+        storageProps.output.areas || storageProps.output.perimeters
+          ? storageProps.parameters
+          : undefined,
+        ...getRasterPreflightOutputViews(storageProps.output)
+      ],
+      {
+        'patch keys': storageCellCount * 4,
+        'patch scalar planes': this.patchCapacity * 4,
+        'patch guard state':
+          storageProps.status?.converged || storageProps.status?.overflow ? 16 : 0
+      }
+    );
+
     const {id, props, patchCapacity} = this;
     const {output} = props;
     const {width, height} = props.grid;

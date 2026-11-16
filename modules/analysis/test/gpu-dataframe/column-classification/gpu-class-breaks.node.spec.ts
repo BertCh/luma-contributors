@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {createTransientView, GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {expect, it} from 'vitest';
 import {
   getGPUClassBreaksParameterLength,
@@ -151,7 +151,11 @@ it('GPUClassBreaks validates its views and options', () => {
   const graph = createGraph();
   const props = createProps(graph);
   expect(
-    () => new GPUClassBreaks({...props, output: {...props.output, classCount: props.mask!}})
+    () =>
+      new GPUClassBreaks({
+        ...props,
+        output: {...props.output, classCount: props.mask as GraphDataView<'uint32'>}
+      })
   ).toThrow(/share buffers/);
 });
 
@@ -292,11 +296,11 @@ it('GPUClassBreaks natural-breaks rounds and the second coarse stage share their
     ...createProps(graph, {methods: ['natural-breaks']}, 100, 12),
     id: 'nb'
   }).getCommandNodes(graph);
-  // Eight rounds of two half-rounds compile five kernels: advance, plan, clear, accumulate, solve.
+  // Eight rounds of two half-rounds share advance, row-arm, plan, clear, accumulate, and solve.
   const halfRoundPipelines = getGPUCommandNodePipelineKeys(nodes, {
     idPattern: /^nb-natural-breaks-refine-\d+-/
   });
-  expect(halfRoundPipelines.size).toBe(5);
+  expect(halfRoundPipelines.size).toBe(6);
   const halfRounds = new Set(
     getGPUCommandNodeKernelSources(nodes)
       .map(({id}) => /refine-(\d+)-/.exec(id)?.[1])

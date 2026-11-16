@@ -6,3 +6,9 @@ export {GPUSegregation, GPU_SEGREGATION_MAXIMUM_GROUPS} from './gpu-segregation'
 export type {GPUSegregationOutput, GPUSegregationProps} from './gpu-segregation';
 export {getGPUSegregationLayout} from './segregation-layout';
 export type {GPUSegregationLayout} from './segregation-layout';
+
+export {
+  getGPUSegregationParameterValues,
+  GPU_SEGREGATION_PARAMETER_LENGTH
+} from './segregation-parameters';
+export type {GPUSegregationSettings} from './segregation-parameters';

@@ -91,7 +91,10 @@ describe('GPULocalPermutationReplay', () => {
     ] as const) {
       const {graph, replay} = createReplay({}, {statistic});
       const [setup] = getGPUCommandNodeKernelSources(replay.getCommandNodes(graph));
-      expect(setup.source.includes('negativeCount[negativeCountOffset] == 0.0'), statistic).toBe(
+      expect(setup.source.includes('negativeCount[negativeCountOffset] == 0u'), statistic).toBe(
+        expected
+      );
+      expect(setup.source.includes('var<storage, read> negativeCount: array<u32>'), statistic).toBe(
         expected
       );
       graph.device.destroy();

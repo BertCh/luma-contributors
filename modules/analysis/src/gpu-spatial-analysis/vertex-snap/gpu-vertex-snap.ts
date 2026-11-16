@@ -11,7 +11,6 @@ import {
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {IS_NAN_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
@@ -35,6 +34,9 @@ const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
 
 /** Reference count above which the global mode searches a BVH instead of scanning every row. */
 const BVH_MINIMUM_REFERENCES = 64;
+
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateSegmentBVHScratch} from '../segment-intersection/segment-storage-validation';
 
 const OPERATION = 'GPUVertexSnap';
 
@@ -207,16 +209,24 @@ export class GPUVertexSnap implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.positions,
-      props.referencePositions,
-      props.featureOffsets,
-      props.referenceOffsets,
-      props.parameters,
-      props.output.positions,
-      props.output.referenceRows
-    ]);
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(
+        [
+          props.positions,
+          props.referencePositions,
+          props.featureOffsets,
+          props.referenceOffsets,
+          props.parameters,
+          props.output.positions,
+          props.output.referenceRows
+        ].map((view, index) => [String(index), view])
+      )
+    );
     const pairwise = Boolean(props.featureOffsets && props.referenceOffsets);
+    if (!pairwise && props.referencePositions.length > BVH_MINIMUM_REFERENCES)
+      validateSegmentBVHScratch(graph, id, props.referencePositions.length);
     let bvhInternalNodeCount = 0;
     const bindings: WGSLKernelBinding[] = [
       {name: 'positions', view: props.positions, type: 'f32', access: 'read'},

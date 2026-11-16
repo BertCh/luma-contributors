@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateNetworkViewBindings, getNetworkPhysicalBuffer} from '../network-view-utils';
 import {
   createTransientView,
   GPUScan,
@@ -14,7 +15,6 @@ import type {GPUCompactOutput} from '../../analysis-core/kernels/gpu-contributor
 import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
-  validateGraphViewsBelongToGraph,
   validateCompactOutput,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
@@ -243,7 +243,7 @@ export class GPUNetworkPathExtraction implements GPUCommandNodeProducer {
       edges?.output.lineOffsets
     ]
       .filter(view => view !== undefined)
-      .map(view => view.buffer);
+      .map(getNetworkPhysicalBuffer);
     const inputs = [
       props.predecessors,
       props.costs,
@@ -255,7 +255,7 @@ export class GPUNetworkPathExtraction implements GPUCommandNodeProducer {
       edges?.edgeIds
     ]
       .filter(view => view !== undefined)
-      .map(view => view.buffer);
+      .map(getNetworkPhysicalBuffer);
     if (
       new Set(outputs).size !== outputs.length ||
       outputs.some(buffer => inputs.includes(buffer))
@@ -270,7 +270,13 @@ export class GPUNetworkPathExtraction implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, maximumPathLength} = this;
     const {edges, output} = props;
-    validateGraphViewsBelongToGraph(id, graph, getViews(props));
+    validateNetworkViewBindings(id, graph, getViews(props), {
+      totals: 4,
+      status: props.targets.length > 0 ? 8 : 0,
+      // Scan hierarchy buffers have at most one word per target.
+      targetColumns: props.targets.length * 4,
+      linkColumns: edges && props.targets.length > 0 ? edges.output.ids.length * 4 : 0
+    });
     const nodeCount = props.predecessors.length;
     const targetCapacity = props.targets.length;
     const nodeTotal = createTransientView(graph, `${id}-node-total`, 'uint32', 1);

@@ -257,7 +257,9 @@ describe('GPUPeriodIndex validation', () => {
       graph.add(new GPUPeriodIndex({...props, id: `period-index-${rows}`}));
     };
     expect(() => build(limit)).not.toThrow();
-    expect(() => build(limit + 1)).toThrow(/timestamps needs 134217736 bytes in one binding/);
+    expect(() => build(limit + 1)).toThrow(
+      /timestamps chunk 0 needs 134217736 bytes in one binding/
+    );
     device.destroy();
   });
 
@@ -271,11 +273,13 @@ describe('GPUPeriodIndex validation', () => {
     });
     expect(withStatus.getCommandNodes(graph).map(node => node.id)).toEqual([
       'period-index-clear-invalid-count',
-      'period-index-periods'
+      'period-index-periods-chunk-0'
     ]);
-    expect(new GPUPeriodIndex(props).getCommandNodes(graph).map(node => node.id)).toEqual([
-      'period-index-periods'
-    ]);
+    expect(
+      new GPUPeriodIndex({...props, id: 'without-status'})
+        .getCommandNodes(graph)
+        .map(node => node.id)
+    ).toEqual(['without-status-periods-chunk-0']);
     device.destroy();
   });
 });

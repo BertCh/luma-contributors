@@ -274,6 +274,14 @@ export const ENTRY_POINT_OPERATOR_DETAILS: Readonly<Record<string, EntryPointOpe
     documentation: 'docs/api/gpu-network/operators.md',
     dimensionality: 'topology'
   },
+  GPUNetworkCentralityScheduleStep: {
+    package: `${PACKAGE}/gpu-network`,
+    summary: 'Accumulates fixed-capacity pivot batches across reusable centrality submissions.',
+    tests:
+      'modules/analysis/test/gpu-network/network-centrality/network-centrality-schedule.node.spec.ts',
+    documentation: 'docs/api/gpu-network/operators.md',
+    dimensionality: 'topology'
+  },
   GPUNetworkLouvain: {
     package: `${PACKAGE}/gpu-network`,
     summary:
@@ -284,7 +292,8 @@ export const ENTRY_POINT_OPERATOR_DETAILS: Readonly<Record<string, EntryPointOpe
   },
   GPUNetworkFlow: {
     package: `${PACKAGE}/gpu-network`,
-    summary: 'Successive shortest augmenting paths with explicit reverse arcs.',
+    summary:
+      'Successive shortest augmenting paths with explicit reverse arcs; opt-in primal-dual batches costed paths.',
     tests:
       'modules/analysis/test/gpu-network/network-optimization/gpu-network-optimization.spec.ts',
     documentation: 'docs/api/gpu-network/network-movement-coverage.md',
@@ -1008,7 +1017,7 @@ export const ENTRY_POINT_OPERATOR_DETAILS: Readonly<Record<string, EntryPointOpe
   GPURasterZonalStatistics: {
     package: `${PACKAGE}/raster-analysis`,
     summary:
-      'Computes per-zone count, sum, mean, minimum, and maximum of a raster band, where zones are a pre-rasterized grid of dense zone IDs.',
+      'Computes per-zone count, sum, mean, minimum, and maximum of a raster band, where zones are a pre-rasterized uint32 ID grid, optionally mapped through a sparse zone dictionary.',
     tests:
       'modules/analysis/test/gpu-raster/raster-zonal-statistics/gpu-raster-zonal-statistics.spec.ts',
     documentation: 'docs/api/gpu-raster/operations-analysis.md',

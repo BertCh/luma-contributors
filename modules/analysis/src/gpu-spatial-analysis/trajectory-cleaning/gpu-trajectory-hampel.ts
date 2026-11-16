@@ -3,6 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  validateTrajectoryBindings,
+  validateTrajectoryWritableDispatches,
+  validateTrajectoryOutputRanges
+} from '../trajectory-analysis/trajectory-binding-validation';
+import {
   createTransientView,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -48,7 +53,7 @@ export function getGPUTrajectoryHampelParameterValues(
   settings: GPUTrajectoryHampelSettings,
   target: Float32Array = new Float32Array(GPU_TRAJECTORY_HAMPEL_PARAMETER_LENGTH)
 ): Float32Array {
-  if (!Number.isFinite(settings.numberOfSigmas) || settings.numberOfSigmas < 0) {
+  if (!Number.isFinite(Math.fround(settings.numberOfSigmas)) || settings.numberOfSigmas < 0) {
     throw new Error('Hampel numberOfSigmas must be finite and non-negative');
   }
   target.set([settings.numberOfSigmas, 0, 0, 0]);
@@ -127,6 +132,10 @@ export class GPUTrajectoryHampel implements GPUCommandNodeProducer {
         'output.outlierCount must contain one uint32 row'
       );
     }
+    validateTrajectoryOutputRanges(this.id, this.props.output);
+    validateTrajectoryWritableDispatches(this.id, [
+      {filtered: output.filtered, flags: output.flags, outlierCount: output.outlierCount}
+    ]);
     validateGraphOutputsDisjointFromInputs(
       id,
       [output.filtered, output.flags, output.outlierCount],
@@ -155,6 +164,7 @@ export class GPUTrajectoryHampel implements GPUCommandNodeProducer {
       rowCount * 4,
       'split the tracks over several graphs'
     );
+    validateTrajectoryBindings(graph, this.id, this.props);
     const windowLength = 2 * halfWindow + 1;
     const rowStarts = createTransientView(graph, `${id}-row-starts`, 'uint32', rowCount);
     const rowEnds = createTransientView(graph, `${id}-row-ends`, 'uint32', rowCount);

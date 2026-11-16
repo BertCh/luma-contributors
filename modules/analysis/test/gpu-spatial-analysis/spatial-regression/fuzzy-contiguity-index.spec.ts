@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {createTransientView, GPUCommandGraph, GPUSort} from '@luma.gl/graph/gpu-core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {it, expect} from 'vitest';
 import type {Buffer} from '@luma.gl/core';
@@ -16,6 +16,9 @@ import {
 } from '../../utils/gpu-contributor-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
 import {GPUFuzzyContiguity} from '../../../src/gpu-spatial-analysis/spatial-weights/gpu-fuzzy-contiguity';
+import {getFuzzyContiguityPairSortNodes} from '../../../src/gpu-spatial-analysis/spatial-weights/gpu-fuzzy-contiguity-pair-sort';
+import {createWGSLKernelNode} from '../../../src/analysis-core/kernels/wgsl-kernel-nodes';
+import {getFuzzyContiguityOffsetNodes} from '../../../src/gpu-spatial-analysis/spatial-weights/gpu-fuzzy-contiguity-csr';
 
 type Point = [number, number];
 /** One feature: polygons of rings of points; an empty array is an empty feature. */
@@ -443,34 +446,299 @@ it('indexed fuzzy contiguity matches a brute-force reference above the former 51
   expect(expectedAdded.flat()).toContain(1);
 });
 
-it('fuzzy contiguity rejects more features than its documented limit', async () => {
+it.each([
+  65536, 65537
+])('fuzzy pair sorting matches the legacy packed uint32 path with %i possible rows', async rows => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);
   const graph = new GPUCommandGraph(device);
-  let serial = 0;
-  const view = <Format extends 'float32' | 'float32x2' | 'uint32'>(
-    format: Format,
-    length: number
-  ) => createTransientView(graph, `view-${serial++}`, format, length);
-  expect(
-    () =>
-      new GPUFuzzyContiguity({
-        polygons: {
-          kind: 'polygons',
-          positions: view('float32x2', 16),
-          featureOffsets: view('uint32', 65538),
-          polygonOffsets: view('uint32', 5),
-          ringOffsets: view('uint32', 5)
-        },
-        tolerance: TOLERANCE,
-        output: {
-          offsets: view('uint32', 65538),
-          neighbors: view('uint32', 8),
-          weights: view('float32', 8),
-          added: view('uint32', 8),
-          featureStatus: view('uint32', 65537),
-          status: {overflow: view('uint32', 1)}
-        }
+  // The same input exercises the packed shared route and the two-pass route. Duplicate keys
+  // carry distinct attribute slots, and unused slots must stay after every emitted pair.
+  const pairRows = [65535, 0, 7, 65535, 7, 7, 0xffffffff, 0xffffffff];
+  const pairNeighbors = [0, 65535, 65535, 7, 0, 0, 0xffffffff, 0xffffffff];
+  const length = pairRows.length;
+  const buffers: Buffer[] = [];
+  let compiled: ReturnType<typeof graph.compile> | undefined;
+  try {
+    const input = (name: string, data: number[]) => {
+      const buffer = createInputBuffer(device, Uint32Array.from(data));
+      buffers.push(buffer);
+      return importGraphBuffer(graph, name, buffer, 'uint32', length);
+    };
+    const rowView = input('pair-rows', pairRows);
+    const neighborView = input('pair-neighbors', pairNeighbors);
+    const legacyKeys = input(
+      'legacy-keys',
+      pairRows.map((row, index) => ((row << 16) | pairNeighbors[index]) >>> 0)
+    );
+    const indices = input(
+      'indices',
+      pairRows.map((_, index) => index)
+    );
+    const legacyBuffer = createOutputBuffer(device, length);
+    const currentBuffer = createOutputBuffer(device, length);
+    buffers.push(legacyBuffer, currentBuffer);
+    const legacyOutput = importGraphBuffer(graph, 'legacy-output', legacyBuffer, 'uint32', length);
+    const currentOutput = importGraphBuffer(
+      graph,
+      'current-output',
+      currentBuffer,
+      'uint32',
+      length
+    );
+    const sorted = getFuzzyContiguityPairSortNodes(graph, {
+      id: 'pair-sort',
+      rows,
+      pairRows: rowView,
+      pairNeighbors: neighborView
+    });
+    graph.add([
+      ...new GPUSort({
+        id: 'legacy-sort',
+        keys: legacyKeys,
+        values: indices,
+        outputKeys: createTransientView(graph, 'legacy-sorted-keys', 'uint32', length),
+        outputValues: legacyOutput,
+        algorithm: 'radix',
+        keyBits: 32
+      }).getCommandNodes(graph),
+      ...sorted.nodes,
+      createWGSLKernelNode(graph, {
+        id: 'copy-pair-order',
+        operation: 'FuzzyPairSortTest',
+        variant: 'copy',
+        invocationCount: length,
+        bindings: [
+          {name: 'sortedIndices', view: sorted.sortedIndices, type: 'u32', access: 'read'},
+          {name: 'output', view: currentOutput, type: 'u32', access: 'read_write'}
+        ],
+        body: 'output[outputOffset + index] = sortedIndices[sortedIndicesOffset + index];'
       })
-  ).toThrow(/^fuzzy-contiguity features must be an integer in \[1, 65536\]$/);
+    ]);
+    compiled = graph.compile();
+    submitGraph(device, compiled, undefined);
+    const legacyOrder = await readUint32(legacyBuffer, length);
+    expect(await readUint32(currentBuffer, length)).toEqual(legacyOrder);
+    expect(legacyOrder).toEqual([1, 4, 5, 2, 0, 3, 6, 7]);
+  } finally {
+    compiled?.destroy();
+    for (const buffer of buffers) buffer.destroy();
+  }
+});
+
+it('fuzzy contiguity builds identical sorted CSR rows above 65536 features and vertices', async () => {
+  const rows = 65538;
+  // Reverse spatial order: Morton traversal emits high IDs before low IDs. Dyadic coordinates
+  // give exactly 0.25 separation, and only consecutive spatial features can be neighbors.
+  const features: Feature[] = Array.from({length: rows}, (_, row) => [
+    [square((rows - 1 - row) * 1.25, 0, 1)]
+  ]);
+  const required = 2 * (rows - 1);
+  const result = await runFuzzyContiguity(features, 0.25, required + 17);
+  const expectedNeighbors = features.map((_, row) => [
+    ...(row > 0 ? [row - 1] : []),
+    ...(row + 1 < rows ? [row + 1] : [])
+  ]);
+  const expectedOffsets = [0];
+  for (const neighbors of expectedNeighbors)
+    expectedOffsets.push(expectedOffsets[expectedOffsets.length - 1] + neighbors.length);
+  expect(result.featureStatus).toEqual(new Array(rows).fill(0));
+  expect(result.requiredCount).toBe(required);
+  expect(result.overflow).toBe(0);
+  expect(result.offsets).toEqual(expectedOffsets);
+  expect(result.neighborRows).toEqual(expectedNeighbors);
+  expect(result.distances).toEqual(new Array(required).fill(0.25));
+  expect(result.added).toEqual(new Array(required).fill(1));
+  expect(result.weights).toEqual(new Array(required).fill(1));
+}, 120000);
+
+it.each([
+  9, 2
+])('wide-key fuzzy contiguity permutes mixed distances and clips within a row (%i slots)', async capacity => {
+  const rows = 65538;
+  const features: Feature[] = Array.from({length: rows}, () => []);
+  // Spatial order differs from row order on both sides of the 16-bit boundary. In row 11,
+  // traversal sees touching row 65537 before separated row 65536, reversing sorted CSR order.
+  features[65537] = [[square(0, 0, 1)]];
+  features[11] = [[square(1, 0, 1)]];
+  features[65536] = [[square(2.125, 0, 1)]];
+  features[3] = [[square(3.375, 0, 1)]];
+  features[7] = [[square(20, 0, 1)]];
+  const expected = new Map<number, [number, number][]>([
+    [3, [[65536, 0.25]]],
+    [
+      11,
+      [
+        [65536, 0.125],
+        [65537, 0]
+      ]
+    ],
+    [
+      65536,
+      [
+        [3, 0.25],
+        [11, 0.125]
+      ]
+    ],
+    [65537, [[11, 0]]]
+  ]);
+  const result = await runFuzzyContiguity(features, 0.5, capacity);
+  expect(result.featureStatus).toEqual(features.map(feature => (feature.length ? 0 : 1)));
+  expect(result.requiredCount).toBe(6);
+  expect(result.overflow).toBe(capacity < 6 ? 1 : 0);
+  let used = 0;
+  const expectedOffsets = [0];
+  for (let row = 0; row < rows; row++) {
+    const accepted = expected.get(row) ?? [];
+    const keptCount = Math.min(accepted.length, capacity - used);
+    expect(result.neighborRows[row]).toHaveLength(keptCount);
+    if (keptCount === accepted.length) {
+      expect(result.neighborRows[row]).toEqual(accepted.map(([neighbor]) => neighbor));
+    }
+    for (const [position, neighbor] of result.neighborRows[row].entries()) {
+      const edge = accepted.find(([candidate]) => candidate === neighbor);
+      expect(edge).toBeDefined();
+      expect(result.distances[used + position]).toBe(edge![1]);
+      expect(result.added[used + position]).toBe(edge![1] > 0 ? 1 : 0);
+      expect(result.weights[used + position]).toBe(1);
+    }
+    used += keptCount;
+    expectedOffsets.push(used);
+  }
+  expect(result.offsets).toEqual(expectedOffsets);
+  if (capacity >= 6) {
+    expect(result.distances).toEqual([0.25, 0.125, 0, 0.25, 0.125, 0]);
+    expect(result.added).toEqual([1, 1, 0, 1, 1, 0]);
+  } else {
+    expect(result.neighborRows[11]).toHaveLength(1);
+    expect([65536, 65537]).toContain(result.neighborRows[11][0]);
+  }
+}, 120000);
+
+it.each([
+  255, 256, 257, 511, 512, 513
+])('wide pair sort preserves duplicate attributes across workgroup boundaries (%i slots)', async length => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const graph = new GPUCommandGraph(device);
+  const buffers: Buffer[] = [];
+  let compiled: ReturnType<typeof graph.compile> | undefined;
+  try {
+    // Every key repeats after 28 slots, spanning radix workgroups. Sentinels occur throughout
+    // the incoming permutation and at the end; they must sort last and retain their own order.
+    const pairs = Array.from({length}, (_, index) =>
+      index % 73 === 0 || index >= length - 5
+        ? [0xffffffff, 0xffffffff]
+        : [index % 4 === 0 ? 65536 : index % 4, (index % 7) * 3]
+    );
+    const attributes = pairs.map((_, index) => (index % 5 === 0 ? 0 : index / 1024));
+    const input = (id: string, data: Uint32Array | Float32Array) => {
+      const buffer = createInputBuffer(device, data);
+      buffers.push(buffer);
+      return importGraphBuffer(graph, id, buffer, 'uint32', length);
+    };
+    const pairRows = input('rows', Uint32Array.from(pairs.map(pair => pair[0])));
+    const pairNeighbors = input('neighbors', Uint32Array.from(pairs.map(pair => pair[1])));
+    const distanceBits = input('distance-bits', Float32Array.from(attributes));
+    const orderBuffer = createOutputBuffer(device, length);
+    const distanceBuffer = createOutputBuffer(device, length);
+    buffers.push(orderBuffer, distanceBuffer);
+    const order = importGraphBuffer(graph, 'order', orderBuffer, 'uint32', length);
+    const distances = importGraphBuffer(graph, 'distances', distanceBuffer, 'uint32', length);
+    const sorted = getFuzzyContiguityPairSortNodes(graph, {
+      id: 'pair-sort',
+      rows: 65537,
+      pairRows,
+      pairNeighbors
+    });
+    graph.add([
+      ...sorted.nodes,
+      createWGSLKernelNode(graph, {
+        id: 'gather-attributes',
+        operation: 'FuzzyPairSortTest',
+        variant: 'gather',
+        invocationCount: length,
+        bindings: [
+          {name: 'indices', view: sorted.sortedIndices, type: 'u32', access: 'read'},
+          {name: 'distanceBits', view: distanceBits, type: 'u32', access: 'read'},
+          {name: 'order', view: order, type: 'u32', access: 'read_write'},
+          {name: 'distances', view: distances, type: 'u32', access: 'read_write'}
+        ],
+        body: `let original = indices[indicesOffset + index];
+order[orderOffset + index] = original;
+distances[distancesOffset + index] = distanceBits[distanceBitsOffset + original];`
+      })
+    ]);
+    compiled = graph.compile();
+    submitGraph(device, compiled, undefined);
+    const expected = pairs
+      .map((_, index) => index)
+      .sort((left, right) => pairs[left][0] - pairs[right][0] || pairs[left][1] - pairs[right][1]);
+    expect(await readUint32(orderBuffer, length)).toEqual(expected);
+    expect(await readFloat32(distanceBuffer, length)).toEqual(
+      expected.map(index => attributes[index])
+    );
+  } finally {
+    compiled?.destroy();
+    for (const buffer of buffers) buffer.destroy();
+  }
+});
+
+it('fuzzy CSR keeps monotonic offsets and its first eight pairs after a uint32 count overflow', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const rows = 65537;
+  const capacity = 8;
+  const graph = new GPUCommandGraph(device);
+  const countBuffer = createInputBuffer(device, new Uint32Array(rows).fill(65536));
+  const offsetBuffer = createOutputBuffer(device, rows + 1);
+  const slotBuffer = createOutputBuffer(device, capacity);
+  const overflowBuffer = createOutputBuffer(device, 1);
+  const requiredBuffer = createOutputBuffer(device, 1);
+  const buffers = [countBuffer, offsetBuffer, slotBuffer, overflowBuffer, requiredBuffer];
+  let compiled: ReturnType<typeof graph.compile> | undefined;
+  try {
+    slotBuffer.write(new Uint32Array(capacity).fill(0xdeadbeef));
+    const counts = importGraphBuffer(graph, 'counts', countBuffer, 'uint32', rows);
+    const offsets = importGraphBuffer(graph, 'offsets', offsetBuffer, 'uint32', rows + 1);
+    const slots = importGraphBuffer(graph, 'slots', slotBuffer, 'uint32', capacity);
+    const overflow = importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1);
+    const requiredCount = importGraphBuffer(graph, 'required-count', requiredBuffer, 'uint32', 1);
+    graph.add([
+      ...getFuzzyContiguityOffsetNodes(graph, {
+        id: 'synthetic',
+        counts,
+        offsets,
+        slots,
+        overflow,
+        requiredCount
+      }),
+      createWGSLKernelNode(graph, {
+        id: 'emit-prefix',
+        operation: 'FuzzyCountScanTest',
+        variant: 'emit',
+        invocationCount: rows,
+        bindings: [
+          {name: 'offsets', view: offsets, type: 'u32', access: 'read'},
+          {name: 'slots', view: slots, type: 'u32', access: 'read_write'}
+        ],
+        // This deliberately follows row emission: a wrapped final row would overwrite row zero.
+        body: `let begin = offsets[offsetsOffset + index];
+let end = offsets[offsetsOffset + index + 1u];
+for (var slot = begin; slot < end; slot++) { slots[slotsOffset + slot] = index; }`
+      })
+    ]);
+    compiled = graph.compile();
+    submitGraph(device, compiled, undefined);
+    expect(await readUint32(offsetBuffer, rows + 1)).toEqual([
+      0,
+      ...new Array(rows).fill(capacity)
+    ]);
+    expect(await readUint32(slotBuffer, capacity)).toEqual(new Array(capacity).fill(0));
+    expect(await readUint32(requiredBuffer, 1)).toEqual([0xffffffff]);
+    expect(await readUint32(overflowBuffer, 1)).toEqual([1]);
+  } finally {
+    compiled?.destroy();
+    for (const buffer of buffers) buffer.destroy();
+  }
 });

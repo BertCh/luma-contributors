@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  validateNetworkViewBindings,
+  validateNetworkWritableViews,
+  validateNetworkOutputsDisjointFromInputs
+} from '../network-view-utils';
+
 import type {Device} from '@luma.gl/core';
 import {
   createTransientView,
@@ -15,7 +21,6 @@ import {
   getStorageBindingElementLimit,
   validateCapacity,
   validateMaximumCount,
-  validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
@@ -44,7 +49,8 @@ import {
   createFrontierState,
   getFrontierPhaseLayout,
   getFrontierPhaseMaximumStamp,
-  type FrontierPhase
+  type FrontierPhase,
+  FRONTIER_DISPATCH_SLOT_WORDS
 } from './network-frontier';
 
 /** Sentinel written for "no predecessor" and "no band" (unreached or beyond the last threshold). */
@@ -295,11 +301,36 @@ export class GPUNetworkReachability implements GPUCommandNodeProducer {
 
   /**
    * @throws If a view has the wrong format or length, an option is out of range, or an output
-   * shares a buffer with another output or an input.
+   * overlaps another output, or shares a read-only/writable binding with an input.
    */
   constructor(props: GPUNetworkReachabilityProps) {
     this.id = props.id ?? 'network-reachability';
     this.props = props;
+    const writable = props.output;
+    validateNetworkWritableViews(this.id, writable, [
+      {
+        outputs: {
+          converged: writable.status?.converged,
+          iterationCount: writable.status?.iterationCount,
+          relaxationCount: writable.status?.relaxationCount,
+          reachedEdgeCount: writable.status?.reachedEdgeCount
+        }
+      },
+      {
+        outputs: {predecessors: writable.predecessors},
+        inputs: {costs: writable.costs}
+      },
+      {outputs: {bands: writable.bands}, inputs: {costs: writable.costs}},
+      {
+        outputs: {unresolvedCount: writable.unresolvedCount},
+        inputs: {costs: writable.costs, predecessors: writable.predecessors}
+      },
+      {outputs: {bandCounts: writable.bandCounts}, inputs: {bands: writable.bands}},
+      {
+        outputs: {iterationLimitReached: writable.status?.iterationLimitReached},
+        inputs: {converged: writable.status?.converged}
+      }
+    ]);
     this.maximumIterations = props.maximumIterations ?? DEFAULT_MAXIMUM_ITERATIONS;
     this.localIterations = props.localIterations ?? DEFAULT_LOCAL_ITERATIONS;
     this.maximumTieIterations = props.maximumTieIterations ?? DEFAULT_MAXIMUM_TIE_ITERATIONS;
@@ -426,21 +457,7 @@ export class GPUNetworkReachability implements GPUCommandNodeProducer {
     if (output.unresolvedCount && !output.predecessors) {
       throw new Error(`${id} output.unresolvedCount requires output.predecessors`);
     }
-    const outputs = [
-      output.costs,
-      output.predecessors,
-      output.bands,
-      output.bandCounts,
-      output.status?.converged,
-      output.unresolvedCount,
-      output.status?.iterationCount,
-      output.status?.iterationLimitReached,
-      output.status?.relaxationCount,
-      output.status?.reachedEdgeCount
-    ]
-      .filter(view => view !== undefined)
-      .map(view => view.buffer);
-    const inputs = [
+    validateNetworkOutputsDisjointFromInputs(id, getNetworkOutputViews(output), [
       ...getGPUNetworkTopologyViews(props.topology),
       props.startNodes,
       props.startCosts,
@@ -448,15 +465,7 @@ export class GPUNetworkReachability implements GPUCommandNodeProducer {
       props.activeIterations,
       props.costLimit,
       props.costBreaks
-    ]
-      .filter(view => view !== undefined)
-      .map(view => view.buffer);
-    if (
-      new Set(outputs).size !== outputs.length ||
-      outputs.some(buffer => inputs.includes(buffer))
-    ) {
-      throw new Error(`${id} outputs must use separate buffers from each other and from inputs`);
-    }
+    ]);
   }
 
   /**
@@ -471,7 +480,7 @@ export class GPUNetworkReachability implements GPUCommandNodeProducer {
     const {id, props, maximumIterations, localIterations} = this;
     const {output} = props;
     const {offsets, neighbors, weights} = props.topology;
-    validateGraphViewsBelongToGraph(id, graph, getViews(props));
+    validateNetworkViewBindings(id, graph, getViews(props));
     const nodeCount = output.costs.length;
     validateMaximumCount(
       id,
@@ -506,6 +515,16 @@ export class GPUNetworkReachability implements GPUCommandNodeProducer {
     const phaseControlWordCount =
       layout.controlWordCount + (hasTiePhase ? tieLayout.controlWordCount : 0);
     const counterWordOffset = hasCounters ? phaseControlWordCount : undefined;
+    validateNetworkViewBindings(id, graph, [], {
+      frontier: nodeCount * 8,
+      control:
+        (phaseControlWordCount + (hasCounters ? NETWORK_REACHABILITY_COUNTER_WORD_COUNT : 0)) * 4,
+      dispatch:
+        (layout.dispatchSlotCount + (hasTiePhase ? tieLayout.dispatchSlotCount : 0)) *
+        FRONTIER_DISPATCH_SLOT_WORDS *
+        4,
+      tieBits: hasTiePhase ? Math.max(1, Math.ceil(neighbors.length / 32)) * 4 : 4
+    });
     const state = createFrontierState(graph, id, {
       nodeCount,
       controlWordCount:
@@ -760,6 +779,15 @@ function getViews(props: GPUNetworkReachabilityProps): (GraphDataView | undefine
     props.activeIterations,
     props.costLimit,
     props.costBreaks,
+    ...getNetworkOutputViews(output)
+  ];
+}
+
+/** Every caller-owned writable field, including optional status counters. */
+function getNetworkOutputViews(
+  output: GPUNetworkReachabilityProps['output']
+): (GraphDataView | undefined)[] {
+  return [
     output.costs,
     output.predecessors,
     output.bands,

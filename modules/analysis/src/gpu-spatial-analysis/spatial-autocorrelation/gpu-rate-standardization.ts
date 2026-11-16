@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateSpatialStatisticsBindings} from '../spatial-weights/spatial-statistics-bindings';
 import {
   createTransientView,
   validatePackedUint32View,
@@ -10,10 +12,8 @@ import {
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {
-  createWGSLKernelNode,
-  type WGSLKernelBinding
-} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {type WGSLKernelBinding} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {createStatisticsKernelNode as createWGSLKernelNode} from '../spatial-weights/statistics-kernel-node';
 import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
@@ -309,6 +309,11 @@ export class GPUAssuncaoReisStandardization implements GPUCommandNodeProducer {
       validatePackedUint32View(invalidCount, `${id} output.status.invalidCount`);
       validateCapacity(id, 'output.status.invalidCount length', invalidCount.length);
     }
+    validateDisjointWritableViews(id, {
+      standardizedRates: output.standardizedRates,
+      statistics: output.statistics,
+      invalidCount
+    });
     validateGraphOutputsDisjointFromInputs(
       id,
       [output.standardizedRates, output.statistics, invalidCount],
@@ -320,6 +325,10 @@ export class GPUAssuncaoReisStandardization implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateSpatialStatisticsBindings(graph, this.id, this.props, {
+      'row scratch': this.props.events.length * 4,
+      'block sums': Math.ceil(this.props.events.length / BLOCK_ROWS) * 4
+    });
     const {id, props} = this;
     const {mask} = props;
     const {standardizedRates} = props.output;

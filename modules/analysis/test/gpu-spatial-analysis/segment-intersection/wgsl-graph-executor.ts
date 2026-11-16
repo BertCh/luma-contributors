@@ -111,6 +111,21 @@ function createExecutorDevice(): NullDevice {
       destroy: () => {}
     })
   });
+  // Parameter upload nodes allocate ordinary device buffers. NullBuffer discards write(), so
+  // retain those bytes just like logical graph buffers before executing copyBufferToBuffer.
+  const createBuffer = device.createBuffer.bind(device);
+  device.createBuffer = props => {
+    const buffer = createBuffer(props);
+    const backing = new ArrayBuffer(buffer.byteLength);
+    Object.defineProperty(buffer, 'backing', {value: backing});
+    buffer.write = (data, offset = 0) => {
+      const source = ArrayBuffer.isView(data)
+        ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+        : new Uint8Array(data);
+      new Uint8Array(backing, offset, source.byteLength).set(source);
+    };
+    return buffer;
+  };
   return device;
 }
 
@@ -296,7 +311,7 @@ function getProgram(source: string) {
     }
     // Phony assignments keep bindings in the layout; the interpreter does not know '_'.
     // wgsl_reflect 1.2.3 indexes a one-value workgroup_size attribute as a string ('32' -> 3 x 2).
-    const executable = source
+    let executable = source
       .replace(/^\s*_\s*=[^;]*;/gm, '')
       .replace(/@workgroup_size\(\s*(\d+)u?\s*\)/g, '@workgroup_size($1, 1, 1)')
       // wgsl_reflect 1.2.3 cannot assign a vector lane by dynamic index inside a struct
@@ -321,6 +336,23 @@ function getProgram(source: string) {
           `else if (${lane} == 1u) { ${vector}.y = ${value}; } ` +
           `else if (${lane} == 2u) { ${vector}.z = ${value}; } else { ${vector}.w = ${value}; }`
       );
+    if (/\bfrexp\(/.test(executable)) {
+      executable =
+        `struct ExecutorFractionExponent { fract: f32, exp: i32 }
+
+fn executorFrexp(value: f32) -> ExecutorFractionExponent {
+  if (value == 0.0) { return ExecutorFractionExponent(value, 0i); }
+  var bits = bitcast<u32>(value);
+  var adjustment = 0i;
+  if ((bits & 0x7f800000u) == 0u) { bits = bitcast<u32>(value * 16777216.0); adjustment = -24i; }
+  return ExecutorFractionExponent(bitcast<f32>((bits & 0x807fffffu) | 0x3f000000u), i32((bits >> 23u) & 255u) - 126i + adjustment);
+}
+fn executorLdexp(value: f32, power: i32) -> f32 {
+  let first = power / 2i;
+  return (value * exp2(f32(first))) * exp2(f32(power - first));
+}
+` + executable.replace(/\bfrexp\(/g, 'executorFrexp(').replace(/\bldexp\(/g, 'executorLdexp(');
+    }
     program = {exec: new WgslExec(new WgslParser().parse(executable)), bindings};
     programs.set(source, program);
   }

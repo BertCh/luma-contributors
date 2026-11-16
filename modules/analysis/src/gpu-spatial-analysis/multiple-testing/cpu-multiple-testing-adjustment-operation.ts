@@ -22,7 +22,7 @@ import type {MultipleTestingAdjustmentOperationProps} from './gpu-multiple-testi
  * What differs from the GPU contributor:
  * - Float64 arithmetic replaces float32 intermediate arithmetic; compare with relative tolerance 2e-6.
  * - Benjamini-Yekutieli sums the full harmonic series instead of the GPU approximation above 64.
- * - The GPU-only row and minimumFamilySize limits below 2^24 are dropped; the uint32 family-size
+ * - The GPU sort row and minimumFamilySize limits at 2^31 are dropped; the uint32 family-size
  *   layout limit remains. Above the public helper's minimumFamilySize cap, virtual p=1 rows pin
  *   the family instead. That path allocates and sorts the padded family inside the public helper.
  * - Subnormal p-values may be flushed to zero on the GPU and are kept by the twin.
@@ -70,7 +70,7 @@ export function computeMultipleTestingAdjustmentOnCPU(
   return {adjustedPValues, testedCount: Uint32Array.of(familySize)};
 }
 
-/** CPU twin. The row-count GPU precision cap is dropped; uint32 output sizes remain. */
+/** CPU twin. The GPU sort row-count cap is dropped; uint32 output sizes remain. */
 export class CPUMultipleTestingAdjustmentOperation extends GPUCPUOperation {
   constructor(props: MultipleTestingAdjustmentOperationProps) {
     const id = props.id ?? 'multiple-testing-adjustment';

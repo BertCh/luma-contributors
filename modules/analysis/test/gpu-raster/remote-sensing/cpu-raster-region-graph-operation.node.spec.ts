@@ -82,12 +82,33 @@ it('validates both operation forms and drops GPU-only size and round limits on C
   expect(
     () => new CPURasterRegionGraphOperation({...PROPS, regionCount: 257, maximumIterations: 257})
   ).not.toThrow();
+  // Auto now accepts fixed-linkage Boruvka above the dense reference maximum.
   expect(() =>
     constructRasterOperationContributor(
       new GPURasterRegionGraphOperation({...PROPS, regionCount: 257}),
       inputs
     )
-  ).toThrow(/regionCount/);
+  ).not.toThrow();
+  for (const override of [{searchStructure: 'dense' as const}, {mergeMode: 'adaptive' as const}]) {
+    expect(() =>
+      constructRasterOperationContributor(
+        new GPURasterRegionGraphOperation({...PROPS, ...override, regionCount: 257}),
+        inputs
+      )
+    ).toThrow(/^regions regionCount must be an integer in \[1, 256\]$/);
+  }
+  expect(() =>
+    constructRasterOperationContributor(
+      new GPURasterRegionGraphOperation({...PROPS, regionCount: 65536}),
+      inputs
+    )
+  ).toThrow(/^regions outputs\.adjacency\.length must be an integer in \[1, 4294967295\]$/);
+  expect(() =>
+    constructRasterOperationContributor(
+      new GPURasterRegionGraphOperation({...PROPS, maximumIterations: 257}),
+      inputs
+    )
+  ).toThrow(/^regions maximumIterations must be an integer in \[1, 256\]$/);
   expect(() =>
     computeRasterRegionGraphOnCPU(new Uint32Array(5), new Float32Array(6), PROPS)
   ).toThrow(/labels/);

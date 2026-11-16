@@ -17,6 +17,17 @@ import {
   validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
+import {
+  validateGPUStorageBindingByteLength,
+  getGraphOutputViews,
+  getNextPowerOfTwo
+} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {
+  validateFiniteNumber,
+  validateRequirement
+} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateGeographicDistributionViews} from '../geographic-distribution/geographic-distribution-validation';
 import type {GPUPolygonGeometryFields} from '../../analysis-core/contracts/index';
 import {
   getKeyGroupNodes,
@@ -206,6 +217,16 @@ export class GPUCoverageDissolve implements GPUCommandNodeProducer {
     if (props.vertexTolerance !== undefined && !(props.vertexTolerance > 0)) {
       throw new Error(`${id} vertexTolerance must be positive`);
     }
+    if (props.snapTolerance !== undefined)
+      validateFiniteNumber(id, 'snapTolerance', props.snapTolerance, 0);
+    if (props.vertexTolerance !== undefined) {
+      validateFiniteNumber(id, 'vertexTolerance', props.vertexTolerance, 0);
+      validateRequirement(
+        id,
+        Math.fround(props.vertexTolerance) > 0,
+        'vertexTolerance must remain positive after float32 conversion'
+      );
+    }
     const {boundarySegmentCount, uncertainCount, ringOutput} = splitDissolveOutput(props.output);
     for (const [name, scalar] of [
       ['boundarySegmentCount', boundarySegmentCount],
@@ -243,6 +264,17 @@ export class GPUCoverageDissolve implements GPUCommandNodeProducer {
       ],
       [props.positions, props.ringOffsets, props.polygonOffsets, props.featureOffsets, props.labels]
     );
+    validateGeographicDistributionViews(
+      id,
+      {},
+      Object.fromEntries(
+        [
+          ...getGraphOutputViews(props.output),
+          ...(ringOutput.polygons ? getGraphOutputViews(ringOutput.polygons) : [])
+        ].map((view, index) => [`output.${index}`, view])
+      ),
+      []
+    );
   }
 
   /** Returns the dissolve nodes in dependency order, ending with the ring assembly. */
@@ -261,6 +293,48 @@ export class GPUCoverageDissolve implements GPUCommandNodeProducer {
       boundarySegmentCount,
       uncertainCount
     ]);
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(
+        [
+          positions,
+          ringOffsets,
+          polygonOffsets,
+          featureOffsets,
+          featureLabels,
+          ...getGraphOutputViews(props.output),
+          ...(ringOutput.polygons ? getGraphOutputViews(ringOutput.polygons) : [])
+        ].map((view, index) => [`binding.${index}`, view])
+      )
+    );
+    // Endpoint planes dominate vertex sort, scans and the nested assembly's scalar planes.
+    // Shell classification additionally builds a power-of-two BVH and three-word records.
+    const shellCount = ringOutput.ringOffsets.length - 1;
+    for (const [name, bytes] of [
+      ['dissolve endpoint scratch', positions.length * 16],
+      ['dissolve polygon labels scratch', (polygonOffsets.length - 1) * 4],
+      ['dissolve ring orientation scratch', (ringOffsets.length - 1) * 4],
+      ['assembly ring counters scratch', 24],
+      [
+        'assembly frame partials scratch',
+        Math.min(256, Math.max(1, Math.ceil(positions.length / 4096))) * 16
+      ],
+      ...(ringOutput.ringShells || ringOutput.polygons
+        ? [
+            ['assembly shell records scratch', shellCount * 12],
+            ['assembly shell bounds scratch', shellCount * 16],
+            ['assembly shell hierarchy scratch', (2 * getNextPowerOfTwo(shellCount) - 1) * 8]
+          ]
+        : [])
+    ] as [string, number][])
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        name,
+        Math.max(bytes, 4),
+        'reduce vertex or ring capacity'
+      );
     const vertexCount = positions.length;
     const ringCount = ringOffsets.length - 1;
     const polygonCount = polygonOffsets.length - 1;
@@ -514,7 +588,9 @@ ${getCoverageSnapKeyWGSL(snapTolerance, ringCount)}`,
     const groupsFull = view('groups-full', vertexCount);
     const segments = createTransientView(graph, `${id}-segments`, 'float32x4', vertexCount);
     const segmentGroups = view('segment-groups', vertexCount);
-    const segmentCount = boundarySegmentCount ?? view('segment-count', 1);
+    // Ring assembly reads this count while writing caller outputs. Keep the reader private so
+    // a packed boundarySegmentCount cannot mix read-only and writable uses of one physical buffer.
+    const segmentCount = view('segment-count', 1);
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-segment-endpoints`,
@@ -570,6 +646,19 @@ ${getCoverageSnapKeyWGSL(snapTolerance, ringCount)}`,
       })
     );
 
+    if (boundarySegmentCount)
+      nodes.push(
+        createWGSLKernelNode(graph, {
+          id: `${id}-publish-boundary-count`,
+          operation: OPERATION,
+          invocationCount: 1,
+          bindings: [
+            {name: 'countIn', view: segmentCount, type: 'u32', access: 'read'},
+            {name: 'countOut', view: boundarySegmentCount, type: 'u32', access: 'read_write'}
+          ],
+          body: 'countOut[countOutOffset] = countIn[countInOffset];'
+        })
+      );
     const vertexTolerance =
       props.vertexTolerance ??
       (snapTolerance > 0 ? snapTolerance / 4 : DEFAULT_SNAPPED_VERTEX_TOLERANCE);

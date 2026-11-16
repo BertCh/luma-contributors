@@ -13,7 +13,6 @@ import type {GPUCommandNodeProducer} from '@luma.gl/graph/gpu-core';
 import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -38,6 +37,9 @@ import {
   getLineGeometryOutputViews,
   validateLineGeometryOutput
 } from './line-geometry-output';
+
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateGeometryScratchByteLengths} from '../geometry-edit/geometry-storage-validation';
 
 const OPERATION = 'GPULineSegmentize';
 
@@ -191,12 +193,19 @@ export class GPULineSegmentize implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id, coordinateSystem, radius} = this;
     const {output} = props;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.positions,
-      props.lineOffsets,
-      props.parameters,
-      ...getLineGeometryOutputViews(output)
-    ]);
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(
+        [
+          props.positions,
+          props.lineOffsets,
+          props.parameters,
+          ...getLineGeometryOutputViews(output)
+        ].map((view, index) => [String(index), view])
+      )
+    );
+    validateGeometryScratchByteLengths(graph, id, {rowColumnsAndScan: props.positions.length * 4});
     const rowCount = props.positions.length;
     const lineCount = props.lineOffsets.length - 1;
     const counts = createTransientView(graph, `${id}-counts`, 'uint32', rowCount);

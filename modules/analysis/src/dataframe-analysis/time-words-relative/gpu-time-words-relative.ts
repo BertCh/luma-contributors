@@ -3,6 +3,14 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  createGraphChunkGroupKernelNode,
+  validateGraphChunkGroupKernelSupport,
+  GRAPH_CHUNK_GROUP_EXTRA_PARAMETER_OFFSET
+} from '../../analysis-core/kernels/graph-chunk-groups';
+
+import {
+  getBoundedDispatchLayout,
+  type GraphVectorView,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GPUCommandNodeProducer,
@@ -15,29 +23,45 @@ import {
   type GPUTemporalContextSupport
 } from '../../analysis-core/contracts/temporal-context';
 import {
-  validateGPUStorageBindingByteLength,
+  getGraphViewChunks,
+  validateCommandNodeBudget,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
   validateSinglePackedView,
   validateRequirement,
   validateViewLength
 } from '../../analysis-core/kernels/gpu-contributor-utils';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {
+  planGraphChunkDispatch,
+  validateDisjointWritableViews,
+  validateGraphChunkDispatchBindings,
+  type GraphChunkDispatchPlan
+} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {type WGSLKernelBinding} from '../../analysis-core/kernels/wgsl-kernel-nodes';
 import {TIME_WORDS_WGSL} from '../time-window-filter/time-words';
 
 const OPERATION = 'GPUTimeWordsRelative';
+/** Fixed workgroup size keeps all row chunks on the same pipeline specialization. */
+const WORKGROUP_SIZE = 256;
 const TEMPORAL_CONTEXT_SUPPORT: GPUTemporalContextSupport = Object.freeze({
   encodings: Object.freeze(['int64-words'] as const)
 });
 const INT64_MAXIMUM = (1n << 63n) - 1n;
 const INT64_MINIMUM = -(1n << 63n);
 
+/** Preserves packed row types by default and the caller's chunked view kind when requested. */
+type GPUTimeWordsRelativeRowView<
+  Format extends GraphDataView['format'],
+  Rows extends GraphDataView | GraphVectorView
+> = Rows extends GraphVectorView ? GraphVectorView<Format> : GraphDataView<Format>;
+
 /** Properties for {@link GPUTimeWordsRelative}. */
-export type GPUTimeWordsRelativeProps = {
+export type GPUTimeWordsRelativeProps<
+  Rows extends GraphDataView | GraphVectorView = GraphDataView
+> = {
   /** Prefix for generated node IDs. Defaults to `'time-words-relative'`. */
   id?: string;
   /** Int64 words, `(low, high)` per row, counted from the epoch of `temporalContext`. */
-  timestamps: GraphDataView<'uint32x2'>;
+  timestamps: GPUTimeWordsRelativeRowView<'uint32x2', Rows>;
   /** Temporal context of `timestamps`. It must be `'int64-words'`; any unit and epoch. */
   temporalContext: GPUTemporalContext;
   /**
@@ -46,7 +70,7 @@ export type GPUTimeWordsRelativeProps = {
    */
   origin: bigint;
   /** Caller-owned `float32` column with one row per timestamp: ticks after `origin`. */
-  output: GraphDataView<'float32'>;
+  output: GPUTimeWordsRelativeRowView<'float32', Rows>;
 };
 
 /**
@@ -66,14 +90,20 @@ export type GPUTimeWordsRelativeProps = {
  * units.
  *
  * Per-frame (no recompile): the contents of `timestamps` and `output`. Topology (needs a new
- * graph): the row count, `origin` and `temporalContext`. The `uint32x2` timestamps must fit one
- * storage binding (16,777,216 rows on a default device).
+ * graph): the row count and chunk boundaries, `origin` and `temporalContext`. Row inputs and
+ * outputs may be chunked with matching ordered chunk lengths. Each chunk must fit one storage
+ * binding; the total row count is bounded by the shared uint32 chunk limit.
  */
-export class GPUTimeWordsRelative implements GPUCommandNodeProducer {
+export class GPUTimeWordsRelative<
+  Props extends GPUTimeWordsRelativeProps<
+    GraphDataView | GraphVectorView
+  > = GPUTimeWordsRelativeProps
+> implements GPUCommandNodeProducer
+{
   /** Prefix for every node ID. */
   readonly id: string;
   /** Validated properties. */
-  readonly props: GPUTimeWordsRelativeProps;
+  readonly props: Props & GPUTimeWordsRelativeProps<Props['timestamps']>;
   /** Number of rows. */
   readonly rowCount: number;
   /** Context of `output`: the input's with `encoding: 'float32-relative'` and `epoch: origin`. */
@@ -81,9 +111,12 @@ export class GPUTimeWordsRelative implements GPUCommandNodeProducer {
   /** `origin` as ticks after the input epoch, the words subtracted from every time. */
   private readonly offsetTicks: bigint;
 
-  constructor(props: GPUTimeWordsRelativeProps) {
+  readonly estimatedCommandNodeCount: number;
+  private readonly chunkPlan: GraphChunkDispatchPlan;
+
+  constructor(props: Props) {
     this.id = props.id ?? 'time-words-relative';
-    this.props = props;
+    this.props = props as Props & GPUTimeWordsRelativeProps<Props['timestamps']>;
     const id = this.id;
     const {timestamps, output, origin} = props;
     const inputContext = resolveGPUTemporalContext(
@@ -105,49 +138,60 @@ export class GPUTimeWordsRelative implements GPUCommandNodeProducer {
     );
     this.outputTemporalContext = {...inputContext, encoding: 'float32-relative', epoch: origin};
     validateGPUTemporalContext(id, this.outputTemporalContext);
-    validateSinglePackedView(timestamps, ['uint32x2'], `${id} timestamps`);
-    validateSinglePackedView(output, ['float32'], `${id} output`);
+    for (const chunk of getGraphViewChunks(timestamps))
+      validateSinglePackedView(chunk, ['uint32x2'], `${id} timestamps`);
+    for (const chunk of getGraphViewChunks(output))
+      validateSinglePackedView(chunk, ['float32'], `${id} output`);
     this.rowCount = timestamps.length;
     validateRequirement(id, this.rowCount >= 1, 'needs at least one row');
     validateViewLength(id, 'output', output, this.rowCount);
     validateGraphOutputsDisjointFromInputs(id, [output], [timestamps]);
+    validateDisjointWritableViews(id, {output});
+    this.chunkPlan = planGraphChunkDispatch(id, {timestamps, output});
+    this.estimatedCommandNodeCount = this.chunkPlan.nonemptyChunkCount;
+    validateCommandNodeBudget(id, this.estimatedCommandNodeCount);
   }
 
   /** Returns the one conversion kernel. */
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
-    const {props, id, rowCount, offsetTicks} = this;
-    const {timestamps, output} = props;
-    validateGraphViewsBelongToGraph(id, graph, [timestamps, output]);
-    validateGPUStorageBindingByteLength(
-      graph.device,
-      id,
-      'timestamps',
-      rowCount * 8,
-      'convert fewer rows per graph'
-    );
+    const {id, offsetTicks, chunkPlan} = this;
+    validateGraphChunkDispatchBindings(graph, id, chunkPlan);
+    validateGraphChunkGroupKernelSupport(graph, id, 2, WORKGROUP_SIZE);
+    for (const chunk of chunkPlan.chunks) {
+      if (chunk.length > 0)
+        getBoundedDispatchLayout(
+          id,
+          chunk.length,
+          WORKGROUP_SIZE,
+          graph.device.limits.maxComputeWorkgroupsPerDimension
+        );
+    }
+
     const unsigned = BigInt.asUintN(64, offsetTicks);
     return [
-      createWGSLKernelNode<Parameters>(graph, {
-        id: `${id}-convert`,
-        operation: OPERATION,
-        bindings: [
-          {name: 'timestamps', view: timestamps, type: 'u32', access: 'read'},
-          {name: 'relative', view: output, type: 'f32', access: 'read_write'}
-        ],
-        invocationCount: rowCount,
-        // The origin words are overrides so that graphs differing only in origin share a module.
-        declarations: `${TIME_WORDS_WGSL}
-override ORIGIN_LOW: u32;
-override ORIGIN_HIGH: u32;`,
-        constants: {
-          ORIGIN_LOW: Number(unsigned & 0xffffffffn),
-          ORIGIN_HIGH: Number(unsigned >> 32n)
-        },
-        body: `let time = vec2<u32>(timestamps[timestampsOffset + 2u * index], timestamps[timestampsOffset + 2u * index + 1u]);
-  relative[relativeOffset + index] = timeWordsDifferenceToF32(time, vec2<u32>(ORIGIN_LOW, ORIGIN_HIGH));`
-      })
+      ...chunkPlan.chunks
+        .filter(chunk => chunk.length > 0)
+        .map(chunk =>
+          createGraphChunkGroupKernelNode<Parameters>(graph, {
+            id: `${id}-convert-chunk-${chunk.chunkIndex}`,
+            operation: OPERATION,
+            bindings: [
+              {name: 'timestamps', view: chunk.views['timestamps'], type: 'u32', access: 'read'},
+              {name: 'relative', view: chunk.views['output'], type: 'f32', access: 'read_write'}
+            ] as WGSLKernelBinding[],
+            invocationCount: chunk.length,
+            workgroupSize: WORKGROUP_SIZE,
+            parameterValues: [Number(unsigned & 0xffffffffn), Number(unsigned >> 32n)],
+            declarations: TIME_WORDS_WGSL,
+            body: `if (index >= getChunkParameter(1u)) { return; }
+  let timestampsBase = arrayLength(&timestamps) - 2u * getChunkParameter(1u);
+  let relativeBase = arrayLength(&relative) - getChunkParameter(1u);
+  let time = vec2<u32>(timestamps[timestampsBase + 2u * index], timestamps[timestampsBase + 2u * index + 1u]);
+  relative[relativeBase + index] = timeWordsDifferenceToF32(time, vec2<u32>(getChunkParameter(${GRAPH_CHUNK_GROUP_EXTRA_PARAMETER_OFFSET}u), getChunkParameter(${GRAPH_CHUNK_GROUP_EXTRA_PARAMETER_OFFSET + 1}u)));`
+          })
+        )
     ];
   }
 }

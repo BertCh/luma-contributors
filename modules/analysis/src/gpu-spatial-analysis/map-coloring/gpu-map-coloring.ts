@@ -24,6 +24,10 @@ import {
   validateRasterIterations
 } from '../../raster-analysis/cost-distance/raster-relaxation';
 import {HASH_UINT32_WGSL} from '../shared/hash-uint32';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateGPUStorageBindingByteLength} from '../../analysis-core/kernels/gpu-contributor-utils';
+import {validateGeographicDistributionViews} from '../geographic-distribution/geographic-distribution-validation';
+import {validateGeometryReadWriteViews} from '../geometry-edit/geometry-storage-validation';
 import type {GPUSpatialWeights} from '../spatial-weights/spatial-weights';
 import {
   getGPUSpatialWeightsChunkDispatches,
@@ -218,6 +222,30 @@ export class GPUMapColoring implements GPUCommandNodeProducer {
       ...getGPUSpatialWeightsOrChunksViews(props.weights),
       props.parameters
     ]);
+    validateGeographicDistributionViews(
+      id,
+      {},
+      {
+        colors: output.colors,
+        colorCount: output.colorCount,
+        conflictCount: output.conflictCount,
+        converged: output.status?.converged,
+        iterationCount: output.status?.iterationCount
+      },
+      [
+        {reads: {}, writes: {colors: output.colors, colorCount: output.colorCount}},
+        {
+          reads: {},
+          writes: {
+            converged: output.status?.converged,
+            iterationCount: output.status?.iterationCount
+          }
+        }
+      ]
+    );
+    // Conflict verification reads colors while writing the scalar. Separate aligned ranges
+    // still cannot mix read-only and writable storage uses of one physical buffer.
+    validateGeometryReadWriteViews(id, [output.colors], [output.conflictCount]);
   }
 
   /** Returns the clear, gated round, and verification nodes in dependency order. */
@@ -228,6 +256,25 @@ export class GPUMapColoring implements GPUCommandNodeProducer {
     const {weights, parameters, output} = props;
     const {colors} = output;
     const dispatches = getGPUSpatialWeightsChunkDispatches(weights);
+    validateGraphChunkBindingRanges(graph, id, {
+      parameters,
+      ...Object.fromEntries(getOutputs(output).map((view, index) => [`output.${index}`, view])),
+      ...Object.fromEntries(
+        dispatches.flatMap((dispatch, index) => [
+          [`offsets.${index}`, dispatch.weights.offsets],
+          [`neighbors.${index}`, dispatch.weights.neighbors]
+        ])
+      )
+    });
+    for (const [name, bytes] of [
+      ['color iteration status scratch', 16],
+      ['color indirect dispatch scratch', 12],
+      ['color count scratch', 4],
+      ...(priority === 'largest-degree-first' && !dispatches[0].isWhole
+        ? [['color degree scratch', colors.length * 4]]
+        : [])
+    ] as [string, number][])
+      validateGPUStorageBindingByteLength(graph.device, id, name, bytes, 'reduce row count');
     validateGraphViewsBelongToGraph(id, graph, [
       ...getGPUSpatialWeightsOrChunksViews(weights),
       parameters,

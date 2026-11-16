@@ -21,9 +21,10 @@ import {
   getStorageBindingElementLimit,
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
-  validateGraphViewsBelongToGraph,
+  validateGPUStorageBindingByteLength,
   validateCompactOutput,
   validateMaximumCount,
+  validateRequirement,
   validateSinglePackedView
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
@@ -33,14 +34,52 @@ import {
 } from './dot-density-constants';
 import {
   getPolygonTriangulationIndexCount,
-  GPUPolygonTriangulation
+  GPUPolygonTriangulation,
+  validatePolygonTriangulationScratch
 } from '../polygon-triangulation/gpu-polygon-triangulation';
 import {createSegmentSumNode} from '../../analysis-core/kernels/sorted-segment-sums';
-import {IS_FINITE_BITS_WGSL, IS_NAN_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
+import {IS_NAN_BITS_WGSL} from '../../analysis-core/kernels/wgsl-common';
 import type {GPUPolygonGeometryFields} from '../../analysis-core/contracts/index';
 import {GPU_DOT_DENSITY_PARAMETER_LENGTH} from './dot-density-parameters';
 import {PHILOX_WGSL} from '../../analysis-core/kernels/philox-random';
+import {getDotTriangleCumulativeAreaNodes} from './dot-density-triangle-cdf';
+import {getCoreDefaultBuffer} from '../../analysis-core/network-topology';
+import {
+  validateDisjointWritableViews,
+  validateGraphChunkBindingRanges
+} from '../../analysis-core/kernels/graph-chunk-dispatch';
 import {getReadPointWGSL} from '../shared/spatial-wgsl-point-helpers';
+
+/** Logical writes in separate passes may share an aligned prefix, but may never alias. @internal */
+export function validateDotSamplingLogicalOutputs(
+  id: string,
+  outputs: Readonly<Record<string, GraphDataView | undefined>>
+): void {
+  const fields = Object.entries(outputs).filter((entry): entry is [string, GraphDataView] =>
+    Boolean(entry[1])
+  );
+  for (let firstIndex = 0; firstIndex < fields.length; firstIndex++) {
+    const [firstName, first] = fields[firstIndex];
+    if (first.length === 0) continue;
+    const firstBuffer = first.buffer.defaultBuffer
+      ? getCoreDefaultBuffer(first.buffer.defaultBuffer)
+      : first.buffer;
+    for (let secondIndex = firstIndex + 1; secondIndex < fields.length; secondIndex++) {
+      const [secondName, second] = fields[secondIndex];
+      if (second.length === 0) continue;
+      const secondBuffer = second.buffer.defaultBuffer
+        ? getCoreDefaultBuffer(second.buffer.defaultBuffer)
+        : second.buffer;
+      validateRequirement(
+        id,
+        firstBuffer !== secondBuffer ||
+          first.byteOffset + first.length * first.rowByteLength <= second.byteOffset ||
+          second.byteOffset + second.length * second.rowByteLength <= first.byteOffset,
+        `${firstName} and ${secondName} logical byte ranges must not overlap`
+      );
+    }
+  }
+}
 
 /** Feature ID written past the published count. */
 const NO_FEATURE = '0xffffffffu';
@@ -58,16 +97,14 @@ export function getGPUDotDensityMaximumCapacity(device: Device): number {
   return getStorageBindingElementLimit(device, DOT_WORDS * 4);
 }
 
-/**
- * Fixed-point total of the per-feature triangle areas. Areas are scaled so one feature sums to at
- * most this value, which leaves about 7% of the u32 range as headroom for f32 rounding of the
- * area total. The selection bias of the quantization is below one part in 1e9 per triangle.
- */
-const AREA_FIXED_POINT_TOTAL = '4.0e9';
 /** Lanes per feature of the mask-maximum pass. */
 const MASK_MAXIMUM_WORKGROUP_SIZE = 256;
 /** Default mask-rejection attempts per dot. */
 export const DEFAULT_DOT_MAXIMUM_ATTEMPTS = 32;
+/** One workgroup per normalized feature uses 256 invocations within the uint32 dispatch count. */
+export const DOT_SAMPLING_MAXIMUM_NORMALIZED_FEATURE_COUNT = Math.floor(
+  0xffffffff / MASK_MAXIMUM_WORKGROUP_SIZE
+);
 
 /** Optional dasymetric constraint shared by {@link GPUDotDensity} and {@link GPURandomPointsInPolygon}. */
 export type GPUDotDensityMask = {
@@ -154,12 +191,20 @@ export function validateDotSamplingConfig(config: DotSamplingConfig): number {
   validateSinglePackedView(config.featureOffsets, ['uint32'], `${id} featureOffsets`);
   validateSinglePackedView(config.polygonOffsets, ['uint32'], `${id} polygonOffsets`);
   validateSinglePackedView(config.ringOffsets, ['uint32'], `${id} ringOffsets`);
+  validateCapacity(id, 'polygonOffsets rows', config.polygonOffsets.length, 1);
+  validateCapacity(id, 'ringOffsets rows', config.ringOffsets.length, 1);
+  validateRequirement(
+    id,
+    config.polygonOffsets.length > 1 || config.positions.length === 0,
+    'positions must be empty when polygonOffsets describes no polygons'
+  );
   const featureCount = config.featureOffsets.length - 1;
   if (featureCount < 1) {
     throw new Error(`${id} featureOffsets must describe at least one feature`);
   }
   validateCapacity(id, 'categoryCount', config.categoryCount);
   const slotCount = featureCount * config.categoryCount;
+  validateCapacity(id, 'featureCount * categoryCount', slotCount);
   if (config.source.kind === 'values') {
     validateSinglePackedView(config.source.values, ['float32'], `${id} values`);
     if (config.source.values.length !== slotCount) {
@@ -178,6 +223,14 @@ export function validateDotSamplingConfig(config: DotSamplingConfig): number {
     );
   }
   validateCapacity(id, 'maximumAttempts', config.maximumAttempts);
+  if (mask?.normalizeFeatures) {
+    validateMaximumCount(
+      id,
+      'normalized feature count',
+      featureCount,
+      DOT_SAMPLING_MAXIMUM_NORMALIZED_FEATURE_COUNT
+    );
+  }
   if (mask) {
     validateSinglePackedView(mask.weights, ['float32'], `${id} mask.weights`);
     if (
@@ -220,22 +273,48 @@ export function validateDotSamplingConfig(config: DotSamplingConfig): number {
       }
     }
   }
+  const outputViews = getDotSamplingOutputs(config);
+  validateDotSamplingLogicalOutputs(id, outputViews as Record<string, GraphDataView | undefined>);
+  validateDisjointWritableViews(id, {
+    ids: output.dots.ids,
+    categories: output.categories,
+    slotCounts: output.slotCounts,
+    slotOffsets: output.slotOffsets
+  });
+  validateDisjointWritableViews(id, {
+    slotCounts: output.slotCounts,
+    failedCount: output.status?.failedCount
+  });
+  validateDisjointWritableViews(id, {
+    positions: output.positions,
+    failedCount: output.status?.failedCount
+  });
+  validateDisjointWritableViews(id, {
+    count: output.dots.status.count,
+    overflow: output.dots.status.overflow,
+    requiredCount: output.dots.status.requiredCount
+  });
   validateGraphOutputsDisjointFromInputs(
     id,
-    [
-      output.positions,
-      output.dots.ids,
-      output.dots.status.count,
-      output.dots.status.overflow,
-      output.dots.status.requiredCount,
-      output.categories,
-      output.status?.failedCount,
-      output.slotCounts,
-      output.slotOffsets
-    ],
+    Object.values(outputViews),
     getDotSamplingInputs(config)
   );
   return featureCount;
+}
+
+function getDotSamplingOutputs(config: DotSamplingConfig) {
+  const {output} = config;
+  return {
+    'output.positions': output.positions,
+    'output.dots.ids': output.dots.ids,
+    'output.dots.status.count': output.dots.status.count,
+    'output.dots.status.overflow': output.dots.status.overflow,
+    'output.dots.status.requiredCount': output.dots.status.requiredCount,
+    'output.categories': output.categories,
+    'output.status.failedCount': output.status?.failedCount,
+    'output.slotCounts': output.slotCounts,
+    'output.slotOffsets': output.slotOffsets
+  };
 }
 
 function getDotSamplingInputs(config: DotSamplingConfig): GraphDataView[] {
@@ -266,18 +345,12 @@ export function getDotSamplingNodes<Parameters>(
   featureCount: number
 ): GPUCommandNode<Parameters>[] {
   const {id, operation, output, mask, categoryCount} = config;
-  validateGraphViewsBelongToGraph(id, graph, [
-    ...getDotSamplingInputs(config),
-    output.positions,
-    output.dots.ids,
-    output.dots.status.count,
-    output.dots.status.overflow,
-    output.dots.status.requiredCount,
-    output.categories,
-    output.status?.failedCount,
-    output.slotCounts,
-    output.slotOffsets
-  ]);
+  validateGraphChunkBindingRanges(graph, id, {
+    ...Object.fromEntries(
+      getDotSamplingInputs(config).map((view, index) => [`input ${index}`, view])
+    ),
+    ...getDotSamplingOutputs(config)
+  });
   const slotCount = featureCount * categoryCount;
   const capacity = output.positions.length;
   validateMaximumCount(
@@ -295,6 +368,35 @@ export function getDotSamplingNodes<Parameters>(
       polygonCount
     ) / 3
   );
+  // Check all derived bindings, including the nested triangulator's layout and scratch,
+  // before declaring any resource. The CDF scans have four uint32 triangle-sized scratch views;
+  // their hierarchical summaries are smaller than those views.
+  validatePolygonTriangulationScratch(
+    graph.device,
+    id,
+    config.positions.length,
+    config.ringOffsets.length - 1,
+    polygonCount
+  );
+  const normalizeFeatures = Boolean(mask?.normalizeFeatures);
+  for (const [name, wordCount] of [
+    ['triangle indices', Math.max(3 * triangleCount, 1)],
+    ['triangle CDF scratch', Math.max(triangleCount, 1)],
+    ['cumulative areas', Math.max(triangleCount, 1) + (normalizeFeatures ? featureCount : 0)],
+    ['feature offsets', featureCount + 1],
+    ['slot scratch', slotCount],
+    ['dot slots', capacity * DOT_WORDS],
+    ['triangulation polygon layout', 4 * polygonCount + 2],
+    ['triangulation ring layout', 2 * (config.ringOffsets.length - 1) + 1]
+  ] as const) {
+    validateGPUStorageBindingByteLength(
+      graph.device,
+      id,
+      name,
+      Math.max(wordCount, 1) * 4,
+      'reduce the geometry, category count or output capacity'
+    );
+  }
   const nodes: GPUCommandNode<Parameters>[] = [];
 
   const triangleIndices = createTransientView(
@@ -317,7 +419,6 @@ export function getDotSamplingNodes<Parameters>(
     Math.max(triangleCount, 1)
   );
   const triangleSlotCount = Math.max(triangleCount, 1);
-  const normalizeFeatures = Boolean(mask?.normalizeFeatures);
   // With feature normalization the per-feature maximum mask weight (f32 bits) follows the triangles.
   const cumulativeAreas = createTransientView(
     graph,
@@ -449,37 +550,16 @@ fn getTriangleStart(polygon: u32) -> u32 {
     })
   );
 
-  // 5. Cumulative fixed-point area inside every feature (inclusive prefix), one invocation per
-  // feature in triangle order. A feature whose polygons failed to triangulate or whose area is
-  // zero or not finite gets all zeros, which the sampler reports. Each triangle gets
-  // floor(share * total) units, so the running sum never exceeds the fixed-point total.
+  // 5. Parallel inclusive fixed-point CDF, restarting at each feature's contiguous slice.
   nodes.push(
-    createWGSLKernelNode<Parameters>(graph, {
+    ...getDotTriangleCumulativeAreaNodes(graph, {
       id: `${id}-cumulative-areas`,
       operation,
-      variant: 'cumulative-areas',
-      bindings: [
-        {name: 'triangleAreas', view: triangleAreas, type: 'f32', access: 'read'},
-        {name: 'featureTriangleOffsets', view: featureTriangleOffsets, type: 'u32', access: 'read'},
-        {name: 'featureValid', view: featureValid, type: 'u32', access: 'read'},
-        {name: 'featureAreas', view: featureAreas, type: 'f32', access: 'read'},
-        {name: 'cumulativeAreas', view: cumulativeAreas, type: 'u32', access: 'read_write'}
-      ],
-      invocationCount: featureCount,
-      declarations: IS_FINITE_BITS_WGSL,
-      body: /* wgsl */ `
-  let first = featureTriangleOffsets[featureTriangleOffsetsOffset + index];
-  let end = featureTriangleOffsets[featureTriangleOffsetsOffset + index + 1u];
-  let featureArea = featureAreas[featureAreasOffset + index];
-  let usable = featureValid[featureValidOffset + index] == 1u && isFiniteBits(featureArea) && featureArea > 0.0;
-  var running = 0u;
-  for (var triangle = first; triangle < end; triangle = triangle + 1u) {
-    let area = triangleAreas[triangleAreasOffset + triangle];
-    if (usable && isFiniteBits(area)) {
-      running = running + u32(clamp(area / featureArea, 0.0, 1.0) * ${AREA_FIXED_POINT_TOTAL});
-    }
-    cumulativeAreas[cumulativeAreasOffset + triangle] = running;
-  }`
+      triangleAreas,
+      featureTriangleOffsets,
+      featureValid,
+      featureAreas,
+      cumulativeAreas
     })
   );
 
@@ -517,7 +597,11 @@ var<workgroup> partialMaximum: array<vec2<f32>, ${MASK_MAXIMUM_WORKGROUP_SIZE}>;
 var<workgroup> partialWeight: array<f32, ${MASK_MAXIMUM_WORKGROUP_SIZE}>;`,
         body: /* wgsl */ `
   let lane = localInvocationIndex;
-  let feature = index / WORKGROUP_SIZE;
+  // Keep the feature independent of localInvocationIndex in WGSL's uniformity analysis.
+  // Dividing index by WORKGROUP_SIZE is mathematically equivalent, but remains non-uniform.
+  let feature = workgroupIndex;
+  // A bounded multidimensional dispatch may pad whole workgroups. This guard is uniform.
+  if (feature >= arrayLength(&featureOffsets) - featureOffsetsOffset - 1u) { return; }
   // Vertex range of the feature: first vertex of its first ring to the end of its last polygon.
   let firstPolygon = min(featureOffsets[featureOffsetsOffset + feature], POLYGON_COUNT);
   let endPolygon = min(featureOffsets[featureOffsetsOffset + feature + 1u], POLYGON_COUNT);
@@ -644,7 +728,7 @@ var<workgroup> partialWeight: array<f32, ${MASK_MAXIMUM_WORKGROUP_SIZE}>;`,
         {
           name: 'clampFlag',
           view: clampFlag,
-          type: 'u32',
+          type: 'atomic<u32>',
           access: 'read_write'
         }
       ],
@@ -683,14 +767,14 @@ const CATEGORY_COUNT: u32 = ${categoryCount}u;`,
   }
   slotCounts[slotCountsOffset + index] = dots;
   if (clamped) {
-    clampFlag[clampFlagOffset] = 1u;
+    atomicStore(&clampFlag[clampFlagOffset], 1u);
   }`
           : /* wgsl */ `
   _ = parameters[parametersOffset];
   var dots = sourceCounts[sourceCountsOffset + index];
   if (dots > SLOT_LIMIT) {
     dots = SLOT_LIMIT;
-    clampFlag[clampFlagOffset] = 1u;
+    atomicStore(&clampFlag[clampFlagOffset], 1u);
   }
   if (featureAreas[featureAreasOffset + index / CATEGORY_COUNT] == 0.0) {
     atomicAdd(&failed[failedOffset], dots);

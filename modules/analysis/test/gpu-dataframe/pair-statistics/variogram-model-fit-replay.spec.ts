@@ -5,7 +5,10 @@
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {expect, it} from 'vitest';
 import {GPUVariogramModelFit} from '../../../src/dataframe-analysis/pair-statistics/gpu-variogram-model-fit';
-import {fitVariogramModel} from '../../../src/dataframe-analysis/pair-statistics/variogram-model';
+import {
+  fitVariogramModel,
+  getVariogramModelShape
+} from '../../../src/dataframe-analysis/pair-statistics/variogram-model';
 import {InterpolationBenchmarkScope} from '../../gpu-spatial-analysis/spatial-interpolation/interpolation-performance-harness';
 import {requireTestDevice} from '../../utils/require-test-device';
 import {submitGraph} from '../../utils/gpu-contributor-test-utils';
@@ -147,5 +150,161 @@ it('variogram cressie fit is unchanged when the semivariances are scaled to 1e-8
     expect(Math.abs(fit[0] - truth.nugget), `${label} nugget ${fit[0]}`).toBeLessThan(0.02);
     expect(Math.abs(fit[1] - truth.sill), `${label} sill ${fit[1]}`).toBeLessThan(0.02);
     expect(Math.abs(fit[2] - truth.range), `${label} range ${fit[2]}`).toBeLessThan(0.03);
+  }
+});
+
+it('runtime variogram round slots retain the closed-form exponential fit', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const distances = Float32Array.from({length: 32}, (_, index) => (index + 1) / 8);
+  const truth = {nugget: 0.2, sill: 1.5, range: 2.2};
+  const values = Float32Array.from(
+    distances,
+    distance => truth.nugget + truth.sill * (1 - Math.exp((-3 * distance) / truth.range))
+  );
+  for (const weighting of ['pairs', 'cressie'] as const) {
+    const scope = new InterpolationBenchmarkScope(device, `runtime-rounds-${weighting}`);
+    scope.graph.add(
+      new GPUVariogramModelFit({
+        distances: scope.input('distances', distances, 'float32'),
+        semivariances: scope.input('semivariances', values, 'float32'),
+        pairCounts: scope.input('counts', new Uint32Array(32).fill(10), 'uint32'),
+        models: ['exponential'],
+        weighting,
+        rangeSteps: 128,
+        output: {
+          parameters: scope.output('parameters', 1, 'float32x4'),
+          diagnostics: scope.output('diagnostics', 1, 'float32x4'),
+          status: scope.output('status', 1, 'uint32')
+        }
+      })
+    );
+    const compiled = scope.graph.compile();
+    try {
+      for (const write of scope.initialWrites) write.buffer.write(write.values);
+      // Repeated encoding also checks that graph-owned parameter slots are restored each frame.
+      for (let frame = 0; frame < 2; frame++) {
+        submitGraph(device, compiled, undefined);
+        const result = await scope.read();
+        expect(result['status']).toEqual([0]);
+        expect(Math.abs(result['parameters'][0] - truth.nugget)).toBeLessThan(0.02);
+        expect(Math.abs(result['parameters'][1] - truth.sill)).toBeLessThan(0.02);
+        expect(Math.abs(result['parameters'][2] - truth.range)).toBeLessThan(0.03);
+        expect(result['diagnostics'][0]).toBe(32);
+      }
+    } finally {
+      compiled.destroy();
+      scope.destroy();
+    }
+  }
+});
+
+it('Cressie slots reweight noisy unequal-count bins on changed and repeated frames', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const scope = new InterpolationBenchmarkScope(device, 'noisy-cressie-replay');
+  const distances = Float32Array.from({length: 32}, (_, index) => (index + 1) / 8);
+  const counts = Uint32Array.from({length: 32}, (_, index) => 10 + (index % 4) * 50);
+  const original = Float32Array.from(
+    distances,
+    (distance, index) =>
+      0.2 + 1.5 * (1 - Math.exp((-3 * distance) / 2.2)) + 0.2 * Math.sin(index * 1.7)
+  );
+  scope.graph.add(
+    new GPUVariogramModelFit({
+      distances: scope.input('distances', distances, 'float32'),
+      semivariances: scope.input('semivariances', original, 'float32'),
+      pairCounts: scope.input('pairs', counts, 'uint32'),
+      models: ['exponential'],
+      weighting: 'cressie',
+      output: {
+        parameters: scope.output('parameters', 1, 'float32x4'),
+        diagnostics: scope.output('diagnostics', 1, 'float32x4'),
+        status: scope.output('status', 1, 'uint32')
+      }
+    })
+  );
+  const compiled = scope.graph.compile();
+  try {
+    for (const write of scope.initialWrites) write.buffer.write(write.values);
+    for (const scale of [1, 1.4, 1]) {
+      const observations = Float32Array.from(original, value => value * scale);
+      scope.initialWrites[1].buffer.write(observations);
+      const input = {distances, semivariances: observations, pairCounts: counts};
+      const expected = fitVariogramModel(input, {model: 'exponential', weighting: 'cressie'});
+      const pairFit = fitVariogramModel(input, {model: 'exponential', weighting: 'pairs'});
+      // This fixture must reject an implementation that never enables reweighting.
+      expect(Math.abs(expected.range - pairFit.range)).toBeGreaterThan(0.1);
+      submitGraph(device, compiled, undefined);
+      const actual = await scope.read();
+      expect(actual['status'][0]).toBe(0);
+      for (const [index, value] of [
+        expected.nugget,
+        expected.sill,
+        expected.range,
+        expected.residual
+      ].entries()) {
+        expect(Math.abs(actual['parameters'][index] - value)).toBeLessThan(
+          0.02 * Math.max(1, Math.abs(value))
+        );
+      }
+      const unweighted = Array.from(
+        distances,
+        (distance, index) =>
+          (observations[index] -
+            actual['parameters'][0] -
+            actual['parameters'][1] *
+              getVariogramModelShape('exponential', distance / actual['parameters'][2])) **
+          2
+      ).reduce((total, value) => total + value, 0);
+      expect(Math.abs(actual['diagnostics'][1] - unweighted)).toBeLessThan(
+        2e-5 * Math.max(1, unweighted)
+      );
+    }
+  } finally {
+    compiled.destroy();
+    scope.destroy();
+  }
+});
+
+it('zero variogram refinement budget publishes finite candidates and budget status', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const scope = new InterpolationBenchmarkScope(device, 'zero-refinement-budget');
+  const distances = Float32Array.from({length: 16}, (_, index) => (index + 1) / 4);
+  const observations = Float32Array.from(
+    distances,
+    distance => 0.2 + 1.5 * (1 - Math.exp((-3 * distance) / 2.2))
+  );
+  scope.graph.add(
+    new GPUVariogramModelFit({
+      distances: scope.input('distances', distances, 'float32'),
+      semivariances: scope.input('semivariances', observations, 'float32'),
+      pairCounts: scope.input('pairs', new Uint32Array(16).fill(10), 'uint32'),
+      models: ['exponential'],
+      maximumIterations: 0,
+      weighting: 'cressie',
+      output: {
+        parameters: scope.output('parameters', 1, 'float32x4'),
+        diagnostics: scope.output('diagnostics', 1, 'float32x4'),
+        status: scope.output('status', 1, 'uint32')
+      }
+    })
+  );
+  const compiled = scope.graph.compile();
+  try {
+    for (const write of scope.initialWrites) write.buffer.write(write.values);
+    submitGraph(device, compiled, undefined);
+    const result = await scope.read();
+    expect(result['status']).toEqual([3]);
+    expect(result['parameters'].every(Number.isFinite)).toBe(true);
+    expect(result['diagnostics'][0]).toBe(16);
+    expect(result['diagnostics'][3]).toBeGreaterThan(1e-5);
+    expect(Math.abs(result['parameters'][0] - 0.2)).toBeLessThan(0.03);
+    expect(Math.abs(result['parameters'][1] - 1.5)).toBeLessThan(0.03);
+    expect(Math.abs(result['parameters'][2] - 2.2)).toBeLessThan(0.06);
+  } finally {
+    compiled.destroy();
+    scope.destroy();
   }
 });

@@ -2,6 +2,16 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  createOverlayFeatureSourceNodes,
+  validateOverlayFeatureSourceOutput,
+  type GPUPolygonOverlayFeatureSources
+} from './overlay-feature-sources';
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {
+  validateOverlayScratchByteLengths,
+  getOverlayOutputViews
+} from './overlay-storage-validation';
 import {clamp} from '@math.gl/core';
 import {
   createTransientView,
@@ -24,7 +34,8 @@ import {
   validateGraphViewsBelongToGraph,
   validateMaximumCount,
   validateSinglePackedView,
-  validateRequirement
+  validateRequirement,
+  validateFiniteNumber
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import type {
   GPUBoundedResultStatusPort,
@@ -54,6 +65,10 @@ import {
 } from './overlay-face-labelling-wgsl';
 
 const OPERATION = 'GPUPolygonOverlay';
+/** Positive shader thresholds must survive WebGPU subnormal flushing and f32 conversion. */
+const MINIMUM_VERTEX_TOLERANCE = 2 ** -126;
+/** Snap rounding rounds up to a power-of-two cell, whose largest finite f32 is 2^127. */
+const MAXIMUM_VERTEX_TOLERANCE = 2 ** 127;
 
 /** Bits of a sorted lattice coordinate: lattice values are at most 2^22 + 1, the sentinel 2^23 - 1. */
 const LATTICE_KEY_BITS = 23;
@@ -143,6 +158,10 @@ export type GPUPolygonOverlayBoundaryPort = {
  * `count`. Size the ring capacity from `status.requiredRingCount`.
  */
 export type GPUPolygonOverlayOutput = {
+  /** Optional per-output-feature representative boundary source row. Mixed provenance is explicit;
+   * this does not enumerate interior features or every owner of coincident boundary edges.
+   * Valid only when output.status.overflow is zero, like the generated polygon itself. */
+  featureSources?: GPUPolygonOverlayFeatureSources;
   geometry: Omit<GPUPackedGeometryPort<GPUPolygonGeometryPort>, 'sourceIds'>;
   status: Omit<GPUBoundedResultStatusPort, 'requiredCount'> &
     GPURingCountStatusPort & {
@@ -307,6 +326,20 @@ export class GPUPolygonOverlay implements GPUCommandNodeProducer {
       this.spatialContext
     );
     this.props = props;
+    validateFiniteNumber(
+      this.id,
+      'vertexTolerance',
+      props.vertexTolerance,
+      0,
+      MAXIMUM_VERTEX_TOLERANCE
+    );
+    validateFiniteNumber(
+      this.id,
+      'vertexTolerance converted to float32',
+      Math.fround(props.vertexTolerance),
+      MINIMUM_VERTEX_TOLERANCE,
+      MAXIMUM_VERTEX_TOLERANCE
+    );
     this.fillRule = props.fillRule ?? 'even-odd';
     const {id} = this;
     const {output} = props;
@@ -343,6 +376,7 @@ export class GPUPolygonOverlay implements GPUCommandNodeProducer {
     ) {
       throw new Error(`${id} output polygon offsets must share one ring capacity`);
     }
+    validateOverlayFeatureSourceOutput(id, output);
     const boundary = output.boundary;
     validateSinglePackedView(boundary.endpoints, ['float32x4'], `${id} output.boundary.endpoints`);
     for (const [name, view] of [
@@ -363,17 +397,43 @@ export class GPUPolygonOverlay implements GPUCommandNodeProducer {
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props} = this;
     const {left, right, output} = props;
+    validateGraphChunkBindingRanges(
+      graph,
+      id,
+      Object.fromEntries(
+        [
+          left.positions,
+          left.featureOffsets,
+          left.polygonOffsets,
+          left.ringOffsets,
+          right?.positions,
+          right?.featureOffsets,
+          right?.polygonOffsets,
+          right?.ringOffsets,
+          ...getOverlayOutputViews(output)
+        ].map((view, index) => [`binding.${index}`, view])
+      )
+    );
+    const inputRingCount = left.ringOffsets.length - 1 + (right ? right.ringOffsets.length - 1 : 0);
+    validateOverlayScratchByteLengths(graph, id, {
+      expandedVertexCount: left.positions.length + (right?.positions.length ?? 0) + inputRingCount,
+      inputRingCount,
+      intersections: props.capacity.intersections,
+      nodedSegments: props.capacity.nodedSegments,
+      boundaryCapacity: output.boundary.endpoints.length,
+      outputRingCapacity: output.geometry.ringOffsets.length - 1,
+      outputVertexCapacity: output.geometry.positions.length,
+      leafCapacity: props.leafCapacity
+    });
     validateGraphViewsBelongToGraph(id, graph, [
       left.positions,
       left.featureOffsets,
       left.polygonOffsets,
       left.ringOffsets,
-      left.sourceIds,
       right?.positions,
       right?.featureOffsets,
       right?.polygonOffsets,
       right?.ringOffsets,
-      right?.sourceIds,
       output.geometry.positions,
       output.geometry.featureOffsets,
       output.geometry.polygonOffsets,
@@ -1291,6 +1351,17 @@ const NODED_CAPACITY: u32 = ${capacity}u;`
     const ringStatusVariant = ringStatusOutputs.some(([, , view]) => view)
       ? `-${ringStatusOutputs.map(([, , view]) => (view ? 1 : 0)).join('')}`
       : '';
+    const featureSourceMapping = output.featureSources
+      ? {
+          segmentRings: transient(
+            'source-segment-rings',
+            'uint32',
+            output.boundary.endpoints.length
+          ),
+          ringShells: transient('source-ring-shells', 'uint32', ringCapacity),
+          ringAreas: transient('source-ring-areas', 'float32', ringCapacity)
+        }
+      : undefined;
     nodes.push(
       ...new GPUSegmentRingAssembly({
         id: `${id}-assemble`,
@@ -1310,10 +1381,23 @@ const NODED_CAPACITY: u32 = ${capacity}u;`
           positions: ringPositions,
           ringOffsets,
           status: {count: ringCount, requiredCount: ringRequiredCount, overflow: ringOverflow},
-          polygons: output.geometry
+          polygons: output.geometry,
+          ...featureSourceMapping
         }
       }).getCommandNodes(graph)
     );
+    if (output.featureSources && featureSourceMapping)
+      nodes.push(
+        ...createOverlayFeatureSourceNodes(graph, {
+          id,
+          ...featureSourceMapping,
+          ringCount,
+          boundaryCount: boundary.status.count,
+          sourceRows: boundary.sourceFeatureIds,
+          operandIds: boundary.operandIds,
+          output: output.featureSources
+        })
+      );
     nodes.push(
       kernel(
         'lattice-to-world',

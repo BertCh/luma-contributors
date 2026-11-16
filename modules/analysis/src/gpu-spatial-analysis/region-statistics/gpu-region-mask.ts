@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {createSpatialStatisticsCollectiveNode} from '../spatial-weights/spatial-statistics-collective-node';
+import {validateDisjointWritableViews} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateSpatialStatisticsBindings} from '../spatial-weights/spatial-statistics-bindings';
 import {
   GraphVectorView,
   createTransientView,
@@ -142,6 +145,7 @@ export class GPURegionMask implements GPUCommandNodeProducer {
         throw new Error(`${id} screenTransform must contain 20 float32 values`);
       }
     }
+    validateDisjointWritableViews(id, {mask: output.mask, ...output.status});
     validateGraphOutputsDisjointFromInputs(
       id,
       [
@@ -161,6 +165,7 @@ export class GPURegionMask implements GPUCommandNodeProducer {
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    validateSpatialStatisticsBindings(graph, this.id, this.props, {});
     const {id, props} = this;
     const {positions, region} = props;
     const outputMask = props.output.mask;
@@ -295,17 +300,20 @@ fn isInsideRegion(point: vec2f) -> bool {
           });
         }
         nodes.push(
-          createWGSLKernelNode<Parameters>(graph, {
+          createSpatialStatisticsCollectiveNode<Parameters>(graph, {
             id: isVector ? `${id}-chunk-${chunkIndex}` : id,
             operation: 'GPURegionMask',
             variant: `${region.kind}${region.screenTransform ? '-screen' : ''}`,
             bindings,
             invocationCount: chunk.length,
-            declarations: `const ROW_START: u32 = ${rowStart}u;
+            parameterValues: [rowStart],
+            declarations: `
 ${REGION_STATISTICS_WGSL_HELPERS}
 ${toRegionSpace}
 ${isInsideRegion}`,
-            body: `let world = vec2f(positions[positionsOffset + index * 2u], positions[positionsOffset + index * 2u + 1u]);
+            body: `if (index >= INVOCATION_COUNT) { return; }
+  let ROW_START = getChunkParameter(36u);
+  let world = vec2f(positions[positionsOffset + index * 2u], positions[positionsOffset + index * 2u + 1u]);
   var selected = false;
   if (isFiniteValue(world.x) && isFiniteValue(world.y)) {
     let regionPoint = toRegionSpace(world);

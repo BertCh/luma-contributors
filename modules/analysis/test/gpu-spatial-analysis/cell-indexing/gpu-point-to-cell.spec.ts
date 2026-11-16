@@ -15,6 +15,7 @@ import {
 import {h3ToBigInt, quadbinPointToCell} from '../cell-aggregation/cell-aggregation-oracle';
 import {createRandom} from '../cell-aggregation/cell-aggregation-points';
 import {
+  createVectorView,
   createInputBuffer,
   createOutputBuffer,
   readUint32,
@@ -430,4 +431,423 @@ it('GPUPointToCell H3 equals h3-py away from cell edges', async () => {
     'largest mismatch margin (rad)',
     largestMargin
   );
+});
+
+it('GPUPointToCell packed and three uneven batches produce identical row-aligned outputs', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const positions = createPoints(89);
+  const mask = Uint32Array.from({length: ROWS}, (_, row) => (row % 13 === 0 ? 0 : 1));
+  const lengths = [3, 257, ROWS - 260];
+  for (const family of ['quadbin', 'quadkey', 'geohash', 's2', 'h3'] as const) {
+    const resolution = family === 'h3' ? 4 : 8;
+    const packed = createIndexer(device, family, resolution, {mask: true, validity: true});
+    const buffers: Buffer[] = [];
+    const graph = new GPUCommandGraph(device);
+    const cellBuffers: Buffer[] = [];
+    const validityBuffers: Buffer[] = [];
+    let rowOffset = 0;
+    const positionChunks = [];
+    const maskChunks = [];
+    const cellChunks = [];
+    const validityChunks = [];
+    for (const [chunkIndex, length] of lengths.entries()) {
+      const positionBuffer = createInputBuffer(
+        device,
+        positions.slice(rowOffset * 2, (rowOffset + length) * 2)
+      );
+      const maskBuffer = createInputBuffer(device, mask.slice(rowOffset, rowOffset + length));
+      const cellBuffer = createOutputBuffer(device, length * 2);
+      const validityBuffer = createOutputBuffer(device, length);
+      buffers.push(positionBuffer, maskBuffer, cellBuffer, validityBuffer);
+      cellBuffers.push(cellBuffer);
+      validityBuffers.push(validityBuffer);
+      positionChunks.push(
+        importGraphBuffer(graph, `positions-${chunkIndex}`, positionBuffer, 'float32x2', length)
+      );
+      maskChunks.push(importGraphBuffer(graph, `mask-${chunkIndex}`, maskBuffer, 'uint32', length));
+      cellChunks.push(
+        importGraphBuffer(graph, `cells-${chunkIndex}`, cellBuffer, 'uint32x2', length)
+      );
+      validityChunks.push(
+        importGraphBuffer(graph, `validity-${chunkIndex}`, validityBuffer, 'uint32', length)
+      );
+      rowOffset += length;
+    }
+    graph.add(
+      new GPUPointToCell({
+        family,
+        resolution,
+        positions: createVectorView('positions', 'float32x2', positionChunks),
+        mask: createVectorView('mask', 'uint32', maskChunks),
+        output: {
+          cells: createVectorView('cells', 'uint32x2', cellChunks),
+          validity: createVectorView('validity', 'uint32', validityChunks)
+        }
+      })
+    );
+    const compiled = graph.compile();
+    try {
+      submitGraph(device, compiled, undefined);
+      const expected = await packed.run(positions, mask);
+      const keys: bigint[] = [];
+      const validity: number[] = [];
+      for (const [chunkIndex, length] of lengths.entries()) {
+        const words = await readUint32(cellBuffers[chunkIndex], length * 2);
+        for (let row = 0; row < length; row++) {
+          keys.push(joinKey(words[row * 2], words[row * 2 + 1]));
+        }
+        validity.push(...(await readUint32(validityBuffers[chunkIndex], length)));
+      }
+      expect(keys).toEqual(expected.keys);
+      expect(validity).toEqual(expected.valid);
+      expectPointCellOracle(family, resolution, positions, mask, keys, validity);
+    } finally {
+      compiled.destroy();
+      packed.destroy();
+      for (const buffer of buffers) {
+        buffer.destroy();
+      }
+    }
+  }
+});
+
+it('GPUPointToCell accepts more than 2^24 / 16 rows in three record batches', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const lengths = [17, 262147, 786429];
+  const graph = new GPUCommandGraph(device);
+  const buffers: Buffer[] = [];
+  const positionChunks = [];
+  const cellChunks = [];
+  const outputBuffers: Buffer[] = [];
+  for (const [chunkIndex, length] of lengths.entries()) {
+    const positions = createInputBuffer(device, new Float32Array(length * 2));
+    const cells = createOutputBuffer(device, length * 2);
+    buffers.push(positions, cells);
+    outputBuffers.push(cells);
+    positionChunks.push(
+      importGraphBuffer(graph, `positions-${chunkIndex}`, positions, 'float32x2', length)
+    );
+    cellChunks.push(importGraphBuffer(graph, `cells-${chunkIndex}`, cells, 'uint32x2', length));
+  }
+  graph.add(
+    new GPUPointToCell({
+      family: 'quadbin',
+      resolution: 8,
+      positions: createVectorView('positions', 'float32x2', positionChunks),
+      output: {cells: createVectorView('cells', 'uint32x2', cellChunks)}
+    })
+  );
+  const compiled = graph.compile();
+  try {
+    submitGraph(device, compiled, undefined);
+    const key = quadbinPointToCell(0, 0, 8);
+    const low = Number(key & 0xffffffffn);
+    const high = Number(key >> 32n);
+    expect(lengths.reduce((total, length) => total + length, 0)).toBeGreaterThan(2 ** 24 / 16);
+    for (const [chunkIndex, length] of lengths.entries()) {
+      const words = await readUint32(outputBuffers[chunkIndex], length * 2);
+      expect(words.every((word, index) => word === (index % 2 === 0 ? low : high))).toBe(true);
+    }
+  } finally {
+    compiled.destroy();
+    for (const buffer of buffers) {
+      buffer.destroy();
+    }
+  }
+});
+
+it('GPUPointToCell preserves offset boundary batches, signed zeros and repeated encodings', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const lengths = [0, 1, 255, 256, 257, 0];
+  const rows = lengths.reduce((total, length) => total + length, 0);
+  const positions = Float32Array.from({length: rows * 2}, (_, component) =>
+    component % 2 ? (Math.floor(component / 2) % 150) - 75 : (Math.floor(component / 2) % 350) - 175
+  );
+  positions[4] = -0;
+  positions[5] = 0;
+  positions[6] = 0;
+  positions[7] = -0;
+  const mask = Uint32Array.from({length: rows}, (_, row) => (row % 11 ? 1 : 0));
+  for (const family of ['quadbin', 'h3'] as const) {
+    const resolution = family === 'quadbin' ? 26 : 12;
+    const createRun = (batchLengths: number[], packed: boolean) => {
+      const graph = new GPUCommandGraph(device);
+      const buffers: Buffer[] = [];
+      const positionBuffers: Buffer[] = [];
+      const maskBuffers: Buffer[] = [];
+      const cellBuffers: Buffer[] = [];
+      const validityBuffers: Buffer[] = [];
+      const positionChunks = [];
+      const maskChunks = [];
+      const cellChunks = [];
+      const validityChunks = [];
+      for (const [chunkIndex, length] of batchLengths.entries()) {
+        const positionBuffer = createInputBuffer(
+          device,
+          new Float32Array((Math.max(length, 1) + 3) * 2)
+        );
+        const maskBuffer = createInputBuffer(device, new Uint32Array(Math.max(length, 1) + 3));
+        const cellBuffer = createOutputBuffer(device, (Math.max(length, 1) + 3) * 2);
+        const validityBuffer = createOutputBuffer(device, Math.max(length, 1) + 3);
+        cellBuffer.write(new Uint32Array((Math.max(length, 1) + 3) * 2).fill(0xfeedbeef));
+        validityBuffer.write(new Uint32Array(Math.max(length, 1) + 3).fill(0xfeedbeef));
+        buffers.push(positionBuffer, maskBuffer, cellBuffer, validityBuffer);
+        positionBuffers.push(positionBuffer);
+        maskBuffers.push(maskBuffer);
+        cellBuffers.push(cellBuffer);
+        validityBuffers.push(validityBuffer);
+        const positionBacking = importGraphBuffer(
+          graph,
+          `positions-${chunkIndex}`,
+          positionBuffer,
+          'float32x2'
+        );
+        const maskBacking = importGraphBuffer(graph, `mask-${chunkIndex}`, maskBuffer, 'uint32');
+        const cellBacking = importGraphBuffer(graph, `cells-${chunkIndex}`, cellBuffer, 'uint32x2');
+        const validityBacking = importGraphBuffer(
+          graph,
+          `validity-${chunkIndex}`,
+          validityBuffer,
+          'uint32'
+        );
+        positionChunks.push(
+          graph.createDataView(positionBacking.buffer, {
+            format: 'float32x2',
+            length,
+            byteOffset: 24
+          })
+        );
+        maskChunks.push(
+          graph.createDataView(maskBacking.buffer, {format: 'uint32', length, byteOffset: 12})
+        );
+        cellChunks.push(
+          graph.createDataView(cellBacking.buffer, {format: 'uint32x2', length, byteOffset: 24})
+        );
+        validityChunks.push(
+          graph.createDataView(validityBacking.buffer, {format: 'uint32', length, byteOffset: 12})
+        );
+      }
+      graph.add(
+        new GPUPointToCell({
+          family,
+          resolution,
+          precision: family === 'h3' ? 'extended' : undefined,
+          positions: packed
+            ? positionChunks[0]
+            : createVectorView('positions', 'float32x2', positionChunks),
+          mask: packed ? maskChunks[0] : createVectorView('mask', 'uint32', maskChunks),
+          output: {
+            cells: packed ? cellChunks[0] : createVectorView('cells', 'uint32x2', cellChunks),
+            validity: packed
+              ? validityChunks[0]
+              : createVectorView('validity', 'uint32', validityChunks)
+          }
+        })
+      );
+      const compiled = graph.compile();
+      return {
+        async run(currentPositions: Float32Array, currentMask: Uint32Array) {
+          let firstRow = 0;
+          for (const [chunkIndex, length] of batchLengths.entries()) {
+            if (length) {
+              positionBuffers[chunkIndex].write(
+                currentPositions.subarray(firstRow * 2, (firstRow + length) * 2),
+                24
+              );
+              maskBuffers[chunkIndex].write(currentMask.subarray(firstRow, firstRow + length), 12);
+            }
+            firstRow += length;
+          }
+          submitGraph(device, compiled, undefined);
+          const keys: bigint[] = [];
+          const validity: number[] = [];
+          for (const [chunkIndex, length] of batchLengths.entries()) {
+            const words = await readUint32(cellBuffers[chunkIndex], (Math.max(length, 1) + 3) * 2);
+            const flags = await readUint32(validityBuffers[chunkIndex], Math.max(length, 1) + 3);
+            expect(words.slice(0, 6)).toEqual(new Array<number>(6).fill(0xfeedbeef));
+            expect(flags.slice(0, 3)).toEqual(new Array<number>(3).fill(0xfeedbeef));
+            for (let row = 0; row < length; row++) {
+              keys.push(joinKey(words[6 + row * 2], words[7 + row * 2]));
+              validity.push(flags[3 + row]);
+            }
+            if (!length) {
+              expect(words.every(word => word === 0xfeedbeef)).toBe(true);
+              expect(flags.every(word => word === 0xfeedbeef)).toBe(true);
+            }
+          }
+          return {keys, validity};
+        },
+        destroy() {
+          compiled.destroy();
+          for (const buffer of buffers) buffer.destroy();
+        }
+      };
+    };
+    const packed = createRun([rows], true);
+    const chunked = createRun(lengths, false);
+    try {
+      for (const frame of [0, 1, 2]) {
+        const currentMask = frame === 1 ? new Uint32Array(rows) : mask;
+        const currentPositions =
+          frame === 2 ? Float32Array.from(positions, coordinate => -coordinate) : positions;
+        const actual = await chunked.run(currentPositions, currentMask);
+        expect(actual).toEqual(await packed.run(currentPositions, currentMask));
+        expectPointCellOracle(
+          family,
+          resolution,
+          currentPositions,
+          currentMask,
+          actual.keys,
+          actual.validity,
+          true
+        );
+      }
+    } finally {
+      packed.destroy();
+      chunked.destroy();
+    }
+  }
+});
+
+/** Independent references: integer/bisection grids, h3-js, and the documented S2 edge tolerance. */
+function expectPointCellOracle(
+  family: GPUCellIndexFamily,
+  resolution: number,
+  positions: Float32Array,
+  mask: Uint32Array,
+  keys: readonly bigint[],
+  validity: readonly number[],
+  exactH3 = false
+): void {
+  let s2Mismatches = 0;
+  let h3Mismatches = 0;
+  for (let row = 0; row < keys.length; row++) {
+    if (!mask[row] || !isFinitePoint(positions, row)) {
+      expect(keys[row]).toBe(0n);
+      expect(validity[row]).toBe(0);
+      continue;
+    }
+    expect(validity[row]).toBe(1);
+    const longitude = positions[row * 2];
+    const latitude = positions[row * 2 + 1];
+    let expected: bigint;
+    switch (family) {
+      case 'quadbin':
+        expected = quadbinPointToCell(longitude, latitude, resolution);
+        break;
+      case 'quadkey':
+        expected = quadkeyPointToCell(longitude, latitude, resolution);
+        break;
+      case 'geohash':
+        expected = geohashPointToCell(longitude, latitude, resolution);
+        break;
+      case 'h3':
+        expected = h3ToBigInt(latLngToCell(latitude, longitude, resolution));
+        break;
+      case 's2':
+        expected = s2PointToCell(longitude, latitude, resolution);
+        break;
+    }
+    if (family === 'h3' && !exactH3 && keys[row] !== expected) {
+      h3Mismatches++;
+      const [expectedLatitude, expectedLongitude] = cellToLatLng(expected.toString(16));
+      const [actualLatitude, actualLongitude] = cellToLatLng(keys[row].toString(16));
+      expect(
+        getAngularDistance([expectedLongitude, expectedLatitude], [actualLongitude, actualLatitude])
+      ).toBeLessThan(Math.max(0.5, 5 * 2 ** -resolution));
+    } else if (family === 's2' && keys[row] !== expected) {
+      // A float32 S2 face or edge tie may choose an adjacent reference cell. Count random rows
+      // separately from the deliberate seams/poles and retain the existing low-level rate bound.
+      if (row < UNIFORM_COUNT) s2Mismatches++;
+      expect(getAngularDistance(s2CellToCenter(keys[row]), s2CellToCenter(expected))).toBeLessThan(
+        2.5 * (Math.PI / 2 / 2 ** resolution)
+      );
+    } else {
+      expect(keys[row]).toBe(expected);
+    }
+  }
+  expect(s2Mismatches).toBeLessThanOrEqual(Math.ceil(keys.length * 5e-4));
+  expect(h3Mismatches).toBeLessThanOrEqual(Math.ceil(keys.length * 1e-3));
+}
+
+it('GPUPointToCell accepts adjacent output chunks and different binding prefixes with CPU expected keys', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const graph = new GPUCommandGraph(device);
+  const buffers: Buffer[] = [];
+  const positions = Float32Array.from([10, 20, -100, 15, 130, -30]);
+  const positionChunks = [0, 8, 248].map((byteOffset, index) => {
+    const data = new Float32Array(byteOffset / 4 + 2).fill(77);
+    data.set(positions.subarray(index * 2, index * 2 + 2), byteOffset / 4);
+    const buffer = createInputBuffer(device, data);
+    buffers.push(buffer);
+    const backing = importGraphBuffer(graph, `varying-positions-${index}`, buffer, 'float32x2');
+    return graph.createDataView(backing.buffer, {format: 'float32x2', length: 1, byteOffset});
+  });
+  const maskBuffers: Buffer[] = [];
+  const maskOffsets = [0, 4, 252];
+  const maskChunks = maskOffsets.map((byteOffset, index) => {
+    const buffer = createInputBuffer(device, new Uint32Array(byteOffset / 4 + 1).fill(1));
+    buffers.push(buffer);
+    maskBuffers.push(buffer);
+    const backing = importGraphBuffer(graph, `varying-mask-${index}`, buffer, 'uint32');
+    return graph.createDataView(backing.buffer, {format: 'uint32', length: 1, byteOffset});
+  });
+  const cells = createOutputBuffer(device, 6);
+  const validity = createOutputBuffer(device, 3);
+  buffers.push(cells, validity);
+  const cellBacking = importGraphBuffer(graph, 'adjacent-output-cells', cells, 'uint32x2');
+  const validityBacking = importGraphBuffer(graph, 'adjacent-output-validity', validity, 'uint32');
+  graph.add(
+    new GPUPointToCell({
+      family: 'quadbin',
+      resolution: 8,
+      positions: createVectorView('varying-position-chunks', 'float32x2', positionChunks),
+      mask: createVectorView('varying-mask-chunks', 'uint32', maskChunks),
+      output: {
+        cells: createVectorView(
+          'adjacent-cell-chunks',
+          'uint32x2',
+          [0, 8, 16].map(byteOffset =>
+            graph.createDataView(cellBacking.buffer, {format: 'uint32x2', length: 1, byteOffset})
+          )
+        ),
+        validity: createVectorView(
+          'adjacent-validity-chunks',
+          'uint32',
+          [0, 4, 8].map(byteOffset =>
+            graph.createDataView(validityBacking.buffer, {format: 'uint32', length: 1, byteOffset})
+          )
+        )
+      }
+    })
+  );
+  const compiled = graph.compile();
+  try {
+    for (const mask of [
+      new Uint32Array([1, 1, 1]),
+      new Uint32Array([1, 0, 1]),
+      new Uint32Array([0, 1, 0])
+    ]) {
+      maskBuffers.forEach((buffer, index) =>
+        buffer.write(mask.subarray(index, index + 1), maskOffsets[index])
+      );
+      submitGraph(device, compiled, undefined);
+      const words = await readUint32(cells, 6);
+      expectPointCellOracle(
+        'quadbin',
+        8,
+        positions,
+        mask,
+        [0, 1, 2].map(row => joinKey(words[row * 2], words[row * 2 + 1])),
+        await readUint32(validity, 3)
+      );
+    }
+  } finally {
+    compiled.destroy();
+    for (const buffer of buffers) buffer.destroy();
+  }
 });

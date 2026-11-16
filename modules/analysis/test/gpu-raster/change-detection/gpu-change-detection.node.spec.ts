@@ -121,7 +121,7 @@ it('GPUChangeDetection rejects invalid properties', () => {
   expectThrows(graph => {
     const slices = createTransientView(graph, 'alias', 'float32', 18);
     return {slices, output: {difference: slices}};
-  }, /must not share/);
+  }, /^change-detection .*logical writable byte ranges must not overlap$/);
   expectThrows(
     graph => ({
       output: {

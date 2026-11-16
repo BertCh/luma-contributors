@@ -16,7 +16,9 @@ import {
   validateCapacity,
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,
-  validateSinglePackedView
+  validateSinglePackedView,
+  validateGPUStorageBindingByteLength,
+  getGraphOutputViews
 } from '../../analysis-core/kernels/gpu-contributor-utils';
 import {
   validateGPUStatusPort,
@@ -24,8 +26,11 @@ import {
 } from '../../analysis-core/contracts/index';
 import {GPU_UPPER_INCOMPLETE_GAMMA_WGSL} from '../../analysis-core/kernels/incomplete-gamma-wgsl';
 
+import {validateGraphChunkBindingRanges} from '../../analysis-core/kernels/graph-chunk-dispatch';
+
 const OPERATION = 'GPUTransitionDiagnostics';
-const MAXIMUM_CLASS_COUNT = 64;
+/** Serial GTH elimination and homogeneity retain a bounded reference dense system. */
+export const GPU_TRANSITION_DIAGNOSTICS_MAXIMUM_CLASS_COUNT = 64;
 
 /** Default {@link GPUTransitionDiagnosticsProps.minimumTransitions}. */
 export const GPU_TRANSITION_DEFAULT_MINIMUM_TRANSITIONS = 5;
@@ -156,7 +161,13 @@ export class GPUTransitionDiagnostics implements GPUCommandNodeProducer {
     this.minimumTransitions =
       props.minimumTransitions ?? GPU_TRANSITION_DEFAULT_MINIMUM_TRANSITIONS;
     const {classCount, output} = props;
-    validateCapacity(id, 'classCount', classCount, 1, MAXIMUM_CLASS_COUNT);
+    validateCapacity(
+      id,
+      'classCount',
+      classCount,
+      1,
+      GPU_TRANSITION_DIAGNOSTICS_MAXIMUM_CLASS_COUNT
+    );
     validateCapacity(id, 'conditionCount', this.conditionCount);
     validateCapacity(id, 'minimumTransitions', this.minimumTransitions);
     validatePackedUint32View(props.counts, `${id} counts`);
@@ -218,6 +229,22 @@ export class GPUTransitionDiagnostics implements GPUCommandNodeProducer {
       output.stateSparsity,
       converged
     ]);
+    validateGraphChunkBindingRanges(graph, id, {
+      counts,
+      ...Object.fromEntries(
+        getGraphOutputViews({...output, status: {converged: output.status?.converged}}).map(
+          (view, index) => [`output[${index}]`, view]
+        )
+      )
+    });
+    if (output.steadyStates)
+      validateGPUStorageBindingByteLength(
+        graph.device,
+        id,
+        'chainWork',
+        chainCount * classCount * classCount * 4,
+        'reduce conditionCount or classCount'
+      );
     const constants = `const K: u32 = ${classCount}u;
 const C: u32 = ${conditionCount}u;
 const MINIMUM_TRANSITIONS: u32 = ${minimumTransitions}u;`;

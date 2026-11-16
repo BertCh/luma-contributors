@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {NETWORK_CENTRALITY_SCHEDULE_KERNEL_AUDIT_CASES} from '../../gpu-network/network-centrality/network-centrality-kernel-audit-cases';
 import {QUANTILE_LISA_AUDIT_CASES} from './cases-quantile-lisa';
 import {COREGIONALIZATION_FIT_AUDIT_CASES} from './cases-coregionalization-fit';
 import {EXACT_NATURAL_BREAKS_AUDIT_CASES} from './cases-exact-natural-breaks';
@@ -117,7 +118,7 @@ export const KERNEL_AUDIT_CASES: Readonly<Record<string, readonly KernelAuditCas
   ],
   raster: RASTER_CASES,
   terrain: TERRAIN_CASES,
-  network: NETWORK_CASES,
+  network: [...NETWORK_CASES, ...NETWORK_CENTRALITY_SCHEDULE_KERNEL_AUDIT_CASES],
   statistics: STATISTICS_CASES,
   recipes: [...RECIPES_CASES, ...RATE_MAPPING_KERNEL_AUDIT_CASES, ...QUANTILE_LISA_AUDIT_CASES],
   geometry: [...GEOMETRY_CASES, ...DORLING_CARTOGRAM_AUDIT_CASES],

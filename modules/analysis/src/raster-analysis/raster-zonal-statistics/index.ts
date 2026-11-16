@@ -42,3 +42,4 @@ export type {
 } from './cpu-raster-fractional-zonal-statistics-operation';
 export {GPURasterFractionalZonalStatisticsOperation} from './gpu-raster-fractional-zonal-statistics-operation';
 export type {RasterFractionalZonalStatisticsOperationProps} from './gpu-raster-fractional-zonal-statistics-operation';
+export type {GPURasterZonalStatisticsDictionaryOutput} from './gpu-raster-zonal-statistics';

@@ -30,6 +30,11 @@ import {
   validatePairStatisticsRowCount
 } from './pair-statistics-grid';
 import {
+  validateGraphChunkBindingRanges,
+  validateDisjointWritableViews
+} from '../../analysis-core/kernels/graph-chunk-dispatch';
+import {validateGraphChunkGroupKernelSupport} from '../../analysis-core/kernels/graph-chunk-groups';
+import {
   getPairStatisticsCellNeighborLoopWGSL,
   getPairStatisticsSegmentTotalNodes,
   PAIR_STATISTICS_PARTIAL_ENTRY_MAXIMUM,
@@ -189,6 +194,7 @@ export class GPUMarkedPointStatistics implements GPUCommandNodeProducer {
       if (view.length !== props.radiusCount * (name === 'statistics' ? 4 : 1))
         throw new Error(`${this.id}: output size mismatch`);
     }
+    validateDisjointWritableViews(this.id, props.output);
     validateGraphOutputsDisjointFromInputs(
       this.id,
       Object.values(props.output),
@@ -203,6 +209,12 @@ export class GPUMarkedPointStatistics implements GPUCommandNodeProducer {
     const bins = props.radiusCount;
     const gridSize = props.gridSize ?? DEFAULT_GRID_SIZE;
     validatePairStatisticsRowCount(id, graph.device, rows);
+    validateMaximumCount(
+      id,
+      'pair partials byteLength',
+      rows * bins * (this.searchStructure === 'brute-force' ? 6 : 3) * 4,
+      graph.device.limits.maxBufferSize
+    );
     validateGPUStorageBindingByteLength(
       graph.device,
       id,
@@ -211,6 +223,12 @@ export class GPUMarkedPointStatistics implements GPUCommandNodeProducer {
       'reduce positions length or radiusCount'
     );
     if (this.searchStructure === 'grid') {
+      validateMaximumCount(
+        id,
+        'cell offsets byteLength',
+        (gridSize[0] * gridSize[1] + 1) * 4,
+        graph.device.limits.maxBufferSize
+      );
       validateGPUStorageBindingByteLength(
         graph.device,
         id,
@@ -220,6 +238,11 @@ export class GPUMarkedPointStatistics implements GPUCommandNodeProducer {
       );
     }
     const bindings = getBindings(props);
+    validateGraphChunkBindingRanges(graph, id, {
+      ...Object.fromEntries(bindings.map(binding => [binding.name, binding.view])),
+      ...props.output
+    });
+    if (this.searchStructure === 'grid') validateGraphChunkGroupKernelSupport(graph, id, 2);
     validateGraphViewsBelongToGraph(id, graph, [
       ...bindings.map(binding => binding.view),
       ...Object.values(props.output)

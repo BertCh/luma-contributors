@@ -14,6 +14,7 @@ import {
   GPUNearestFeatureJoin,
   GPUPointInPolygonJoin,
   GPUSpatialPredicateJoin,
+  GPUSpatialJoinPrepared,
   type GPUSpatialJoinGeometry
 } from '../../../src/gpu-spatial-analysis/spatial-join/index';
 import {
@@ -99,7 +100,10 @@ function createGeometry(
 async function runPredicateJoin(
   device: Device,
   how: 'inner' | 'anti',
-  candidateCapacity: number
+  candidateCapacity: number,
+  candidateTileCapacity?: number,
+  sortedPrepared = false,
+  mode?: 'distance' | 'relate' | 'attribute'
 ): Promise<{
   pairs: [number, number][];
   unmatched: number[];
@@ -124,13 +128,38 @@ async function runPredicateJoin(
   const candidateOverflow = fixture.output('candidate-overflow', 1);
   const truncatedCount = fixture.output('truncated-count', 1);
   const truncated = fixture.output('truncated', leftCount);
+  const distance =
+    mode === 'distance'
+      ? new GPUParameterBuffer(device, {
+          id: 'distance',
+          format: 'float32',
+          length: 1,
+          values: new Float32Array([0])
+        })
+      : undefined;
+  const onAttribute =
+    mode === 'attribute'
+      ? {
+          left: view(graph, 'left-keys', fixture.upload(new Uint32Array([0, 1, 2, 1])), 4),
+          right: view(graph, 'right-keys', fixture.upload(new Uint32Array([1, 0])), 2)
+        }
+      : undefined;
+  const prepared = sortedPrepared
+    ? new GPUSpatialJoinPrepared({geometry: right, spatialSort: true})
+    : undefined;
+  if (prepared) graph.add(prepared);
   graph.add(
     new GPUSpatialPredicateJoin({
       left,
       right,
-      predicate: 'intersects',
+      predicate: mode === 'distance' ? 'dwithin' : mode === 'relate' ? 'coveredBy' : 'intersects',
+      engine: mode === 'distance' ? 'relate' : undefined,
+      distance: distance?.importToGraph(graph),
+      onAttribute,
       how,
       candidateCapacity,
+      candidateTileCapacity,
+      prepared,
       output: {
         ...(how === 'inner'
           ? {
@@ -173,6 +202,8 @@ async function runPredicateJoin(
     overflow: (await readUint32(overflow.buffer, 1))[0]
   };
   compiled.destroy();
+  prepared?.destroy();
+  distance?.destroy();
   for (const buffer of fixture.buffers) {
     buffer.destroy();
   }
@@ -323,3 +354,74 @@ it('GPUNearestFeatureJoin flags the queries whose candidates were dropped', asyn
     buffer.destroy();
   }
 });
+
+for (const candidateTileCapacity of [1, 2, 3]) {
+  for (const sortedPrepared of [false, true]) {
+    it(`predicate candidates stream across pages of ${candidateTileCapacity} with an independent oracle (prepared ${sortedPrepared})`, async () => {
+      const device = await getWebGPUTestDevice();
+      requireTestDevice(device);
+      // Closed-form interior points: each of rows 0, 1 and 3 belongs to both squares; row 2 to neither.
+      const oraclePairs = [
+        [0, 0],
+        [0, 1],
+        [1, 0],
+        [1, 1],
+        [3, 0],
+        [3, 1]
+      ];
+      for (const capacity of [3, 5, 6, 9]) {
+        const result = await runPredicateJoin(
+          device,
+          'inner',
+          capacity,
+          candidateTileCapacity,
+          sortedPrepared
+        );
+        expect(result.pairs).toEqual(oraclePairs.slice(0, capacity));
+        expect(result.candidateOverflow).toBe(Number(capacity < 6));
+        expect(result.overflow).toBe(Number(capacity < 6));
+        const expectedTruncated = [0, Number(capacity < 4), 0, Number(capacity < 6)];
+        expect(result.truncated).toEqual(expectedTruncated);
+        expect(result.truncatedCount).toBe(expectedTruncated.reduce((sum, flag) => sum + flag, 0));
+        const anti = await runPredicateJoin(
+          device,
+          'anti',
+          capacity,
+          candidateTileCapacity,
+          sortedPrepared
+        );
+        expect(anti.unmatched).toEqual([2]);
+        expect(anti.truncated).toEqual(expectedTruncated);
+      }
+    });
+  }
+}
+
+for (const mode of ['distance', 'relate', 'attribute'] as const) {
+  it(`predicate page compaction preserves ${mode} output and order`, async () => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device);
+    const result = await runPredicateJoin(device, 'inner', 9, 2, true, mode);
+    // Distance zero and coveredBy accept the same six strictly interior point/square pairs.
+    // The attribute case retains only equality of the independent key arrays above.
+    expect(result.pairs).toEqual(
+      mode === 'attribute'
+        ? [
+            [0, 1],
+            [1, 0],
+            [3, 0]
+          ]
+        : [
+            [0, 0],
+            [0, 1],
+            [1, 0],
+            [1, 1],
+            [3, 0],
+            [3, 1]
+          ]
+    );
+    expect(result.truncated).toEqual([0, 0, 0, 0]);
+    expect(result.candidateOverflow).toBe(0);
+    expect(result.overflow).toBe(0);
+  });
+}

@@ -11,7 +11,7 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
-import {createWGSLKernelNode} from '../../analysis-core/kernels/wgsl-kernel-nodes';
+import {createGroupStatisticsKernelNode} from './group-statistics-kernel';
 import {ORDERED_KEY_WGSL} from '../../analysis-core/cell-key-wgsl';
 import {
   atomicBinding,
@@ -88,7 +88,7 @@ export function getColumnOrderNodes<Parameters>(
   // 1. Sort rows by value (ascending, non-finite last), then by key words (stable).
   const valueKeys = u32('value-keys');
   nodes.push(
-    createWGSLKernelNode<Parameters>(graph, {
+    createGroupStatisticsKernelNode<Parameters>(graph, {
       id: `${id}-value-keys`,
       operation,
       variant: 'value-keys',
@@ -134,7 +134,7 @@ ${GROUP_VALUE_KEY_WGSL}
 ${QUANTILE_WGSL}`;
   if (output.medians) {
     nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
+      createGroupStatisticsKernelNode<Parameters>(graph, {
         id: `${id}-medians`,
         operation,
         variant: 'medians',
@@ -158,7 +158,7 @@ ${QUANTILE_WGSL}`;
   if (output.percentiles && props.percentiles) {
     const percentileCount = props.percentiles.length;
     nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
+      createGroupStatisticsKernelNode<Parameters>(graph, {
         id: `${id}-percentiles`,
         operation,
         variant: 'percentiles',
@@ -192,7 +192,7 @@ const PERCENTILE_COUNT: u32 = ${percentileCount}u;`,
   }
   const heads = u32('run-heads');
   nodes.push(
-    createWGSLKernelNode<Parameters>(graph, {
+    createGroupStatisticsKernelNode<Parameters>(graph, {
       id: `${id}-run-heads`,
       operation,
       variant: 'run-heads',
@@ -216,7 +216,7 @@ const PERCENTILE_COUNT: u32 = ${percentileCount}u;`,
   const maximumLengths = wantsMode ? u32('maximum-run-lengths', capacity) : undefined;
   const modeRuns = wantsMode ? u32('mode-runs', capacity) : undefined;
   nodes.push(
-    createWGSLKernelNode<Parameters>(graph, {
+    createGroupStatisticsKernelNode<Parameters>(graph, {
       id: `${id}-run-clear`,
       operation,
       variant: 'run-clear',
@@ -233,7 +233,7 @@ const PERCENTILE_COUNT: u32 = ${percentileCount}u;`,
   );
   if (!wantsMode) {
     nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
+      createGroupStatisticsKernelNode<Parameters>(graph, {
         id: `${id}-count-runs`,
         operation,
         variant: 'count-runs',
@@ -260,7 +260,7 @@ const PERCENTILE_COUNT: u32 = ${percentileCount}u;`,
     );
     const runStarts = u32('run-starts');
     nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
+      createGroupStatisticsKernelNode<Parameters>(graph, {
         id: `${id}-run-starts`,
         operation,
         variant: 'run-starts',
@@ -294,7 +294,7 @@ const PERCENTILE_COUNT: u32 = ${percentileCount}u;`,
   let runEnd = min(nextStart, offsets[offsetsOffset + group] + finiteCounts[finiteCountsOffset + group]);
   let runLength = runEnd - index;`;
     nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
+      createGroupStatisticsKernelNode<Parameters>(graph, {
         id: `${id}-run-lengths`,
         operation,
         variant: 'run-lengths',
@@ -315,7 +315,7 @@ const PERCENTILE_COUNT: u32 = ${percentileCount}u;`,
     );
     // Ties in length resolve to the smallest run, which holds the smallest value.
     nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
+      createGroupStatisticsKernelNode<Parameters>(graph, {
         id: `${id}-mode-runs`,
         operation,
         variant: 'mode-runs',
@@ -336,7 +336,7 @@ const PERCENTILE_COUNT: u32 = ${percentileCount}u;`,
       })
     );
     nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
+      createGroupStatisticsKernelNode<Parameters>(graph, {
         id: `${id}-finish-modes`,
         operation,
         variant: 'finish-modes',
@@ -361,7 +361,7 @@ const PERCENTILE_COUNT: u32 = ${percentileCount}u;`,
   }
   if (output.uniqueCounts) {
     nodes.push(
-      createWGSLKernelNode<Parameters>(graph, {
+      createGroupStatisticsKernelNode<Parameters>(graph, {
         id: `${id}-finish-unique`,
         operation,
         variant: 'finish-unique',

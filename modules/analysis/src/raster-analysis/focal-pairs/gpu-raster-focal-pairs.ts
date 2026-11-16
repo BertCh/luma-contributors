@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateRasterStorageBindings} from '../raster-grid/raster-storage-preflight';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -191,6 +192,22 @@ export class GPURasterFocalPairs implements GPUCommandNodeProducer, GPURasterHal
   getCommandNodes<Parameters>(
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
+    const storageProps = this.props;
+    const storageCellCount = storageProps.grid.width * storageProps.grid.height;
+    validateRasterStorageBindings(
+      graph,
+      this.id,
+      [
+        ...getRasterBandViews(storageProps.predictor),
+        ...getRasterBandViews(storageProps.response),
+        ...Object.values(storageProps.output)
+      ],
+      {
+        'canonical band planes': storageCellCount * 4,
+        'focal metrics': storageCellCount * METRICS.length * 4
+      }
+    );
+
     const {id, props} = this;
     validateRasterBandBelongsToGraph(id, graph, props.predictor, []);
     validateRasterBandBelongsToGraph(id, graph, props.response, []);

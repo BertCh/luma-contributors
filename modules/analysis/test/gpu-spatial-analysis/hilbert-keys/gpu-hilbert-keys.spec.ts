@@ -228,3 +228,51 @@ it('GPUHilbertKeys reduces bounds across workgroups for large inputs', async () 
   expect(mismatches).toBe(0);
   fixture.destroy();
 });
+
+it('Hilbert quantization preserves normalized cells at extreme normal float32 scales', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const order = 4;
+  for (const scale of [2 ** 126, 2 ** -120]) {
+    for (const minimum of [0, -2 * scale]) {
+      const points = Float32Array.from(
+        [0, 4, 8, 12].flatMap(column => [minimum + (column * scale) / 4, minimum + scale])
+      );
+      const bounds = Float32Array.of(
+        minimum,
+        minimum,
+        minimum + 4 * scale - scale / 4,
+        minimum + 4 * scale - scale / 4
+      );
+      // Large opposite bounds overflow a raw f32 difference; all quantized fractions are finite.
+      if (minimum < 0) bounds.set([minimum, minimum, -minimum, -minimum]);
+      const fixture = createGeometryFixture(device, {
+        inputs: {
+          points: {values: points, format: 'float32x2'},
+          bounds: {values: bounds, format: 'float32'}
+        },
+        outputs: {keys: {format: 'uint32', length: 4}},
+        create: ({inputs, outputs}) =>
+          new GPUHilbertKeys({
+            order,
+            positions: inputs['points'] as never,
+            bounds: inputs['bounds'] as never,
+            output: {keys: outputs['keys'] as never}
+          })
+      });
+      const result = await fixture.run();
+      expect(result['keys']).toEqual(
+        Array.from({length: 4}, (_, row) =>
+          getHilbertIndexReference(
+            order,
+            getCellReference(order, points[2 * row], bounds[0], bounds[2]),
+            getCellReference(order, points[2 * row + 1], bounds[1], bounds[3])
+          )
+        )
+      );
+      expect(new Set(result['keys']).size).toBe(4);
+      fixture.destroy();
+    }
+  }
+  device.destroy();
+});

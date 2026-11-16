@@ -4,14 +4,23 @@
 // SPDX-FileComment: Independently implemented for WebGPU; inspired by NVIDIA RAPIDS cuProj.
 // This datum-grid extension is independently authored; no cuProj grid implementation is copied.
 
-import type {
-  GPUCommandGraph,
-  GPUCommandNode,
-  GPUCommandNodeProducer,
-  GraphDataView
+import {
+  createGPUComputeCommandNode,
+  getBoundedDispatchLayout,
+  getViewBinding,
+  getViewElementOffset,
+  validatePackedView,
+  type GraphVectorView,
+  type GPUCommandGraph,
+  type GPUCommandNode,
+  type GPUCommandNodeProducer,
+  type GraphDataView
 } from '@luma.gl/graph/gpu-core';
+import {Kernel} from '@luma.gl/graph';
 import {
   createWGSLKernelNode,
+  getWGSLFloatLiteral,
+  type WGSLKernelProps,
   type WGSLKernelBinding
 } from '../analysis-core/kernels/wgsl-kernel-nodes';
 import {
@@ -21,9 +30,28 @@ import {
   validateRequirement,
   validateViewLength,
   validateSinglePackedView,
-  validateGraphViewsBelongToGraph,
+  getGraphViewChunks,
+  validateCommandNodeBudget,
   validateGraphOutputsDisjointFromInputs
 } from '../analysis-core/kernels/gpu-contributor-utils';
+
+import {
+  createGraphChunkDispatchParameters,
+  planGraphChunkDispatch,
+  validateDisjointWritableViews,
+  validateGraphChunkBindingRanges,
+  validateGraphChunkDispatchBindings,
+  type GraphChunkDispatchPlan
+} from '../analysis-core/kernels/graph-chunk-dispatch';
+
+// Fixed workgroups and the pre-multiplication guard preserve uint32 indices at large dispatches.
+const DATUM_CHUNK_WORKGROUP_SIZE = 256;
+// A 256-thread workgroup must be guarded before its index multiplication can wrap uint32.
+const DATUM_MAXIMUM_LINEAR_WORKGROUP_COUNT = 0x1000000;
+// Each packed sample needs three scalar u32 indices, including an aligned binding prefix.
+const DATUM_MAXIMUM_SAMPLE_COUNT = Math.floor(0xffffffff / 3) - 64;
+// Bound inverse shader work and its u32 loop-bound literal.
+const DATUM_MAXIMUM_ITERATIONS = 1024;
 
 /**
  * Bit values written to the `status` output of {@link GPUDatumGridTransform}. Zero is success;
@@ -62,12 +90,23 @@ export type GPUDatumGrid = {
   origin: readonly [number, number];
   spacing: readonly [number, number];
 };
-export type GPUDatumGridTransformProps = {
+
+/** Preserves the source view kind for each row-aligned output format. */
+type GPUDatumGridTransformRowView<
+  Format extends 'float32' | 'float32x2' | 'float32x3' | 'uint32',
+  Rows extends GraphDataView | GraphVectorView
+> = Rows extends GraphDataView ? GraphDataView<Format> : GraphVectorView<Format>;
+
+export type GPUDatumGridTransformProps<
+  Rows extends
+    | GraphDataView<'float32x3'>
+    | GraphVectorView<'float32x3'> = GraphDataView<'float32x3'>
+> = {
   id?: string;
   /** Longitude/latitude in degrees and height in declared units. */
-  positions: GraphDataView<'float32x3'>;
+  positions: Rows;
   /** Optional residual words; positions + positionsLow retain sub-f32 coordinate detail. */
-  positionsLow?: GraphDataView<'float32x3'>;
+  positionsLow?: Rows;
   /** Packed shifts: longitude degrees, latitude degrees, signed height meters. */
   samples: GraphDataView<'float32x3'>;
   /** Row mask of `samples`: zero marks nodata. All four interpolation corners must be valid, including at edges. */
@@ -91,28 +130,36 @@ export type GPUDatumGridTransformProps = {
    */
   tolerance?: number;
   output: {
-    positions: GraphDataView<'float32x3'>;
+    positions: Rows;
     /** Required with positionsLow; residual relative to the unchanged input high words. */
-    positionsLow?: GraphDataView<'float32x3'>;
+    positionsLow?: Rows;
     /** {@link GPU_DATUM_GRID_TRANSFORM_STATUS} values. */
-    status: GraphDataView<'uint32'>;
+    status: GPUDatumGridTransformRowView<'uint32', Rows>;
   };
 };
 
-/** GPU-resident bilinear datum shift with ordered grids and bounded inverse iteration. */
-export class GPUDatumGridTransform implements GPUCommandNodeProducer {
+/**
+ * GPU-resident bilinear datum shift with ordered grids and bounded inverse iteration.
+ * Positions, optional low words and all outputs accept identical ordered chunk lengths; the
+ * correction samples and sample mask remain packed and resident across every dispatch.
+ */
+export class GPUDatumGridTransform<
+  Rows extends
+    | GraphDataView<'float32x3'>
+    | GraphVectorView<'float32x3'> = GraphDataView<'float32x3'>
+> implements GPUCommandNodeProducer
+{
   readonly id: string;
+  /** Upper bound including the chunk parameter upload. */
+  readonly estimatedCommandNodeCount: number;
+  private readonly chunkPlan: GraphChunkDispatchPlan;
   /** The sample mask, `props.mask`. */
   readonly mask: GraphDataView<'uint32'>;
-  constructor(readonly props: GPUDatumGridTransformProps) {
+  constructor(readonly props: GPUDatumGridTransformProps<Rows>) {
     this.id = props.id ?? 'datum-grid-transform';
     const {mask} = props;
     validateRequirement(this.id, mask !== undefined, 'mask must be given');
     this.mask = mask;
-    validateSinglePackedView(props.positions, ['float32x3'], this.id);
-    if (props.positionsLow) validateSinglePackedView(props.positionsLow, ['float32x3'], this.id);
-    if (props.output.positionsLow)
-      validateSinglePackedView(props.output.positionsLow, ['float32x3'], this.id);
     validateRequirement(
       this.id,
       Boolean(props.positionsLow) === Boolean(props.output.positionsLow),
@@ -127,14 +174,29 @@ export class GPUDatumGridTransform implements GPUCommandNodeProducer {
         props.positions.length
       );
     }
-    validateSinglePackedView(props.samples, ['float32x3'], this.id);
-    validateSinglePackedView(this.mask, ['uint32'], this.id);
-    validateSinglePackedView(props.output.positions, ['float32x3'], this.id);
-    validateSinglePackedView(props.output.status, ['uint32'], this.id);
+    validateSinglePackedView(props.samples, ['float32x3'], `${this.id} samples`);
+    validateSinglePackedView(this.mask, ['uint32'], `${this.id} mask`);
+    for (const [name, view, format] of [
+      ['positions', props.positions, 'float32x3'],
+      ['positionsLow', props.positionsLow, 'float32x3'],
+      ['output.positions', props.output.positions, 'float32x3'],
+      ['output.positionsLow', props.output.positionsLow, 'float32x3'],
+      ['output.status', props.output.status, 'uint32']
+    ] as const) {
+      for (const chunk of view ? getGraphViewChunks(view) : [])
+        validatePackedView(chunk, [format], `${this.id} ${name}`);
+    }
     // Output rows are aligned, grid indices are exact u32 offsets, and interpolation needs 2x2 cells.
     validateViewLength(this.id, 'output.positions', props.output.positions, props.positions.length);
     validateViewLength(this.id, 'output.status', props.output.status, props.positions.length);
     validateViewLength(this.id, 'mask', this.mask, props.samples.length);
+    validateCapacity(
+      this.id,
+      'samples.length',
+      props.samples.length,
+      0,
+      DATUM_MAXIMUM_SAMPLE_COUNT
+    );
     for (const [gridIndex, grid] of props.grids.entries()) {
       const name = `grids[${gridIndex}]`;
       validateCapacity(this.id, `${name}.width`, grid.width, 2);
@@ -174,7 +236,13 @@ export class GPUDatumGridTransform implements GPUCommandNodeProducer {
       Math.fround(props.tolerance ?? DEFAULT_INVERSE_TOLERANCE_DEGREES) > 0,
       'tolerance must be positive in float32'
     );
-    validateCapacity(this.id, 'maximumIterations', props.maximumIterations ?? 16, 1, 1024);
+    validateCapacity(
+      this.id,
+      'maximumIterations',
+      props.maximumIterations ?? 16,
+      1,
+      DATUM_MAXIMUM_ITERATIONS
+    );
     if (props.operation !== 'horizontal') {
       // Vertical source and target references are mandatory, even when only height units differ.
       validateRequirement(
@@ -183,6 +251,16 @@ export class GPUDatumGridTransform implements GPUCommandNodeProducer {
         `${props.operation} operation requires sourceVerticalReference and targetVerticalReference`
       );
     }
+    this.chunkPlan = planGraphChunkDispatch(this.id, {
+      positions: props.positions,
+      positionsLow: props.positionsLow,
+      'output.positions': props.output.positions,
+      'output.positionsLow': props.output.positionsLow,
+      'output.status': props.output.status
+    });
+    validateDisjointWritableViews(this.id, props.output);
+    this.estimatedCommandNodeCount = 1 + this.chunkPlan.nonemptyChunkCount;
+    validateCommandNodeBudget(this.id, this.estimatedCommandNodeCount);
     validateGraphOutputsDisjointFromInputs(this.id, Object.values(props.output), [
       props.positions,
       ...(props.positionsLow ? [props.positionsLow] : []),
@@ -194,46 +272,59 @@ export class GPUDatumGridTransform implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {props, id} = this;
-    validateGraphViewsBelongToGraph(id, graph, [
-      props.positions,
-      ...(props.positionsLow ? [props.positionsLow] : []),
-      props.samples,
-      this.mask,
-      ...Object.values(props.output)
-    ]);
+    validateGraphChunkDispatchBindings(graph, id, this.chunkPlan);
+    validateGraphChunkBindingRanges(graph, id, {samples: props.samples, mask: this.mask});
+    if (this.chunkPlan.nonemptyChunkCount === 0) return [];
+    const chunked = [props.positions, props.positionsLow, ...Object.values(props.output)].some(
+      view => view && !('buffer' in view)
+    );
     const horizontal = props.operation !== 'vertical';
     const vertical = props.operation !== 'horizontal';
     const inverse = props.direction === 'inverse';
-    return [
-      createWGSLKernelNode(graph, {
-        id,
-        operation: 'GPUDatumGridTransform',
-        variant: `${props.operation}-${props.direction ?? 'forward'}`,
-        invocationCount: props.positions.length,
-        bindings: [
-          {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
-          ...(props.positionsLow
-            ? [
-                {
-                  name: 'positionsLow',
-                  view: props.positionsLow,
-                  type: 'f32',
-                  access: 'read'
-                } satisfies WGSLKernelBinding,
-                {
-                  name: 'outputLow',
-                  view: props.output.positionsLow!,
-                  type: 'f32',
-                  access: 'read_write'
-                } satisfies WGSLKernelBinding
-              ]
-            : []),
-          {name: 'samples', view: props.samples, type: 'f32', access: 'read'},
-          {name: 'validity', view: this.mask, type: 'u32', access: 'read'},
-          {name: 'output', view: props.output.positions, type: 'f32', access: 'read_write'},
-          {name: 'status', view: props.output.status, type: 'u32', access: 'read_write'}
-        ],
-        declarations: `struct GridSample { shift: vec3f, status: u32 }
+    const kernelProps: WGSLKernelProps<Parameters> = {
+      id,
+      operation: 'GPUDatumGridTransform',
+      variant: `${props.operation}-${props.direction ?? 'forward'}`,
+      invocationCount: props.positions.length,
+      bindings: [
+        {
+          name: 'positions',
+          view: getGraphViewChunks(props.positions)[0],
+          type: 'f32',
+          access: 'read'
+        },
+        ...(props.positionsLow
+          ? [
+              {
+                name: 'positionsLow',
+                view: getGraphViewChunks(props.positionsLow)[0],
+                type: 'f32',
+                access: 'read'
+              } satisfies WGSLKernelBinding,
+              {
+                name: 'outputLow',
+                view: getGraphViewChunks(props.output.positionsLow!)[0],
+                type: 'f32',
+                access: 'read_write'
+              } satisfies WGSLKernelBinding
+            ]
+          : []),
+        {name: 'samples', view: props.samples, type: 'f32', access: 'read'},
+        {name: 'validity', view: this.mask, type: 'u32', access: 'read'},
+        {
+          name: 'output',
+          view: getGraphViewChunks(props.output.positions)[0],
+          type: 'f32',
+          access: 'read_write'
+        },
+        {
+          name: 'status',
+          view: getGraphViewChunks(props.output.status)[0],
+          type: 'u32',
+          access: 'read_write'
+        }
+      ],
+      declarations: `struct GridSample { shift: vec3f, status: u32 }
 fn datumFinite(value: f32) -> bool { return (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u; }
 // Compare the residual against the latitude limits before adding it to the high word.
 // Summing first rounds sub-ulp excursions beyond either pole back onto the valid boundary.
@@ -242,17 +333,17 @@ fn datumLatitudeValid(high: f32, low: f32) -> bool { return low <= 90.0 - high &
 // terms the residual is formed from (4 * 2^-23 of the largest), below which it is rounding.
 fn datumInverseLimit(displacement: vec2f, shift: vec2f, low: vec2f) -> f32 {
   let magnitude = max(max(abs(displacement), abs(shift)), abs(low));
-  return max(${props.tolerance ?? DEFAULT_INVERSE_TOLERANCE_DEGREES}, 4.8e-7 * max(magnitude.x, magnitude.y));
+  return max(${getWGSLFloatLiteral(props.tolerance ?? DEFAULT_INVERSE_TOLERANCE_DEGREES)}, 4.8e-7 * max(magnitude.x, magnitude.y));
 }
 fn loadDatumSample(row: u32) -> vec3f { let offset = samplesOffset + row * 3u; return vec3f(samples[offset], samples[offset + 1u], samples[offset + 2u]); }
 fn sampleDatum(position: vec2f, low: vec2f) -> GridSample {
 ${props.grids
   .map(
     grid => `{
-  let highDifference = fma(position, vec2f(1.0), -vec2f(${grid.origin.map(value => `${Math.fround(value)}`).join(',')}));
-  let lowDifference = fma(low, vec2f(1.0), -vec2f(${grid.origin.map(value => `${value - Math.fround(value)}`).join(',')}));
+  let highDifference = fma(position, vec2f(1.0), -vec2f(${grid.origin.map(value => getWGSLFloatLiteral(value)).join(',')}));
+  let lowDifference = fma(low, vec2f(1.0), -vec2f(${grid.origin.map(value => getWGSLFloatLiteral(value - Math.fround(value))).join(',')}));
   if (!datumFinite(lowDifference.x) || !datumFinite(lowDifference.y) || !datumFinite(highDifference.x) || !datumFinite(highDifference.y)) { return GridSample(vec3f(0.0), ${GPU_DATUM_GRID_TRANSFORM_STATUS.invalid}u); }
-  let rawCoordinate = (highDifference + lowDifference) / vec2f(${grid.spacing.join(',')});
+  let rawCoordinate = (highDifference + lowDifference) / vec2f(${grid.spacing.map(getWGSLFloatLiteral).join(',')});
   // A tiny grid-coordinate margin absorbs f32 quotient error at closed outer boundaries.
   if (all(rawCoordinate >= vec2f(-1e-5)) && all(rawCoordinate <= vec2f(${grid.width - 1}, ${grid.height - 1}) + vec2f(1e-5))) {
     let coordinate = clamp(rawCoordinate, vec2f(0.0), vec2f(${grid.width - 1}, ${grid.height - 1}));
@@ -272,7 +363,7 @@ ${props.grids
   .join('\n')}
   return GridSample(vec3f(0.0), ${GPU_DATUM_GRID_TRANSFORM_STATUS.noCoverage}u);
 }`,
-        body: `let offset = positionsOffset + index * 3u;
+      body: `let offset = positionsOffset + index * 3u;
 let source = vec3f(positions[offset], positions[offset + 1u], positions[offset + 2u]);
 let sourceLow = ${props.positionsLow ? 'vec3f(positionsLow[positionsLowOffset + index * 3u], positionsLow[positionsLowOffset + index * 3u + 1u], positionsLow[positionsLowOffset + index * 3u + 2u])' : 'vec3f(0.0)'};
 var displacement = sourceLow;
@@ -304,7 +395,7 @@ if (failure == 0u) {
         ? 'displacement = vec3f(sourceLow.xy + sampled.shift.xy, sourceLow.z);'
         : ''
   }
-  ${vertical ? `displacement.z = sourceLow.z + ${inverse ? '-' : ''}sampled.shift.z / ${props.heightUnitMeters ?? 1};` : ''}
+  ${vertical ? `displacement.z = sourceLow.z + ${inverse ? '-' : ''}sampled.shift.z / ${getWGSLFloatLiteral(props.heightUnitMeters ?? 1)};` : ''}
 }
 result = source + displacement;
 var resultLow = displacement;
@@ -316,7 +407,126 @@ output[outputOffset + index * 3u + 1u] = result.y;
 output[outputOffset + index * 3u + 2u] = result.z;
 ${props.output.positionsLow ? 'outputLow[outputLowOffset + index * 3u] = resultLow.x; outputLow[outputLowOffset + index * 3u + 1u] = resultLow.y; outputLow[outputLowOffset + index * 3u + 2u] = resultLow.z;' : ''}
 status[statusOffset + index] = failure;`
-      })
+    };
+    if (!chunked) return [createWGSLKernelNode(graph, kernelProps)];
+    const layouts = this.chunkPlan.chunks.map(chunk =>
+      getBoundedDispatchLayout(
+        id,
+        chunk.length,
+        DATUM_CHUNK_WORKGROUP_SIZE,
+        graph.device.limits.maxComputeWorkgroupsPerDimension
+      )
+    );
+    const source = `
+@group(0) @binding(0) var<storage, read> chunkParameters: array<u32>;
+${kernelProps.bindings.map((binding, bindingIndex) => `@group(0) @binding(${bindingIndex + 1}) var<storage, ${binding.access}> ${binding.name}: array<${binding.type}>;`).join('\n')}
+const samplesOffset: u32 = ${getViewElementOffset(props.samples)}u;
+const validityOffset: u32 = ${getViewElementOffset(this.mask)}u;
+${kernelProps.declarations}
+@compute @workgroup_size(${DATUM_CHUNK_WORKGROUP_SIZE})
+fn main(@builtin(workgroup_id) workgroupId: vec3u,
+        @builtin(num_workgroups) workgroupCount: vec3u,
+        @builtin(local_invocation_index) localInvocationIndex: u32) {
+  ${kernelProps.bindings.map(binding => `_ = &${binding.name};`).join('\n  ')}
+  let workgroupIndex = (workgroupId.z * workgroupCount.y + workgroupId.y) * workgroupCount.x + workgroupId.x;
+  if (workgroupIndex >= ${DATUM_MAXIMUM_LINEAR_WORKGROUP_COUNT}u) { return; }
+  let index = workgroupIndex * ${DATUM_CHUNK_WORKGROUP_SIZE}u + localInvocationIndex;
+  let rowCount = chunkParameters[1];
+  if (index >= rowCount) { return; }
+  ${kernelProps.bindings
+    .filter(binding => binding.name !== 'samples' && binding.name !== 'validity')
+    .map(
+      binding =>
+        `let ${binding.name}Offset = arrayLength(&${binding.name}) - ${binding.view.rowByteLength / 4}u * rowCount;`
+    )
+    .join('\n  ')}
+  ${kernelProps.body}
+}`;
+    const {slots, nodes: uploadNodes} = createGraphChunkDispatchParameters(graph, {
+      id: `${id}-chunks`,
+      plan: this.chunkPlan
+    });
+    return [
+      ...uploadNodes,
+      ...this.chunkPlan.chunks
+        .filter(chunk => chunk.length > 0)
+        .map(chunk => {
+          const parameters = slots[chunk.chunkIndex];
+          const chunkBindings = kernelProps.bindings.map(binding => ({
+            ...binding,
+            view:
+              binding.name === 'samples' || binding.name === 'validity'
+                ? binding.view
+                : chunk.views[
+                    binding.name === 'output'
+                      ? 'output.positions'
+                      : binding.name === 'outputLow'
+                        ? 'output.positionsLow'
+                        : binding.name === 'status'
+                          ? 'output.status'
+                          : binding.name
+                  ]
+          }));
+          return createGPUComputeCommandNode<Parameters>({
+            id: `${id}-chunk-${chunk.chunkIndex}`,
+            workload: {
+              operation: 'GPUDatumGridTransform',
+              variant: `${props.operation}-${props.direction ?? 'forward'}`,
+              commandCount: 1,
+              maximumInvocationCount: chunk.length,
+              maximumWorkgroupCount:
+                layouts[chunk.chunkIndex].x *
+                layouts[chunk.chunkIndex].y *
+                layouts[chunk.chunkIndex].z
+            },
+            resources: [
+              {buffer: parameters, usage: 'storage-read'},
+              ...chunkBindings.map(binding => ({
+                buffer: binding.view,
+                usage:
+                  binding.access === 'read'
+                    ? ('storage-read' as const)
+                    : ('storage-read-write' as const)
+              }))
+            ],
+            compile: ({device}) => {
+              const kernel = new Kernel(device, {
+                id: 'datum-grid-transform-chunk',
+                source,
+                shaderLayout: {
+                  bindings: [
+                    {name: 'chunkParameters', group: 0, location: 0, type: 'read-only-storage'},
+                    ...chunkBindings.map((binding, bindingIndex) => ({
+                      name: binding.name,
+                      group: 0,
+                      location: bindingIndex + 1,
+                      type:
+                        binding.access === 'read'
+                          ? ('read-only-storage' as const)
+                          : ('storage' as const)
+                    }))
+                  ]
+                }
+              });
+              return {
+                encode: ({computePass, getBuffer}) =>
+                  kernel.dispatch(computePass, {
+                    bindings: {
+                      chunkParameters: getViewBinding(parameters, getBuffer),
+                      ...Object.fromEntries(
+                        chunkBindings.map(binding => [
+                          binding.name,
+                          getViewBinding(binding.view, getBuffer)
+                        ])
+                      )
+                    },
+                    ...layouts[chunk.chunkIndex]
+                  }),
+                destroy: () => kernel.destroy()
+              };
+            }
+          });
+        })
     ];
   }
 }
