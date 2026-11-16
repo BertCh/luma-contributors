@@ -66,6 +66,9 @@ status. A robust covariance does not change the classical Anselin–Kelejian dia
 
 ## Regimes, panels and SUR
 
+SUR, including spatial SUR, and panel-error fits support 16,777,216 total rows with tiled
+reductions; panel periods cannot exceed the total row count. Device bindings may impose lower limits.
+
 `GPURestrictedRegimeRegression.common` includes the intercept followed by each predictor.
 A true entry estimates one shared coefficient; a false entry estimates one coefficient per regime.
 Output order is source-column-major, with regime order inside each varying column.
@@ -346,8 +349,9 @@ Rows are explicit OD count cells. `pairState` distinguishes structural zero (0),
 missing (2). Missing cells are excluded from both support and margins and predict NaN; structural
 zeros must have observed flow zero and predict zero. Observed zero counts remain in the support.
 Duplicate supplied OD rows are independent cells; aggregate duplicates explicitly when appropriate.
-Zero observed margins remain zero. At most 4096 cells, 128 origins, 128 destinations and 128
-coefficient candidates are supported; candidate predictions occupy explicit transient storage.
+Zero observed margins remain zero. Dense routes support at most 4096 cells, 128 origins, 128
+destinations and 128 coefficient candidates. The sparse doubly constrained route uses explicit
+pair tables within its device and command budget; candidate predictions occupy transient storage.
 
 The selected summary is `[coefficient, deviance, maximumRelativeMarginError, iterations]`.
 Each candidate exposes deviance, error, iterations and status. Unconverged candidates are never
@@ -394,6 +398,9 @@ These small deterministic synthetic examples run the actual GPU producers and ca
 
 ### `GPUSpatialPanelErrorMaximumLikelihood`
 
+Tiled moments and reductions support 16,777,216 total rows, subject to device bindings. Panel period
+count is bounded by the total row count.
+
 {/* lens:GPUSpatialPanelErrorMaximumLikelihood */}
 
 ::lens{scenario=gpu-spatial-analysis.spatial-panel-error-maximum-likelihood rung=result caption="Inspect the estimates and explicit status outputs on synthetic inputs."}
@@ -401,6 +408,9 @@ These small deterministic synthetic examples run the actual GPU producers and ca
 ::lens{scenario=gpu-spatial-analysis.spatial-panel-error-maximum-likelihood rung=graph caption="Inspect the executed GPU command graph."}
 
 ### `GPUSeeminglyUnrelatedRegression`
+
+Tiled moments and reductions support 16,777,216 total rows, subject to device bindings. Panel period
+count is bounded by the total row count.
 
 {/* lens:GPUSeeminglyUnrelatedRegression */}
 
@@ -435,6 +445,9 @@ See [runtime parameters and inference semantics](./operators-statistics.md#gpumu
 ::lens{scenario=gpu-spatial-analysis.multivariate-local-geary-permutation-test rung=graph caption="Inspect the executed GPU command graph."}
 
 ### `GPURankMarkov`
+
+Sorted ranks above 64 rows support up to 65,535 logical states, subject to dense transition-output
+bindings. Explicit pairwise ranking and transition diagnostics retain 64.
 
 {/* lens:GPURankMarkov */}
 
@@ -476,6 +489,10 @@ See [runtime parameters and inference semantics](./operators-statistics.md#gpumu
 
 ### `GPUSpatialInteraction`
 
+Dense routes retain 4,096 pairs and 128 groups. Sparse doubly constrained balancing accepts explicit
+pair tables, subject to device bindings and the command-node budget; incomplete balancing is
+reported.
+
 {/* lens:GPUSpatialInteraction */}
 
 ::lens{scenario=gpu-spatial-analysis.spatial-interaction rung=result caption="Inspect the estimates and explicit status outputs on synthetic inputs."}
@@ -512,11 +529,16 @@ input/output bytes and result certificates are retained with every observation.
 
 ## Random and unit-effects spatial lag maximum likelihood
 
+`GPUSpatialPanelLagMaximumLikelihood`: Auto selects tiled unit effects when entity eigenvalues are
+supplied. Tiled fits support 1,024 entities and 16,777,216 total rows, subject to device bindings;
+reference fits retain 32 entities and 32 periods.
+
 `GPUSpatialPanelLagMaximumLikelihood` fits `y = rho Wy + X beta + unitEffect + error`
 on complete balanced panels in period-major order. The random-effects fit alternates analytic
 variance-component shrinkage `phi` with an exact dense log-determinant profile search for `rho`;
-unit effects use within-entity demeaning. The declared capacity is 2–32 entities, 2–32 periods
-and 1–7 predictors. Weights must be nonnegative, row-standardized, zero-diagonal CSR with sorted
+unit effects use within-entity demeaning. The reference capacity is 2–32 entities, 2–32 periods and 1–7 predictors. With
+`fitMode` selecting tiled unit effects and a supplied entity spectrum, the bound is 1,024 entities
+and 16,777,216 total rows, subject to device bindings. Weights must be nonnegative, row-standardized, zero-diagonal CSR with sorted
 unique neighbors and no islands. Missing observations invalidate the complete fit.
 
 The fit runs on centered data: the pooled mean of each predictor and of the response is removed

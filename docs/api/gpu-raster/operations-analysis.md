@@ -133,6 +133,10 @@ covers `compileAsync()`, rebuilding without a stall, submission and why `paramet
 
 ## `GPUCostDistance` and `GPUCostDistancePath`
 
+`GPUCostDistance`: With continuation, settledAt stores cumulative last-decrease rounds across
+resumed submissions. Explicit or automatic restart clears it together with costs/state; removing all
+sources restarts the result.
+
 Accumulated cost surface over a friction raster from per-frame source cells, a source mask, or
 both: 8-connected moves cost ground distance times mean friction, invalid or negative friction is
 a barrier, and a per-frame cost limit, isoline-ready bands with counts, and D8 back-links are
@@ -229,6 +233,10 @@ Settings of `getGPUCostDistanceParameterValues`:
 
 #### `GPUCostDistance`
 
+With continuation, settledAt stores cumulative last-decrease rounds across resumed submissions.
+Explicit or automatic restart clears it together with costs/state; removing all sources restarts the
+result.
+
 Relaxes accumulated travel cost outward from a source cell over a friction raster until no cell improves.
 
 ::lens{scenario=gpu-raster.cost-distance rung=result caption="Accumulated cost from Greenville; water is impassable and stays unreached."}
@@ -259,6 +267,10 @@ Walks D8 back-links from each target cell to the source and lists the least-cost
 ::lens{scenario=gpu-raster.cost-distance-path rung=graph caption="Cost distance with back-links feeds three walks; a histogram turns each path into a mask."}
 
 ## `GPURasterZonalStatistics`
+
+Optional zoneDictionary maps sorted native uint32 IDs to dense rows. sourceZoneIds and denseZoneIds
+make row association explicit; invalidCount reports IDs missing from the dictionary. Omitting the
+dictionary retains dense IDs. Strings and automatic dictionary construction are not supported.
 
 Counts cells and computes the mean, lowest and highest elevation of each land-cover zone from a zone raster.
 
@@ -747,6 +759,9 @@ Scores each cell as a weighted sum of remapped layers; here land cover and eleva
 
 ## `GPURasterStretch`
 
+Optional output.validCount carries the exact uint32 valid population. The legacy float32 statistics
+row remains rounded above 2^24.
+
 Rescales a raster to 0–1 between its smallest and largest valid values, with optional percentile, equalize, gamma and sigmoid.
 
 ::lens{scenario=gpu-raster.raster-stretch rung=result caption="Near-infrared reflectance after the fire, stretched between its smallest and largest valid values."}
@@ -976,7 +991,7 @@ Settings of `getGPUIsobandsParameterValues`:
 | Field | Type | Description |
 |---|---|---|
 | `breakCount` | `number` | Number of active ascending breaks, at most the contributor's `maximumBreakCount` (larger values clamp on the GPU). `breakCount + 1` bands exist: band `k` covers `[b[k - 1], b[k])`. |
-| `extent` | `readonly [number, number, number, number]` | Raster extent `[minX, minY, maxX, maxY]` in world units. Row 0 is at `minY`. |
+| `extent` | `readonly [number, number, number, number]` | Outer world extent `[minX, minY, maxX, maxY]`. Sample `(column, row)` is centered at `(minX + (column + 0.5) * cellWidth, minY + (row + 0.5) * cellHeight)`, with cell sizes `(maxX - minX) / grid.width` and `(maxY - minY) / grid.height`. Geometry interpolates over the rectangle between the outermost sample centers, half a cell inside each extent edge. Row zero is at the minY side and rows advance toward larger y. grid.affine and pixelInterpretation do not change this placement. Ring output uses the same convention. |
 | `firstBand` (optional) | `number` | First band emitted as geometry. Defaults to 0. Does not affect `bandClasses`. |
 | `lastBand` (optional) | `number` | Last band (inclusive) emitted as geometry. Defaults to `breakCount` (every band). |
 | `localOrigin` (optional) | `readonly [number, number]` | Float64 point that triangle vertices (and `GPUIsobandRings` ring vertices) are written relative to; add it back on the CPU or as the layer's coordinate origin. Defaults to `[0, 0]` (absolute vertices). Pass the raster or tile corner `[minX, minY]` for projected rasters: absolute float32 vertices are quantized to 0.5 m at a UTM northing of 4.6e6 m, origin-relative ones to about `1.2e-7` of their distance from the origin (1.2 cm at 100 km). |
@@ -995,7 +1010,7 @@ Settings of `getGPUIsolinesParameterValues`:
 | Field | Type | Description |
 |---|---|---|
 | `levelCount` | `number` | Number of active leading rows of the `levels` view. Clamped by the contributor to its maximum. |
-| `extent` | `readonly [number, number, number, number]` | World extent `[minX, minY, maxX, maxY]` of the raster. Sample `(column, row)` sits at the centre of its cell, `minX + (column + 0.5) * cellWidth`; row 0 is at `minY`. |
+| `extent` | `readonly [number, number, number, number]` | Outer world extent `[minX, minY, maxX, maxY]`. Sample `(column, row)` is at `(minX + (column + 0.5) * cellWidth, minY + (row + 0.5) * cellHeight)`, with cell sizes `(maxX - minX) / grid.width` and `(maxY - minY) / grid.height`. Row zero is half a cell above the lower edge. Contours interpolate between sample centers, so their domain ends at the outermost centers, half a cell inside the extent. This placement ignores grid.affine and pixelInterpretation; neither changes the row order. |
 | `localOrigin` (optional) | `readonly [number, number]` | Float64 point that segment and polyline vertices are written relative to; add it back on the CPU or as the layer's coordinate origin. Defaults to `[0, 0]` (absolute vertices). Pass the raster or tile corner `[minX, minY]` for projected rasters: absolute float32 vertices are quantized to 0.5 m at a UTM northing of 4.6e6 m, origin-relative ones to about `1.2e-7` of their distance from the origin (1.2 cm at 100 km). |
 
 {/* /parameters */}
@@ -1229,7 +1244,7 @@ Settings of `getGPUParticleAdvectionParameterValues`:
 
 | Field | Type | Description |
 |---|---|---|
-| `fieldExtent` | `readonly [number, number, number, number]` | Field raster placement `[originX, originY, cellWidth, cellHeight]`. Row 0 is the row with the smallest y; cell `(i, j)` is centred at `origin + (i + 0.5, j + 0.5) * cellSize`. A cell size that is zero or not finite throws. |
+| `fieldExtent` | `readonly [number, number, number, number]` | Field raster placement `[originX, originY, cellWidth, cellHeight]`, not min/max bounds. Positive cellHeight puts row zero on the smallest-y side; signed sizes set index direction. Cell `(i, j)` is centered at `origin + (i + 0.5, j + 0.5) * cellSize`. A cell size that is zero or not finite throws. |
 | `timeStep` | `number` | Time step of this frame, in the time unit of the field velocities. |
 | `speedScale` (optional) | `number` | Multiplier on the time step, for example a playback speed. Defaults to 1. |
 | `dropRate` (optional) | `number` | Probability in `[0, 1]` that a particle respawns this frame regardless of age. Defaults to 0. |
@@ -1308,8 +1323,8 @@ Settings of `getGPULineIntegralConvolutionParameterValues`:
 
 | Field | Type | Description |
 |---|---|---|
-| `fieldExtent` | `readonly [number, number, number, number]` | Field placement `[originX, originY, cellWidth, cellHeight]`; row 0 has the smallest y. A cell size that is zero or not finite throws. |
-| `outputExtent` | `readonly [number, number, number, number]` | Output raster placement `[originX, originY, cellWidth, cellHeight]`; row 0 has the smallest y. A cell size that is zero or not finite throws. |
+| `fieldExtent` | `readonly [number, number, number, number]` | Field placement `[originX, originY, cellWidth, cellHeight]`, not min/max bounds. The origin is an outer corner; sample `(column, row)` is at origin + `(column + 0.5, row + 0.5)` times cell size. Positive cellHeight places row zero at the smallest y; signed cell sizes set the direction of increasing indices. Zero or non-finite sizes throw. The field is sampled bilinearly between centers, with edge clamping inside its half-open outer bounds. |
+| `outputExtent` | `readonly [number, number, number, number]` | Output raster placement `[originX, originY, cellWidth, cellHeight]`. LIC starts at each output center, origin + `(column + 0.5, row + 0.5)` times cell size, independently of the field lattice. Signed cell sizes set row/column direction; zero or non-finite sizes throw. grid.affine and pixelInterpretation do not change this placement. |
 | `stepLength` (optional) | `number` | Streamline step in output pixels. Defaults to 0.5. The step follows the field in world space; on non-square output cells its world length is the one that spans `stepLength` pixels in that direction. |
 | `minimumSpeed` (optional) | `number` | A streamline stops where the field is slower than this. Defaults to 0. |
 | `phase` (optional) | `number` | Animation phase in kernel periods; advance it every frame to make the texture flow. Defaults to 0. |
@@ -1389,8 +1404,8 @@ Settings of `getGPUStreamlinesParameterValues`:
 
 | Field | Type | Description |
 |---|---|---|
-| `fieldExtent` | `readonly [number, number, number, number]` | Field placement `[originX, originY, cellWidth, cellHeight]`; row 0 has the smallest y. A cell size that is zero or not finite throws. |
-| `gridExtent` | `readonly [number, number, number, number]` | Occupancy grid placement `[originX, originY, cellWidth, cellHeight]`. The cell size is the separation distance between streamlines; seeds and traced points stay inside the grid. |
+| `fieldExtent` | `readonly [number, number, number, number]` | Field placement `[originX, originY, cellWidth, cellHeight]`, not min/max bounds. The origin is an outer corner; sample `(column, row)` is at origin + `(column + 0.5, row + 0.5)` times cell size. Positive cellHeight puts row zero at the smallest y; signed cell sizes determine the direction of increasing indices. Zero or non-finite sizes throw. Sampling is bilinear between centers, clamped inside the outer bounds. No grid affine changes this placement. |
+| `gridExtent` | `readonly [number, number, number, number]` | Occupancy grid placement `[originX, originY, cellWidth, cellHeight]`. The cell size is the separation distance between streamlines; seeds and traced points stay inside the grid. Cell `(column, row)` is the half-open rectangle from origin + `(column, row)` times cell size to origin + `(column + 1, row + 1)` times cell size. Both cell sizes must be positive. |
 | `stepLength` | `number` | Integration step in world units. |
 | `minimumSpeed` (optional) | `number` | A streamline stops where the field is slower than this. Defaults to 0. |
 | `seed` (optional) | `number` | Seed of the jittered seed lattice and the line priorities. Defaults to 0. |

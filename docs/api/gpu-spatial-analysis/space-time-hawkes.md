@@ -39,6 +39,9 @@ What is not modelled, and what that costs:
 
 ## `GPUSpaceTimeHawkes`
 
+On GPU, squared initialSpatialStandardDeviation must be finite normal float32 and at least 2^-126.
+The CPU reference retains its wider variance domain.
+
 ```ts
 const hawkes = new GPUSpaceTimeHawkes({
   positions,        // GraphDataView<'float32x2'>

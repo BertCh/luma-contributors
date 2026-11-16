@@ -88,6 +88,9 @@ graph.add(new GPUClassificationFit({values, classes, classCount: 5, output: {cou
 
 ### `GPUTransitionMatrix`
 
+Up to 65,535 classes subject to dense matrix and device binding limits; transition diagnostics
+retain 64 classes.
+
 **`GPUTransitionMatrix`**: Counts how many counties move between unemployment classes from one year to the next, with row-normalised probabilities.
 
 ::lens{scenario=gpu-spatial-analysis.transition-matrix rung=result caption="Counts of 437 counties moving between five classes over 15 yearly steps, 2008 to 2023."}
@@ -99,7 +102,7 @@ graph.add(new GPUClassificationFit({values, classes, classCount: 5, output: {cou
 Markov transition counts between classes of consecutive periods (giddy `Markov`).
 
 - Props: `classes` (`rowCount * periodCount` rows; the row count is derived from it), `periodCount`,
-  `classCount`, optional `periodLag` (default 1),
+  `classCount` (1–65,535, subject to dense matrix/device bounds), optional `periodLag` (default 1),
   `conditionClasses` with `conditionCount`, `mask`, and `output: {counts, probabilities?, rowTotals?, ignored?}`.
 - `counts` holds exact `uint32` counts at `(c * K + from) * K + to` for `t = 0 .. T - lag - 1`
   (integer atomics, independent of order). `probabilities` are the row-normalized floats, 0 for empty

@@ -13,6 +13,9 @@ All of these are contributors: construct, then `graph.add`. Per-frame values go 
 
 ### `GPUOutlineGeometry`
 
+Compact output layouts are opt-in; offsets and counts describe only emitted geometry. Position
+addressing is at most 2,147,483,647 and candidate/fragment word counts must fit uint32.
+
 Builds round-joined triangle outlines around points, lines or polygon rings at a fixed distance, for drawing only.
 
 ::lens{scenario=gpu-spatial-analysis.outline-geometry rung=result caption="Grey: 51 Chicago parks · blue: 100 m outline triangles, overlaps not unioned"}
@@ -22,10 +25,12 @@ picture). Props: `positions`, `geometryType` (`'points'`, `'lines'` or `'polygon
 `featureOffsets`, `polygonOffsets` and `ringOffsets`), `spatialContext` (omitted is planar; `{coordinateSpace: 'longitude-latitude', metric:
 'great-circle'}` gives meters on a sphere of `sphereRadius`, default the mean Earth radius; this replaces
 the removed `coordinateSystem` and `radius` props, and other contexts throw), `joinSegments` (default 16),
-`parameters` (`getGPUOutlineGeometryParameterValues({distance})`) and `output.positions`. It writes a
+`parameters` (`getGPUOutlineGeometryParameterValues({distance})`) and `output.positions`. The default fixed-stride layout writes a
 non-indexed triangle list with exactly `positions.length * getGPUOutlineGeometryVerticesPerInput(joinSegments)`
 vertices: per input vertex a round-join disc fan plus a quad to the next vertex, with unused triangles
-degenerate. There is no capacity and no overflow. Overlaps are not unioned, so it is for drawing only;
+degenerate. Fixed-stride output has no capacity or overflow. With `output.layout: 'compact'`,
+`vertexOffsets` and status delimit the emitted triangle vertices; `sourceRows` is optional.
+Compact capacity overflow retains a bounded prefix and reports required counts. Overlaps are not unioned, so it is for drawing only;
 queries use `dwithin` and `GPUBufferSelection`. Spherical mode converts meters with each vertex's local
 east and north scale (equirectangular, not geodesic; wrong near the poles and across the antimeridian).
 It measures distance, so `local-lambert-equal-area` frames throw. There are no negative buffers. A one-sided offset line is [`GPUOffsetCurve`](#gpuoffsetcurve-and-gpuvertexsnap).
@@ -60,6 +65,10 @@ Settings of `getGPUOutlineGeometryParameterValues`:
 ::lens{scenario=gpu-spatial-analysis.outline-geometry rung=graph caption="One outline node: positions and distance in, triangle list out"}
 
 ### `GPUOffsetCurve` and `GPUVertexSnap`
+
+`GPUOffsetCurve`: Compact output layouts are opt-in; offsets and counts describe only emitted
+geometry. Position addressing is at most 2,147,483,647 and candidate/fragment word counts must fit
+uint32.
 
 **`GPUOffsetCurve`** — Offsets lines or polygon rings to one side by a signed distance, with round, mitre or bevel joins.
 
@@ -142,6 +151,14 @@ Settings of `getGPUVertexSnapParameterValues`:
 ::lens{scenario=gpu-spatial-analysis.vertex-snap rung=graph caption="A BVH over the area vertices, then the snap search"}
 
 ### `GPUPolygonOverlay` and `GPUBufferSurface`
+
+`GPUPolygonOverlay`: Optional `featureSources` publishes representative retained-boundary source row,
+operand and mixed flag; it does not enumerate all input contributors. Tolerance is at most 2^127 and
+positive shader values must survive float32 conversion.
+
+`GPUBufferSurface`: Optional `featureSources` publishes representative retained-boundary source row,
+operand and mixed flag; it does not enumerate all input contributors. Tolerance is at most 2^127 and
+positive shader values must survive float32 conversion.
 
 **`GPUPolygonOverlay`** — Computes intersection, union, difference, symmetric difference or dissolve of planar polygon sets as compact polygons.
 
@@ -578,6 +595,12 @@ Planar only: `spatialContext` defaults to native planar coordinates and a longit
 
 ### `GPUDelaunayTessellation` and `GPUVoronoiDiagram`
 
+`GPUDelaunayTessellation`: Scratch triangles are bounded by 1,073,741,823 and output triangles by
+1,431,655,765, in addition to device bindings.
+
+`GPUVoronoiDiagram`: Triangle and segment counts are bounded by 357,913,941 and 1,073,741,823
+respectively, with device bindings imposing lower limits.
+
 **`GPUDelaunayTessellation`** — Triangulates planar points into counter-clockwise triples of point rows, with exact predicates.
 
 ::lens{scenario=gpu-spatial-analysis.delaunay-tessellation rung=result caption="Grey dots: 319 Wicker Park places (every fourth) · blue: their Delaunay triangles"}
@@ -663,6 +686,9 @@ and `GPULocalFrameProjection`), because a lng/lat Delaunay is not a spherical on
 
 ### `GPULabelPoint`
 
+featureCount is at most 67,108,863 and gridSize at most 65,535; the output and squared grid address
+space must also fit the device.
+
 Finds an interior label point for each polygon, its pole of inaccessibility, with the inscribed radius around it.
 
 ::lens{scenario=gpu-spatial-analysis.label-point rung=result caption="Grey: 51 parks · points: label points coloured by inscribed radius in metres"}
@@ -696,6 +722,9 @@ equal-area local frame throws; use an azimuthal-equidistant frame.
 ::lens{scenario=gpu-spatial-analysis.label-point rung=graph caption="One label node: polygons in, points, radii and degenerate flags out"}
 
 ### `GPUShapeDescriptors`
+
+Moment routing selects 256-edge tiles from 4,096 rows when scratch fits; the explicit serial route
+remains. Moment tile count is uint32 bounded, and reduction scratch must fit the device.
 
 Computes compactness, elongation, orientation, convexity and sliver flags for each polygon from its rings.
 
@@ -1133,6 +1162,9 @@ notes for the additional coordinate quantization error.
 ::lens{scenario=gpu-spatial-analysis.lon-lat-polygon-preparation rung=graph caption="Scans publish the doubled main and east topology"}
 
 ### `GPURectangleClip`
+
+Optional polygon output publishes feature, polygon and ring offsets for the clipped rectangles;
+compact counts describe only the emitted geometry.
 
 Clips lines or polygon rings to an axis-aligned rectangle, rejoining the surviving line pieces.
 

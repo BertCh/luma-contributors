@@ -54,6 +54,11 @@ Two nearby line vertices round to the same grid point. The keep-collapsed policy
 
 ## `GPUSegmentSnap`
 
+Default `searchStructure: 'grid'` reuses candidate scratch in batches of at most 256 lines.
+`candidateCapacity` defaults to 1,024 and is at most 4,294,967,290. Overflow uses bounded exhaustive
+fallback or reports incomplete geometry; `candidateOverflowPolicy: 'incomplete'` disables fallback.
+Explicit brute force and fallback bound `(positions + lines) * (references + 1)^3` by 16,777,216.
+
 Two reference points are inserted along a six-unit segment in projection order. Counts delimit the fixed output slots; validity and source edges are captured.
 
 {/* lens:GPUSegmentSnap */}

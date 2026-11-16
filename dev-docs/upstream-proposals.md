@@ -222,6 +222,10 @@ All rows are declaration readings. Local paths identify the symbols that could d
 | `GPUGraphAlgorithmsModularityOptimization` | Multilevel coarsening | `GPUNetworkLouvain`, `gpu-network/network-optimization/gpu-network-louvain.ts` (32 vertices) |
 | `random` shader module | Counter-based Philox and open-interval unit float | `PHILOX_WGSL`, `getPhiloxOpenUnitFloat`, `analysis-core/kernels/philox-random.ts` |
 | `GPUCommandGraph` | Per-node shader description on `preflight.nodes[]` | Per-graph kernel record table, [upstream-first-recording.md](./upstream-first-recording.md) |
+| `GPUScan` (and sort/reduction recursion) | Size-independent recursion levels driven by runtime parameters, so pipeline counts do not grow with input size (36 to 38 variants between 1M and 2M rows, scalability pass SC) | Chunked contributors' constant-pipeline guarantees, for example `GPUGeographicallyTemporallyWeightedRegression` and `GPUKernelDensity` |
+| `GPUBVH` | Two-dimensional or bounded refit dispatch; the one-dimensional refit exceeds `maxComputeWorkgroupsPerDimension` above 16,777,216 leaves | `GPUFuzzyContiguity` dispatch pre-check (`gpu-spatial-analysis/spatial-weights/gpu-fuzzy-contiguity.ts`) |
+| `GPUReduction` and sort kernels | Runtime chunk, recursion-level and input-size bounds instead of specializing shader source for each size; stable pipelines across unequal chunks | Profile, statistics and tiled aggregation contributors still inherit published reduction/sort shader variants (IMP F-DF/F-STATS) |
+| `GPUCommandGraph` | Scratch lifetime planning for independently seeded batches: permit explicit batch dependencies or a scheduling policy that retires scratch before the next batch | CSR visibility planned 35.7 GB while independent centrality batches stayed live simultaneously; explicit dependencies bounded their lifetimes (IMP SC3-VIS) |
 
 **Suggested filing order**
 

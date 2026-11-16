@@ -265,6 +265,11 @@ unreachable reverse journey. Inspect the costs alongside completion status and e
 
 ## Residual flow example
 
+`GPUNetworkFlow`: Legacy solver selection and successive-shortest-path defaults remain. Opt-in mode
+primal-dual uses three phases by default, with bounded relaxation/phase budgets; incomplete feasible
+flows require completion and cut-certification status checks. Device bindings and command budgets
+constrain all routes.
+
 {/* lens:GPUNetworkFlow */}
 
 ::lens{scenario=gpu-network.network-flow rung=graph}

@@ -1,5 +1,8 @@
 # GPUVariableStandardization
 
+Chunked GraphVectorView columns support up to 4,294,967,295 logical rows, subject to device
+bindings. Counts are uint32; float32 statistical fields remain rounded.
+
 `GPUVariableStandardization` is a command-node producer for five named variable transformations.
 It composes shared `GPUReduction` passes and elementwise WGSL. It never submits, reads back,
 or computes statistics on the CPU. Add it to a `GPUCommandGraph` and compile/encode normally.
@@ -34,11 +37,10 @@ NaN, including in constant populations. An all-excluded column therefore outputs
 Null validity must be represented by NaN or the caller's mask; this API does not inspect Arrow
 validity bitmaps. Every output row is rewritten on each encoding.
 
-`values`, `mask` and `output` must each be a single packed chunk; a column with more than one
-chunk is rejected at construction (`values single chunk`), and the three columns must have the same
-length. There is no implicit packing, realignment or independent normalization per chunk. Source and
-output buffers must be disjoint. All views must belong to the graph. The logical row count is 0
-through 2^24. An empty column emits no output rows. Lengths, method, variance convention, and mask presence are topology;
+`values`, `mask` and `output` accept aligned chunked `GraphVectorView` columns with the same
+logical length. Statistics span the complete column. Source and output buffers must be disjoint;
+all views must belong to the graph. The logical row count is 0 through 4,294,967,295, subject to
+device binding and backing allocation limits. An empty column emits no output rows. Lengths, method, variance convention, and mask presence are topology;
 buffer contents are per-frame data. Buffers remain caller-owned and scratch is graph-owned.
 
 Arithmetic uses float32 shared hierarchical reductions, not GeoDa's float64 loops. Summation order

@@ -14,6 +14,10 @@ cubes are in [Space-time statistics](./space-time-statistics.md).
 
 ### `GPUGlobalSpatialStatistics`
 
+Scalable rows are bounded by 4,294,963,199 and actual device bindings. Additive uint32 count outputs
+preserve exact populations; float32 statistics remain rounded. Tiled reductions are the default;
+mode reference retains its previous limit.
+
 Summarise a tract column with global Moran’s I, Geary’s C and General G from queen weights, each with an analytic z-score and p-value.
 
 ::lens{scenario=gpu-spatial-analysis.global-spatial-statistics rung=result caption="Global Moran I = 0.60 (z 29.8), Geary and G for 791 Chicago tracts, with p-values."}
@@ -80,7 +84,7 @@ Neighbors, islands and re-standardization follow the shared rules of the local s
 The summary block reports `n`, `S0`, `S1`, `S2`, the mean, the variance, the black count and the
 island count. `n` is counted in `u32` and the mean gets a second-pass correction
 (`mean += sum(x - mean) / n`), so a large offset does not bias the variance; the row count must be
-below `2^24`, the limit of the local statistics, because degrees and counts are f32 columns.
+at most 4,294,963,199 for scalable routes, with device binding limits and exact uint32 counts.
 The statistics do not change when the values are multiplied by a constant, so the values are divided
 by a power of two near their mean magnitude before the moment sums (an exact operation; only the
 reported mean and variance are scaled back) and the weights enter the variances as `S1 / S0^2` and
@@ -105,6 +109,12 @@ quotient with one `fma` remainder step, so constant data centers to exactly 0 on
 ::lens{scenario=gpu-spatial-analysis.global-spatial-statistics rung=graph caption="Trace queen weights, row standardisation and the fixed-order reductions into 52 summary values."}
 
 ### `GPUHotSpotAnalysis` and `GPULocalMoran`
+
+`GPULocalMoran`: Scalable rows are bounded by 4,294,963,199 and actual device bindings. Additive
+uint32 count outputs preserve exact populations; float32 statistics remain rounded.
+
+`GPUHotSpotAnalysis`: Scalable rows are bounded by 4,294,963,199 and actual device bindings.
+Additive uint32 count outputs preserve exact populations; float32 statistics remain rounded.
 
 `GPUHotSpotAnalysis`, `GPULocalMoran` and `GPULocalGeary` accept optional `output.status.invalidCount` and `output.status.overflow` uint32
 scalars. `invalidCount` counts selected input rows with nonfinite values; masked rows, islands and
@@ -286,6 +296,9 @@ Settings of `getGPUSpatialAutocorrelationParameterValues`:
 
 ### `GPULocalGeary`
 
+Scalable rows are bounded by 4,294,963,199 and actual device bindings. Additive uint32 count outputs
+preserve exact populations; float32 statistics remain rounded.
+
 Measure how much each tract differs from its neighbours with local Geary c, where small values mean similar surroundings.
 
 ::lens{scenario=gpu-spatial-analysis.local-geary rung=result caption="Local Geary c across 791 Chicago tracts, mean 0.81; small values mark tracts like their neighbours."}
@@ -304,6 +317,9 @@ Additional spatial statistics below.
 ::lens{scenario=gpu-spatial-analysis.local-geary rung=graph caption="Trace queen weights, row standardisation, moments and the local Geary kernel."}
 
 ### `GPULocalSpatialHeteroscedasticity`
+
+Scalable rows are bounded by 4,294,963,199 and actual device bindings. Additive uint32 count outputs
+preserve exact populations; float32 statistics remain rounded.
 
 Descriptive LOSH divides each row's weighted neighbor residual power by the study-wide mean
 residual power. Positive usable neighbors are normalized within each row. Masked rows, nonfinite
@@ -415,7 +431,7 @@ Definition (identical to `esda.smoothing.assuncao_rate`), over the `m` valid row
   write NaN, as esda's 0 / 0 does.
 - **Precision.** `m` is a u32; sums are fixed-order two-level workgroup trees (no float atomics,
   bitwise reproducible); `b` gets a second-pass correction and `s2` is formed from centered
-  deviations. Fewer than 2^24 rows.
+  deviations. Scalable count/index bounds and device limits apply.
 
 Composition (no statistic code is duplicated):
 
@@ -462,6 +478,9 @@ rows that remain.
 
 ### `GPUMultipleTestingAdjustment`
 
+Exact integer ranks support at most 2,147,483,648 rows, subject to published sort and device
+bindings.
+
 Adjust a column of per-tract p-values for multiple testing, returning corrected values that are significant when at most alpha.
 
 ::lens{scenario=gpu-spatial-analysis.multiple-testing-adjustment rung=result caption="Hot spot p-values of 754 tested tracts before and after Benjamini-Hochberg: 369 pass 0.05 unadjusted, 265 adjusted."}
@@ -500,7 +519,7 @@ Adjusts a column of per-row p-values for multiple testing on the GPU. `method` i
   p-values get identical adjusted values.
 - **Cost.** `none` and Bonferroni are O(n). The step procedures add a 30-bit `GPUSort` plus a
   deterministic cumulative maximum (Holm) or minimum (Benjamini) scan in workgroup memory, a few
-  linear kernels in all. Fewer than 2^24 rows (ranks are exact f32 integers); results are
+  linear kernels in all. At most 2,147,483,648 rows (ranks are exact uint32 integers), within device limits; results are
   independent of scheduling.
 
 ```ts
@@ -520,6 +539,8 @@ graph.add(new GPUMultipleTestingAdjustment({
 ::lens{scenario=gpu-spatial-analysis.multiple-testing-adjustment rung=graph caption="Trace the hot spot p-values through counting, sorting, the cumulative minimum and scatter."}
 
 ### `GPURasterFalseDiscoveryRateMask`
+
+Exact integer ranks support at most 2,147,483,648 cells, subject to sort and device binding limits.
 
 Field significance of a p-value raster: adjust every tested cell for multiple testing and mask the cells that survive.
 
@@ -543,7 +564,7 @@ the valid cells and is not changed by a display mask. `method` is `'benjamini-ho
   statsmodels itself was not run for the mask.
 - **float32 limit.** Adjusted p-values are float32, so a cell whose adjusted value is within a few ulp of
   `alpha` may fall on either side of statsmodels' float64 decision.
-- Fewer than 2^24 cells. This is a field operation on a linear cell array, so it needs no raster grid.
+- At most 2,147,483,648 cells, subject to sort and device limits. This is a field operation on a linear cell array, so it needs no raster grid.
 
 {/* parameters: GPURasterFalseDiscoveryRateMask generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
@@ -573,6 +594,12 @@ graph.add(new GPURasterFalseDiscoveryRateMask({
 {/* lens:GPURasterFalseDiscoveryRateMask */}
 
 ### `GPULocalPermutationTest` and `GPUGlobalPermutationTest`
+
+`GPUGlobalPermutationTest`: Scalable rows are bounded by 4,294,963,199 and actual device bindings.
+Additive uint32 count outputs preserve exact populations; float32 statistics remain rounded.
+
+`GPULocalPermutationTest`: Scalable rows are bounded by 4,294,963,199 and actual device bindings.
+Additive uint32 count outputs preserve exact populations; float32 statistics remain rounded.
 
 `GPULocalPermutationTest`: Test each tract’s local Moran I against 99 conditional permutations, returning pseudo p-values, adjusted values and a significance mask.
 
@@ -848,6 +875,12 @@ Settings of `getGPUPermutationParameterValues`:
 
 ### `GPUSpatialPearson` and `GPUGammaStatistic`
 
+`GPUSpatialPearson`: Scalable rows are bounded by 4,294,963,199 and actual device bindings. Additive
+uint32 count outputs preserve exact populations; float32 statistics remain rounded.
+
+`GPUGammaStatistic`: Scalable rows are bounded by 4,294,963,199 and actual device bindings. Additive
+uint32 count outputs preserve exact populations; float32 statistics remain rounded.
+
 `GPUSpatialPearson`: Correlate a tract variable with a second variable at its neighbours, returning one edge-weighted Pearson coefficient.
 
 ::lens{scenario=gpu-spatial-analysis.spatial-pearson rung=result caption="Edge-weighted Pearson r = 0.30 between poverty and neighbouring uninsured rates over 791 tracts."}
@@ -881,6 +914,14 @@ details are described under Additional spatial statistics below.
 
 ### Additional spatial statistics and bounded optimization
 
+Rose rows retain the uint32 ceiling 4,294,967,295. There is no separate 2^24 group cap:
+`groupCount * summaryStride` and `groupCount * circular.binCount` must each fit uint32 and
+device bindings. Empirical-Bayes contributors allow 4,294,967,039 rows. Scan accepted count totals
+are bounded by 4,294,967,294, reserving `0xffffffff` for overflow.
+
+`GPURoseStatistic`: Supports radians/degrees and positive-x counterclockwise or positive-y clockwise
+conventions. Row, group and flattened output addressing are bounded before construction.
+
 `GPULocalGeary` writes source-aligned `sum_j w_ij (z_i - z_j)^2` values to `output.statistic`
 (`GPULocalGearyOutput`, with the optional `globalStatistics`), with the neighbor, re-standardization and `islands` semantics of
 `GPULocalMoran` (an island is NaN under `'exclude'`, the default, and 0 under `'keep'`, esda's
@@ -908,7 +949,7 @@ divided by the edge weight), and `GPUSpatialPearson` is not `esda.Spatial_Pearso
 `leesL`).
 
 `GPURoseStatistic` consumes planar line starts and ends. Its required
-`GPUCircularStatisticsContract` makes directional versus axial interpretation, radians, angular
+`GPUCircularStatisticsContract` makes directional versus axial interpretation, radians or degrees, angular
 origin, and equal-width bin count explicit. It reports count, mean angle, resultant length,
 circular variance, Rayleigh z, and the weighted Rose bins for every group, in
 `output: {summary, bins}`. The descriptive mean, resultant length, variance and bins use the
@@ -1514,12 +1555,28 @@ graph.add(new GPUHierarchicalDensityClustering({
 ##### `GPUHierarchicalDensityClustering` parameters
 
 - Packer: `getGPUHierarchicalDensityClusteringParameterValues(settings)`, writes `GPU_HIERARCHICAL_DENSITY_CLUSTERING_PARAMETER_LENGTH` (4) `float32` values.
+- Packer: `getGPUNeighborSearchParameterValues(settings)`, writes `GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH` (12) `float32` values.
 
 Settings of `getGPUHierarchicalDensityClusteringParameterValues`:
 
 | Field | Type | Description |
 |---|---|---|
 | `timeScale` | `number` | Spatial position units per temporal-context tick. Finite and non-negative; zero ignores time distances. |
+
+Settings of `getGPUNeighborSearchParameterValues`:
+
+| Field | Type | Description |
+|---|---|---|
+| `spatialContext` (optional) | `GPUSpatialContext` | Spatial context of the positions; when it is longitude/latitude, a distance under 10 float32 quanta (about 17 m) logs a warning (see Precision of longitude/latitude positions). Does not change the packed values. |
+| `bounds` | `readonly [number, number, number, number]` | `[minX, minY, maxX, maxY]` extent of the search lattice. Targets and self-join rows outside it (or with non-finite coordinates) are excluded: they become isolates and never a neighbor, so it must cover every target of interest (count the dropped rows with `invalidCount`). The queries of a cross join are not clipped by it: a query outside the bounds still finds its exact neighbors (great-circle latitude must be within +-90). For a great-circle search these are degrees `[minLongitude, minLatitude, maxLongitude, maxLatitude]` with a longitude span of at most 360 (`[-180, -90, 180, 90]` for the world). |
+| `radius` (optional) | `number` | In the units of the spatial context (position units, or meters/kilometers of great-circle distance). Radius mode: the distance band (neighbors satisfy `d <= radius`); a non-positive or non-finite radius yields empty rows. kNN mode: an optional maximum distance; `Infinity` (the default) or any non-positive value means unbounded. |
+| `weightKind` (optional) | `GPUNeighborSearchWeightKind` | Weight function. Defaults to `'binary'`. |
+| `power` (optional) | `number` | Inverse-distance exponent. Defaults to 1. |
+| `distanceFloor` (optional) | `number` | Inverse distance uses `max(d, distanceFloor)`, in the length unit of the distances. Defaults to `1e-6`, the default of `GPUNearestFeatureWeights` too, so coincident points (`d = 0`) get the finite weight `distanceFloor^-power` (`1e6` at power 1). An explicit 0 removes the floor: coincident points then get weight 0, because their weight is not finite, and a zero-weight slot is not a neighbor. Under the default, a coincident neighbor outweighs every ordinary neighbor by many orders of magnitude and takes nearly all of a row-standardized row; pass a floor on the scale of the data when positions repeat (see the class documentation). |
+| `kernel` (optional) | `GPUNeighborSearchKernel` | Kernel profile for `weightKind: 'kernel'`. Defaults to `'triangular'`. |
+| `rowStandardize` (optional) | `boolean` | Divides each row's weights by their sum (zero-sum rows stay zero). Defaults to false. |
+| `timeRadius` (optional) | `number` | Time window of a space-time search, in the `temporalContext` unit: a neighbor satisfies `\|t_target - t_query\| <= timeRadius`. Non-positive or non-finite makes every row empty. Required with `times`, and selects the `GPU_NEIGHBOR_SEARCH_TEMPORAL_PARAMETER_LENGTH`-word layout. |
+| `timeBounds` (optional) | `readonly [number, number]` | `[minimumTime, maximumTime]` covered by the index. Rows outside it are invalid, like rows outside `bounds`. Required with `timeRadius`. |
 
 {/* /parameters */}
 

@@ -10,6 +10,10 @@ description: "Spatial joins contributors in @luma-contributors/analysis/gpu-spat
 
 ### `GPUSpatialPredicateJoin`
 
+candidateTileCapacity bounds paged candidate scratch independently of the unchanged global
+candidateCapacity. Final pairs and weights remain globally capacity bounded; inspect candidate and
+output overflow separately.
+
 Finds feature pairs that satisfy a spatial predicate such as intersects, contains or within, and counts matches per feature.
 
 ::lens{scenario=gpu-spatial-analysis.spatial-predicate-join rung=result caption="102 parks against 199 tracts; tracts shaded by the number of parks they intersect."}
@@ -350,6 +354,10 @@ compiled.encode(commandEncoder, {parameters: undefined});
 
 ### `GPUPointInPolygonJoin` and `GPUNearestFeatureJoin`
 
+`GPUPointInPolygonJoin`: Chunked queries keep global source order and shared polygon geometry.
+candidateTileCapacity bounds paged candidate scratch independently of the unchanged global
+candidateCapacity; global overflow/status semantics remain.
+
 **`GPUPointInPolygonJoin`**: Assigns each point the polygon that contains it, under an explicit boundary rule, and counts points per polygon.
 
 ::lens{scenario=gpu-spatial-analysis.point-in-polygon-join rung=result caption="2,344 observations (grey) assigned to the containing tract; colour is the tract."}
@@ -611,6 +619,10 @@ from overflowing the index and reverting to a full walk through indirect edge re
 ::lens{scenario=gpu-spatial-analysis.nearest-feature-weights rung=graph caption="Nearest search, per-row counts, offset scan, then the CSR emit pass."}
 
 ### `GPUPairGather`, `GPUOffsetExpansion`, and `GPUBoundsFilter`
+
+`GPUBoundsFilter`: Chunked feature bounds use chunk-local bit masks and global block-count scratch.
+Compact IDs retain global source-row order; output bindings and global block counts must fit the
+device.
 
 **`GPUPairGather`**: Copies attributes from the source rows of matched pairs onto the pair rows.
 

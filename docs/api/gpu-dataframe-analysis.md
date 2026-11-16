@@ -625,6 +625,9 @@ Settings of `getGPUColumnQuantilesParameterValues`:
 
 ## `GPUColumnProfile`
 
+Chunked GraphVectorView columns support up to 4,294,967,295 logical rows, subject to device
+bindings. Counts are uint32; float32 statistical fields remain rounded.
+
 Profile several columns at once: counts, nulls, extent, moments, histogram and distinct estimate.
 
 ::lens{scenario=gpu-dataframe.column-profile rung=result caption="Median household income has 19 suppressed tracts; the three rate columns have 3 each (CPU check)."}
@@ -674,7 +677,7 @@ domainParameters.write(getGPUColumnProfileParameterValues([[0, 100], [NaN, NaN]]
 - Top categories: exact per-code counts with `uint32` atomics, then the top `topCategoryCount`
   ordered by count (descending) and code (ascending). Codes at or above `categoryCount` are
   counted in `overflowCount`.
-- At most 16 columns and 2^24 rows, and at most `getGPUColumnProfileMaximumCategoryTotal(device)` (2^25 on a default device)
+- At most 16 columns and 4,294,967,295 logical rows (within device limits), and at most `getGPUColumnProfileMaximumCategoryTotal(device)` (2^25 on a default device)
   `categoryCount` summed over the category columns (one 4-byte slot per category in a 128 MiB binding).
   Inputs must be single packed views. The per-column kernels read
   the current column from a GPU cursor word, so the pipeline count does not grow with the column
@@ -700,6 +703,10 @@ domainParameters.write(getGPUColumnProfileParameterValues([[0, 100], [NaN, NaN]]
 ::lens{scenario=gpu-dataframe.column-profile rung=graph caption="Per-column moment tiles, a merge, domain, histogram and HyperLogLog nodes, then a finish node."}
 
 ## `GPUGroupStatistics`
+
+Reducible statistics use tiled scratch controlled by scratchTileSize. Compact tiled padded rows are
+at most 4,294,967,295; packed output and exact order-statistic scratch remain device-binding
+bounded.
 
 Groups rows by a key and computes count, mean, variance and median of a value column per group, ascending by key.
 
@@ -733,7 +740,7 @@ fractions.write(Float32Array.of(0.1, 0.5, 0.9)); // no recompile
 - Exactness: counts, the fixed-point `sums` words, minimum, maximum, median, percentiles, mode and unique counts are bit-identical to a CPU reference. `sumValues` is the exact sum rounded once to float32 and `means` is that divided by the count (a few float32 units in the last place), at any magnitude: values 1.0e-4, 1.2e-4, 1.4e-4 have mean 1.2e-4. A value keeps all its bits in the sum while its magnitude is at least `max * 2^(h - 71)`, where `max` is the largest value of the column in a kept group and `h` the bit length of the row count. Percentiles use the numpy `linear` rule (`h = (n - 1) p`, `lo + (hi - lo) * (h - floor h)` in f32) and the order-statistic policy shared with `GPUColumnQuantiles`, with `p` read per frame; a fraction that is NaN or outside [0, 1] gives NaN (it is no longer clamped). Mode is the longest run of equal values (ties: smallest value). `-0` is treated as `+0`; NaN and infinities are excluded.
 - Moments are corrected two-pass: `d = v - mean` is summed in a fixed order (a binary tree over sorted row blocks), so a second encode is bitwise identical. The signed first and third powers are scaled by a power of two chosen from each group's extremes before reduction and restored afterwards, preventing same-sign branches from overflowing before opposite signs cancel. Values with binary exponent at most 30 use no scaling. Even powers retain their float32 range limits. Each level merges only the group crossing each block midpoint; the work is O(rows), the depth is O(log rows), and a dominant group spreads across workgroups. The four power sums use separate scalar scratch bindings (16 bytes per input row in total); each binding must fit the device storage limit. The row count is also bounded by the published sort maximum of 2^31. `estimatedCommandNodeCount` includes the merge levels and conservative allowances for published sorts, scans and gathers, checked against the shared command-node budget. Central moments about the true mean come from the shifted power sums. Oracle specs require relative tolerances of 1e-6 for means, 2e-5 for variance, and 1e-4 for skewness, kurtosis and z-scores, with small absolute tolerances near zero. Skewness is Fisher-Pearson `g1`, kurtosis is excess `g2`; both are NaN for constant groups, a group whose variance is under 2^-19 of its shifted sum of squares is treated as constant (the shift mean is rounded to float32). Sample variance of one value is NaN; the z-score is `(v - mean) / sd` with the same corrected mean the variance uses, and is 0 when the deviation is 0 or a sample group has one value, NaN for masked, invalid-key, non-finite or capacity-dropped rows.
 - Dense mode: `keyCount` (compile-time) requires `uint32` keys in `[0, keyCount)`. `output.keys.length` and every per-group output hold exactly `keyCount` rows, and row `k` is key `k` (`output.keys[k] = k`, `output.status.count` and `status.requiredCount` are `keyCount`, `status.overflow` is 0). Keys with no rows keep a row: `counts` 0, `sums` and `uniqueCounts` 0, and NaN for mean, minimum, maximum, variance, standard deviation, skewness, kurtosis, median, percentiles and mode. Keys outside the range and the reserved all-ones key are skipped like masked rows and are not reported as overflow. It costs one binary search per key instead of a group scan, and suits region IDs or other small dense key spaces (the choropleth recipe uses it so empty polygons keep a row). The default compact table of occupied keys is unchanged.
-- Cost: one stable key sort (two 32-bit radix sorts for 64-bit keys); each column that asks for median, percentiles, mode or unique count adds a value sort plus a key re-sort. Inputs must be single packed views. Approximate distinct counts (HyperLogLog) are not included.
+- Cost: one stable key sort (two 32-bit radix sorts for 64-bit keys); each column that asks for median, percentiles, mode or unique count adds a value sort plus a key re-sort. Chunked reducible inputs use fixed tile scratch; exact order statistics still require device-bound packed scratch. Approximate distinct counts (HyperLogLog) are not included.
 
 #### How it computes
 
@@ -745,6 +752,10 @@ fractions.write(Float32Array.of(0.1, 0.5, 0.9)); // no recompile
 ::lens{scenario=gpu-dataframe.group-statistics rung=graph caption="A radix sort of rows by key, group ranges from head flags and a scan, then the moment and order-statistic nodes."}
 
 ## `GPUKeyJoin`
+
+`count-distinct` counts distinct finite values among matching right rows; missing and nonfinite
+values do not contribute. Right tables are bounded by 2,147,483,648 rows, subject to sort and device
+limits. Left-row and output ordering remains unchanged.
 
 Looks up each left row's key among unique right keys and gathers the matching right row's value, entirely on the GPU.
 
@@ -772,14 +783,14 @@ each left row binary-searches them on the unsigned `(high, low)` order.
 
 - `gather` copies a right column (`float32` or `uint32`, bit for bit) from the smallest matching
   right row. Unmatched rows get NaN or `0xffffffff`.
-- `aggregates` run over all matching right rows: `count`, `sum`, `mean`, `minimum`, `maximum`.
+- `aggregates` run over all matching right rows: `count`, `count-distinct`, `sum`, `mean`, `minimum`, `maximum`.
   `sum` is the exact sum of the finite values in a 96-bit fixed-point accumulator whose unit
   follows the largest value among the valid right rows, rounded once to float32; `mean` divides
   it by the finite count. A column of 1e-4 and a column of 1e6 are both right to float32. The
   optional `sums` words are a separate 64-bit sum of `roundHalfEven(value * sumScale)` (default
   65536): each value is rounded to `1 / sumScale` first, so a value below half a unit adds
   nothing there. Extremes use ordered-key atomics. Non-finite values are excluded per aggregate.
-  Unmatched rows get 0 for `count` and NaN otherwise.
+  Unmatched rows get 0 for `count` and `count-distinct`, and NaN otherwise.
 - `output.rightRows`, `matchCounts`, `matched` (usable as a crossfilter live mask) are left-aligned;
   `rightMatched` is right-aligned (1 when some valid left row has the same key).
 - `kind: 'inner'` additionally compacts matched left row IDs, ascending, into `output.rows`
@@ -1294,6 +1305,12 @@ Settings of `getGPUCompositeScoreParameterValues`:
 
 ## `GPUInequality`
 
+Parallel and reference routes support at most 2,147,483,648 rows, subject to sort and device
+limits. `mode: 'reference'` preserves the serial oracle.
+
+Parallel reductions are the default; mode reference retains the serial per-zone oracle. Lorenz knots
+and output bindings retain their existing limits.
+
 Computes weighted Gini and other inequality indices per zone from a value column, with Lorenz knots and a pooled summary.
 
 ::lens{scenario=gpu-dataframe.inequality rung=result caption="Within community areas the income Gini runs from 0.01 (area 37, two tracts) to 0.31 (area 28); pooled it is 0.33 (CPU check)."}
@@ -1316,7 +1333,12 @@ Inputs: `values` (float32), `zoneIds` (uint32; `0xffffffff` or any id `>= zoneCo
 
 The Lorenz curve is linear inside each row (a row's income spreads over its population share), so a Palma cut or knot inside a row takes a fractional share of that row. Empty zones, and zones with zero total income, report NaN for every index (zero-income zones keep `mean = 0`). The Theil decomposition is `between = sum_g s_g ln(s_g / p_g)` and `within = sum_g s_g T_g` with income share `s_g` and population share `p_g`; the pooled Theil T is computed independently from all included rows, so `total = between + within` is a real check.
 
-Algorithm and cost: rows are sorted by an order-preserving u32 value key (`GPUSort`), re-keyed by zone and stably radix-sorted by zone, so every zone is one value-ordered segment. One thread per zone binary-searches its segment and walks it twice in fixed order. There are no atomics, so results are bitwise reproducible on one adapter. A zone is one thread of serial work (O(segment)): a zone holding most rows serializes the pass. That becomes the bottleneck at about 2^20 rows in one zone, and the f32 running sums lose precision beyond about 2^22 rows per zone; the planned replacement is a segmented `GPUScan` of `w` and `w x` over the sorted rows, row-parallel terms, and `sorted-segment-sums` per zone. The pooled Gini sums 256-row tiles, then scans and sums the tile totals in one 256-lane workgroup, and the global sums reduce the zones in one 256-lane workgroup (strided reads, fixed binary tree), so their depth is rows / 256 or zones / 256 plus 8 rather than serial. Sums are plain f32.
+Algorithm and cost: rows are sorted by value, re-keyed by zone and stably sorted, so each zone
+is a value-ordered segment. The default parallel route builds bounded 256-row Lorenz prefixes,
+computes row-parallel terms and reduces them by segment. `mode: 'reference'` preserves the two
+serial per-zone walks and their rounding order; a dominant zone serializes that route. The
+parallel summation order can change the last float32 bits; sums and published statistics remain
+float32. Pooled and global reductions use fixed-order tiles.
 
 {/* parameters: GPUInequality generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 

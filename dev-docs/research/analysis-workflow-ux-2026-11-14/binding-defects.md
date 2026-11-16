@@ -48,6 +48,10 @@ AX workarounds, the last column of the tables:
   local-frame hull area in the fused clusters binding, and the 1 percent margin on derived radii and
   distance bands. Roadmap AX-87.
 
+The [AX-87 differential follow-up](#ax-87-differential-follow-up-2026-11-15-stream-workarounds)
+below removes the extra planar hull translation and curated radius inflation, and records why the
+other safeguards remain.
+
 ## Wrong results
 
 | Binding or function | Defect | Evidence | Status | AX workaround |
@@ -104,3 +108,83 @@ AX workarounds, the last column of the tables:
 | `s2-cap-covering` | `maximumCells` accepts up to 6,144 but is capped at `6 * 4^level` | Reported |
 | `geometry-polygonize` | `snapTolerance` has unit `crs` but the CPU run applies no metric frame | Reported |
 | `geometry-minimum-clearance` | Reported to treat an open line as a ring. Not reproduced on the CPU engine: 39 cases match Shapely to 1e-6. If real, it is in the GPU path | Refuted on CPU |
+
+## AX-87 differential follow-up (2026-11-15, stream `workarounds`)
+
+Re-ran the reviewer shuffle, unit-scale, large-offset, tiny-polygon, dateline and exact-radius
+probes against the fixed bindings. The fused clusters binding no longer translates its planar hull
+to its first vertex before calling `measureRingSignedArea`, which now performs that same translation
+internally. Independent review also found an overlooked redundant radius-inflation workaround,
+removed in the correction recorded below. The binding still measures planar hulls in frame
+coordinates and unwraps geographic output rings. The other safeguards below have observable
+semantics beyond the original binding defects and are retained. Corrected their stale comments;
+no regression, kriging, profile, descriptor-default or presentation behavior was changed.
+
+### Measurements and decisions
+
+All differences below are CPU binary64 measurements. A delta is candidate minus previous unless
+stated otherwise; maximum absolute deltas are over the named array. Specs assert the decisions,
+including counterexamples to equivalence, rather than treating these measurements as GPU evidence.
+
+| Category | Differential probe and numerical result | Decision |
+| --- | --- | --- |
+| Extra planar hull translation | The three scikit-learn/Shapely fixture cluster hulls: maximum area delta **0**, maximum perimeter delta **0**. Area-32 quadrilaterals at offsets **0, 1e9, 1e12**, with a remote point fixing a separate frame origin: area and perimeter deltas **0** at every offset. | Remove the extra translation. The shared area helper already provides it. |
+| Choice of hull measurement coordinates | Measuring the fixture hulls after `frame.inverse` instead of in frame coordinates changes area by up to **3.410605131648481e-13**. | Keep planar frame-coordinate measurement; removing the duplicate translation does not establish equivalence of the inverse ring. |
+| Geographic hull geometry | Dateline rectangle at longitudes ±179.9 and latitudes 40–40.1: wrapped versus unwrapped area delta **0** with the fixed shared helper. Published geometry still has a longitude beyond 180 and a span below 1 degree. | Keep output-ring unwrapping: short output geometry edges are a separate concern from numerical area integration. |
+| Canonical permutation ordering | On the original 25-location equal-distance grid, the fixed neighbor identities agree after reversing rows. Removing canonical permutation ordering nevertheless changes the seeded global Moran pseudo p-value by **0.03700000000000003** (999 permutations, seed 43). Retaining ordering gives identical statistics and p-values. The existing fused residual/kriging reverse and seeded-shuffle probes also pass. | Keep canonical ordering. Canonical neighbor ties do not canonicalize random permutation streams or floating-point accumulation. |
+| Canonical kriging merge ordering | Reversing the 40-point kriging oracle before empirical variogram accumulation changes bin mean distances by up to **1.1368683772161603e-13** and semivariances by up to **2.220446049250313e-15**. Sorting by location first gives exactly equal arrays. | Keep ordering before pair sums and fitting, even though catalog neighbor ties are fixed. |
+| Predictor standardisation / solver | On the reviewer's income/share fixture, the fixed catalog and fused solver agree to the existing 1e-9 relative tolerance. Maximum absolute deltas: coefficients **8.526512829121202e-14**; standard errors **1.4210854715202004e-14**; t statistics **3.552713678800501e-15**; fitted values and residuals **1.4210854715202004e-14**; estimated covariance diagonal (squared standard errors) **2.7284841053187847e-12**. R² and adjusted R² deltas are **1.1102230246251565e-16**, RSS **1.7053025658242404e-13**, sigma² **3.552713678800501e-15**, auxiliary Koenker–Bassett statistic **1.5987211554602254e-14**. | Keep the fused solver: ordinary-scale numerical agreement does not imply equal numerical range or rejection behavior. Full off-diagonal covariance is not exposed or compared; no consolidation claim. |
+| Solver rejection and range | For a predictor `row * scale`, scales **1e-200** and **1e200** both fit with finite fused predictions; the fixed catalog rejects the first for zero spread and the second as collinear after unscaled squares underflow/overflow. For predictors `row` and `row + (row % 2) * 1e-5`, the fused solver rejects near-collinearity while the catalog fits finite coefficients. | Preserve offset scaling and the fused **1e-10** unexplained-variance threshold, distinct from the catalog **1e-12** pivot threshold. |
+| Profile-owned anchors | Zero-area shell `[0, 2, 10, 0]` on the x axis: profile centroid **5**, catalog vertex mean **3** (delta **2**). Geographic line longitudes `[0, 1, 10]` on the equator: length-weighted profile longitude **5** versus catalog mean **11/3** (delta **1.3333333333333326**). Scaled triangles at **1e-200** and **1e200** keep profile centroids `(2/3, 1/3) * scale`; the catalog does not. Existing hole/orientation, tiny polygon, widely separated parts, cut-dateline and scaled-moment profile specs pass. | Keep profile anchors. The merged extent/distinct stream strengthened their range and fallback semantics; reusing the fixed catalog would regress these guarantees. |
+| Curated DBSCAN radius inflation | Independent review reproduced an explicit-radius violation: with points `(0,0)` and `(1.0000000005,0)`, `epsilon: 1`, `minimumPoints: 2`, the catalog returned **[-1, -1]** but curated returned **[0, 0]**. Passing epsilon unchanged makes curated **[-1, -1]**, matching catalog: **2** core points become noise, noise count **0 → 2**. An inexact-frame-translation fixture changes from **[0, 0, -1]** to **[-1, -1, -1]**. Exact-boundary fixtures remain **[0, 0]** and **[0, 0, -1]** through both bindings. | Remove the curated **1e-9** relative radius inflation. Compensate only measured frame-translation errors in the shared DBSCAN implementation; compare squared distance inclusively against the unchanged requested radius. This corrects near-boundary classifications; it is not a zero-delta removal. |
+| One-percent radii and bands | Fixed catalog DBSCAN includes a planar pair at radius **1** despite the shift by **0.1**, matching the reviewer boundary fixture. This does not remove geographic metric differences: four points at longitudes ±1 and latitudes 60/61 have a maximum spherical nearest-neighbor distance **111190.8461581229 m**; the fixed local-frame weights leave **2** islands at that band and **0** at **1.01 ×** the band. | Keep the shared geographic margin and the resolver's independent upward rounding. Remove stale claims that an inclusive radius boundary itself excludes exact pairs. The margin is not a universal distortion bound. |
+| Gi* presentation island guard | The fixed binding emits `not-tested` for the isolated fifth row. With `neighbor_count`, presentation excludes that row and retains the hot-spot class scheme. Without the guard's evidence, `not-tested` is outside the current hot-spot vocabulary and the whole table falls back to categories. | Keep the surviving presentation exclusion. Removing it needs a separate class-vocabulary change and map/legend qualification, not just the binding fix. |
+
+### Reproduction and limits
+
+New differential cases live in:
+
+- `modules/kepler/test/curated/curated-bindings-fixes.node.spec.ts` — fixed neighbor identities versus
+  permutation order, OLS agreement/rejection/range, profile semantics, exact-radius and geographic
+  distances, and actual Gi* output through presentation.
+- `modules/kepler/test/curated/curated-bindings-clusters.node.spec.ts` — old/candidate hull area and
+  perimeter, remote frame origins, large offsets and dateline geometry.
+- `modules/kepler/test/curated/curated-bindings-kriging.node.spec.ts` — input-order variogram deltas
+  and canonical accumulation equality.
+
+Run them with `CURATED_MARGINS_FILE` set to an absolute output path through `.ax/node-spec.sh`;
+lines beginning `AX-87` contain these measurements. The stream manifest lists these and the existing
+regression, profile, defaults, descriptor and presentation regression specs used for qualification.
+Initial Node run before the independent-review correction: **8 files passed, 638 tests passed,
+2 skipped**. Scoped typechecking of all nine
+edited source/spec files passed; Biome checked those same files; upstream-first had no violations
+and the contributor-contract check had no new findings. Logs and measurements are in
+`.ax/streams/workarounds/` and enumerated by its manifest. No headless WebGPU or browser tests were
+run, no CPU/GPU equivalence is claimed, and the CPU-reference fused binding remains CPU-reference. AX-87 is a partial removal with explicit
+retention decisions; this does not authorize deleting the retained safeguards at integration.
+
+### Independent review correction: curated DBSCAN radius (finding 1)
+
+**Accepted.** The initial audit tested the fixed catalog boundary but missed the additional
+`epsilon * (1 + 1e-9)` applied by the fused curated binding. The shared routine already receives
+translation residuals from `readClusterSamples` and compensates them when forming coordinate
+differences. Its widened bucket lookup only controls candidate enumeration; its final test is
+`distanceSquared <= epsilonSquared`. Inflating epsilon again therefore admits points genuinely
+outside the requested radius. At epsilon 1, the old effective radius was **1.000000001**; the
+reviewer's pair exceeds the requested radius by approximately **5e-10** and was incorrectly joined.
+
+Removed the constant and multiplication, and revised the binding's declared tolerance policy.
+Explicit epsilon values now go through unchanged. The separate one-percent data-derived default
+margin remains for the measured spherical-profile/local-frame metric mismatch; it chooses a
+reported parameter value rather than silently inflating that value during execution.
+
+Four regression cases in `curated-bindings-fixes.node.spec.ts` exercise both catalog and curated
+bindings: exact and just-outside pairs, each with and without an inexact frame translation. They
+assert labels, core flags and noise counts. Before the fix, both just-outside curated cases failed
+(`.ax/streams/workarounds/review-before.log`); the exact cases passed. No findings were rejected.
+
+Review-correction verification: **2 Node spec files passed, 51 tests passed**, including all four
+new regression cases and the existing clustering oracles. Scoped typechecking of all nine edited
+TypeScript files passed; Biome passed for the two TypeScript files changed in this correction;
+upstream-first reported no violations and contributor-contract reported no new findings. Review
+logs are enumerated in `.ax/streams/workarounds/manifest.json`. GPU/browser checks were not run.

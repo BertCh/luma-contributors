@@ -10,6 +10,9 @@ description: "Density & interpolation contributors in @luma-contributors/analysi
 
 ### `GPUPointDensity`
 
+Chunked positions and weights use fixed tile scratch for packed hexagon/masked routes, controlled by
+scratchTileSize. Shared grid outputs remain packed; fixed-point scale and counts span all chunks.
+
 Bins points into grid or hexagon cells and writes a per-cell count, sum or mean raster.
 
 ::lens{scenario=gpu-spatial-analysis.point-density rung=result caption="2,344 observations (grey) binned into 125 m cells (blue); counts per cell, not per km²."}
@@ -159,6 +162,10 @@ also depends on the grid and crossing capacity.
 
 
 ### `GPUKernelDensity`
+
+Explicit method binned accepts aligned chunked positions and weights. Corrected-weight scalar
+scratch splits when a global binding cannot fit; split totals use fixed-point accumulation. Exact
+and auto retain packed indexed inputs, and shared grid outputs must fit.
 
 Estimates event intensity on a raster from points with a planar kernel, a ground-unit bandwidth and edge correction.
 
@@ -626,6 +633,9 @@ Settings of `getGPUSpaceTimeKrigingParameterValues`:
 {/* /parameters */}
 
 ### `GPUDotDensity` and `GPURandomPointsInPolygon`
+
+`GPUDotDensity`: Normalized features are bounded by 16,777,215. The triangle CDF uses segmented
+saturating counts; packed outputs must satisfy logical and co-bound aligned-range checks.
 
 **`GPUDotDensity`**: Places seeded random dots inside polygons in proportion to a count column, one dot per stated number of units.
 

@@ -185,6 +185,33 @@ graph.add(centrality);
 
 ::lens{scenario=gpu-network.network-centrality rung=graph}
 
+### `GPUNetworkCentralityScheduleStep`
+
+::lens{scenario=gpu-network.network-centrality-schedule-step rung=result caption="Compare eight sampled pivots in the first fixed-capacity schedule batch."}
+
+`planNetworkCentralitySchedule({pivotCount, laneCount})` lazily partitions pivot rows into fixed-lane
+submissions. Compile one step, upload each batch into its pivot buffer, pad the final batch with
+`0xffffffff`, update the one-word `reset` view, and submit the same graph on the same queue. Set reset
+nonzero only on the first submission of a run. Node/edge betweenness and status accumulate on GPU;
+per-pivot outputs describe the current batch and must be copied or consumed before the next submission.
+
+For sampled estimates keep `betweennessScale = nodeCount / originalPivotCount` across all steps.
+Each batch must still converge within `maximumIterations`. `createNetworkCentralityContinuation`
+provides host-controlled continuation for longer paths. Do not interleave runs sharing output buffers;
+inspect the final accumulated status before consuming the result.
+
+#### How it computes
+
+{/* lens:GPUNetworkCentralityScheduleStep */}
+
+::lens{scenario=gpu-network.network-centrality-schedule-step rung=datum bind=page datum=3}
+
+::lens{scenario=gpu-network.network-centrality-schedule-step rung=formula}
+
+::lens{scenario=gpu-network.network-centrality-schedule-step rung=kernel}
+
+::lens{scenario=gpu-network.network-centrality-schedule-step rung=graph}
+
 ### `GPUNetworkPathExtraction`, `GPUNetworkServiceAreas`, `GPUNetworkNeighborhood`, and `GPUNetworkAnalyticsColumns`
 
 Network analysis over the same directed CSR road network as `GPUNetworkReachability`.
@@ -822,7 +849,7 @@ Settings of `getGPUIsobandsParameterValues`:
 | Field | Type | Description |
 |---|---|---|
 | `breakCount` | `number` | Number of active ascending breaks, at most the contributor's `maximumBreakCount` (larger values clamp on the GPU). `breakCount + 1` bands exist: band `k` covers `[b[k - 1], b[k])`. |
-| `extent` | `readonly [number, number, number, number]` | Raster extent `[minX, minY, maxX, maxY]` in world units. Row 0 is at `minY`. |
+| `extent` | `readonly [number, number, number, number]` | Outer world extent `[minX, minY, maxX, maxY]`. Sample `(column, row)` is centered at `(minX + (column + 0.5) * cellWidth, minY + (row + 0.5) * cellHeight)`, with cell sizes `(maxX - minX) / grid.width` and `(maxY - minY) / grid.height`. Geometry interpolates over the rectangle between the outermost sample centers, half a cell inside each extent edge. Row zero is at the minY side and rows advance toward larger y. grid.affine and pixelInterpretation do not change this placement. Ring output uses the same convention. |
 | `firstBand` (optional) | `number` | First band emitted as geometry. Defaults to 0. Does not affect `bandClasses`. |
 | `lastBand` (optional) | `number` | Last band (inclusive) emitted as geometry. Defaults to `breakCount` (every band). |
 | `localOrigin` (optional) | `readonly [number, number]` | Float64 point that triangle vertices (and `GPUIsobandRings` ring vertices) are written relative to; add it back on the CPU or as the layer's coordinate origin. Defaults to `[0, 0]` (absolute vertices). Pass the raster or tile corner `[minX, minY]` for projected rasters: absolute float32 vertices are quantized to 0.5 m at a UTM northing of 4.6e6 m, origin-relative ones to about `1.2e-7` of their distance from the origin (1.2 cm at 100 km). |
@@ -857,12 +884,20 @@ Settings of `getGPUNetworkIsochronesParameterValues`:
 
 Snap facilities and demand points to roads, assign drive-time catchments and count demand per cost band.
 
+Coincident facility and demand endpoints remain accessible at zero cost even when a road is
+one-way. Interior movement still obeys its permitted directions. The recipe's min-mode raster
+includes the direct paths from each snapped facility to its road endpoints, so early bands can
+appear around facilities inside streets even when neither endpoint lies in that band. The recipe
+requires min raster mode; the standalone isochrone contributor still supports max mode.
+`GPUNetworkIsochronesRaster.sourcePaths` supplies these additional directed paths through the
+same splatter, with optional assignments in the main network's start-row identity space.
+
 ::lens{scenario=gpu-network.drive-time-catchment-recipe rung=result caption="Compare drive times from 100 demand points to their nearest of 4 facilities."}
 
 A snapped point lies at fraction `f` of the straight road between the two end nodes of its edge. The road is
 driven in a direction only when the topology has a passable edge that way, at the weight of the cheapest
-one, so a one-way edge is driven one way and a facility on it gets one start row (the other row of
-`startNodes` is `0xffffffff`). The demand time is the smallest of `cost[source] + f * w(source -> target)`,
+one, so a one-way edge is driven one way. An interior facility gets one start row (the other row of
+`startNodes` is `0xffffffff`); a facility coincident with an endpoint also seeds that node at zero cost. The demand time is the smallest of `cost[source] + f * w(source -> target)`,
 `cost[target] + (1 - f) * w(target -> source)` and, for each facility snapped to the same road, the way
 straight along it (`abs(f - f_facility) * w` on a two-way road of one cost). Demand beside its facility
 therefore gets the short way along the road, not the way out to an end node and back. The facilities are
@@ -1071,6 +1106,10 @@ graph.add(new GPUMapMatching({
 
 ### `GPUMapMatching`
 
+Rows are bounded by min(floor(bindingBytes / 12), 16,777,215). Optional
+output.status.candidateOverflow mirrors intermediate-table overflow; routeOverflow counts dropped
+route nodes. Check these before treating a route as complete.
+
 Match noisy GPS tracks to directed road edges with candidate edges, bounded route searches and a Viterbi decode.
 
 ::lens{scenario=gpu-network.map-matching rung=result caption="Compare 3 simulated GPS tracks with their road-snapped runs; 137 of 139 fixes matched."}
@@ -1191,6 +1230,10 @@ Settings of `getGPUMapMatchingParameterValues`:
 ::lens{scenario=gpu-network.map-matching rung=graph}
 
 ### `GPUNetworkKFunction`
+
+Optional output.status.converged is one only when every shortest-path batch reaches a fixpoint;
+iterationLimitReached is one if any batch exhausts its round budget. Snapping overflow remains a
+separate status.
 
 Count crash pairs by network distance band and return the network K value at each distance threshold.
 

@@ -54,7 +54,16 @@ Eight rays from the centre recover the square enclosure area and perimeter of si
 
 ## `addVisibilityGraphRecipe`
 
+The `gpu-network` recipe of the same name supports budgeted exact CSR all-source metrics or deterministic sampled estimates via
+metricsMode auto/exact. Auto samples when the exact command budget cannot fit; sampled maximum depth
+is a lower bound. Approximation, overflow and convergence are separate statuses; explicit exact
+rejects an insufficient budget.
+
 Three collinear observers form a path graph. The middle observer has betweenness one. An edge capacity of one deliberately truncates the two-edge output; the status reports both the written and required counts while dense adjacency still supports the metrics.
+
+This scenario uses the dense reference mode. In CSR mode this spatial recipe provides
+adjacency and degree only; [the gpu-network visibility recipe](../gpu-network/visibility-graph.md)
+adds pivot betweenness, closeness and reached counts.
 
 {/* lens:addVisibilityGraphRecipe */}
 
@@ -63,6 +72,10 @@ Three collinear observers form a path graph. The middle observer has betweenness
 ::lens{scenario=gpu-spatial-analysis.visibility-graph-recipe rung=graph caption="Follow the executable GPU stages and output capture copies."}
 
 ## `addBuildingTessellationRecipe`
+
+Local mode uses an adaptive candidate index and publishes convex-piece triangle unions for bounded
+simple nonconvex or holed enclosures (at most 32 rings). Reference mode retains dissolved rings, 64
+buildings and 128 samples. Device bindings and certification/overflow status still apply.
 
 Eight boundary samples from two rectangular buildings are clipped to a rectangular enclosure and dissolved by building. The two complementary cells each have area twelve. Sampling, overlay counts and completeness accompany the variable-length geometry.
 

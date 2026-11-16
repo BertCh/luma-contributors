@@ -36,6 +36,9 @@ Extensive totals sum value times fraction; density integrals additionally multip
 
 ## GPURasterReconstruction
 
+Reconstruction accepts raster bands through the CPU/GPU operation wrappers; caller-owned geometry
+and raster metadata remain explicit.
+
 {/* lens:GPURasterReconstruction */}
 
 Geodesic dilation iterates min(mask, neighborhood maximum) until a verified fixed point; erosion is the dual.

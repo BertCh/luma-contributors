@@ -9,9 +9,9 @@ description: "Cells (DGGS) contributors in @luma-contributors/analysis/gpu-spati
 
 ## Cell system support
 
-Which operation each cell system offers today. S2 is a separate partial API with its own classes,
-status words and units (steradians and radians, little-endian keys only); it is not folded into
-the H3 and Quadbin classes, so the gaps below are real, not omissions of this page.
+Shared cell operators support S2 topology, compaction, grid paths, center covering and outlines.
+The separate S2 compatibility API retains its own status words and unit-sphere units
+(steradians and radians, little-endian keys only). Aggregation/rollup still support H3 and Quadbin.
 
 | Operation | H3 | Quadbin | S2 | quadkey / geohash | A5 |
 | --- | --- | --- | --- | --- | --- |
@@ -20,19 +20,23 @@ the H3 and Quadbin classes, so the gaps below are real, not omissions of this pa
 | Parent | `GPUCellTopology` | `GPUCellTopology` | `GPUCellTopology`; `GPUS2CellHierarchy` compatibility | none | none |
 | Children | `GPUCellTopology`, any depth to stride 4096 | same | `GPUCellTopology`, any depth to stride 4096; compatibility `GPUS2CellHierarchy` also provides leaf ranges | none | none |
 | k-ring / disk | `GPUCellTopology`, k at most 8 | `GPUCellTopology`, k at most 8 (Chebyshev) | `GPUCellTopology`, k at most 8 (edge steps) | none | none |
-| Grid distance / path | `GPUCellGridPath` | none | none | none | none |
-| Compact / uncompact | `GPUCellCompaction` | `GPUCellCompaction` | none | none | none |
-| Polyfill / cover | `GPUCellCover` (scales) | `GPUCellCover` (scales) | `GPUS2PolygonCovering` (one polygon; `refinement: 'level-synchronous'` is parallel), `GPUS2CapCovering` (level at most 8, or 15 with `refinement: 'level-synchronous'`) | none | none |
+| Grid distance / path | `GPUCellGridPath` | `GPUCellGridPath` | `GPUCellGridPath`, levels 0–30 | none | none |
+| Compact / uncompact | `GPUCellCompaction` | `GPUCellCompaction` | `GPUCellCompaction`, expansion depth ≤15 | none | none |
+| Polyfill / cover | `GPUCellCover` (scales) | `GPUCellCover` (scales) | `GPUCellCover` (center, level ≤15); `GPUS2PolygonCovering` (one polygon; `refinement: 'level-synchronous'` is parallel), `GPUS2CapCovering` (level at most 8, or 15 with `refinement: 'level-synchronous'`) | none | none |
 | Aggregation, rollup, pyramid | `GPUCellAggregation` (pre-keyed only), rollup, pyramid | all, including points | none | none | none |
-| Cell set outline | `GPUCellSetOutline` | `GPUCellSetOutline` | none | none | none |
+| Cell set outline | `GPUCellSetOutline` | `GPUCellSetOutline` | `GPUCellSetOutline` | none | none |
 | Cell area, perimeter | `GPUCellMeasures`, metres or km | `GPUCellMeasures`, metres or km | `GPUCellMeasures`, metres or km; `GPUS2CellMeasures` for unit-sphere compatibility | none | none |
 | Edge / vertex identities | `GPUH3CellIdentities` | not applicable | none | not applicable | not applicable |
 
-S2 covers take unit xyz vectors and an optional `spatialContext` (longitude-latitude, great-circle
+The separate `GPUS2PolygonCovering` and `GPUS2CapCovering` take unit xyz vectors and an optional `spatialContext` (longitude-latitude, great-circle
 edges); see [Global coordinates](./global-coordinates.md) for their limits and status words.
 
 
 ### `GPUCellAggregation`, `GPUCellRollup`, `GPUCellPyramid`, and `GPUCellLevelSelection`
+
+`GPUCellAggregation`: Aligned chunked inputs use fixed tile sorting scratch controlled by
+scratchTileSize. Aggregate padded tile rows are at most 4,294,967,295; packed global aggregate
+outputs remain device-binding bounded.
 
 **`GPUCellAggregation`** — Counts and sums rows per Quadbin or H3 cell into a sorted, capacity-bounded cell table.
 
@@ -123,7 +127,7 @@ activeLevel.write(Uint32Array.of(levelForZoom(zoom)));   // no recompile
   random points up to resolution 8, 0.01% at 12, 0.1% at 16, 1.1% at 20, 17% at 24 and 55% at
   26. It is never off by more than 1 row up to resolution 22, 2 rows at 24 and 5 rows at 26
   (f32 latitudes are not that precise). The column always matches.
-- Inputs must be single packed views. Forward keying of points is Quadbin only.
+- Aligned chunked inputs use fixed tile scratch; packed aggregate outputs remain device-bound. Forward keying of points is Quadbin only.
 
 #### How it computes
 
@@ -259,6 +263,9 @@ graph.add(new GPUCellGeometry({
 
 ### `GPUCellTopology` and `GPUCellCompaction`
 
+`GPUCellCompaction`: Supports H3, Quadbin and S2. S2 levels are 0–30; compaction expansion depth is
+at most 15. S2 covering uses level-15 center containment, rather than exact polygon intersection.
+
 **`GPUCellTopology`** — Expands each cell key to its grid disk, ring, parent or children as a fixed-stride row.
 
 ::lens{scenario=gpu-spatial-analysis.cell-topology rung=result caption="Blue: the radius-4 disk around the central place, shaded by grid steps from its cell"}
@@ -268,7 +275,7 @@ graph.add(new GPUCellGeometry({
 ::lens{scenario=gpu-spatial-analysis.cell-compaction rung=result caption="Grey: 49 resolution-9 cells, two masked out · blue: the merged set, resolutions 8 and 9"}
 
 Cell topology for Quadbin, H3 and S2 keys stored as `uint32x2` little-endian `(low, high)` words.
-`GPUCellCompaction` supports Quadbin and H3.
+`GPUCellCompaction` supports Quadbin, H3 and S2 (levels 0–30; expansion depth at most 15).
 This is the Arrow `Uint64` layout used by `GPUCellAggregation`. Inputs also accept
 `wordOrder: 'high-low'`. A zero key means "no cell" in every output.
 
@@ -344,7 +351,10 @@ graph.add(new GPUCellCompaction({
 
 ### `GPUCellGridPath` and `GPUCellMeasures`
 
-**`GPUCellGridPath`** — Computes the H3 grid distance and the cells of the grid path between origin and destination cells.
+`GPUCellGridPath`: Supports H3, Quadbin and S2 paths. Aligned GraphVectorView cell-pair and mask
+rows support chunked input; complete fixed-stride paths stay within one output chunk.
+
+**`GPUCellGridPath`** — Computes H3, Quadbin or S2 grid distance and the cells of the grid path between origin and destination cells.
 
 ::lens{scenario=gpu-spatial-analysis.cell-grid-path rung=result caption="Grey: 7 origin places · blue: grid-path cell centres to the central place"}
 
@@ -352,7 +362,7 @@ graph.add(new GPUCellCompaction({
 
 ::lens{scenario=gpu-spatial-analysis.cell-measures rung=result caption="Blue: 160 H3 resolution-9 cells by spherical area, 106,248–106,278 m², near-equal here"}
 
-H3 grid paths and H3/S2/Quadbin cell measures, integer-exact where possible.
+H3/S2/Quadbin grid paths and cell measures, integer-exact where possible.
 
 `GPUCellGridPath` consumes cell keys, so it takes no `spatialContext`.
 
@@ -425,11 +435,15 @@ H3 grid paths and H3/S2/Quadbin cell measures, integer-exact where possible.
 
 ### `GPUCellCover`
 
-Polyfills polygons into H3 or Quadbin cells, emitting (feature id, cell) pairs.
+Supports H3, Quadbin and S2. S2 compaction/outline levels are 0–30 and compaction expansion
+depth is at most 15. S2 covering is limited to level-15 center containment, rather than exact
+polygon intersection.
+
+Polyfills polygons into H3, Quadbin or S2 cells, emitting (feature id, cell) pairs.
 
 ::lens{scenario=gpu-spatial-analysis.cell-cover rung=result caption="Grey: 17 community areas · blue: 163 resolution-8 H3 cells whose centres fall inside"}
 
-Polyfills polygons (with holes) into Quadbin or H3 cells, like CARTO `QUADBIN_POLYFILL` /
+Polyfills polygons (with holes) into Quadbin, H3 or S2 cells, like CARTO `QUADBIN_POLYFILL` /
 `H3_POLYFILL` and h3-js `polygonToCells`. The result is `(feature id, cell)` pairs that feed
 `GPUCellAggregation` pre-keyed rows, `GPUKeyJoin` and `GPUCellCompaction`.
 
@@ -535,11 +549,15 @@ cell is core.
 
 ### `GPUCellSetOutline`
 
-Finds the boundary edges of a sorted H3 or Quadbin cell set and chains them into closed rings.
+Supports H3, Quadbin and S2. S2 compaction/outline levels are 0–30 and compaction expansion
+depth is at most 15. S2 covering is limited to level-15 center containment, rather than exact
+polygon intersection.
+
+Finds the boundary edges of a sorted H3, Quadbin or S2 cell set and chains them into closed rings.
 
 ::lens{scenario=gpu-spatial-analysis.cell-set-outline rung=result caption="Grey: 163 covering H3 cells · blue: one closed ring chained from 140 exposed edges"}
 
-The boundary edges of a set of H3 or Quadbin cells, the `cellsToMultiPolygon` outline. Set `rings` to chain
+The boundary edges of a set of H3, Quadbin or S2 cells, the `cellsToMultiPolygon` outline. Set `rings` to chain
 the edges into closed rings with shells and holes on the GPU ([`GPUSegmentRingAssembly`](#gpusegmentringassembly)).
 
 It consumes cell keys, so it takes no `spatialContext`; the segments and rings it produces are
@@ -609,6 +627,9 @@ producing a linear output context. Global or antimeridian-crossing rings also ne
 ::lens{scenario=gpu-spatial-analysis.cell-set-outline rung=graph caption="Outline classification, edge packing and ring assembly as one graph"}
 
 ### `GPUSegmentRingAssembly`
+
+vertexTolerance must round to positive finite float32 (at least 2^-149); caller and scratch bindings
+are checked before graph declarations.
 
 Chains directed boundary segments into closed rings with shell and hole classification.
 

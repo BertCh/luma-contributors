@@ -40,6 +40,9 @@ variogram score has no fair variant here.
 
 ## GPUEnsembleScores
 
+Variogram pair count is at most 2,147,483,647 to prevent flattened-index overflow; all score inputs
+and outputs remain device-binding bounded.
+
 ```ts
 const scores = new GPUEnsembleScores({
   ensemble,        // GraphDataView<'float32'>, memberCount * dimension rows, member-major

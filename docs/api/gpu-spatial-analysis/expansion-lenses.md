@@ -4,6 +4,9 @@ These executable examples use small, explicitly synthetic inputs to inspect each
 
 ## `GPULocalSpatialHeteroscedasticity`
 
+Scalable rows are bounded by 4,294,963,199 and actual device bindings. Additive uint32 count outputs
+preserve exact populations; float32 statistics remain rounded.
+
 LOSH divides a weighted neighborhood residual moment by the study-wide residual moment; the graph exposes normalization and invalid-row status.
 
 {/* lens:GPULocalSpatialHeteroscedasticity */}
@@ -13,6 +16,10 @@ LOSH divides a weighted neighborhood residual moment by the study-wide residual 
 ::lens{scenario=gpu-spatial-analysis.local-spatial-heteroscedasticity rung=graph caption="Follow the actual command graph, including intermediate stages and status outputs."}
 
 ## `GPUMultivariateLocalGeary`
+
+Scalable rows are bounded by 4,294,963,199 and actual device bindings. Additive uint32 count outputs
+preserve exact populations; float32 statistics remain rounded. Descriptive reductions default to
+tiled; mode reference retains its previous limit. Permutation inference retains its own ceiling.
 
 Complete-case, variance-standardized multivariate squared differences are averaged over each weighted neighborhood.
 
@@ -64,6 +71,9 @@ Separate fully varying ordinary least-squares models are solved per caller-defin
 
 ## `GPUConcaveHull`
 
+Triangle reservation is bounded by 715,827,882 to keep six boundary words per triangle within uint32
+addressing; device bindings impose lower limits.
+
 An alpha complex selects Delaunay triangles by maximum circumradius and derives the exposed boundary edges; graph and validity are the appropriate structural explanation.
 
 {/* lens:GPUConcaveHull */}
@@ -83,6 +93,11 @@ Independent alpha complexes preserve original point IDs and empty group slots; b
 ::lens{scenario=gpu-spatial-analysis.group-concave-hull rung=graph caption="Follow the actual command graph, including intermediate stages and status outputs."}
 
 ## `GPUConstrainedDelaunayTriangulation`
+
+flipMethod auto selects parallel candidate discovery and adjacency repair when the polygon and
+command budget fit; serial retains reference flip ordering. Serial maximumFlips is 4,294,967,294;
+parallel polygon and triangle counts are bounded by 536,870,911 and 1,431,655,765 respectively, with
+device bindings imposing lower limits.
 
 Polygon triangulation preserves ring constraints and performs legal Lawson edge flips, retaining validity and convergence diagnostics.
 

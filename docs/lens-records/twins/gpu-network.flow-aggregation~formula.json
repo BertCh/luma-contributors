@@ -13,7 +13,7 @@
     "value": "2/2"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-network.flow-aggregation.pair-sum</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{rowWeights}{W}=\\sum_{x\\in\\text{pair}}\\term{sortedContributions}{x}</pre><p class=\"lens-ascii\">rowWeights[row] = fixed_tree_sum(sortedContributions[begin:end]): one workgroup per stored origin-destination pair sums the pair&#39;s contributions (the weights of its records, in source row order, 0 for rejected or non-finite weights) with a strided partial sum and a fixed binary tree, so the float sum is bitwise reproducible. It is a sum of the weights (trips), not a mean and not the record count; flowCounts counts the records of the pair separately.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.flow-aggregation-compiled:flow-aggregation-pair-sum\" data-value=\"rowWeights\">weight sum of the pair · output · rowWeights</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.flow-aggregation-compiled:flow-aggregation-pair-sum-gather\" data-value=\"sortedContributions\">record weights of the pair, sorted · input · sortedContributions</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-network.flow-aggregation.pair-sum</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{rowWeights}{W}=\\sum_{x\\in\\text{pair}}\\term{sortedContributions}{x}</pre><p class=\"lens-ascii\">rowWeights[row] = fixed_tree_sum(sortedContributions[begin:end]): one workgroup per stored origin-destination pair sums the pair&#39;s contributions (the weights of its records, in source row order, 0 for rejected or non-finite weights) with a strided partial sum and a fixed binary tree, so the float sum is bitwise reproducible. It is a sum of the weights (trips), not a mean and not the record count; flowCounts counts the records of the pair separately.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.flow-aggregation-compiled:flow-aggregation-pair-sum\" data-value=\"rowWeights\">weight sum of the pair · output · rowWeights</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.flow-aggregation-compiled:flow-aggregation-pair-sum\" data-value=\"sortedContributions\">record weights of the pair, sorted · input · sortedContributions</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -53,8 +53,8 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-11T15:20:12.289Z",
-    "runId": "run-98e924e3",
+    "date": "2026-11-16T00:41:23.284Z",
+    "runId": "run-48cef97d",
     "observerEffects": [
       "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
@@ -62,7 +62,7 @@
     ]
   },
   "state": {
-    "runId": "run-98e924e3",
+    "runId": "run-48cef97d",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

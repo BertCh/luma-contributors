@@ -144,6 +144,9 @@ Each lens executes its public contributor on explicit synthetic inputs and expos
 
 ### GPURasterRegionGraph
 
+Auto selects fixed Boruvka for larger fixed-count requests, supporting 65,535 regions subject to
+device bindings. Dense and adaptive routes retain 256 regions.
+
 This example assembles two tile cores with different local label numbering through `addRasterRegionGraphTiles`, then captures actual adaptive-merge results and assembly kernels.
 
 {/* lens:GPURasterRegionGraph */}

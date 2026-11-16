@@ -46,6 +46,53 @@ Codex gpt-6.1-sol implementor per item in a private staging copy; the lead runs 
 
 Not in this pass: Kepler rows (KE-PORT, KE-WF and AX sessions), website rows, decisions, upstream proposals, items blocked on unpublished luma.gl (NW-CENT, DF-DESC, LN-DQ, CPU-08), oracle-blocked validation (STM-07, PLAT-06), consumer-on-demand rows (GAP-*, CPU-03) and LUM-21.
 
+## Scalability pass (SC, 2026-11-15)
+
+Goal: remove the size limits that block a browser spatial statistics tool on deck.gl-sized data (1 to 30 million rows). A survey of about 830 named limits found most are honest (f32/u32 exactness, reference-tier exact algorithms with a scale route beside them: scalable SCC, sparse Louvain, indexed kriging, indexed MGWR, `GPUContiguityWeights`). The blockers are systemic: hosts create devices with the WebGPU default 128 MiB binding, and almost every contributor needs one packed input view. Codex gpt-6.1-sol implementor per stream in a private staging copy; headless specs, review and gates run as one collected pass afterwards, not per stream.
+
+| ID | Stream | Scope |
+| --- | --- | --- |
+| SC-AUDIT | Size-limit audit | Every data-size limit classified (precision, binding, reference algorithm, implementation choice), its scale route and default; `dev-docs/research/scalability-limits-2026-11-15/`. |
+| SC-DEV | Device limits | Public analysis-core helper for adapter binding/buffer maxima; lenses and the kepler host request them (kepler requested only storage-buffer count). |
+| SC-PACK | Chunk gathering | Shared helper that gathers a chunked view into packed scratch with copy nodes when it fits one binding. |
+| SC-CHUNK-CELL, -DENSITY, -JOIN, -CLASS, -GROUP | Chunked input | Row-parallel foundations accept `GraphVectorView` input with per-chunk dispatch: point-to-cell and cell aggregation, point/kernel density, point-in-polygon join and bounds filter, column classification, group statistics. |
+| SC-NW-STRUCTURE | Network structure | Lift 1,024 vertices: compose scalable SCC; parallel bridges, articulation points and biconnected components. |
+| SC-FLOW, SC-ROUTE, SC-LOUVAIN | Network | Scalable flow route (128 nodes / 1,024 edges), point routing beyond 128 edges with same-edge support (GPU-10), sparse Louvain beyond 65,535 nodes. |
+| SC-FUZZY | Fuzzy contiguity | Replace the 16+16-bit pair key that caps 65,536 features. |
+| SC-DORLING, SC-OPTICS, SC-URBAN | Indexed routes | Grid-indexed Dorling beyond 65,536 rows, OPTICS grid beyond 65,536 rows, GPU-11 tessellation and visibility. |
+
+Wave 2, from the SC-AUDIT priorities (`dev-docs/research/scalability-limits-2026-11-15/`): shared chunk dispatch helpers (W2-CHUNK-CORE: one pipeline for every chunk via aligned parameter slots, disjoint-output validation); chunked input for 28 row-independent contributors in four families (dataframe time and forest inference, geodesic and geometry, cell topology, query-side interpolation and linear referencing); and the implementation-choice caps with no scale route: island attachment (65,535), GWR and its nonstationarity test, generalized GWR (1,048,576 indexed rows), GTWR (32,768), HDBSCAN (1,048,576), space-time kriging sample index, raster fractional coverage and categorical tuples, flow-aggregation zones and network-coarsening groups (65,535 key packing), utilization isopleths (2^24 cells), IDW and nearest-feature top-k above 64.
+
+**State (landed in the working tree, not committed):** 412 files (215 changed, 197 new) from 31 streams, each with an independent Codex review and one to four fix rounds. Gates on a fresh clone of main plus the streams: source and test typecheck 0 errors, lint clean, upstream-first and contributor-contract clean, `yarn build` and `verify-package-exports` (17 entry points) pass, node suite 17,924 passed / 0 failed, and all 69 new or changed headless specs pass on Apple Metal. The headless runs found five code defects the node specs could not see (a pass binding a buffer its shader never reads, one buffer bound read-only and writable in one pass, `variant: undefined` on a graph node, NaN and out-of-range integer literals written into WGSL, a duplicate resource id) and about ten wrong test oracles.
+
+API changes callers should know:
+- Chunk-capable contributors accept `GraphVectorView` input and are generic over input/output view kinds with packed defaults, so packed callers keep `GraphDataView` types.
+- Default routes changed: point routing uses the scalable CSR route (`mode: 'reference'` keeps the old kernel and its tie order), network structure uses `mode: 'auto'` (exact SCC within 1,024 vertices, parallel resilience), network flow selects the parallel route above the reference caps or when `topology` is given.
+- GWR's automatic Gaussian truncation above 1,048,576 rows publishes `status.approximation`.
+- CSR closeness and betweenness for visibility graphs now come from `addVisibilityGraphRecipe` in `@luma-contributors/analysis/gpu-network`; the `gpu-spatial-analysis` recipe's CSR mode returns adjacency and degree only (the layering rule forbids `gpu-spatial-analysis` importing `gpu-network`).
+- `getAnalysisRequiredLimits` / `getAnalysisMaximumRowCount` (analysis-core) request adapter binding and buffer maxima; the kepler host and lenses use them.
+
+Not done, recorded as limits below: OPTICS xi stays at 65,536 rows (float32 crossing intervals make parallel conflict selection change results); local tessellation supports convex enclosures only; visibility all-source integration and normalized choice stay on the 256-point dense route; min-cost flow still uses successive shortest paths. Rules learned for later passes: headless inputs must be a fixed size (at most about 512 MiB per test), never derived from device limits; every number written into WGSL must be finite and valid for its type; chunk resource ids carry the contributor id; overlap checks compare aligned binding ranges within one dispatch and logical ranges across dispatches (`validateDisjointWritableViews`).
+
+Not in this pass: the 2^24 f32-exact row ceiling, raster time-series and embedding chunking (tile inputs, 25 classes listed by the audit), reference-tier exact algorithms that already have a scale route, the 32,768 command node budget (needs published GPU-gated continuation, PLAT-04), and catalog/AX defaults (AX session). Proposed, not adopted: a contract rule that size limits default to an interactive bound with an explicit opt-in above it (the `GPUSpatialWeightsTraces` `mode: 'exact'` pattern).
+
+## Improvement pass (IMP, started 2026-11-15)
+
+Finishes the SC waves and runs an improvement pass over all of `modules/analysis/src`, family by family. One Codex gpt-6.1-sol implementor per stream in a private staging copy (owned directories, additive API only, each defect fix with a test that fails before it), then an independent Codex review per stream with fix rounds, the headless specs, integration gates in a fresh clone, and one landing coordinated with the AX session. AX-owned paths (ontology, analysis spacing, neighbour-search kernels, recipes, isochrones, kepler, lenses, docs/api, website) are out of scope; catalog limit changes are handed to the AX landing.
+
+| Wave | Streams |
+| --- | --- |
+| SC3 (scalability completion) | Chunked input for raster time-series (two streams) and raster embeddings (with EMB-02, LUM-24); row-proportional scratch beyond one binding for aggregation/density/group statistics and for joins/bounds filter/classification; parallel min-cost flow (NW02, NW03, GPU-10 facility kernels); visibility integration and choice on CSR; NW-CENT centrality without unrolled-round growth. |
+| F (family improvement) | Statistics (2^24 weight-row ceiling, STD-04/05), regression and validation (GPU-09, SUR and panel caps), interpolation, clustering and interaction (OPTICS xi, rank Markov, sparse IPF), two geometry streams (STD-08, GPU-12), cells (DUP-03), trajectories, urban and landscape (nonconvex tessellation), network (alternative routes, map matching), raster (STD-06, STD-07, GPU-13), terrain (TE03, TE06), point cloud and geospatial (STD-05, GPU-01), dataframe (GPU-01, GPU-13), core (STD-14 binding-check rule, LUM-30 leak checks, STD-10 helpers). |
+
+State (2026-11-16): landed uncommitted in the working tree on top of SC and AX, by 3-way merge. All 23 streams were implemented, independently reviewed and fixed. Gates in the integration clone: typecheck, lint, upstream-first, contributor contract, build, package exports and test typecheck pass; test-node passes 21,709 tests (the one failure, the kepler AX-70 git-identity case, needs `.git` and passes in the checkout). The full headless WebGPU pass on Apple Metal (899 files) is clean after the fix rounds, including the earlier `gpu-color-scale` and `gpu-buffer-selection` failures.
+
+Main results: global and local statistics beyond 2^24 rows (tiled global Moran, Geary and G); SUR to 16.7M rows; chunked raster time-series and embeddings (up to 1,024 dimensions); tiled cell aggregation, group statistics and join paging; opt-in primal-dual min-cost flow; centrality continuation beyond 1,024 rounds; visibility integration and choice on CSR (exact within budget, sampled with `status.approximation` beyond it); nonconvex tessellation; Borůvka region graph; tiled D8 flow (TE06); indexed segment snapping, compact offsets and `featureSources`; S2 compaction, covering and outlines. Contract tooling: a binding-preflight rule (330 findings to 1, the AX-owned isochrones entry, baselined) and a kernel-audit check that every declared WGSL binding is referenced (unused bindings break inferred layouts on Metal).
+
+GPU-only defect classes found by the headless pass, now covered by node checks: Metal fast-math division near float32 max (use the shared exponent-scaled quotient), `workgroupBarrier` outside uniform control flow, NaN/inf literals in WGSL, one buffer bound read-only and writable in one dispatch, one buffer imported under two graph IDs, unused declared bindings, and graph scratch lifetimes without explicit dependencies.
+
+Not done (kept as known limits): OPTICS xi stays at 65,536 rows; fractional distribution dynamics stays at 65,536 tuples; rank Markov keeps dense n×n output (about 5,792 states); S2 aggregation and a unified public `GPUCellFamily`; ratio hull, nesting beyond 64 and straight skeleton beyond 1,024 vertices (`geometry-refinement`); parallel arc overlay and offset-component redesign; scalable random-effects/Hausman panel lag, nested validation beyond 4,096 rows and ST06 intervals; larger local kriging systems and automatic RBF indexing; NW-GA and larger cooperative network search; remaining STD-04/STD-05 adoption, chunk-specific shader specialization in older helpers, and the existing serial-loop baseline entries. Primal-dual min-cost flow is opt-in; defaults elsewhere are unchanged unless a stream report says otherwise.
+
 ## Open backlog by domain
 
 ### Repository, examples and integration
@@ -226,54 +273,64 @@ Provisional decisions taken for this build, not yet confirmed by the maintainer 
 
 Not built, in order of value: a GPU-resident hand-off between adjacent steps with a fusion planner (KE-WF-08 of the study); resident recipes (hot spots, kriging, OLS on resident columns) as step kinds; composition by reference (a workflow used as an operation of another, so edits propagate); share links and the standalone viewer; a map preview of a step that is not displayed.
 
-#### Analysis experience (AX, library layer landed 2026-11-14)
+#### Analysis experience (AX, implementation pass landed 2026-11-15)
 
-No host surface suggests an analysis from the loaded data yet, and curated chains (41 recipes, 417 lens scenarios, 173 showcase stories) are not available as pre-configured workflows on user data. The library that such a surface needs is in the tree and nothing in `examples/deck/kepler-compute` calls it. The review of the existing state, the research on similar tools, the design, the gate for each row, the measured baseline and eleven maintainer decisions are in [research/analysis-workflow-ux-2026-11-14](./research/analysis-workflow-ux-2026-11-14/README.md).
+The workbench question gallery consumes the AX library and maps curated templates to user datasets. All 28 curated records (the original 27 plus drive-time bands) have registered bindings, descriptors and licensed synthetic samples. Registry and CPU checks do not close the headless WebGPU, browser journey or real-sample gates. The review of the existing state, the research on similar tools, the design, the gate for each row, the measured baseline and eleven maintainer decisions are in [research/analysis-workflow-ux-2026-11-14](./research/analysis-workflow-ux-2026-11-14/README.md).
 
-In the tree (plain CPU TypeScript, no GPU resource):
+The shared metadata is plain CPU TypeScript; execution bindings select CPU or WebGPU:
 
 - `modules/analysis/src/gpu-spatial-analysis/ontology/analysis-experience/`: twelve questions and operator-to-question rules, the data-kind vocabulary with supplements for operators whose kinds are empty, measurement-level guesses and field-role matching, the requirement evaluator (passed, failed or unknown, with its evidence), spacing statistics and default rules, class schemes, result sentences and cautions. Documented in `docs/api/gpu-spatial-analysis/analysis-experience.md`.
 - `modules/kepler/src/profile/`: dataset profile per revision with declarations that replace guesses.
 - `modules/kepler/src/descriptors/`: a descriptor per catalog binding keyed by binding id (136 written by hand; the other 81 of the 217 bindings get a derived one and are not suggested), resolved defaults, applicability, `suggestKeplerAnalyses`, and adapters in the shapes the KE-WF workbench reads.
 - `modules/kepler/src/presentation/`: scale, classes, legend, sentence, chosen-parameter report and cautions for a catalog result.
-- `modules/kepler/src/curated/`: 27 question-named analyses as single-binding presets with synthetic samples (16 runnable, 11 waiting for a binding) and six CPU-reference bindings (`curated-*`) that fuse existing steps.
+- `modules/kepler/src/curated/`: 28 question-named analyses (the original 27 plus drive-time bands), with registered bindings, descriptors, licensed synthetic samples and AX-30 templates. Sixteen have CPU paths; twelve require WebGPU.
 - `examples/deck/kepler-compute/scripts/ax-journey-baseline.mjs` and its recorded baseline.
 
 Checked by three independent review rounds with probes (eight reviewers, then seven, then three verifiers) and four fix rounds; 30 spec files, about 2,490 tests. Defects the reviews found in existing catalog bindings are in [binding-defects.md](./research/analysis-workflow-ux-2026-11-14/binding-defects.md); the bindings were fixed on 2026-11-15 and the workarounds that had become wrong were removed with them (its status section lists both).
 
 Known limits of the layer: the rate cluster map recovered a lone planted outlier in 12 of 20 runs; the default clustering radius fragments irregular concentrations and merges uniformly repeated locations; a requirement that depends on an estimated distinct count is always `unknown`; edge and node capacity cannot be exact from a profile; the measurements behind these were made before the binding fixes of 2026-11-15 and have not been repeated.
 
-The KE-WF workbench (workflow document and parser, runner, palette, assistant, result view; `modules/kepler/src/workflows/` and `examples/deck/kepler-compute/src/workflow/`) was built by another session and applied to the tree on 2026-11-15. It does not call the AX layer yet (AX-86). AX-30's document, AX-50, AX-51, AX-60 and AX-61 are its rows.
+The KE-WF workbench (workflow document and parser, runner, palette, assistant, result view; `modules/kepler/src/workflows/` and `examples/deck/kepler-compute/src/workflow/`) was built by another session and applied to the tree on 2026-11-15. It now consumes AX descriptors, templates and native sample sources; the external qualification gates remain open. AX-30's document, AX-50, AX-51, AX-60 and AX-61 are its rows.
 
-| ID | Item | Current limit | Priority |
-| --- | --- | --- | --- |
-| AX-01 | Carry publication roles (coordinates, geometry, time, value column) into every analysis form | Each point form starts with blank longitude and latitude; 4 actions per point statistic | H |
-| AX-02 | Catalog reads prepared (resident) datasets and longitude/latitude roles through an adapter; the host builds a `KeplerDatasetProfile` per dataset revision (`createKeplerDatasetProfileCache`); caps shown before Run | The catalog panel receives non-resident datasets only and needs a GeoJSON field (`examples/deck/kepler-compute/src/app.tsx`, `analysis-catalog-input.ts`); no host code builds a profile | H |
-| AX-03 | Forms start from `resolveKeplerOperationParameters` and show where each value came from | The library derives the values; forms still start from constants (IDW and kriging from fixed New York bounds, distance band 1,000 in CRS units) | H |
-| AX-04 | Publish catalog results through `planKeplerResultPresentation`; report view for table-only results | The plan exists; the host publishes a fixed cyan layer and raw summary keys | H |
-| AX-05 | Show `evaluateKeplerOperationApplicability` before Run, with the unmet requirement and the remedy | Geometry and capacity rejections come back from execution | H |
-| AX-22 | "Suggested for this data" on the dataset card from `suggestKeplerAnalyses`, with its questions (what rows stand for, coordinate system, what a column measures); "Browse all that fit" | A 24-option menu and a catalog search | H |
-| AX-30 | Workflow document types and parser (KE-WF-03) and the template format over them: slots, exposed parameters, question, sample, result reading | Saved recipes name concrete columns and datasets; curated analyses are single-binding presets | H |
-| AX-31 | Bindings for the 11 curated analyses that lack one (raster, trajectory and multi-step cases); licence-clean real samples beside the synthetic ones | 16 of 27 curated analyses run; samples are synthetic | H |
-| AX-32 | Field-mapping step (`createKeplerCuratedAnalysisMapping`) and a gallery by question; pair gallery samples with curated analyses | Role mapping exists in the host for 20 dataframe lens scenarios only | H |
-| AX-33 | Website workflows page from the curated records with real chain intermediates; website catalog entries tagged with the questions and the shared data-kind vocabulary | See WEB-HIW-03; the website keeps its own data types | M |
-| AX-40 | Generated analysis sheet with live preview in place of the catalog panel, after revision checks, stale-result rejection, memory reservation and cancel are in place; migrate hand-written forms; merge or label duplicate operations | Two form systems; catalog and panel local Moran and kriging differ without saying so | M |
-| AX-41 | Result card from `describeKeplerCatalogResult`: sentence, chosen-parameter report, cautions, inference controls, next steps | The report exists as data and text; hand-written panels only | M |
-| AX-42 | Sensitivity strip (small multiples across one parameter), labelled exploratory and recorded in provenance | Showcase sweeps only | L |
-| AX-43 | Spatial weights as a named reusable object with an inspector | Two host caches, no user-facing object | M |
-| AX-50 | Analysis stack (status, visibility, reopen, run stale, undo and redo of edits), then KE-WF-01, KE-WF-02 and KE-WF-04 to KE-WF-08 | Flat list of at most 32 catalog invocations, no edges | M |
-| AX-51 | Save a stack as a template; JSON export (TypeScript export stays KE-WF-11) | Not implemented | M |
-| AX-60 | Command palette over questions, curated analyses and operations, scoped to the active dataset | Not implemented | M |
-| AX-61 | Assistant: search, describe and propose tools; plans checked by the template parser and requirement checker; whole-plan approval | Seven named analyses on built-in observations | L |
-| AX-70 | Scripted journeys for the eight gallery samples, actions and time to first result recorded per release | A baseline is recorded (`research/analysis-workflow-ux-2026-11-14/baseline`); nothing re-runs it | H |
-| AX-80 | Hand-written descriptors for the 81 bindings ported by KE-PORT (space-time, trajectory, raster embedding, network categorical and others) | Derived descriptors only: no questions, roles or data-derived defaults, so they are not suggested | H |
-| AX-81 | Error bound on estimated distinct counts in the profile, so capacity requirements can be decided | Such requirements are always `unknown` above the exact-count limit | M |
-| AX-82 | Edge and node counts in the profile of a line dataset | Network capacity is estimated from row and vertex counts | M |
-| AX-83 | `activeWhen` accepts "any of" conditions | A role or requirement active under either of two settings is declared twice or left always active | L |
-| AX-84 | One covering-arc extent helper shared by the profile and the spacing statistics | Two implementations of the antimeridian covering arc | L |
-| AX-85 | Spacing and contiguity statistics on the GPU for large datasets | CPU, exact up to a sample limit and sampled above it | M |
-| AX-86 | Wire `modules/kepler/src/descriptors/workbench-adapters.ts` into the KE-WF workbench (applicability, defaults, presentation, curated analyses) | Adapters are tested against the shapes the workbench session specified, not against its code; the workbench uses its own rules | H |
-| AX-87 | Remove the workarounds that the binding fixes made redundant, re-measuring what each removal changes: canonical row ordering and predictor standardisation in the fused bindings, the profile's own anchors, the local-frame hull area, the 1 percent margin on derived radii and distance bands. Repeat the reviewers' probes against the fixed bindings | Redundant, not wrong; left in place because removing them changes verified numbers | L |
+The design, research, gates and maintainer decisions are in [research/analysis-workflow-ux-2026-11-14](./research/analysis-workflow-ux-2026-11-14/README.md). The library layer landed on 2026-11-14; the implementation pass (AX-PASS) of 2026-11-15 wired it into the Kepler host and the KE-WF workbench and closed most rows.
+
+How AX-PASS was run: three read-only Codex `gpt-6.1-sol` audits of the tree first (they found AX-02's resident catalog input already wired and AX-30, AX-50, AX-51, AX-60 and AX-61 partly built in the workbench), then 58 planned streams plus 6 integration streams (curated registration, four whole-area review fixes, browser fixes), each in its own clone of an integration copy, verified by scoped typecheck, biome, its node specs, structure specs and both checkers, reviewed once or twice by an independent read-only Codex reviewer, and landed in dependency order. Headless WebGPU specs and host browser scripts were run by the lead on the integration copy. A whole-diff review in four areas (host, Kepler AX library, workflows, analysis and website) found about 20 cross-stream defects; all but the website pictures were fixed.
+
+Provisional decisions taken (the research README's recommended defaults unless noted, not yet confirmed by the maintainer): vocabulary and rules in analysis, adapters in kepler, UI in the host; converge onto the generated sheet one operation at a time, keeping bespoke result views; correctable guesses that warn and never block (an unknown row meaning is a warning with a one-click answer); twelve wave-1 analyses plus a drive-time bands analysis, with the reachable-demand analysis kept under its truthful name; synthetic licence-clean samples only; the existing host and workbench assistant route; no significance classes from sampled previews; the twelfth question `what-is-at-each-place` kept; descriptor-level `apply: live | rebuild`.
+
+| ID | Status after AX-PASS | Open |
+| --- | --- | --- |
+| AX-01 | Every hand-written form is seeded from one dataset-revision context (`analysis-dataset-context.ts`, `analysis-form-initialization.ts`): coordinates, value column, extent bounds, lattice shape; overrides kept | Two-action journey measured only by script |
+| AX-02 | Shared profile and role service over the resident catalog input; declarations saved and replayed through the sandbox extension; caps shown | Million-row timings are recorded, not gated |
+| AX-03 | Catalog and forms start from `resolveKeplerOperationParameters` with the source of each value; no fixed geographic bounds in defaults | |
+| AX-04 | One presentation path (`encodeKeplerResultPresentation`) for catalog and workbench publication; table-only results get a report view; planar results are never drawn as degrees | Independent screenshot review |
+| AX-05 | Applicability before Run with reason, evidence and remedy; a preflight matrix spec covers every binding | |
+| AX-10 to AX-15 | Authoritative kind records; `apply` flags; cross-parameter "any of" conditions (AX-83); no unmapped column parameter; presentation for every geometric output or a stated exception | |
+| AX-13 | Ten-binding runtime-parity rejection matrix, node and headless | |
+| AX-20 | Staged profiling: metadata, GPU column statistics, GPU spacing (`GPUAnalysisSpacing`) and contiguity summaries (`GPUAnalysisContiguityStatistics`); stale-stage rejection | Latency thresholds not gated |
+| AX-21 | Suggestions checked against the eight gallery samples, strict family diversity | |
+| AX-22 | "Suggested for this data" card with reasons, remedies, editable roles and "Browse all that fit"; one click opens the binding or form filled | |
+| AX-30 | AX template envelope and strict parser over the workflow document | |
+| AX-31 | All 28 curated analyses available: eleven new bindings, GPU paths for the four fused CPU bindings, drive-time bands; each runs on its sample and on a renamed second dataset (`curated-template-gates.node.spec.ts`); 16 curated GPU specs pass | No real-world samples (licence decision) |
+| AX-32 | Workflows gallery by question with the field-mapping step; raster and table samples enabled | |
+| AX-33 | Website catalog tagged with the shared questions and kinds; workflows page records generated from the curated templates | Chain-intermediate pictures not captured (capture gate fails by design; capture script supports drainage only) |
+| AX-40 | Generated analysis sheet with live/rebuild badges, checks and preview policy; revision, stale-result, admission and cancel safeguards (lifecycle, preview session); point, interpolation and polygon panels migrated; kernel density has a retained preview executor | The 500 ms live map-change gate is unqualified for the other wave-1 templates (`ax-analysis-sheet-qualification.mjs` fails explicitly) |
+| AX-41 | Result card with sentence, chosen parameters, cautions and actionable next steps; inference controls on the result | |
+| AX-42 | Sensitivity strip: six small maps from one compiled graph, exploratory label, sweep in provenance | |
+| AX-43 | Named reusable weights with inspector; shared by two analyses | |
+| AX-50 | Stack lifecycle: no obsolete publication, old display kept until replacement, remove-then-undo restores and marks stale; pre-flight estimate and computation-record bridge (KE-WF-07) | GPU-resident hand-off (KE-WF-08) not built |
+| AX-51 | Save a stack as an AX template with chosen slots and exposed parameters; reruns on a renamed dataset | |
+| AX-60 | Command palette over questions, templates and operations scoped to the active profile | See the browser status below |
+| AX-61 | Assistant template tools, plans validated by the template parser and requirement checker, approval tied to the reviewed document | |
+| AX-70 | Release journey runner, targets, fixture hashes | Release journeys not rerun on this tree |
+| AX-80 | Every one of the 217 catalog bindings has a hand-written descriptor (the derived allowance is empty) | |
+| AX-81, AX-82, AX-84 | Bounded distinct counts, topology-specific network counts, one covering-arc extent helper | |
+| AX-85 | GPU spacing and contiguity contributors (catalogued) | |
+| AX-86 | The workbench uses AX applicability, defaults, roles, presentation and curated presets | |
+| AX-87 | Redundant workarounds removed where differential probes showed equivalence; deltas in binding-defects.md | |
+
+Host browser scripts on the final tree (headless WebGPU Chromium, Vite dev server, 2026-11-15): 20 of 23 pass, among them the curated gallery, form seeding, profile declarations, result publication, assistant approval, keyboard and palette, save extensions and the existing kriging, cartogram, polygon, projected and published analysis journeys. Still failing: `ax-analysis-sheet-qualification.mjs` (deliberately, until the AX-40 map-latency gate is qualified; only kernel density has a retained preview executor), `analysis-catalog.mjs` (Run disabled at a later step of the catalog journey) and `ax-workbench-qualification.mjs` (the script reads a null publication state; node regressions show AX class scales survive publication). `ax-journey-baseline.mjs` (AX-70) was not rerun.
+
 Source-stream first-round audit: [upload/source parity, script fixes and pending browser qualification](./research/kepler-source-parity-2026-11-14.md). All eight fixture module graphs build; source/resume/rollback Node checks pass. The 17 Playwright workflows and six native demo uploads still need the driver run; this is not an all-Kepler parity claim. Round 2: the driver subsequently confirmed all 17 scripts pass (native-csv retried once after a cold Vite start). Independent review found a globe-label hook ordering defect; the follow-up preserves inherited injection order and runs culling last, verified by final GLSL/WGSL assembly tests in the same audit.
 
 ### Lenses, recording and CPU operation forms
@@ -485,7 +542,12 @@ Keep the research’s not-recommended candidates out of implementation; its reas
 | Space-time variogram | `GPUSpaceTimeVariogram` requires `gridSize` and eight parameters. | `dataframe-analysis/pair-statistics/gpu-space-time-variogram.ts` |
 | Temporal reduction | Word mode permits at most 4,294,967,294 slots (`cellCount * bucketCount`). | `dataframe-analysis/temporal-reduction/gpu-temporal-reduction.ts`: `MAXIMUM_SLOT_COUNT` |
 | Trajectory restriction | `unknown` counts each invalid segment once plus gap-overlap pairs. | `gpu-spatial-analysis/trajectory-restriction/trajectory-restriction-pair-merge-kernels.ts` |
-| Space-time kriging | `GPUSpaceTimeKriging` is reference tier, scans samples per query, maximum 1,048,576 samples. | `gpu-spatial-analysis/spatial-interpolation/gpu-space-time-kriging.ts`; [spatiotemporal] |
+| Space-time kriging | Indexed by default above 4,096 samples (device-binding bound, about 8.4M packed samples at 128 MiB); the explicit full scan stays capped at 1,048,576. | `gpu-spatial-analysis/spatial-interpolation/gpu-space-time-kriging.ts`: `GPU_SPACE_TIME_KRIGING_INDEX_MAXIMUM_SAMPLE_COUNT` |
+| OPTICS xi | Xi extraction stays at 65,536 rows: float32 rounding of `1 - xi` makes intervals cross, and a parallel conflict selection changes results; the grid DBSCAN route goes to 1,048,576. | `gpu-spatial-analysis/spatial-clustering/gpu-optics.ts`: `GPU_OPTICS_XI_MAXIMUM_ROWS`; `optics-xi-dependencies.spec.ts` |
+| Urban tessellation | The local route (up to 1,000,000 buildings) handles convex enclosures; dissolved rings, nonconvex or holed enclosures use the 64-building reference; clustered inputs with distant outliers report `candidateOverflow` and publish no polygons. | `gpu-spatial-analysis/urban-morphology/building-tessellation-local.ts` |
+| Visibility graph | CSR mode (up to 1,000,000 points) gives adjacency, degree and sampled-pivot closeness/betweenness; all-source integration and normalized choice stay on the 256-point dense route. | `gpu-network/visibility-graph/`; `gpu-spatial-analysis/urban-morphology/visibility-graph-csr.ts` |
+| Network flow | Max flow uses preflow push-relabel; min-cost flow uses successive shortest paths with a bounded augmentation count, so graphs needing many augmentations publish partial results with `iterationLimitReached`. | `gpu-network/network-optimization/network-flow-parallel.ts` |
+| Chunked input | Most chunked contributors still keep row-proportional scratch in one binding (aggregation, quantile moments, order statistics, join compaction), so totals are bounded by the device binding size; the kepler host now requests the adapter maximum. | contributor class docs; `analysis-core/device-limits.ts` |
 | FP64-04 | Keep local addition/multiplication rounding-error helpers. | [workarounds]; `analysis-core/kernels/addition-rounding-error-wgsl.ts`; `multiplication-rounding-error-wgsl.ts` |
 | Published fp64 | About 48 bits, not 53, with float32 exponent range. | `modules/analysis/test/analysis-core/shader-fp64-module.spec.ts`; [cpu] |
 

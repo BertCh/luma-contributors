@@ -68,6 +68,9 @@ errors), an independent double-precision CPU twin, and the Philox twin for excee
 
 ## Cross-correlation per location: `GPUSpaceTimeCrossCorrelation`
 
+`GPUSpaceTimeCrossCorrelation`: periodCount is at most 2,147,483,647; cube and correlation address
+products must fit uint32.
+
 For each cell and lag `l` (distinct integers, `|l| <= periodCount - 4`, at most 64) the Pearson correlation of
 the overlapping pairs `(first[t], second[t + l])`, so a positive lag asks whether `second` follows `first`.
 The p-value is Fisher's z test, `erfc(|atanh r| sqrt(n - 3) / sqrt 2)`. It assumes serially independent

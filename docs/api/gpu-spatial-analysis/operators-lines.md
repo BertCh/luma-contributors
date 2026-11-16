@@ -10,6 +10,9 @@ description: "Lines & trajectories contributors in @luma-contributors/analysis/g
 
 ### `GPULineSegmentize`, `GPUGreatCircleArcs`, `GPULineSmooth`, and `GPULineChunk`
 
+`GPULineSmooth`: Optional source-row and source-chainage metadata follows the emitted vertices.
+Metadata rows are at most 1,073,741,823 and position addresses at most 2,147,483,647.
+
 **`GPULineSegmentize`** — Densifies each polyline so no segment exceeds a maximum length, writing new vertices and source-line indices.
 
 ::lens{scenario=gpu-spatial-analysis.line-segmentize rung=result caption="Grey: 223 Wicker Park streets · blue: densified to segments of at most 25 m"}
@@ -1186,6 +1189,9 @@ writes one `uint32` row, the number of rows out of order, and costs nothing unle
 
 ### `GPUZoneEvents`
 
+Candidate capacities reserve a strictly higher saturated-count sentinel; device bindings usually
+impose much lower limits.
+
 **`GPUZoneEvents`** — Finds when each track enters and exits polygon zones, with crossing times and dwell time and visits per track and zone.
 
 ::lens{scenario=gpu-spatial-analysis.zone-events rung=result caption="Right: 12 AIS tracks coloured by zone entries and exits, 111 events in all · grey: zones"}
@@ -1296,6 +1302,9 @@ Status: the optional `output.status` takes four one-row `uint32` views, `candida
 
 ### `GPUTrajectoryEncounters`
 
+Candidate capacities reserve a strictly higher saturated-count sentinel; device bindings usually
+impose much lower limits.
+
 Finds pairs of tracks within a distance of each other in the same time bucket of resampled tracks.
 
 ::lens{scenario=gpu-spatial-analysis.trajectory-encounters rung=result caption="GPU pair table: 8 track pairs within 200 m at the same clock, smallest distance in metres"}
@@ -1376,6 +1385,9 @@ exact answer.
 
 ### `GPUTrajectoryClosestApproach`
 
+Candidate capacities reserve a strictly higher saturated-count sentinel; device bindings usually
+impose much lower limits.
+
 Finds pairs of tracks within a distance of each other at the same instant, with closest-approach distance, time and duration.
 
 ::lens{scenario=gpu-spatial-analysis.trajectory-closest-approach rung=result caption="GPU pair table: 10 track pairs passing within 200 m, closest approach and time inside"}
@@ -1429,6 +1441,9 @@ graph.add(new GPUTrajectoryClosestApproach({
 ::lens{scenario=gpu-spatial-analysis.trajectory-closest-approach rung=graph caption="Command graph nodes and buffers that produce the pairs"}
 
 ### `GPUTrackSimilarity`
+
+invalidPair also reports invalid track ranges and densification overflow; an invalid pair must not
+be interpreted as a valid similarity.
 
 Measures Hausdorff and discrete Frechet distance between pairs of tracks or rings, with optional maximum distance and dynamic time warping cost.
 

@@ -6,6 +6,9 @@ are described in [Embedding rasters](./raster-embeddings.md).
 
 ## `GPURasterEmbeddingDequantize`
 
+Aligned GraphVectorView pixel records support chunked input with 1–1,024 components; whole embedding
+records stay together. Reference covariance-family dimensions remain 128.
+
 The existing decoder accepts `format` (compile-time, default `'alphaearth-int8'`):
 
 | Format | Packed `quantized` input | Decoded component | Invalid pixel |
@@ -45,6 +48,9 @@ array has exactly `ceil(pixelCount * dimensions / 4)` words for int8 or
 they contain a sentinel or NaN.
 
 ## `GPURasterEmbeddingQuantize`
+
+Aligned GraphVectorView pixel records support chunked input with 1–1,024 components; whole embedding
+records stay together. Reference covariance-family dimensions remain 128.
 
 {/* lens:GPURasterEmbeddingQuantize */}
 

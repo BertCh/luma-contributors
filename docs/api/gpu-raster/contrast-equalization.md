@@ -2,6 +2,10 @@
 
 ## `GPURasterContrastEqualization`
 
+Cell and histogram populations are uint32, subject to device bindings/backing allocations and
+combined matching/reflected population. Quantized distributions and explicit input/reference domains
+remain; CLAHE omits the global output rescale.
+
 {/* lens:GPURasterContrastEqualization */}
 
 ::lens{scenario=gpu-raster.raster-contrast-equalization rung=graph}

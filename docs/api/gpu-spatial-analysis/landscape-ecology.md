@@ -101,6 +101,12 @@ are checked before graph nodes are appended. The final dense class summary remai
 
 ## `addPatchProximityRecipe` — EC02
 
+Explicit `mode: 'boundary'` uses O(cells + patches + candidateCapacity) storage. `candidateRadius`
+(default `searchRadius`) bounds the neighbor search. Inspect per-patch certification and
+`status.candidateOverflow`: a radius cannot certify an omitted neighbor, and capacity overflow
+invalidates all rows. The reference layout remains the default. Boundary work is bounded by
+4,096 neighborhood visits, 1,073,741,823 rows and 1,431,655,765 candidate records, plus device limits.
+
 Use complete-domain patch labels and physical rectangular cell sizes. `edgeDepth` is a distance in
 the same units. A pixel is core only when its center is strictly farther than this depth from its
 patch exterior, including background and the outer raster boundary. The exact cell-rectangle

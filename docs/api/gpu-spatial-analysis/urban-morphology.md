@@ -44,6 +44,11 @@ non-finite segments. The classification is identical either way.
 
 ## `addBuildingTessellationRecipe` — UR01
 
+`addBuildingTessellationRecipe`: Local mode uses an adaptive candidate index and publishes
+convex-piece triangle unions for bounded simple nonconvex or holed enclosures (at most 32 rings).
+Reference mode retains dissolved rings, 64 buildings and 128 samples. Device bindings and
+certification/overflow status still apply.
+
 Supply closed building boundary `segments`, their `segmentBuildingIds`, a `buildingCount`, and one
 `enclosure`. Convex counterclockwise rings use the default fast path. Set
 `enclosureMode: 'simple'` for a nonconvex ring; provide `enclosureRingOffsets` to describe an
@@ -154,6 +159,11 @@ geometry and independent capacity evidence; incomplete unions publish NaN perime
 `components` preserves the canonical smallest building ID.
 
 ## `addIsovistsRecipe` and `addVisibilityGraphRecipe` — UR05
+
+`addVisibilityGraphRecipe`: The `gpu-network` recipe of the same name supports budgeted exact CSR all-source metrics or
+deterministic sampled estimates via metricsMode auto/exact. Auto samples when the exact command
+budget cannot fit; sampled maximum depth is a lower bound. Approximation, overflow and convergence
+are separate statuses; explicit exact rejects an insufficient budget.
 
 Isovists cast `rayCount` uniformly spaced rays counterclockwise from +X, clipped by closed segment
 obstacles and a finite circular `maximumDistance`. `endpoints`, `distances`, hit `segments`, and

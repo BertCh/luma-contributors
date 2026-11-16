@@ -469,6 +469,10 @@ What the layer cannot do, measured where a number is given:
 - `network-k-function` works in length mode only; the fixed binding rejects property costs.
 - Nothing was run on a GPU or in a browser. The fused bindings are CPU references.
 
+## 10. Implementation pass (2026-11-15)
+
+The host and workbench wiring, the remaining rows of section 5 and a whole-diff review were done on 2026-11-15 (AX-PASS). The per-row status, the provisional decisions and what remains open are in the AX section of [the roadmap](../../roadmap.md). Measurements from the earlier sections (for example the rate cluster outlier recovery) were not repeated.
+
 ## Notes index
 
 | Note | Holds |

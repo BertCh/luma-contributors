@@ -59,11 +59,11 @@ Accumulation is in runoff units (a transport sum), so `GPUTerrainTiledFlow` has 
 
 `GPUTerrainTiledFlow` consumes globally prepared D8 directions by default. With `routing: 'branching'`, each tile also supplies eight-neighbor `fractions`, such as materialized D-infinity/MFD output. In branching mode the routing comes from `fractions`; the only word read from `flowDirections` is `GPU_TERRAIN_FLOW_NONE` (0xffffffff, a cell without data), which makes the cell invalid (status 0, NaN accumulation) as in D8 mode, so the view may contain zeros when every cell has data. A stream cell is any nonzero `streams` word other than the unresolved sentinels (0xffffffff, 0xfffffffe), so a mask of Strahler orders is a valid stream mask. Positive fraction rows must sum to one within `1e-5`; zero rows are outlets. Negative/nonfinite fractions or positive edges leaving the global domain invalidate a row. Fractions are never rerouted or renormalized at seams. The required `grid` describes the complete domain. Tiles specify input-buffer origin, shape and an owned rectangle; rectangles must cover the domain exactly once without overlaps. Halo data never contributes runoff, and owner values are used at seams. In D8 mode only global zero directions represent outlets; a positive direction leaving the global domain is invalid.
 
-Owned-cell exchange dispatches copy routing, runoff and stream flags into one resident global DAG. Atomic dependency sweeps then resolve transport across all seams, including repeated exits/reentries and diagonal corners, without assuming the tile dependency graph itself is acyclic. Per-cell cycles remain unresolved. Once transport readiness is known, each stream cell identifies its chain predecessor; pointer jumping resolves global reach IDs in `ceil(log2(cellCount))` dispatches. Headwaters, confluences and receivers of a branching donor start new IDs. Branch degree counts every positive routing edge, including nonstream receivers; zero-weight edges do not participate. Halo outputs are invalid.
+On the resident route, owned-cell exchange dispatches copy routing, runoff and stream flags into one resident global DAG. Atomic dependency sweeps then resolve transport across all seams, including repeated exits/reentries and diagonal corners, without assuming the tile dependency graph itself is acyclic. Per-cell cycles remain unresolved. Once transport readiness is known, each stream cell identifies its chain predecessor; pointer jumping resolves global reach IDs in `ceil(log2(cellCount))` dispatches. Headwaters, confluences and receivers of a branching donor start new IDs. Branch degree counts every positive routing edge, including nonstream receivers; zero-weight edges do not participate. Halo outputs are invalid.
 
 Optional global scalar diagnostics live at `output.status`: `invalidCount` counts invalid owned cells (state 0); `converged` is one when no owned cell remains unresolved (state 2). `iterationLimitReached` is one only when cells remain unresolved and the solver gate stopped at `maximumIterations` without reaching its no-progress condition. A stalled cycle can therefore return `converged = 0` and `iterationLimitReached = 0`: for directions `[1, 16]` with budget 128, the gate stops after the first logical sweep. Fully resolved results and invalid-only domains do not report exhaustion, even if their last sweep uses the budget. They reduce the resident domain exactly once, excluding halo copies. Entirely invalid domains converge with their invalid count. The per-tile `tile.output.status` is still the per-cell 0/1/2 view. Ports are caller-owned packed one-row uint32 views, checked for shape, aliasing and graph ownership.
 
-The resident exchange and solver scratch use approximately 60 bytes per global cell plus small loop-control buffers, independent of halo size, in addition to caller-owned tile inputs and outputs. The largest mandatory single binding is the eight-fraction array at 32 bytes per cell, including D8 mode. Graph construction rejects bindings exceeding device limits. This is an explicit resident full-domain strategy; it is not out-of-core hydrology. The default/explicit sweep budget is the same as `GPUTerrainBranchingFlow`.
+With `execution: 'resident'` or branching routing, exchange and solver scratch use approximately 60 bytes per global cell plus small loop-control buffers, independent of halo size, in addition to caller-owned tile inputs and outputs. The largest mandatory single binding is the eight-fraction array at 32 bytes per cell, including resident D8 mode. Graph construction rejects bindings exceeding device limits. This is an explicit resident full-domain strategy; it is not out-of-core hydrology. The default/explicit sweep budget is the same as `GPUTerrainBranchingFlow`.
 
 For preprocessing, compose `GPUTerrainFlow` once over the complete resident elevation domain with explicit `fillDepressions` and/or `resolveFlats`. Pass its directions and streams to tiled consumers; for branching, materialize `GPUTerrainFlowFractions` from its **filled** surface and matching parameters. Tile input views can borrow those whole-domain buffers with `column: 0`, `row: 0`, whole-domain width/height and disjoint owned rectangles. This performs no CPU readback, rerouting, or tile-edge filling. The integration test exercises a depression and flat spanning the ownership seam for D8 and Freeman MFD, and compares every owned accumulation with the existing whole-domain operator. Independently preprocessing each tile is not equivalent and is not the provided strategy.
 
@@ -116,6 +116,9 @@ These examples execute the public contributors on small synthetic grids and capt
 
 ### GPUTerrainBreach
 
+Scratch and caller bindings are validated before graph declarations. elevationDecrement must round
+to a finite float32 value.
+
 {/* lens:GPUTerrainBreach */}
 
 ::lens{scenario=gpu-terrain.terrain-breach rung=result}
@@ -123,6 +126,8 @@ These examples execute the public contributors on small synthetic grids and capt
 ::lens{scenario=gpu-terrain.terrain-breach rung=graph}
 
 ### GPUTerrainBranchingFlow
+
+Branching flow remains resident and is bounded by 32,768 command nodes and actual device bindings.
 
 {/* lens:GPUTerrainBranchingFlow */}
 
@@ -163,6 +168,12 @@ These examples execute the public contributors on small synthetic grids and capt
 ::lens{scenario=gpu-terrain.terrain-dem-coregistration rung=graph}
 
 ### GPUTerrainTiledFlow
+
+execution auto selects resident flow or bounded D8 tile/boundary reconciliation; execution resident
+retains the reference route and execution tiled requires D8. Grid addressing is bounded by
+536,870,911 cells and graph expansion by 32,768 command nodes. Tiled D8 keeps maximum-tile scratch
+plus a coarse boundary forest; caller inputs/outputs remain resident. Host paging and branching
+reconciliation remain open.
 
 {/* lens:GPUTerrainTiledFlow */}
 

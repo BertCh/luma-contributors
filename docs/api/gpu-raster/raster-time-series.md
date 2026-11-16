@@ -1,5 +1,11 @@
 # Raster time series
 
+`GPURasterHarmonicRegression`, `GPURasterClimateRunAccumulator`, `GPURasterGeometricMedianComposite`,
+`GPURasterBestAvailablePixel`, `GPURasterBFASTMonitor`, `GPURasterClimateAnomaly`, `GPURasterHANTS`,
+`GPURasterEOFProjection` and `GPURasterCOLDMonitor` accept aligned chunked cell
+records. Keep each complete time series, mask and output record within a chunk; slice limits still
+apply per cell. Harmonic regression defaults to storage-backed QR; the other reference slice caps remain.
+
 Contributors for stacks of raster time slices beyond regular composites: an irregular acquisition-date
 axis, streaming accumulators without a slice limit, penalised and harmonic smoothers, gap filling onto a
 regular grid, and climate indices. Import from `@luma-contributors/analysis/raster-analysis`. All are
@@ -282,6 +288,10 @@ Settings of `getGPURasterPhenologyMetricsParameterValues`:
 {/* /parameters */}
 
 ## SPI and SPEI
+
+`GPURasterStandardizedIndex` evaluates up to 16,777,216 slices per chunk, subject to device
+bindings. Calibration keeps its separate per-dispatch limit. Cell records and aligned outputs
+accept chunked input without changing the fitted calendar-slot model.
 
 `GPURasterStandardizedIndexCalibration` streams calibration chunks (for example 30 years of months) into
 per-slot statistics, with zeros and non-positive values excluded from the fit and counted, and writes a fit

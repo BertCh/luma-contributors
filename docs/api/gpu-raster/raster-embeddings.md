@@ -5,7 +5,7 @@ annual layers (64 bands, 10 m, unit-length vectors): decoding the int8 files, si
 between years, clustering, classification, principal components and per-polygon descriptors, and
 overviews that average vectors correctly. Import from `@luma-contributors/analysis/raster-analysis`.
 
-Layout. A raster is `pixelCount` pixels, row-major, each with `dimensions` (1 to 128) float32 components:
+Layout. A raster is `pixelCount` pixels, row-major, each with `dimensions` float32 components (1–1,024 for streaming contributors; 1–128 for the reference covariance family):
 `vectors[pixel * dimensions + band]`. An invalid pixel is marked by `mask` (zero) or by a non-finite
 component; the decoder writes NaN for every component of a NoData pixel. int8 data is `uint32` words of four
 little-endian signed bytes, pixel-major, as an `Int8Array` uploaded unchanged. Band-sequential files are
@@ -21,6 +21,9 @@ described in [Embedding raster codecs](./raster-embedding-codecs.md). Model infe
 (TerraMind, Prithvi, Clay) and training are outside these codecs.
 
 ## `GPURasterEmbeddingDequantize`
+
+Aligned GraphVectorView pixel records support chunked input with 1–1,024 components; whole embedding
+records stay together. Reference covariance-family dimensions remain 128.
 
 AlphaEarth stores each component as an int8 `q` and decodes it as `sign(q) * (q / 127.5)^2`, with `q = -128`
 as NoData; a pixel with NoData in any band is invalid. The decoded vector has length close to one, not
@@ -38,6 +41,9 @@ graph.add(new GPURasterEmbeddingDequantize({
 ```
 
 ## `GPURasterEmbeddingSimilarity`
+
+Aligned GraphVectorView pixel records support chunked input with 1–1,024 components; whole embedding
+records stay together. Reference covariance-family dimensions remain 128.
 
 Cosine (or dot) similarity of every pixel to up to 64 query vectors: `similarity` for every pixel and
 query, the `maximum` over the queries, the `bestQuery` (the lowest on ties) and a `matches` mask for a
@@ -67,6 +73,9 @@ indices and scores. It runs the published exact `GPUSimilaritySearch` of
 query-by-pixel matrix is never stored.
 
 ## `GPURasterEmbeddingChange`
+
+Aligned GraphVectorView pixel records support chunked input with 1–1,024 components; whole embedding
+records stay together. Reference covariance-family dimensions remain 128.
 
 The use Google recommends for AlphaEarth: the dot product between two years. Outputs are the cosine
 similarity, the angle between the vectors (computed as `2 atan2(|u - v|, |u + v|)` of the two unit
@@ -100,7 +109,11 @@ blob means; it does not reproduce scikit-learn's seeding.
 
 ## `GPURasterEmbeddingKNearestClassifier`
 
-Brute-force k-nearest-neighbour classification against a labelled set of up to 4096 vectors, with
+Default searchStructure tiled performs exact exhaustive training in 256-row tiles. Brute-force
+retains 4,096 training rows. Training count times dimensions must fit uint32 addressing, device
+bindings and the command budget; aligned whole-pixel chunks support 1–1,024 dimensions.
+
+Exact tiled k-nearest-neighbour classification against a labelled training set, with
 scikit-learn's `KNeighborsClassifier` semantics: uniform votes among the `neighborCount` (at most 16)
 nearest, the smallest class on a vote tie, the lower sample on equal distances. `metric` is `'euclidean'`
 or `'cosine'` (distance `1 - cosine`; two zero vectors have similarity 1 and exactly one zero vector gives
@@ -109,12 +122,19 @@ every class. The cost is `pixelCount x trainingCount x dimensions`.
 
 ## `GPURasterEmbeddingLinearProbe`
 
+Aligned GraphVectorView pixel records support chunked input with 1–1,024 components; whole embedding
+records stay together. Reference covariance-family dimensions remain 128.
+
 Inference of a host-trained linear probe: `softmax(W x + b)`, the prediction of a multinomial
 `LogisticRegression` (`coef_`, `intercept_`) with up to 64 classes, computed with the maximum subtracted so
 large logits do not overflow. A binary scikit-learn model has one row; pass the two rows `[0, w]` with
 intercepts `[0, b]`.
 
 ## PCA to RGB
+
+`GPURasterEmbeddingProjection`: Aligned GraphVectorView pixel records support chunked input with
+1–1,024 components; whole embedding records stay together. Reference covariance-family dimensions
+remain 128.
 
 Three steps, with only the eigenproblem on the CPU:
 
