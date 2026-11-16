@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import * as arrow from 'apache-arrow';
 import {chromium} from 'playwright';
 import {openNativeData, closeNativeDialog} from './native-navigation.mjs';
+import {setAnalysisSheetControl} from './analysis-sheet-controls.mjs';
 import {getPlaywrightLaunchOptions} from '../../../../scripts/playwright/get-playwright-launch-options.mjs';
 
 const source = arrow.tableFromArrays({
@@ -63,13 +64,13 @@ try {
   await panel.getByLabel('Numeric field', {exact: true}).selectOption('measure');
   // Point hot spots on a distance band, first on the single CSR.
   await panel.getByText('Configure hot spots on geographic points', {exact: true}).click();
-  await panel.getByLabel('Hot-spot longitude field', {exact: true}).selectOption('longitude');
-  await panel.getByLabel('Hot-spot latitude field', {exact: true}).selectOption('latitude');
-  await panel.getByLabel('Hot-spot topology', {exact: true}).selectOption('distance-band');
-  await panel.getByLabel('Hot-spot radius in meters', {exact: true}).fill('10000');
-  await panel.getByLabel('Hot-spot directed neighbor capacity', {exact: true}).fill('12');
-  await panel.getByLabel('Hot-spot minimum neighbors', {exact: true}).fill('1');
-  await panel.getByLabel('Point hot-spot correction', {exact: true}).selectOption('none');
+  await setAnalysisSheetControl(panel.getByLabel('Hot-spot longitude field', {exact: true}), 'longitude');
+  await setAnalysisSheetControl(panel.getByLabel('Hot-spot latitude field', {exact: true}), 'latitude');
+  await setAnalysisSheetControl(panel.getByLabel('Hot-spot topology', {exact: true}), 'distance-band');
+  await setAnalysisSheetControl(panel.getByLabel('Hot-spot radius in meters', {exact: true}), '10000');
+  await setAnalysisSheetControl(panel.getByLabel('Hot-spot directed neighbor capacity', {exact: true}), '12');
+  await setAnalysisSheetControl(panel.getByLabel('Hot-spot minimum neighbors', {exact: true}), '1');
+  await setAnalysisSheetControl(panel.getByLabel('Point hot-spot correction', {exact: true}), 'none');
   await panel.getByRole('button', {name: 'Apply neighbors and run point hot spots', exact: true}).click();
   await page.waitForFunction(() => document.querySelector('[aria-label="GPU analysis"]')?.textContent.includes('Point weights path: single CSR'), undefined, {timeout: 45000});
   const singleText = await panel.innerText();

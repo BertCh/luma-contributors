@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import assert from 'node:assert/strict';
+import {setAnalysisSheetParameter} from './analysis-sheet-controls.mjs';
 
 export const NETWORK_CATEGORICAL_OPERATIONS = [
   ['kernel-flow-smoothing', 'GPUKernelFlowSmoothing'],
@@ -24,6 +25,13 @@ export const NETWORK_CATEGORICAL_OPERATIONS = [
 
 /** Run the actual panel and require a GPU result, failing promptly on a visible catalog error. */
 export async function runNetworkCategoricalCatalog(page, panel, contributor) {
+  // OD text supplied by flow-h3 has known EPSG:4326 coordinates and identity columns.
+  // Selecting them explicitly confirms those roles under AX preflight, as a user must.
+  if (await panel.getByLabel('Operation', {exact: true}).inputValue() === 'kernel-flow-smoothing') {
+    await setAnalysisSheetParameter(panel, 'coordinateSystem', 'EPSG:4326');
+    await setAnalysisSheetParameter(panel, 'originProperty', 'origin');
+    await setAnalysisSheetParameter(panel, 'destinationProperty', 'destination');
+  }
   await panel.getByTestId('catalog-run').click();
   await page.waitForFunction(expected => {
     const error = document.querySelector('[data-testid="catalog-error"]');

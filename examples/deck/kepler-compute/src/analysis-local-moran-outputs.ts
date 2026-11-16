@@ -5,6 +5,7 @@
 import {Buffer} from '@luma.gl/core';
 import type {GPUVector} from '@luma.gl/graph/gpu-data';
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/graph/gpu-core';
+import {getAnalysisMoranColors} from './analysis-result-colors';
 import {packGPUColor} from '@luma-contributors/analysis/dataframe-analysis';
 import type {GPULocalMoranOutput} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {
@@ -33,7 +34,7 @@ export class AnalysisLocalMoranOutputs {
   constructor(session: KeplerComputeSession, chunkLengths: readonly number[]) {
     const rowCount = chunkLengths.reduce((total, length) => total + length, 0);
     this.reservation = session.registry.reserveMemory(
-      Math.max(1, rowCount) * 24 + 48,
+      Math.max(1, rowCount) * 24 + 52,
       'gpu',
       'output'
     );
@@ -64,15 +65,9 @@ export class AnalysisLocalMoranOutputs {
       this.globalStatistics = allocate('global-statistics', 5);
       this.invalidCount = allocate('undefined-count', 1);
       this.inferenceOverflow = allocate('inference-overflow', 1);
-      this.palette = allocate('quadrant-palette', 5);
+      this.palette = allocate('quadrant-palette', 6);
       this.palette.write(
-        new Uint32Array([
-          packGPUColor(150, 150, 150), // 0: unreported
-          packGPUColor(215, 25, 28), // 1: high-high
-          packGPUColor(171, 217, 233), // 2: low-high
-          packGPUColor(44, 123, 182), // 3: low-low
-          packGPUColor(253, 174, 97) // 4: high-low
-        ])
+        new Uint32Array(getAnalysisMoranColors().map(color => packGPUColor(...color)))
       );
     } catch (error) {
       for (const buffer of this.buffers) buffer.destroy();

@@ -295,9 +295,103 @@ await runAcceptance('workflow-keyboard', async (page, directory) => {
   await page.keyboard.press('Escape');
   await page.getByTestId(TEST_IDS.palette).waitFor({state: 'hidden'});
   await checkFocus(page, 'Escape closes pointer-opened palette');
+  // AX-60: prepare actual user data through the gallery, then use only three typed
+  // characters and Enter. No test host/profile override stands in for dataset scoping.
+  await page.getByRole('button', {name: 'Add Data', exact: true}).click();
+  await page.getByText('Prepare data', {exact: true}).click();
+  await page.getByText('Try a sample dataset', {exact: true}).click();
+  const gallerySelect = page.getByTestId('ax-original-sample-select');
+  await gallerySelect.selectOption('points-time');
+  const sampleTitle = await gallerySelect.locator('option[value="points-time"]').innerText();
+  await page.getByRole('button', {name: 'Prepare sample', exact: true}).click();
+  await page.getByRole('button', {name: 'Check schema and precision', exact: true}).click();
+  await page.getByRole('button', {name: 'Publish selected fields', exact: true}).click();
+  await page.locator('.ReactModal__Overlay').waitFor({state: 'detached', timeout: 15000});
+  await waitForWorkbench(
+    page,
+    'AX palette requires the published point dataset profile',
+    title => {
+      const host = window.__keplerWorkflowTest.store.host;
+      return host
+        .listDatasets()
+        .some(dataset => dataset.label === title && host.getAnalysisProfile(dataset.id));
+    },
+    sampleTitle
+  );
+  const activeDatasetId = await page.evaluate(
+    title =>
+      window.__keplerWorkflowTest.store.host.listDatasets().find(dataset => dataset.label === title)
+        .id,
+    sampleTitle
+  );
+  await page.evaluate(datasetId => {
+    const store = window.__keplerWorkflowTest.store;
+    store.createWorkflow({title: 'AX promoted dataset scope'});
+    store.edit('ax-promoted-source', document => ({
+      ...document,
+      inputs: [{id: 'source-id', label: 'Source', kind: 'string', value: datasetId}],
+      steps: [
+        {
+          id: 'source',
+          operationId: 'source-dataset',
+          inputs: {},
+          parameters: {dataset: {from: 'input', inputId: 'source-id'}},
+          position: {x: 0, y: 0}
+        }
+      ]
+    }));
+    store.select(['source']);
+    store.setDock({open: false});
+  }, activeDatasetId);
+  await dock(page).getByTestId(TEST_IDS.dockToggle).focus();
+  await page.keyboard.press(`${modifier}+k`);
+  const commandPalette = page.getByTestId('ax-command-palette');
+  await commandPalette.waitFor();
+  const commandDataset = page.getByTestId('ax-command-dataset');
+  assert.equal(
+    await commandDataset.inputValue(),
+    activeDatasetId,
+    'Palette scope must resolve the selected source workflow input without manually switching datasets'
+  );
+  const commandSearch = page.getByTestId(TEST_IDS.paletteSearch);
+  await commandSearch.focus();
+  await page.keyboard.type('hot');
+  const commandHighlight = await commandSearch.getAttribute('aria-activedescendant');
+  assert.equal(
+    await page.locator(`[id="${commandHighlight}"]`).getAttribute('data-testid'),
+    'ax-command-template:hot-spot-map',
+    'hot must highlight the mapped hot spot template'
+  );
+  await checkFocus(page, 'Cmd/Ctrl-K search focus', true);
+  await page.keyboard.press('Enter');
+  await page.getByTestId('ax-analysis-mapping').waitFor();
+  assert.equal(
+    await page.getByTestId('ax-mapping-dataset-points').inputValue(),
+    activeDatasetId,
+    'Enter must open the hot spot template with the active dataset slot filled'
+  );
+  assert.match(
+    await page.getByTestId('ax-mapping-progress').innerText(),
+    /1 of 1 mapped/,
+    'The hot spot template must open with every required slot filled'
+  );
+  await waitForWorkbench(page, 'Enter focuses the template mapping', () =>
+    Boolean(document.activeElement?.closest('[data-testid="ax-analysis-mapping"]'))
+  );
+  await screenshot(page, directory, 'workflow-keyboard-hot-template-mapped');
+  await page.keyboard.press('Escape');
+  await commandPalette.waitFor({state: 'hidden'});
+  await checkFocus(page, 'Escape leaves AX palette');
+  // The capture listener must work even when search itself stops bubbling keyboard events.
+  await page.keyboard.press(`${modifier}+k`);
+  await commandPalette.waitFor();
+  await commandSearch.focus();
+  await page.keyboard.press(`${modifier}+k`);
+  await commandPalette.waitFor({state: 'hidden'});
   return {
     addedId,
     modifier,
+    axCommandPalette: {query: 'hot', activeDatasetId, slotsMapped: true, keyboardFocus: true},
     keyboardTabMovesToInspector: true,
     pointerTabOpensPalette: true,
     paletteOpensWithN: {keyboard: true, pointer: true}

@@ -7,7 +7,8 @@
     "start": "vite",
     "build": "vite build",
     "build:viewer": "vite build --config vite.viewer.config.ts",
-    "typecheck": "tsc --noEmit -p ."
+    "typecheck": "tsc --noEmit -p .",
+    "ax:journeys:release": "node scripts/ax-journey-baseline.mjs"
   },
   "dependencies": {
     "@deck.gl-community/editable-layers": "10.0.0-alpha.1",

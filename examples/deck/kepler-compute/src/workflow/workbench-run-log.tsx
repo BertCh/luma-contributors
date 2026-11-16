@@ -2,9 +2,15 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {useMemo} from 'react';
+import {useEffect, useMemo, useRef, useState} from 'react';
 import styled from 'styled-components';
-import type {WorkflowRunRecord} from '@luma-contributors/kepler';
+import {
+  estimateWorkflowPreflight,
+  makeWorkflowComputationRecord,
+  type WorkflowRunRecord,
+  type WorkflowOperationRegistry
+} from '@luma-contributors/kepler';
+import {mountLadderLens} from '@luma-contributors/lenses/computation-views';
 import {WORKBENCH_COLORS, WORKBENCH_STATUS, WORKBENCH_TEST_IDS} from './workbench-contract';
 import type {WorkbenchStore} from './workbench-store';
 import {WorkbenchButton, WorkbenchMuted} from './workbench-styles';
@@ -60,9 +66,58 @@ export function formatWorkbenchRunLine(run: WorkflowRunRecord): string {
   return `Run ${identifier} · ${run.status} · ${run.steps.length.toLocaleString()} steps · ${formatWorkbenchDuration(run.durationMilliseconds)} · ${cached.toLocaleString()} cached`;
 }
 
+/** Uses the existing computation inspector without inventing GPU timings or kernel captures. */
+export function WorkbenchRunTrace({
+  run,
+  registry
+}: {
+  run: WorkflowRunRecord;
+  registry: WorkflowOperationRegistry;
+}): React.JSX.Element {
+  const [open, setOpen] = useState(false);
+  const container = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open || !container.current) return;
+    const lens = mountLadderLens(container.current, {
+      record: makeWorkflowComputationRecord(run, registry),
+      rung: 'table',
+      urlState: false,
+      bind: `workflow-${run.runId}`,
+      caption: 'Workflow step provenance; durations are wall time.'
+    });
+    return () => lens.dispose();
+  }, [open, run, registry]);
+  return (
+    <div>
+      <WorkbenchButton aria-expanded={open} onClick={() => setOpen(!open)}>
+        {open ? 'Close computation views' : 'Open computation views'}
+      </WorkbenchButton>
+      {open && (
+        <>
+          <WorkbenchMuted>
+            Step trace with CPU table boundaries. GPU kernel timings were not recorded.
+          </WorkbenchMuted>
+          <div ref={container} data-testid="workflow-computation-views" />
+        </>
+      )}
+    </div>
+  );
+}
+
 /** Run records of the active workflow. */
 export function WorkbenchRunLog({store}: {store: WorkbenchStore}): React.JSX.Element | null {
   const state = useWorkbenchState(store);
+  const preflight = useMemo(
+    () =>
+      state.document
+        ? estimateWorkflowPreflight(state.document, store.registry, {
+            state: state.runner,
+            profileSources: true,
+            host: store.host
+          })
+        : undefined,
+    [state.document, state.runner, store.registry, store.host]
+  );
   const labels = useMemo(
     () =>
       new Map(
@@ -93,6 +148,15 @@ export function WorkbenchRunLog({store}: {store: WorkbenchStore}): React.JSX.Ele
         >
           {state.dock.logOpen ? '▾' : '▸'} {runs[0]?.line ?? 'No runs yet'}
         </WorkbenchButton>
+        {preflight && (
+          <WorkbenchMuted title="Cold-run logical GPU scratch only; inputs, outputs, staging and host heap excluded.">
+            Scratch:{' '}
+            {preflight.peakScratchBytes === null
+              ? 'unknown'
+              : `${preflight.peakScratchBytes.toLocaleString()} B`}
+            {' · '}Nodes: {preflight.commandNodeCount ?? 'unknown'}
+          </WorkbenchMuted>
+        )}
         {runs[0] && (
           <WorkbenchButton
             data-testid={WORKBENCH_TEST_IDS.runReport}
@@ -117,6 +181,7 @@ export function WorkbenchRunLog({store}: {store: WorkbenchStore}): React.JSX.Ele
           {runs.map(({run, line}) => (
             <details key={run.runId}>
               <summary data-status={run.status}>{line}</summary>
+              <WorkbenchRunTrace run={run} registry={store.registry} />
               <ul>
                 {run.steps.map((step, index) => (
                   <li key={`${step.stepId}:${index}`} data-status={step.status}>

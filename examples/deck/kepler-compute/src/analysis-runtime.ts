@@ -2,7 +2,16 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  getAnalysisRampPalette,
+  addAnalysisRampPalette,
+  addAnalysisInferenceColorIndices,
+  getAnalysisHotspotColors
+} from './analysis-result-colors';
+import {getKeplerResultToneColor} from '@luma-contributors/kepler';
 import {KeplerAllocationError} from '@luma-contributors/kepler';
+import {analysisDatasetContext} from './analysis-dataset-context';
+import {getAnalysisFormInitialization} from './analysis-form-initialization';
 import {trackDeferredOperation} from './tracked-operations';
 import {Buffer, type CommandEncoder} from '@luma.gl/core';
 import type {Layer} from '@deck.gl/core';
@@ -57,7 +66,7 @@ import {
 } from './analysis-recipe-settings';
 export {MAXIMUM_EXACT_NATURAL_BREAKS_ROWS} from './analysis-recipe-settings';
 import {
-  AnalysisPolygonWeightsCache,
+  type AnalysisPolygonWeightsCache,
   type AnalysisPolygonWeightsLease,
   type PolygonAnalysisSource
 } from './analysis-polygon-weights-cache';
@@ -82,10 +91,13 @@ import {
   type AnalysisStreamedWeightsOptions
 } from './analysis5-streamed-weights';
 import {
-  AnalysisPointWeightsCache,
+  type AnalysisPointWeightsCache,
   packAnalysisVector,
   type AnalysisPointWeightsLease
 } from './analysis-point-weights-cache';
+import {getAnalysisWeightsStore, type AnalysisWeightsSettings} from './analysis-weights-store';
+import {getPointTopologySettings} from './analysis-point-weights-settings';
+
 export type {PointWeightsSettings} from './analysis-point-weights-settings';
 import {
   normalizePointHotspotSettings,
@@ -125,6 +137,8 @@ import {AnalysisDBSCANOutputs} from './analysis-dbscan-outputs';
 import {AnalysisOLSOutputs} from './analysis-ols-outputs';
 import {suggestKrigingVariogram} from './kriging-diagnostics';
 import {makeOLSAnalysisSummary, type OLSAnalysisSummary} from './analysis-ols-report';
+
+let weightsConsumerSequence = 0;
 
 export type AnalysisMode =
   | 'off'
@@ -247,6 +261,7 @@ export type AnalysisSummary = {
   mean: number;
   breaks: readonly number[];
   classCounts: readonly number[];
+  classCount?: number;
 };
 export type AnalysisRow = {
   sourceRowIndex: number;
@@ -316,6 +331,10 @@ export class AnalysisRuntime {
   private currentCartogramInspectionPinned = false;
   private dbscanOutputs?: AnalysisDBSCANOutputs;
   private olsOutputs?: AnalysisOLSOutputs;
+  private readonly weightsConsumerId = `analysis-weights-consumer-${++weightsConsumerSequence}`;
+  private selectedWeightsId?: string;
+  private releaseWeightsSource?: () => void;
+  private releaseWeightsListener?: () => void;
   private pointWeightsCache?: AnalysisPointWeightsCache;
   private streamedPointWeights?: AnalysisStreamedPointWeights;
   private streamedWeightsOptions: AnalysisStreamedWeightsOptions = {};
@@ -330,6 +349,8 @@ export class AnalysisRuntime {
   private retirementPromises = new Set<Promise<void>>();
   private activeReads = new Set<Promise<unknown>>();
   private listeners = new Set<() => void>();
+  /** A fit belongs to the response selected when it was supplied or replayed. */
+  private krigingFitResponseColumn?: string;
   private requestedSettings: AnalysisSettings = {
     mode: 'off',
     population: 'all',
@@ -339,6 +360,11 @@ export class AnalysisRuntime {
     column: 'value',
     denominatorColumn: 'value'
   };
+  private readonly publicationPointColumns?: {longitude: string; latitude: string};
+  private releaseDatasetContext?: () => void;
+  private valueColumnOverridden = false;
+  private denominatorColumnOverridden = false;
+  private restoredRecipeRevision = 0;
   private revision = 1;
   private encodedRevision = -1;
   private encodedSelectionRevision = -1;
@@ -359,24 +385,29 @@ export class AnalysisRuntime {
     requestUpdate: () => void;
     column?: string;
     polygonSource?: PolygonAnalysisSource;
+    pointColumns?: {longitude: string; latitude: string};
   }) {
     this.session = props.session;
     this.explorer = props.explorer;
     this.requestUpdate = props.requestUpdate;
     this.polygonSource = props.polygonSource;
+    this.publicationPointColumns = props.pointColumns;
     this.lease = props.session.registry.acquireDataset<KeplerArrowDataset>(
       props.explorer.dataset.id
     );
     try {
       const columns = this.availableColumns;
-      const column = props.column ?? (columns.includes('value') ? 'value' : columns[0]);
-      if (!column || !columns.includes(column))
+      const initialization = this.formInitialization;
+      const column = props.column ?? initialization.column;
+      this.valueColumnOverridden = props.column !== undefined;
+      if (!columns.length || (props.column !== undefined && !columns.includes(props.column)))
         throw new Error('Analysis requires a nonempty prepared Float32 column');
       this.requestedSettings.column = column;
-      this.requestedSettings.denominatorColumn = columns.find(name => name !== column) ?? column;
+      this.requestedSettings.denominatorColumn =
+        initialization.valueColumns.find(name => name !== column) ?? column;
       // Account outputs here; individual programs reserve their scratch separately.
       this.reservation = props.session.registry.reserveMemory(
-        this.value.length * 16 + 256,
+        this.rowCount * 16 + 512,
         'gpu',
         'output'
       );
@@ -394,15 +425,15 @@ export class AnalysisRuntime {
         this.buffers.push(buffer);
         return buffer;
       };
-      this.resultValues = allocate('values', this.value.length);
-      this.resultClasses = allocate('classes', this.value.length);
-      this.resultColors = allocate('colors', this.value.length);
+      this.resultValues = allocate('values', this.rowCount);
+      this.resultClasses = allocate('classes', this.rowCount);
+      this.resultColors = allocate('colors', this.rowCount);
       this.resultValidity = allocate(
         'validity',
-        this.value.length,
-        new Uint32Array(this.value.length).fill(1)
+        this.rowCount,
+        new Uint32Array(this.rowCount).fill(1)
       );
-      const chunkLengths = this.value.data.map(chunk => chunk.length);
+      const chunkLengths = this.sourceChunkLengths;
       this.tableValues = makeAnalysisOutputVector(
         'analysis-values',
         'float32',
@@ -428,18 +459,24 @@ export class AnalysisRuntime {
       this.counts = allocate('counts', 2);
       this.palette = allocate(
         'palette',
-        8,
+        72,
         new Uint32Array([
-          packGPUColor(49, 54, 149),
-          packGPUColor(69, 117, 180),
-          packGPUColor(116, 173, 209),
-          packGPUColor(171, 217, 233),
-          packGPUColor(254, 224, 144),
-          packGPUColor(253, 174, 97),
-          packGPUColor(244, 109, 67),
-          packGPUColor(165, 0, 38)
+          ...getAnalysisRampPalette(),
+          ...getAnalysisHotspotColors().map(color => packGPUColor(...color)),
+          0
         ])
       );
+      this.releaseDatasetContext = analysisDatasetContext.subscribe(() => {
+        if (this.destroyed || this.requestedSettings.mode !== 'off') return;
+        const initialization = this.formInitialization;
+        if (!this.valueColumnOverridden && initialization.column)
+          this.requestedSettings.column = initialization.column;
+        if (!this.denominatorColumnOverridden)
+          this.requestedSettings.denominatorColumn =
+            initialization.valueColumns.find(name => name !== this.requestedSettings.column) ??
+            this.requestedSettings.column;
+        this.notify();
+      });
       this.standardDomain = allocate('standard-domain', 2, new Float32Array([-3, 3]));
       this.colors = makeAnalysisOutputVector(
         'analysis-colors',
@@ -447,7 +484,13 @@ export class AnalysisRuntime {
         this.resultColors,
         chunkLengths
       );
+      this.releaseWeightsSource = this.weightsStore.retainSource(
+        this.lease.dataset,
+        this.polygonSource
+      );
+      this.releaseWeightsListener = this.weightsStore.subscribe(() => this.notify());
     } catch (error) {
+      this.releaseDatasetContext?.();
       for (const buffer of this.buffers) buffer.destroy();
       this.reservation?.release();
       void this.lease.release();
@@ -455,8 +498,132 @@ export class AnalysisRuntime {
     }
   }
 
+  /** Shared, revision-scoped metadata; this getter never reads source rows. */
+  get formInitialization() {
+    const candidate = analysisDatasetContext.get(this.datasetId);
+    const entry =
+      candidate && candidate.dataset.owner === this.lease.dataset ? candidate : undefined;
+    const source = this.lease.dataset.value.source;
+    let metadata: unknown = this.lease.dataset.source?.metadata;
+    const sample = source.schema.metadata.get('luma:sandbox-sample');
+    if (sample) {
+      try {
+        metadata = JSON.parse(sample);
+      } catch {
+        /* Unknown metadata leaves topology explicit. */
+      }
+    }
+    return getAnalysisFormInitialization(
+      entry,
+      this.availableColumns,
+      metadata,
+      source.numRows,
+      this.publicationPointColumns
+    );
+  }
+
   get availablePolygonColumns(): readonly string[] {
     return this.polygonSource ? [this.polygonSource.column] : [];
+  }
+  get weightsStore() {
+    return getAnalysisWeightsStore(this.session);
+  }
+  get weightsReference() {
+    return this.weightsStore.getConsumer(this.weightsConsumerId);
+  }
+  clearNamedWeightsReference(): void {
+    this.selectedWeightsId = undefined;
+    this.weightsStore.unbind(this.weightsConsumerId);
+  }
+  restoreNamedWeightsReference(id: string, version: number): void {
+    const definition = this.weightsStore.get(id);
+    if (
+      definition.source.datasetId !== this.datasetId ||
+      definition.source.revision !== this.lease.dataset.revision
+    )
+      throw new Error('Saved weights require this dataset revision');
+    this.selectedWeightsId = id;
+    this.weightsStore.bind(this.weightsConsumerId, id, version);
+    this.notify();
+  }
+  get weightsStaleReason(): string | undefined {
+    return this.weightsReference?.staleReason;
+  }
+  get namedWeightsSource() {
+    return {datasetId: this.datasetId, revision: this.lease.dataset.revision};
+  }
+  /** Selecting a version explicitly accepts rebuilding every dependent result. */
+  selectNamedWeights(id: string): void {
+    const definition = this.weightsStore.get(id);
+    if (
+      definition.source.datasetId !== this.datasetId ||
+      definition.source.revision !== this.lease.dataset.revision
+    )
+      throw new Error('Named weights require this dataset revision');
+    const settings = definition.settings;
+    const current = this.requestedSettings;
+    if (settings.kind === 'contiguity') {
+      if (!current.polygon || current.mode !== current.polygon.kind)
+        throw new Error('Choose a polygon analysis before selecting polygon weights');
+      this.configurePolygon({...current.polygon, weights: settings});
+    } else {
+      const topology = getPointTopologySettings(settings);
+      // Replace the entire coordinate/topology union; retain only the statistic's own settings.
+      if (current.mode === 'spatial-rate-points' && current.pointWeights) {
+        const {scale, islandPolicy} = current.pointWeights;
+        this.configurePointWeights({...topology, scale, islandPolicy});
+      } else if (current.mode === 'hot-spots-points' && current.pointHotspot) {
+        const {minimumNeighbors, selfWeight, multipleTesting, islands} = current.pointHotspot;
+        this.configurePointHotspots({
+          ...topology,
+          minimumNeighbors,
+          selfWeight,
+          multipleTesting,
+          islands
+        });
+      } else if (current.mode === 'local-moran-points' && current.localMoran) {
+        const {
+          minimumNeighbors,
+          islands,
+          multipleTesting,
+          significanceLevel,
+          inference,
+          permutationCount,
+          seed,
+          secondColumn,
+          variableColumns
+        } = current.localMoran;
+        this.configureLocalMoran({
+          ...topology,
+          minimumNeighbors,
+          islands,
+          multipleTesting,
+          significanceLevel,
+          inference,
+          permutationCount,
+          seed,
+          secondColumn,
+          variableColumns
+        });
+      } else if (current.mode === 'quantile-lisa-points' && current.quantileLisa) {
+        const {quantileCount, selectedQuantile, seed, permutationCount, significanceLevel} =
+          current.quantileLisa;
+        this.configureQuantileLisa({
+          ...topology,
+          quantileCount,
+          selectedQuantile,
+          seed,
+          permutationCount,
+          significanceLevel
+        });
+      } else throw new Error('Choose a point analysis before selecting point weights');
+    }
+    this.selectedWeightsId = id;
+    this.weightsStore.bind(this.weightsConsumerId, id);
+    this.revision++;
+    this.currentSummary = null;
+    this.notify();
+    this.requestUpdate();
   }
   get polygonWeightsCacheStats() {
     return (
@@ -492,11 +659,18 @@ export class AnalysisRuntime {
   get rowCount(): number {
     return this.lease.dataset.rowCount;
   }
+  private get sourceChunkLengths(): number[] {
+    return this.lease.dataset.value.source.batches.map(batch => batch.numRows);
+  }
+  /** Explicit restoration resets coordinate drafts even when the saved coordinates are unchanged. */
+  get coordinateRestorationKey(): string {
+    return `${this.datasetId}:${this.restoredRecipeRevision}`;
+  }
   get datasetId(): string {
     return this.lease.dataset.id;
   }
   get supportsExactNaturalBreaks(): boolean {
-    return this.value.length <= MAXIMUM_EXACT_NATURAL_BREAKS_ROWS;
+    return this.rowCount <= MAXIMUM_EXACT_NATURAL_BREAKS_ROWS;
   }
   get resultColumn(): string {
     const mode = this.requestedSettings.mode;
@@ -668,6 +842,7 @@ export class AnalysisRuntime {
     this.currentCartogramInspectionPinned = false;
   }
   get summary(): AnalysisSummary | null {
+    if (this.weightsStaleReason) return null;
     if (this.requestedSettings.mode === 'dorling-cartogram') return this.cartogramSummary;
     return this.requestedSettings.mode === 'idw-points' ||
       this.requestedSettings.mode === 'kriging-points'
@@ -675,6 +850,7 @@ export class AnalysisRuntime {
       : this.currentSummary;
   }
   get error(): string {
+    if (this.weightsStaleReason) return this.weightsStaleReason;
     if (this.requestedSettings.mode === 'dorling-cartogram')
       return this.cartogram?.error || this.currentError;
     return this.requestedSettings.mode === 'idw-points' ||
@@ -686,6 +862,7 @@ export class AnalysisRuntime {
     return this.readbackBytes + (this.cartogram?.transferredReadbackBytes ?? 0);
   }
   get active(): boolean {
+    if (this.weightsStaleReason) return false;
     const settings = this.requestedSettings;
     const topology =
       settings.mode === 'spatial-rate-points'
@@ -949,7 +1126,6 @@ export class AnalysisRuntime {
     this.update({
       ...this.requestedSettings,
       mode: 'dbscan-points',
-      column: settings.longitudeColumn,
       dbscan: settings
     });
   }
@@ -971,11 +1147,15 @@ export class AnalysisRuntime {
     );
   }
   configureKriging(kriging: KeplerKrigingSettings): void {
-    this.update({
-      ...this.requestedSettings,
-      mode: 'kriging-points',
-      kriging: parseKeplerKrigingSettings(kriging)
-    });
+    this.update(
+      {
+        ...this.requestedSettings,
+        mode: 'kriging-points',
+        kriging: parseKeplerKrigingSettings(kriging)
+      },
+      true,
+      this.requestedSettings.column
+    );
   }
   configureInterpolation(idw: KeplerIDWSettings): void {
     this.update({...this.requestedSettings, mode: 'idw-points', idw: parseKeplerIDWSettings(idw)});
@@ -1011,19 +1191,33 @@ export class AnalysisRuntime {
     const normalized = normalizePointHotspotSettings(pointHotspot, this.rowCount);
     this.update({...this.requestedSettings, mode: 'hot-spots-points', pointHotspot: normalized});
   }
-  configurePointWeights(pointWeights: PointWeightsSettings): void {
+  configurePointWeights(pointWeights: PointWeightsSettings, denominatorColumn?: string): void {
     const normalized = normalizePointWeightsSettings(pointWeights, this.rowCount);
-    this.update({...this.requestedSettings, mode: 'spatial-rate-points', pointWeights: normalized});
+    if (denominatorColumn !== undefined && !this.availableColumns.includes(denominatorColumn))
+      throw new Error('Choose a prepared Float32 population column');
+    this.update({
+      ...this.requestedSettings,
+      mode: 'spatial-rate-points',
+      pointWeights: normalized,
+      denominatorColumn: denominatorColumn ?? this.requestedSettings.denominatorColumn
+    });
+    if (denominatorColumn !== undefined) this.denominatorColumnOverridden = true;
   }
   configureHotspots(hotspot: HotspotSettings): void {
     const normalized = normalizeHotspotSettings(hotspot, this.rowCount);
     this.update({...this.requestedSettings, mode: 'hot-spots-lattice', hotspot: normalized});
   }
   setColumn(column: string): void {
+    if (!this.availableColumns.includes(column))
+      throw new Error('Choose a prepared Float32 analysis column');
     this.update({...this.requestedSettings, column});
+    this.valueColumnOverridden = true;
   }
   setDenominatorColumn(denominatorColumn: string): void {
+    if (!this.availableColumns.includes(denominatorColumn))
+      throw new Error('Choose a prepared Float32 population column');
     this.update({...this.requestedSettings, denominatorColumn});
+    this.denominatorColumnOverridden = true;
   }
   setMode(mode: AnalysisMode): void {
     if (!isAnalysisMode(mode)) throw new Error('Unsupported example analysis');
@@ -1121,7 +1315,16 @@ export class AnalysisRuntime {
     )
       return;
     const recipe = this.createRecipe();
-    const key = JSON.stringify([this.requestedSettings, this.streamedWeightsOptions]);
+    if (this.weightsStaleReason) {
+      this.currentError = this.weightsStaleReason;
+      this.notify();
+      return;
+    }
+    const key = JSON.stringify([
+      this.requestedSettings,
+      this.streamedWeightsOptions,
+      this.weightsReference
+    ]);
     try {
       if (this.program?.key !== key && this.isAwaitingStreamedWeights(recipe)) return;
       if (this.program?.key !== key) {
@@ -1214,7 +1417,8 @@ export class AnalysisRuntime {
           ...(classified
             ? [
                 this.breaks.readAsync(0, (this.requestedSettings.classCount + 1) * 4),
-                this.classCounts.readAsync(0, this.requestedSettings.classCount * 4)
+                this.classCounts.readAsync(0, this.requestedSettings.classCount * 4),
+                this.classCount.readAsync(0, 4)
               ]
             : []),
           ...(hotspot?.diagnostics.map(buffer => buffer.readAsync(0, 4)) ?? []),
@@ -1402,8 +1606,13 @@ export class AnalysisRuntime {
           minimum: statistics[GPU_COLUMN_PROFILE_STATISTIC.minimum],
           maximum: statistics[GPU_COLUMN_PROFILE_STATISTIC.maximum],
           mean: statistics[GPU_COLUMN_PROFILE_STATISTIC.mean],
-          breaks: classified ? Array.from(floatValues(bytes[2])) : [],
-          classCounts: classified ? Array.from(unsignedValues(bytes[3])) : []
+          ...(classified ? {classCount: unsignedValues(bytes[4])[0]} : {}),
+          breaks: classified
+            ? Array.from(floatValues(bytes[2])).slice(0, unsignedValues(bytes[4])[0] + 1)
+            : [],
+          classCounts: classified
+            ? Array.from(unsignedValues(bytes[3])).slice(0, unsignedValues(bytes[4])[0])
+            : []
         };
         this.summaryRevision = revision;
         this.notify();
@@ -1444,11 +1653,7 @@ export class AnalysisRuntime {
       );
     if (!this.active || !this.isEncodedCurrent() || this.activeReads.size >= 4)
       return Promise.resolve(null);
-    if (
-      !Number.isInteger(sourceRowIndex) ||
-      sourceRowIndex < 0 ||
-      sourceRowIndex >= this.value.length
-    )
+    if (!Number.isInteger(sourceRowIndex) || sourceRowIndex < 0 || sourceRowIndex >= this.rowCount)
       return Promise.reject(new Error('Invalid analysis source row'));
     const revision = this.encodedRevision;
     const recipe = this.encodedRecipe!;
@@ -1506,7 +1711,7 @@ export class AnalysisRuntime {
         : recipe
     );
   }
-  restoreRecipe(serialized: string): void {
+  restoreRecipe(serialized: string, weightsReference?: {weightsId: string; version: number}): void {
     const recipe = restoreKeplerAnalysisRecipe(serialized, {
       resolveDatasetRevision: datasetId => this.session.registry.getDataset(datasetId)?.revision,
       resolveSelectionRevision: datasetId =>
@@ -1514,7 +1719,17 @@ export class AnalysisRuntime {
     });
     if (recipe.source.datasetId !== this.lease.dataset.id)
       throw new Error('Recipe belongs to another dataset');
-    this.update({...this.requestedSettings, ...getAnalysisRecipeSettings(recipe)});
+    this.update(
+      {...this.requestedSettings, ...getAnalysisRecipeSettings(recipe)},
+      !weightsReference,
+      recipe.operation.kind === 'kriging-points' ? recipe.operation.column : undefined
+    );
+    if (weightsReference)
+      this.restoreNamedWeightsReference(weightsReference.weightsId, weightsReference.version);
+    this.valueColumnOverridden = true;
+    this.denominatorColumnOverridden = true;
+    this.restoredRecipeRevision++;
+    this.notify();
     if (recipe.operation.kind === 'dorling-cartogram') {
       // A restored cartogram replaces the declaration, so one without it clears a previous overlay.
       const declaration = recipe.display?.cartogramDeclaration;
@@ -1531,6 +1746,9 @@ export class AnalysisRuntime {
   destroy(completion: PromiseLike<unknown>): Promise<void> {
     if (this.destruction) return this.destruction;
     this.destroyed = true;
+    this.releaseDatasetContext?.();
+    this.releaseWeightsListener?.();
+    this.weightsStore.unbind(this.weightsConsumerId);
     this.resetCartogramInspection();
     this.listeners.clear();
     this.destruction = (async () => {
@@ -1550,9 +1768,9 @@ export class AnalysisRuntime {
         await this.cartogram?.destroy(completion);
         for (const program of this.retiredPrograms) program.destroy();
         this.retiredPrograms = [];
-        this.pointWeightsCache?.destroy();
+        this.releaseWeightsSource?.();
         this.streamedPointWeights?.destroy();
-        this.polygonWeightsCache?.destroy();
+
         this.colors.destroy();
         this.tableValues.destroy();
         this.tableClasses.destroy();
@@ -1789,7 +2007,7 @@ export class AnalysisRuntime {
   private createProgram(recipe: KeplerAnalysisRecipe, key: string): AnalysisProgram {
     const device = this.session.device;
     const reservation = this.session.registry.reserveMemory(
-      this.value.length * 128 +
+      this.rowCount * 128 +
         4 * 1024 * 1024 +
         (recipe.operation.kind === 'ols'
           ? this.rowCount * recipe.operation.predictorColumns.length * 8
@@ -1797,7 +2015,7 @@ export class AnalysisRuntime {
         (recipe.operation.kind === 'classify' &&
         recipe.operation.method === 'natural-breaks' &&
         recipe.operation.naturalBreaksMode === 'exact'
-          ? this.value.length * this.value.length * 4
+          ? this.rowCount * this.rowCount * 4
           : 0) +
         (recipe.operation.kind === 'hot-spots-lattice'
           ? getHotspotScratchBytes(recipe.operation, this.rowCount)
@@ -1820,11 +2038,19 @@ export class AnalysisRuntime {
     let pointWeights: AnalysisPointWeightsLease | undefined;
     let polygonWeights: AnalysisPolygonWeightsLease | undefined;
     try {
+      // DBSCAN consumes coordinates without selecting one as the analysis value.
+      const sourceColumn =
+        recipe.operation.kind === 'dbscan-points'
+          ? recipe.operation.longitudeColumn
+          : this.requestedSettings.column;
       // Global statistics use explicit transient packing; borrowed source chunks remain unchanged.
       const values = packAnalysisVector(
         graph,
         'global-values',
-        graph.importGPUVector('source', this.value)
+        graph.importGPUVector(
+          'source',
+          borrowFloat32Column(this.lease.dataset.value.columns[sourceColumn])
+        )
       );
       const validity =
         recipe.operation.kind === 'dbscan-points'
@@ -1834,7 +2060,7 @@ export class AnalysisRuntime {
         ? packAnalysisVector(graph, 'global-validity', graph.importGPUVector('validity', validity))
         : undefined;
       const columns: Record<string, GraphDataView<'float32'>> = Object.create(null);
-      columns[this.requestedSettings.column] = values;
+      columns[sourceColumn] = values;
       if (
         (recipe.operation.kind === 'excess-risk' ||
           recipe.operation.kind === 'spatial-rate-points' ||
@@ -1862,7 +2088,7 @@ export class AnalysisRuntime {
               graph,
               'rate-validity',
               'uint32',
-              this.value.length
+              this.rowCount
             );
             graph.add(
               new GPUMask({
@@ -2028,7 +2254,7 @@ export class AnalysisRuntime {
       );
       let mask = selectionMask;
       if (validityMask && recipe.population === 'selected') {
-        mask = createTransientView(graph, 'valid-selected-population', 'uint32', this.value.length);
+        mask = createTransientView(graph, 'valid-selected-population', 'uint32', this.rowCount);
         graph.add(
           new GPUMask({
             id: 'analysis-valid-selection',
@@ -2042,7 +2268,7 @@ export class AnalysisRuntime {
         'result-values',
         this.resultValues,
         'float32',
-        this.value.length
+        this.rowCount
       );
       const breaks = importBuffer(
         graph,
@@ -2064,10 +2290,7 @@ export class AnalysisRuntime {
         recipe.operation.kind === 'hot-spots-points' ||
         recipe.operation.kind === 'hot-spots-polygons'
       )
-        this.hotspotOutputs ??= new AnalysisHotspotOutputs(
-          this.session,
-          this.value.data.map(chunk => chunk.length)
-        );
+        this.hotspotOutputs ??= new AnalysisHotspotOutputs(this.session, this.sourceChunkLengths);
       if (
         recipe.operation.kind === 'local-moran-points' ||
         recipe.operation.kind === 'multivariate-local-geary-points' ||
@@ -2075,18 +2298,15 @@ export class AnalysisRuntime {
       )
         this.localMoranOutputs ??= new AnalysisLocalMoranOutputs(
           this.session,
-          this.value.data.map(chunk => chunk.length)
+          this.sourceChunkLengths
         );
       if (isQuantileLisaMode(recipe.operation.kind))
         this.quantileLisaOutputs ??= new AnalysisQuantileLisaOutputs(
           this.session,
-          this.value.data.map(chunk => chunk.length)
+          this.sourceChunkLengths
         );
       if (recipe.operation.kind === 'ols')
-        this.olsOutputs ??= new AnalysisOLSOutputs(
-          this.session,
-          this.value.data.map(chunk => chunk.length)
-        );
+        this.olsOutputs ??= new AnalysisOLSOutputs(this.session, this.sourceChunkLengths);
       const olsViews =
         recipe.operation.kind === 'ols'
           ? this.olsOutputs!.importToGraph(
@@ -2096,10 +2316,7 @@ export class AnalysisRuntime {
             )
           : undefined;
       if (recipe.operation.kind === 'dbscan-points')
-        this.dbscanOutputs ??= new AnalysisDBSCANOutputs(
-          this.session,
-          this.value.data.map(chunk => chunk.length)
-        );
+        this.dbscanOutputs ??= new AnalysisDBSCANOutputs(this.session, this.sourceChunkLengths);
       const dbscanViews =
         recipe.operation.kind === 'dbscan-points'
           ? this.dbscanOutputs!.importToGraph(graph, resultValues)
@@ -2107,6 +2324,12 @@ export class AnalysisRuntime {
       const quantileLisaViews = isQuantileLisaMode(recipe.operation.kind)
         ? this.quantileLisaOutputs!.importToGraph(graph, resultValues)
         : undefined;
+      const hotspotViews =
+        recipe.operation.kind === 'hot-spots-lattice' ||
+        recipe.operation.kind === 'hot-spots-points' ||
+        recipe.operation.kind === 'hot-spots-polygons'
+          ? this.hotspotOutputs!.importToGraph(graph, resultValues)
+          : undefined;
       const localMoranViews =
         recipe.operation.kind === 'local-moran-points' ||
         recipe.operation.kind === 'multivariate-local-geary-points' ||
@@ -2133,20 +2356,13 @@ export class AnalysisRuntime {
           pointWeights = this.streamedPointWeights!.acquire(graph, recipe.operation.weights);
           this.streamedPointWeights!.retireOthers(recipe.operation.weights);
         } else {
-          this.pointWeightsCache ??= new AnalysisPointWeightsCache(
-            this.session,
-            this.lease.dataset
-          );
+          this.pointWeightsCache ??= this.weightsStore.pointCache(this.lease.dataset);
           pointWeights = this.pointWeightsCache.acquire(graph, recipe.operation.weights);
         }
       }
       if (isPolygonAnalysisOperation(recipe.operation)) {
         if (!this.polygonSource) throw new Error('Polygon source is unavailable');
-        this.polygonWeightsCache ??= new AnalysisPolygonWeightsCache(
-          this.session,
-          this.lease.dataset,
-          this.polygonSource
-        );
+        this.polygonWeightsCache ??= this.weightsStore.polygonCache(this.lease.dataset);
         polygonWeights = this.polygonWeightsCache.acquire(graph, recipe.operation.weights);
       }
       result = addKeplerAnalysisRecipe(graph, recipe, {
@@ -2166,11 +2382,7 @@ export class AnalysisRuntime {
           ...(dbscanViews ? {dbscan: dbscanViews} : {}),
           ...(quantileLisaViews ? {quantileLisa: quantileLisaViews} : {}),
           ...(localMoranViews ? {localMoran: localMoranViews} : {}),
-          ...(recipe.operation.kind === 'hot-spots-lattice' ||
-          recipe.operation.kind === 'hot-spots-points' ||
-          recipe.operation.kind === 'hot-spots-polygons'
-            ? {hotSpots: this.hotspotOutputs!.importToGraph(graph, resultValues)}
-            : {})
+          ...(hotspotViews ? {hotSpots: hotspotViews} : {})
         }
       });
       const dbscanColorIndices = dbscanViews
@@ -2195,11 +2407,11 @@ export class AnalysisRuntime {
               'result-validity',
               this.resultValidity,
               'uint32',
-              this.value.length
+              this.rowCount
             )
           })
         );
-      else this.resultValidity.write(new Uint32Array(this.value.length).fill(1));
+      else this.resultValidity.write(new Uint32Array(this.rowCount).fill(1));
       const statistics = importBuffer(
         graph,
         'statistics',
@@ -2256,28 +2468,60 @@ export class AnalysisRuntime {
           })
         });
       }
+      const inferenceColorIndices = hotspotViews
+        ? addAnalysisInferenceColorIndices(graph, hotspotViews.bins!, hotspotViews.pValues!, true)
+        : localMoranViews &&
+            (recipe.operation.kind === 'local-moran-points' ||
+              recipe.operation.kind === 'local-moran-polygons')
+          ? addAnalysisInferenceColorIndices(
+              graph,
+              localMoranViews.quadrants!,
+              localMoranViews.pValues!,
+              false
+            )
+          : undefined;
+      const rampPalettes = importBuffer(graph, 'palette', this.palette, 'uint32', 72);
+      const activePalette = classified
+        ? addAnalysisRampPalette(graph, rampPalettes, classCount)
+        : graph.createDataView(rampPalettes.buffer, {
+            format: 'uint32',
+            byteOffset: 7 * 8 * 4,
+            length: 8
+          });
+      const hotspotPalette = hotspotViews
+        ? graph.createDataView(rampPalettes.buffer, {
+            format: 'uint32',
+            byteOffset: 64 * 4,
+            length: 7
+          })
+        : undefined;
       colorParameters = new GPUParameterBuffer(device, {
         id: 'kepler-analysis-color-parameters',
         format: 'float32',
         length: 9,
         values: getGPUColorScaleParameterValues({
           scale:
-            dbscanViews || localMoranViews || quantileLisaViews
+            hotspotViews || dbscanViews || localMoranViews || quantileLisaViews
               ? 'ordinal'
               : classified
                 ? 'threshold'
                 : 'linear',
           domainCount: classified ? this.requestedSettings.classCount + 1 : 2,
-          paletteCount: dbscanViews
-            ? 16
-            : quantileLisaViews
-              ? 4
-              : localMoranViews
-                ? 5
-                : classified
-                  ? this.requestedSettings.classCount
-                  : 8,
+          paletteCount: hotspotViews
+            ? 7
+            : dbscanViews
+              ? 16
+              : quantileLisaViews
+                ? 4
+                : localMoranViews
+                  ? 6
+                  : classified
+                    ? this.requestedSettings.classCount
+                    : 8,
           interpolation: 'linear',
+          ...(hotspotViews || localMoranViews
+            ? {noDataColor: packGPUColor(...getKeplerResultToneColor('excluded'))}
+            : {}),
           clamp: true
         })
       });
@@ -2285,6 +2529,7 @@ export class AnalysisRuntime {
         new GPUColorScale({
           id: 'analysis-colors',
           values:
+            inferenceColorIndices ??
             dbscanColorIndices ??
             quantileLisaViews?.classes ??
             localMoranViews?.quadrants ??
@@ -2292,36 +2537,52 @@ export class AnalysisRuntime {
           mask: effectiveMask,
           domain: colorDomain,
           ...(classified ? {domainCount: classCount} : {}),
-          palette: dbscanViews
-            ? importBuffer(graph, 'dbscan-palette', this.dbscanOutputs!.palette, 'uint32', 16)
-            : quantileLisaViews
-              ? importBuffer(
-                  graph,
-                  'quantile-lisa-palette',
-                  this.quantileLisaOutputs!.palette,
-                  'uint32',
-                  4
-                )
-              : localMoranViews
-                ? importBuffer(graph, 'moran-palette', this.localMoranOutputs!.palette, 'uint32', 5)
-                : importBuffer(graph, 'palette', this.palette, 'uint32', 8),
+          palette:
+            hotspotPalette ??
+            (dbscanViews
+              ? importBuffer(graph, 'dbscan-palette', this.dbscanOutputs!.palette, 'uint32', 16)
+              : quantileLisaViews
+                ? importBuffer(
+                    graph,
+                    'quantile-lisa-palette',
+                    this.quantileLisaOutputs!.palette,
+                    'uint32',
+                    4
+                  )
+                : localMoranViews
+                  ? importBuffer(
+                      graph,
+                      'moran-palette',
+                      this.localMoranOutputs!.palette,
+                      'uint32',
+                      6
+                    )
+                  : activePalette),
           parameters: colorParameters.importToGraph(graph),
           maximumDomainCount: classified ? this.requestedSettings.classCount + 1 : 2,
-          maximumPaletteCount: dbscanViews ? 16 : quantileLisaViews ? 4 : localMoranViews ? 5 : 8,
+          maximumPaletteCount: hotspotViews
+            ? 7
+            : dbscanViews
+              ? 16
+              : quantileLisaViews
+                ? 4
+                : localMoranViews
+                  ? 6
+                  : 8,
           output: {
             colors: importBuffer(
               graph,
               'result-colors',
               this.resultColors,
               'uint32',
-              this.value.length
+              this.rowCount
             ),
             classIndices: importBuffer(
               graph,
               'result-classes',
               this.resultClasses,
               'uint32',
-              this.value.length
+              this.rowCount
             )
           }
         })
@@ -2421,7 +2682,11 @@ export class AnalysisRuntime {
     return true;
   }
 
-  private update(settings: AnalysisSettings): void {
+  private update(
+    settings: AnalysisSettings,
+    manageWeightsReference = true,
+    fittedResponseColumn = this.krigingFitResponseColumn
+  ): void {
     this.assertCurrent();
     if (settings.mode === 'ols' && settings.ols)
       settings = {...settings, column: settings.ols.responseColumn};
@@ -2454,9 +2719,28 @@ export class AnalysisRuntime {
       settings = {...settings, polygon};
     }
 
-    if (!this.availableColumns.includes(settings.column))
+    if (settings.kriging?.variogramFit && settings.column !== fittedResponseColumn) {
+      settings = {
+        ...settings,
+        kriging: parseKeplerKrigingSettings({...settings.kriging, variogramFit: undefined})
+      };
+    }
+
+    const requiresValue = settings.mode !== 'off' && settings.mode !== 'dbscan-points';
+    if (
+      (requiresValue || settings.column !== '') &&
+      !this.availableColumns.includes(settings.column)
+    )
       throw new Error('Choose a prepared Float32 analysis column');
-    if (!this.availableColumns.includes(settings.denominatorColumn))
+    const requiresPopulation = [
+      'excess-risk',
+      'spatial-rate-points',
+      'spatial-rate-polygons'
+    ].includes(settings.mode);
+    if (
+      (requiresPopulation || settings.denominatorColumn !== '') &&
+      !this.availableColumns.includes(settings.denominatorColumn)
+    )
       throw new Error('Choose a prepared Float32 population column');
     if (
       settings.mode === 'spatial-rate-points' &&
@@ -2520,8 +2804,20 @@ export class AnalysisRuntime {
     )
       throw new Error('OLS requires prepared Float32 response and predictor fields');
     if (settings.mode !== 'off')
-      validateAnalysisRecipeCapacity(this.createRecipe(settings), this.value.length);
-    if (JSON.stringify(settings) === JSON.stringify(this.requestedSettings)) return;
+      validateAnalysisRecipeCapacity(this.createRecipe(settings), this.rowCount);
+    if (settings.mode !== 'off') {
+      this.valueColumnOverridden = true;
+      this.denominatorColumnOverridden = true;
+    }
+    const previousOperation =
+      this.requestedSettings.mode === 'off' ? undefined : this.createRecipe().operation;
+    const previousWeights =
+      previousOperation && 'weights' in previousOperation ? previousOperation.weights : undefined;
+    if (JSON.stringify(settings) === JSON.stringify(this.requestedSettings)) {
+      // Legacy replay can remove the weights store while leaving this recipe unchanged.
+      if (manageWeightsReference) this.synchronizeWeightsReference(previousWeights);
+      return;
+    }
     this.requestedSettings = {
       ...settings,
       ...(settings.cartogram
@@ -2546,6 +2842,10 @@ export class AnalysisRuntime {
         ? {pointHotspot: normalizePointHotspotSettings(settings.pointHotspot, this.rowCount)}
         : {})
     };
+    this.krigingFitResponseColumn = this.requestedSettings.kriging?.variogramFit
+      ? fittedResponseColumn
+      : undefined;
+    if (manageWeightsReference) this.synchronizeWeightsReference(previousWeights);
     this.interpolation?.invalidate();
     this.resetCartogramInspection();
     this.cartogram?.invalidate();
@@ -2555,6 +2855,27 @@ export class AnalysisRuntime {
     this.notify();
     this.requestUpdate();
   }
+  private synchronizeWeightsReference(previousWeights?: AnalysisWeightsSettings): void {
+    if (this.requestedSettings.mode !== 'off') {
+      const operation = this.createRecipe().operation;
+      if ('weights' in operation) {
+        const selected = this.selectedWeightsId && this.weightsStore.get(this.selectedWeightsId);
+        // Value, inference and population edits do not silently accept a newer topology version.
+        if (
+          !selected ||
+          !this.weightsReference ||
+          JSON.stringify(previousWeights) !== JSON.stringify(operation.weights)
+        ) {
+          const definition =
+            selected && JSON.stringify(selected.settings) === JSON.stringify(operation.weights)
+              ? selected
+              : this.weightsStore.findOrCreate(this.namedWeightsSource, operation.weights);
+          this.selectedWeightsId = definition.id;
+          this.weightsStore.bind(this.weightsConsumerId, definition.id);
+        }
+      } else this.clearNamedWeightsReference();
+    } else this.clearNamedWeightsReference();
+  }
   private getResultColumnName(base: string): string {
     let name = base;
     while (Object.hasOwn(this.lease.dataset.value.columns, name)) name += '_';
@@ -2563,6 +2884,7 @@ export class AnalysisRuntime {
   private isEncodedCurrent(): boolean {
     return (
       this.enabled &&
+      !this.weightsStaleReason &&
       this.encodedRevision === this.revision &&
       (this.requestedSettings.population === 'all' ||
         this.encodedSelectionRevision === this.explorer.currentRevision + 1)

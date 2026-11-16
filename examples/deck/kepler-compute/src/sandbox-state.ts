@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  getAnalysisWeightsStore,
+  parseAnalysisWeightsWorkspace,
+  SANDBOX_EXTENSION_NAMED_WEIGHTS
+} from './analysis-weights-store';
 import {validateTabularPointPositions} from './point-position-source';
 import {
   getSampleMapProvenance,
@@ -29,7 +34,7 @@ import {
 import {
   preparePolygonContiguityTopology,
   POLYGON_CONTIGUITY_PREPARATION_BYTES
-} from './geometry-preparation';
+} from './geometry-preparation/index';
 import type {ComputeRuntime} from './compute-runtime';
 import type {PolygonAnalysisSource} from './analysis-polygon-weights-cache';
 import {assertSandboxSourcesCovered} from './sandbox-source-validation';
@@ -411,7 +416,45 @@ export function saveSandbox(
         : []
     )
   );
-  const settings = {...hostSettings, ...(extensions ? {extensions} : {})};
+  const weightsStore = getAnalysisWeightsStore(runtime.session);
+  const definitions = weightsStore
+    .list()
+    .filter(definition =>
+      sources.some(
+        source =>
+          source.dataset.datasetId === definition.source.datasetId &&
+          source.dataset.revision === definition.source.revision
+      )
+    );
+  const bindings = [
+    runtime.analysis,
+    ...Array.from(runtime.publications?.values() ?? [], published => published.analysis)
+  ].flatMap(analysis => {
+    const reference = analysis?.weightsReference;
+    return analysis && reference
+      ? [
+          {
+            datasetId: analysis.datasetId,
+            weightsId: reference.weightsId,
+            version: reference.version
+          }
+        ]
+      : [];
+  });
+  const savedExtensions = {
+    ...extensions,
+    ...(definitions.length
+      ? {
+          [SANDBOX_EXTENSION_NAMED_WEIGHTS]: JSON.parse(
+            JSON.stringify({schemaVersion: 1, definitions, bindings})
+          ) as KeplerJSONValue
+        }
+      : {})
+  };
+  const settings = {
+    ...hostSettings,
+    ...(Object.keys(savedExtensions).length ? {extensions: savedExtensions} : {})
+  };
   return serializeKeplerSandboxState({
     schemaVersion: 1,
     ...(Object.keys(settings).length ? {settings} : {}),
@@ -622,6 +665,40 @@ function assertSandboxReplay(
     new Set(saved.analyses.map(recipe => recipe.source.datasetId)).size !== saved.analyses.length
   )
     throw new Error('Every source needs one native selection and at most one analysis');
+  const namedWeights = parseAnalysisWeightsWorkspace(
+    saved.settings?.extensions?.[SANDBOX_EXTENSION_NAMED_WEIGHTS]
+  );
+  for (const definition of namedWeights.definitions) {
+    const source = saved.sources.find(
+      candidate => candidate.dataset.datasetId === definition.source.datasetId
+    );
+    if (!source || source.dataset.revision !== definition.source.revision)
+      throw new Error('Saved named weights require their declared source revision');
+    const settings = definition.settings;
+    const columns =
+      settings.kind === 'contiguity'
+        ? [settings.geometryColumn]
+        : settings.coordinateSpace === 'planar'
+          ? [settings.xColumn, settings.yColumn]
+          : [settings.longitudeColumn, settings.latitudeColumn];
+    if (columns.some(column => !source.schema.some(field => field.name === column)))
+      throw new Error('Saved named weights require their coordinate or geometry fields');
+  }
+  for (const binding of namedWeights.bindings) {
+    const recipe = saved.analyses.find(
+      candidate => candidate.source.datasetId === binding.datasetId
+    );
+    const definition = namedWeights.definitions.find(
+      candidate => candidate.id === binding.weightsId
+    )!;
+    if (
+      !recipe ||
+      !('weights' in recipe.operation) ||
+      (binding.version === definition.version &&
+        JSON.stringify(recipe.operation.weights) !== JSON.stringify(definition.settings))
+    )
+      throw new Error('Saved named weights reference must match the active analysis topology');
+  }
   readSandboxFixture(fixture);
   for (const source of saved.sources) if (source !== fixture) readPublishedSandboxSource(source);
   assertSandboxSourcesCovered(saved.nativeConfig, [
@@ -693,6 +770,18 @@ async function applySandboxState(
     })),
     {allowReimport: reimport}
   );
+  const namedWeights = parseAnalysisWeightsWorkspace(
+    saved.settings?.extensions?.[SANDBOX_EXTENSION_NAMED_WEIGHTS]
+  );
+  for (const analysis of [
+    runtime.analysis,
+    ...Array.from(runtime.publications.values(), published => published.analysis)
+  ])
+    analysis?.clearNamedWeightsReference?.();
+  getAnalysisWeightsStore(runtime.session).restore(
+    {schemaVersion: 1, definitions: namedWeights.definitions},
+    reimport
+  );
   for (const datasetId of [runtime.explorer.dataset.id, ...runtime.publications.keys()]) {
     const recipe = rebound.analyses.find(item => item.source.datasetId === datasetId);
     const published = runtime.publications.get(datasetId);
@@ -702,7 +791,8 @@ async function applySandboxState(
         : recipe
           ? published!.getAnalysis()
           : published?.analysis;
-    if (recipe) analysis!.restoreRecipe(JSON.stringify(recipe));
+    const weightsBinding = namedWeights.bindings.find(binding => binding.datasetId === datasetId);
+    if (recipe) analysis!.restoreRecipe(JSON.stringify(recipe), weightsBinding);
     else analysis?.setMode('off');
   }
   applySandboxExtensions(saved.settings?.extensions, (datasetId, options) =>

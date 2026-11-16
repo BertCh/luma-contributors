@@ -41,6 +41,8 @@ type CacheEntry = {
 };
 
 export type AnalysisPointWeightsLease = {
+  /** Opaque identity of the shared cache entry, identical across consumer imports. */
+  topology?: object;
   binding: KeplerPointWeightsBinding;
   diagnostics: readonly Buffer[];
   /** Which storage built these weights (single CSR here; streamed chunks in the streamed cache). */
@@ -89,7 +91,7 @@ export class AnalysisPointWeightsCache {
   acquire(
     graph: GPUCommandGraph,
     requestedSettings: KeplerPointWeightsSettings
-  ): AnalysisPointWeightsLease {
+  ): AnalysisPointWeightsLease & {topology: object} {
     if (this.destroyed) throw new Error('Point weight cache is destroyed');
     const settings = parseKeplerPointWeightsSettings(requestedSettings);
     const key = JSON.stringify([this.dataset.id, this.dataset.revision, settings]);
@@ -114,6 +116,7 @@ export class AnalysisPointWeightsCache {
     try {
       const binding = cached.importBinding(graph);
       return {
+        topology: cached,
         binding,
         diagnostics: cached.diagnostics,
         path: {path: 'single-csr', chunkCount: 1},

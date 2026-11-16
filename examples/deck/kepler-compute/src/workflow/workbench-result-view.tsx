@@ -6,6 +6,9 @@ import {useEffect, useMemo, useRef, useState} from 'react';
 import styled from 'styled-components';
 import {
   getWorkflowSuggestions,
+  estimateWorkflowPreflight,
+  profileKeplerWorkbenchData,
+  formatKeplerResultReport,
   setWorkflowDisplayStyle,
   makeWorkflowCSVText,
   makeWorkflowGeoJSONText,
@@ -16,6 +19,12 @@ import {
   type WorkflowStep,
   type WorkflowStepState
 } from '@luma-contributors/kepler';
+import {AnalysisResultCard} from '../analysis-result-card';
+import {
+  createAnalysisResultCardModel,
+  addAnalysisResultNextStep,
+  type AnalysisResultNextAction
+} from '../analysis-result-card-model';
 import {
   WORKBENCH_COLORS,
   WORKBENCH_PORT_LABELS,
@@ -45,6 +54,7 @@ import {
   WorkbenchTable
 } from './workbench-styles';
 import {useWorkbenchState} from './use-workbench';
+import {WorkbenchRunTrace} from './workbench-run-log';
 
 const ResultSurface = styled(WorkbenchSurface)`
   display: flex;
@@ -657,6 +667,33 @@ function ResultOutput({
           {publicationIssue.message}
         </PublicationNotice>
       )}
+      {data.analysisReport && !data.analysisRun && (
+        <details>
+          <summary>Analysis report</summary>
+          <pre style={{whiteSpace: 'pre-wrap'}}>
+            {formatKeplerResultReport(data.analysisReport)}
+          </pre>
+        </details>
+      )}
+      {data.analysisPresentation && !step.displayStyle?.[output]?.colorColumn && (
+        <ul aria-label={`${label} legend`}>
+          {data.analysisPresentation.legend.map((entry, index) => (
+            <li key={index}>
+              <span
+                aria-hidden="true"
+                style={{
+                  display: 'inline-block',
+                  width: 12,
+                  height: 12,
+                  backgroundColor: `rgb(${entry.color.join(',')})`
+                }}
+              />{' '}
+              {entry.label}
+              {entry.count === undefined ? '' : `: ${entry.count}`}
+            </li>
+          ))}
+        </ul>
+      )}
       <OutputPreview
         key={output}
         data={data}
@@ -694,6 +731,17 @@ function ResultOutput({
 /** Outputs, preview table, column summaries and diagnostics of one step. */
 export function WorkbenchResultView({store}: {store: WorkbenchStore}): React.JSX.Element | null {
   const state = useWorkbenchState(store);
+  const preflight = useMemo(
+    () =>
+      state.document
+        ? estimateWorkflowPreflight(state.document, store.registry, {
+            state: state.runner,
+            profileSources: true,
+            host: store.host
+          })
+        : undefined,
+    [state.document, state.runner, store.registry, store.host]
+  );
   const selected = useMemo(
     () =>
       state.selectedStepIds.length === 1
@@ -703,6 +751,34 @@ export function WorkbenchResultView({store}: {store: WorkbenchStore}): React.JSX
   );
   const stepState = selected ? state.runner?.steps[selected.id] : undefined;
   const result = stepState?.result;
+  const analysisOutput = Object.values(result?.outputs ?? {}).find(data => data.analysisRun);
+  const card = useMemo(() => {
+    const run = analysisOutput?.analysisRun;
+    if (!run) return undefined;
+    const sensitivity = selected?.sensitivity;
+    return createAnalysisResultCardModel(
+      sensitivity ? {...run.result, sensitivity} : run.result,
+      run.context,
+      {
+        report: sensitivity ? undefined : analysisOutput.analysisReport,
+        executionEngine:
+          (selected?.engine ?? state.document?.settings.engine) === 'cpu' || !store.host.getDevice()
+            ? 'cpu'
+            : 'gpu',
+        outputProfiles: Object.values(result?.outputs ?? {}).map(
+          data => data.analysisProfile ?? profileKeplerWorkbenchData(data)
+        )
+      }
+    );
+  }, [
+    analysisOutput,
+    result,
+    store.host,
+    state.revision,
+    selected?.engine,
+    selected?.sensitivity,
+    state.document?.settings.engine
+  ]);
   const operation = selected ? store.registry.get(selected.operationId) : undefined;
   const outputs = useMemo(() => {
     if (!result) return [];
@@ -832,6 +908,46 @@ export function WorkbenchResultView({store}: {store: WorkbenchStore}): React.JSX
           </WorkbenchButton>
         </WorkbenchNoticeBar>
       )}
+      {card && (
+        <AnalysisResultCard
+          key={`${state.document.id}:${selected.id}:${result!.key}`}
+          model={card}
+          inStack
+          showLegends={false}
+          actionsDisabledReason={
+            stale || state.runner?.running
+              ? 'Run the current configuration before saving or adding a next step.'
+              : undefined
+          }
+          onSaveWorkflow={() => {
+            if (!store.saveTemplate())
+              throw new Error(store.getState().notice?.message ?? 'Could not save this workflow.');
+          }}
+          onNext={(action: AnalysisResultNextAction) => {
+            const output = outputs.find(candidate => candidate.data.table.id === action.tableId);
+            const input = Object.entries(action.applicability.inputAssignments).find(
+              ([, datasetId]) => datasetId === action.tableId
+            )?.[0];
+            if (!output || !input || action.applicability.status === 'blocked')
+              throw new Error('Choose an applicable output before adding a next step.');
+            let addedStepId = '';
+            const changed = store.edit('result:next', document => {
+              const added = addAnalysisResultNextStep(document, store.registry, action, {
+                stepId: selected.id,
+                output: output.name
+              });
+              addedStepId = added.stepId;
+              return added.document;
+            });
+            if (!changed)
+              throw new Error(
+                store.getState().notice?.message ?? 'Could not add the next analysis.'
+              );
+            store.select([addedStepId]);
+            store.setDock({open: true, inspectorTab: 'parameters'});
+          }}
+        />
+      )}
       {stepState &&
         outputs.map((output, index) => (
           <ResultOutput
@@ -904,6 +1020,52 @@ export function WorkbenchResultView({store}: {store: WorkbenchStore}): React.JSX
           </Disclosure>
         </Metadata>
       )}
+      <Metadata>
+        {preflight && (
+          <Disclosure>
+            <summary>Preflight and materialisation</summary>
+            <WorkbenchMuted>
+              Cold-run logical GPU scratch; input/output buffers, staging and host heap excluded.
+            </WorkbenchMuted>
+            {preflight.steps
+              .filter(estimate => estimate.stepId === selected.id)
+              .map(estimate => (
+                <div key={estimate.stepId}>
+                  Scratch:{' '}
+                  {estimate.scratchBytes === null
+                    ? 'unknown'
+                    : `${estimate.scratchBytes.toLocaleString()} B`}
+                  {' · '}Command nodes: {estimate.commandNodeCount ?? 'unknown'}
+                  <div>{estimate.reason}</div>
+                </div>
+              ))}
+            {preflight.boundaries
+              .filter(
+                boundary => boundary.consumer === selected.id || boundary.producer === selected.id
+              )
+              .map(boundary => (
+                <div
+                  key={`${boundary.producer}:${boundary.output}:${boundary.consumer}:${boundary.input}`}
+                >
+                  {boundary.producer}.{boundary.output} → {boundary.consumer}.{boundary.input}:{' '}
+                  {boundary.materialization === 'cpu-raster' ? 'CPU raster band' : 'CPU table'}
+                </div>
+              ))}
+          </Disclosure>
+        )}
+        {result &&
+          state.runLog
+            .filter(run =>
+              run.steps.some(
+                entry =>
+                  entry.stepId === selected.id &&
+                  entry.key === result.key &&
+                  entry.status === 'done'
+              )
+            )
+            .slice(0, 1)
+            .map(run => <WorkbenchRunTrace key={run.runId} run={run} registry={store.registry} />)}
+      </Metadata>
     </ResultSurface>
   );
 }

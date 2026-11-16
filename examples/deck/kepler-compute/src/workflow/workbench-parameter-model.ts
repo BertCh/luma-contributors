@@ -4,6 +4,14 @@
 
 import {
   checkWorkflowConnection,
+  getKeplerWorkbenchParameterDefaults,
+  profileKeplerWorkbenchData,
+  getWorkflowAnalysisProfiles,
+  setWorkflowParameter,
+  updateWorkflowInput,
+  resolveWorkflowParameterOverrides,
+  type KeplerWorkbenchProfiles,
+  type WorkflowHost,
   getWorkflowColumnNames,
   getWorkflowSuggestions,
   isWorkflowParameterVisible,
@@ -148,7 +156,10 @@ export function getWorkbenchParameterControlSpec(
   };
 }
 
-function equalValues(left: CatalogParameterValue, right: CatalogParameterValue): boolean {
+function equalValues(
+  left: CatalogParameterValue | undefined,
+  right: CatalogParameterValue | undefined
+): boolean {
   return Array.isArray(left) && Array.isArray(right)
     ? left.length === right.length && left.every((value, index) => value === right[index])
     : left === right;
@@ -158,9 +169,47 @@ function equalValues(left: CatalogParameterValue, right: CatalogParameterValue):
 export function getWorkbenchParameterRows(
   document: WorkflowDocument,
   step: WorkflowStep,
-  operation: WorkflowOperation
+  operation: WorkflowOperation,
+  analysisOptions?: {profilesByInput: KeplerWorkbenchProfiles; executionEngine: 'gpu' | 'cpu'}
 ): WorkbenchParameterRow[] {
-  const rows = operation.parameters.map(spec => {
+  const overrides = resolveWorkflowParameterOverrides(document, step, operation);
+  const defaults =
+    operation.analysisDescriptor && analysisOptions
+      ? getKeplerWorkbenchParameterDefaults(operation.analysisBinding ?? operation.id, undefined, {
+          ...analysisOptions,
+          overrides
+        })
+      : undefined;
+  const rows = operation.parameters.map(originalSpec => {
+    const resolution = defaults?.resolutions.find(entry => entry.parameter === originalSpec.name);
+    const baseline =
+      defaults && analysisOptions && Object.hasOwn(overrides, originalSpec.name)
+        ? getKeplerWorkbenchParameterDefaults(
+            operation.analysisBinding ?? operation.id,
+            undefined,
+            {
+              ...analysisOptions,
+              overrides: Object.fromEntries(
+                Object.entries(overrides).filter(([name]) => name !== originalSpec.name)
+              )
+            }
+          )
+        : defaults;
+    const defaultValue = baseline?.values[originalSpec.name] ?? originalSpec.defaultValue;
+    const spec = defaults
+      ? {
+          ...originalSpec,
+          defaultValue,
+          description: [
+            originalSpec.description,
+            resolution
+              ? `Default source: ${resolution.source}. ${resolution.resolution?.explanation ?? resolution.reason ?? ''}`
+              : ''
+          ]
+            .filter(Boolean)
+            .join(' ')
+        }
+      : originalSpec;
     const binding = Object.hasOwn(step.parameters, spec.name)
       ? step.parameters[spec.name]
       : undefined;
@@ -173,14 +222,68 @@ export function getWorkbenchParameterRows(
           : spec.defaultValue;
     return {
       spec,
-      value,
+      value: value ?? '',
       bindingKind: binding?.from ?? 'default',
       isDefault: equalValues(value, spec.defaultValue),
       ...(binding?.from === 'input' ? {inputId: binding.inputId} : {})
     } satisfies WorkbenchParameterRow;
   });
   const values = Object.fromEntries(rows.map(row => [row.spec.name, row.value]));
-  return rows.filter(row => isWorkflowParameterVisible(row.spec, values));
+  return rows.filter(
+    row =>
+      !defaults?.inactive.includes(row.spec.name) && isWorkflowParameterVisible(row.spec, values)
+  );
+}
+
+/** Profiles are reused from AX sources and successful immutable intermediate results. */
+export function getWorkbenchAnalysisOptions(
+  document: WorkflowDocument,
+  step: WorkflowStep,
+  operation: WorkflowOperation,
+  registry: WorkflowOperationRegistry,
+  host: WorkflowHost,
+  runner?: WorkflowRunnerState | null
+): {profilesByInput: KeplerWorkbenchProfiles; executionEngine: 'gpu' | 'cpu'} | undefined {
+  if (!operation.analysisDescriptor) return undefined;
+  const profilesByInput = getWorkflowAnalysisProfiles(document, step, registry, host);
+  for (const [input, connection] of Object.entries(step.inputs)) {
+    const state = runner?.steps[connection.stepId];
+    const data = state?.status === 'done' ? state.result?.outputs[connection.output] : undefined;
+    if (data) profilesByInput[input] = data.analysisProfile ?? profileKeplerWorkbenchData(data);
+  }
+  return {
+    profilesByInput,
+    executionEngine:
+      (step.engine ?? document.settings.engine) === 'cpu' || !host.getDevice() ? 'cpu' : 'gpu'
+  };
+}
+
+/** Apply the method's settings while retaining user field mappings and promoted controls. */
+export function applyWorkbenchCuratedPreset(
+  document: WorkflowDocument,
+  step: WorkflowStep,
+  operation: WorkflowOperation,
+  curatedAnalysisId: string
+): WorkflowDocument {
+  const preset = operation.analysisPresets?.find(
+    candidate => candidate.curatedAnalysisId === curatedAnalysisId
+  );
+  if (!preset) return document;
+  let changed = {
+    ...document,
+    steps: document.steps.map(candidate =>
+      candidate.id === step.id ? {...candidate, curatedAnalysisId} : candidate
+    )
+  };
+  for (const [name, value] of Object.entries(preset.executionParameters)) {
+    if (operation.parameters.find(parameter => parameter.name === name)?.fieldRole) continue;
+    const binding = step.parameters[name];
+    changed =
+      binding?.from === 'input'
+        ? updateWorkflowInput(changed, binding.inputId, {value})
+        : setWorkflowParameter(changed, step.id, name, {from: 'static', value});
+  }
+  return changed;
 }
 
 /** Call only after getWorkflowParameterProblem accepts the text. */
@@ -203,8 +306,22 @@ export function getWorkbenchColumnSuggestions(
   spec: WorkflowParameterSpec,
   registry: WorkflowOperationRegistry,
   runner: WorkflowRunnerState | null,
-  datasets: readonly WorkflowDatasetProfile[] = []
+  datasets: readonly WorkflowDatasetProfile[] = [],
+  profilesByInput?: KeplerWorkbenchProfiles
 ): WorkbenchColumnSuggestions {
+  const role = spec.fieldRole;
+  const profile = spec.columnsFrom ? profilesByInput?.[spec.columnsFrom] : undefined;
+  if (role && profile)
+    return {
+      columns: profile.columns
+        .filter(
+          column =>
+            role.accepts.includes(column.type) ||
+            (column.type === 'integer' && role.accepts.includes('number'))
+        )
+        .map(column => column.name),
+      hints: []
+    };
   const datasetParameter = operation.parameters.find(
     parameter => parameter.name === spec.columnsFrom && parameter.kind === 'dataset'
   );
@@ -227,7 +344,23 @@ export function getWorkbenchColumnSuggestions(
     const producerOperation = registry.get(producer.operationId);
     const data = runner?.steps[producer.id]?.result?.outputs[connection.output];
     if (data) {
-      for (const column of getWorkflowColumnNames(data)) columns.add(column);
+      for (const column of getWorkflowColumnNames(data)) {
+        const type = data.table.columnTypes[column];
+        const accepted =
+          !spec.fieldRole ||
+          spec.fieldRole.accepts.some(accepts =>
+            accepts === 'number'
+              ? type === 'float64' || type === 'int32'
+              : accepts === 'integer'
+                ? type === 'int32'
+                : accepts === 'category'
+                  ? type === 'string'
+                  : accepts === 'boolean'
+                    ? type === 'boolean'
+                    : false
+          );
+        if (accepted) columns.add(column);
+      }
     } else {
       for (const column of producerOperation?.outputs.find(
         output => output.name === connection.output

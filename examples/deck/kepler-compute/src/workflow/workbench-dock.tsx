@@ -372,6 +372,7 @@ export function WorkbenchDock({store}: {store: WorkbenchStore}): React.JSX.Eleme
         <LiveRegion aria-live="polite" aria-atomic="true">
           {announcement}
         </LiveRegion>
+        <WorkbenchPalette store={store} />
         {!state.dock.open ? (
           <CollapsedBar>
             <WorkbenchIconButton
@@ -512,7 +513,6 @@ export function WorkbenchDock({store}: {store: WorkbenchStore}): React.JSX.Eleme
               <InspectorSlot>
                 <WorkbenchInspector store={store} />
               </InspectorSlot>
-              <WorkbenchPalette store={store} />
             </Content>
             <WorkbenchRunLog store={store} />
           </>

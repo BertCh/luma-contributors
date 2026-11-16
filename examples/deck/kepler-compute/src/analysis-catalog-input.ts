@@ -2,15 +2,26 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {getCatalogValidationSampleInputs} from './analysis-catalog-validation';
+import {
+  getCatalogValidationSampleInputs,
+  getCatalogValidationSampleDeclarations
+} from './analysis-catalog-validation';
 import {
   findPointCloudCatalogFields,
   readPointCloudCatalogDataset,
   getPointCloudCatalogSamples
 } from './analysis-catalog-pointcloud';
-import type {CatalogFeature, CatalogFeatureCollection} from '@luma-contributors/kepler';
+import {
+  createKeplerCuratedAnalysisSample,
+  type CatalogFeature,
+  type CatalogFeatureCollection,
+  type KeplerDatasetProfileDeclarations
+} from '@luma-contributors/kepler';
 import * as arrow from 'apache-arrow';
-import {getNetworkCategoricalSampleInputs} from './analysis-catalog-network-categorical-samples';
+import {
+  getNetworkCategoricalSampleInputs,
+  getNetworkCategoricalSampleDeclarations
+} from './analysis-catalog-network-categorical-samples';
 
 import {getSpacetimeCatalogSample} from './analysis-catalog-spacetime';
 import {
@@ -34,6 +45,9 @@ function readGeometry(value: unknown): CatalogFeature['geometry'] {
   if (candidate.type === 'Feature') return candidate.geometry ?? null;
   return typeof candidate.type === 'string' ? (candidate as CatalogFeature['geometry']) : null;
 }
+
+/** Shared cell normalization for catalog execution and dataset profiling. */
+export {readGeometry as readCatalogGeometry};
 
 export const CATALOG_POINT_COLUMNS_PREFIX = '@point:';
 
@@ -320,6 +334,18 @@ const SAMPLE_NETWORK = lines([
   }
 ]);
 
+/** Author-known fixture facts also cover bindings with no coordinate-system parameter. */
+export function getCatalogSampleInputDeclarations(
+  operationId: string,
+  inputName: string
+): KeplerDatasetProfileDeclarations | undefined {
+  if (operationId === 'geometry-convex-clip') return {coordinateModel: 'planar'};
+  return (
+    getNetworkCategoricalSampleDeclarations(operationId, inputName) ??
+    getCatalogValidationSampleDeclarations(operationId)
+  );
+}
+
 /** Sample GeoJSON text per operation input name, small and planar-friendly. */
 export function getCatalogSampleInputs(operationId: string): Record<string, string> {
   const spacetime = getSpacetimeCatalogSample(operationId);
@@ -331,6 +357,16 @@ export function getCatalogSampleInputs(operationId: string): Record<string, stri
   const validationSample = getCatalogValidationSampleInputs(operationId);
   if (validationSample) return validationSample;
   switch (operationId) {
+    case 'hotspot-gi-star':
+    case 'local-moran-statistics':
+    case 'global-spatial-statistics':
+      return {
+        features: JSON.stringify(createKeplerCuratedAnalysisSample('city-district-rates')['areas'])
+      };
+    case 'recipe-points-in-polygons-choropleth': {
+      const sample = createKeplerCuratedAnalysisSample('city-district-incidents');
+      return {points: JSON.stringify(sample['points']), polygons: JSON.stringify(sample['areas'])};
+    }
     case 'geometry-validity':
       return {
         polygons: polygons([

@@ -21,11 +21,13 @@ import {
 import {WORKBENCH_TEST_IDS} from './workbench-contract';
 import {
   coerceWorkbenchParameterText,
+  applyWorkbenchCuratedPreset,
   formatWorkbenchParameterHint,
   formatWorkbenchDrawings,
   getWorkbenchColumnSuggestions,
   getWorkbenchDatasetParameters,
   getWorkbenchParameterRows,
+  getWorkbenchAnalysisOptions,
   getWorkbenchParameterControlSpec,
   insertWorkbenchExpressionColumn,
   type WorkbenchColumnSuggestions
@@ -77,6 +79,8 @@ export function WorkbenchParameterValue({
   onCommit,
   testId,
   errorTestId,
+  controlId,
+  enumControl,
   suggestions = {columns: [], hints: []},
   datasets = [],
   datasetLabel,
@@ -84,13 +88,21 @@ export function WorkbenchParameterValue({
   contextLabel,
   differentDefault,
   onReset,
-  operationId
+  operationId,
+  commitOnRelease = false,
+  onDraftChange,
+  onDraftReset,
+  onValidityChange
 }: {
   spec: WorkflowParameterSpec;
   value: CatalogParameterValue;
   onCommit: (value: CatalogParameterValue) => void;
   testId: string;
   errorTestId?: string;
+  /** Retain established host labels and automation selectors when migrating a form. */
+  controlId?: string;
+  /** Resident forms retain native select semantics for their established control IDs. */
+  enumControl?: 'select';
   suggestions?: WorkbenchColumnSuggestions;
   datasets?: readonly WorkflowDatasetProfile[];
   datasetLabel?: string;
@@ -99,8 +111,17 @@ export function WorkbenchParameterValue({
   differentDefault?: CatalogParameterValue;
   onReset?: () => void;
   operationId?: string;
+  /** Rebuild settings keep valid transient text local until blur or Enter. */
+  commitOnRelease?: boolean;
+  /** Notify user text edits immediately, including deferred and invalid drafts. */
+  onDraftChange?: (text?: string) => void;
+  /** Notify a host mirroring pending text when an external value discards that text. */
+  onDraftReset?: () => void;
+  /** Report transient text errors even when no value can be committed. */
+  onValidityChange?: (problem: string | null) => void;
 }): React.JSX.Element {
-  const identifier = useId();
+  const generatedIdentifier = useId();
+  const identifier = controlId ?? generatedIdentifier;
   const errorId = `${identifier}-error`;
   const hintId = `${identifier}-hint`;
   const descriptionId = `${identifier}-description`;
@@ -120,10 +141,26 @@ export function WorkbenchParameterValue({
   const previousValue = useRef({textValue, bindingIdentity});
   const submittedValue = useRef<{textValue: string; bindingIdentity: string} | null>(null);
   const postponedExternalValue = useRef(false);
-  const deferred = spec.kind === 'text' || spec.kind === 'expression';
+  const deferred = commitOnRelease || spec.kind === 'text' || spec.kind === 'expression';
   const text = draft ?? textValue;
-  const problem = fileProblem ?? getWorkflowParameterProblem(spec, draft === null ? value : draft);
+  const problem =
+    fileProblem ??
+    (draft === null && bindingIdentity === 'default' && spec.defaultValue === undefined
+      ? null
+      : getWorkflowParameterProblem(spec, draft === null ? value : draft));
   const hint = formatWorkbenchParameterHint(spec, differentDefault);
+  const validityCallback = useRef(onValidityChange);
+  validityCallback.current = onValidityChange;
+  useEffect(() => {
+    validityCallback.current?.(problem);
+  }, [problem]);
+  useEffect(() => () => validityCallback.current?.(null), []);
+
+  function commitValue(next: CatalogParameterValue): void {
+    validityCallback.current?.(getWorkflowParameterProblem(spec, next));
+    onCommit(next);
+  }
+
   // An undo replaces the transient text, except while the user is finishing invalid input.
   useEffect(() => {
     if (
@@ -150,6 +187,7 @@ export function WorkbenchParameterValue({
     }
     setDraft(null);
     setFileProblem(null);
+    onDraftReset?.();
   }, [textValue, bindingIdentity, spec]);
   useEffect(
     () => () => {
@@ -159,29 +197,33 @@ export function WorkbenchParameterValue({
   );
 
   function changeText(next: string, commit = !deferred): void {
+    onDraftChange?.(next);
     fileRevision.current++;
     postponedExternalValue.current = false;
     submittedValue.current = null;
+    const nextProblem = getWorkflowParameterProblem(spec, next);
+    validityCallback.current?.(nextProblem);
     setDraft(next);
     setFileProblem(null);
-    if (commit && getWorkflowParameterProblem(spec, next) === null) {
+    if (commit && nextProblem === null) {
       const coerced = coerceWorkbenchParameterText(spec, next);
       submittedValue.current = {
         textValue: formatWorkflowParameterValue(spec, coerced),
         bindingIdentity
       };
-      onCommit(coerced);
+      commitValue(coerced);
     }
   }
 
   function commitText(): void {
+    if (commitOnRelease && draft === null) return;
     if (getWorkflowParameterProblem(spec, text) === null) {
       const coerced = coerceWorkbenchParameterText(spec, text);
       submittedValue.current = {
         textValue: formatWorkflowParameterValue(spec, coerced),
         bindingIdentity
       };
-      onCommit(coerced);
+      commitValue(coerced);
     }
   }
 
@@ -208,6 +250,7 @@ export function WorkbenchParameterValue({
         postponedExternalValue.current = false;
         setDraft(null);
         setFileProblem(null);
+        onDraftReset?.();
         return;
       }
       if (deferred) commitText();
@@ -220,10 +263,10 @@ export function WorkbenchParameterValue({
         {...control}
         type="checkbox"
         checked={value === true}
-        onChange={event => onCommit(event.target.checked)}
+        onChange={event => commitValue(event.target.checked)}
       />
     );
-  } else if (spec.kind === 'enum' && (spec.options?.length ?? 0) <= 3) {
+  } else if (spec.kind === 'enum' && (spec.options?.length ?? 0) <= 3 && enumControl !== 'select') {
     input = (
       <div {...control} role="radiogroup">
         {spec.options?.map(option => (
@@ -234,7 +277,7 @@ export function WorkbenchParameterValue({
               value={option}
               checked={value === option}
               aria-label={`${spec.label}: ${option}`}
-              onChange={() => onCommit(option)}
+              onChange={() => commitValue(option)}
             />{' '}
             {option}
           </label>
@@ -245,7 +288,7 @@ export function WorkbenchParameterValue({
     const missingDataset =
       spec.kind === 'dataset' && !datasets.some(dataset => dataset.id === value);
     input = (
-      <select {...control} value={textValue} onChange={event => onCommit(event.target.value)}>
+      <select {...control} value={textValue} onChange={event => commitValue(event.target.value)}>
         {spec.kind === 'dataset' ? (
           <>
             {missingDataset && (
@@ -272,7 +315,37 @@ export function WorkbenchParameterValue({
         )}
       </select>
     );
-  } else if (deferred) {
+  } else if (spec.fieldRole) {
+    const multiple = spec.kind === 'column-list';
+    input = (
+      <select
+        {...control}
+        multiple={multiple}
+        value={
+          multiple
+            ? textValue
+                .split(',')
+                .map(name => name.trim())
+                .filter(Boolean)
+            : textValue
+        }
+        onChange={event =>
+          commitValue(
+            multiple
+              ? Array.from(event.target.selectedOptions, option => option.value).join(',')
+              : event.target.value
+          )
+        }
+      >
+        {!multiple && <option value="">Choose a column</option>}
+        {suggestions.columns.map(column => (
+          <option key={column} value={column}>
+            {column}
+          </option>
+        ))}
+      </select>
+    );
+  } else if (spec.kind === 'text' || spec.kind === 'expression') {
     input = (
       <textarea
         {...control}
@@ -295,9 +368,13 @@ export function WorkbenchParameterValue({
         {...control}
         type="text"
         value={text}
+        placeholder={spec.defaultValue === undefined ? 'Automatic from input' : undefined}
         inputMode={spec.kind === 'number' || spec.kind === 'integer' ? 'decimal' : undefined}
         list={spec.kind === 'column' ? `${identifier}-columns` : undefined}
         onChange={event => changeText(event.target.value)}
+        onKeyDown={event => {
+          if (commitOnRelease && event.key === 'Enter') commitText();
+        }}
       />
     );
   }
@@ -306,6 +383,7 @@ export function WorkbenchParameterValue({
     <>
       <label htmlFor={identifier}>
         {spec.label}
+        {spec.apply === 'rebuild' && <span className="unit">Rebuild</span>}
         {spec.unit && <span className="unit">{spec.unit === 'crs' ? 'CRS units' : spec.unit}</span>}
       </label>
       {input}
@@ -400,7 +478,7 @@ export function WorkbenchParameterValue({
           ))}
         </datalist>
       )}
-      {(spec.kind === 'column-list' || spec.kind === 'expression') && (
+      {!spec.fieldRole && (spec.kind === 'column-list' || spec.kind === 'expression') && (
         <div>
           {suggestions.columns.map(column => (
             <WorkbenchButton
@@ -460,6 +538,7 @@ export function WorkbenchParameterForm({
   stepId: string;
 }): React.JSX.Element | null {
   const state = useWorkbenchState(store);
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const document = state.document;
   const step = document?.steps.find(candidate => candidate.id === stepId);
   const operation = step && store.registry.get(step.operationId);
@@ -467,7 +546,19 @@ export function WorkbenchParameterForm({
   const rows = useMemo(
     () =>
       document && step && operation
-        ? getWorkbenchParameterRows(document, step, operation).map(row => ({
+        ? getWorkbenchParameterRows(
+            document,
+            step,
+            operation,
+            getWorkbenchAnalysisOptions(
+              document,
+              step,
+              operation,
+              store.registry,
+              store.host,
+              state.runner
+            )
+          ).map(row => ({
             ...row,
             controlSpec: getWorkbenchParameterControlSpec(
               row.spec,
@@ -481,7 +572,15 @@ export function WorkbenchParameterForm({
                   row.spec,
                   store.registry,
                   state.runner,
-                  datasets
+                  datasets,
+                  getWorkbenchAnalysisOptions(
+                    document,
+                    step,
+                    operation,
+                    store.registry,
+                    store.host,
+                    state.runner
+                  )?.profilesByInput
                 )
               : undefined
           }))
@@ -503,90 +602,139 @@ export function WorkbenchParameterForm({
   if (!document || !step || !operation) return null;
   return (
     <>
-      {rows.map(row => {
-        const spec = row.spec;
-        const workflowInput = document.inputs.find(input => input.id === row.inputId);
-        const datasetLabel = resolvedValues['datasetLabel'];
-        return (
-          <ParameterField key={`${stepId}:${spec.name}`}>
-            <WorkbenchParameterValue
-              spec={row.controlSpec}
-              operationId={operation.id}
-              value={row.value}
-              testId={WORKBENCH_TEST_IDS.parameter(spec.name)}
-              errorTestId={WORKBENCH_TEST_IDS.parameterError(spec.name)}
-              suggestions={row.suggestions}
-              datasets={datasets}
-              datasetLabel={typeof datasetLabel === 'string' ? datasetLabel : undefined}
-              bindingIdentity={row.inputId ? `input:${row.inputId}` : row.bindingKind}
-              contextLabel={step.label ?? operation.title}
-              differentDefault={row.isDefault ? undefined : spec.defaultValue}
-              onReset={
-                row.bindingKind === 'default'
-                  ? undefined
-                  : () =>
-                      store.edit(`parameter:${stepId}:${spec.name}`, currentDocument =>
-                        setWorkflowParameter(currentDocument, stepId, spec.name, undefined)
-                      )
-              }
-              onCommit={value =>
-                store.edit(`parameter:${stepId}:${spec.name}`, currentDocument => {
-                  const currentStep = currentDocument.steps.find(
-                    candidate => candidate.id === stepId
-                  );
-                  const binding = currentStep?.parameters[spec.name];
-                  if (binding?.from === 'input')
-                    return updateWorkflowInput(currentDocument, binding.inputId, {value});
-                  const dataset =
-                    spec.kind === 'dataset'
-                      ? datasets.find(candidate => candidate.id === value)
-                      : undefined;
-                  const values =
-                    dataset && currentStep
-                      ? getWorkbenchDatasetParameters(currentStep, operation, spec.name, dataset)
-                      : {[spec.name]: value};
-                  return Object.entries(values).reduce(
-                    (changed, [name, parameterValue]) =>
-                      setWorkflowParameter(changed, stepId, name, {
-                        from: 'static',
-                        value: parameterValue
-                      }),
-                    currentDocument
-                  );
-                })
-              }
-            />
-            {row.inputId && (
-              <span className="hint">Workflow input: {workflowInput?.label ?? row.inputId}</span>
-            )}
-            <div>
-              {PROMOTABLE_KINDS.has(spec.kind) && (
-                <WorkbenchButton
-                  type="button"
-                  data-testid={WORKBENCH_TEST_IDS.parameterPromote(spec.name)}
-                  aria-label={`${row.inputId ? 'Remove workflow input for' : 'Make workflow input for'} ${spec.label}`}
-                  aria-pressed={Boolean(row.inputId)}
-                  title="Make this a workflow input"
-                  onClick={() =>
-                    store.edit(`promote:${stepId}:${spec.name}`, currentDocument =>
-                      row.inputId
-                        ? demoteWorkflowParameter(currentDocument, stepId, spec.name)
-                        : promoteWorkflowParameter(
-                            currentDocument,
-                            store.registry,
-                            stepId,
-                            spec.name
-                          ).document
+      {operation.analysisPresets && operation.analysisPresets.length > 0 && (
+        <label>
+          Curated analysis preset
+          <select
+            aria-label="Curated analysis preset"
+            value={step.curatedAnalysisId ?? ''}
+            onChange={event => {
+              const preset = operation.analysisPresets?.find(
+                candidate => candidate.curatedAnalysisId === event.target.value
+              );
+              if (!preset) return;
+              store.edit(`preset:${stepId}`, currentDocument => {
+                const currentStep = currentDocument.steps.find(
+                  candidate => candidate.id === stepId
+                );
+                return currentStep
+                  ? applyWorkbenchCuratedPreset(
+                      currentDocument,
+                      currentStep,
+                      operation,
+                      preset.curatedAnalysisId
                     )
-                  }
-                >
-                  {row.inputId ? 'Demote' : 'Promote'}
-                </WorkbenchButton>
+                  : currentDocument;
+              });
+            }}
+          >
+            <option value="">Choose a preset</option>
+            {operation.analysisPresets.map(preset => (
+              <option key={preset.curatedAnalysisId} value={preset.curatedAnalysisId}>
+                {preset.title}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      {rows.some(row => row.spec.level === 'advanced') && (
+        <label>
+          <input
+            type="checkbox"
+            checked={showAdvanced}
+            onChange={event => setShowAdvanced(event.target.checked)}
+          />{' '}
+          All settings
+        </label>
+      )}
+      {rows
+        .filter(row => showAdvanced || row.spec.level !== 'advanced')
+        .map(row => {
+          const spec = row.spec;
+          const workflowInput = document.inputs.find(input => input.id === row.inputId);
+          const datasetLabel = resolvedValues['datasetLabel'];
+          return (
+            <ParameterField key={`${stepId}:${spec.name}`}>
+              <WorkbenchParameterValue
+                spec={row.controlSpec}
+                operationId={operation.id}
+                value={row.value}
+                testId={WORKBENCH_TEST_IDS.parameter(spec.name)}
+                errorTestId={WORKBENCH_TEST_IDS.parameterError(spec.name)}
+                suggestions={row.suggestions}
+                datasets={datasets}
+                datasetLabel={typeof datasetLabel === 'string' ? datasetLabel : undefined}
+                bindingIdentity={row.inputId ? `input:${row.inputId}` : row.bindingKind}
+                contextLabel={step.label ?? operation.title}
+                differentDefault={row.isDefault ? undefined : spec.defaultValue}
+                onReset={
+                  row.bindingKind === 'default'
+                    ? undefined
+                    : () =>
+                        store.edit(`parameter:${stepId}:${spec.name}`, currentDocument =>
+                          setWorkflowParameter(currentDocument, stepId, spec.name, undefined)
+                        )
+                }
+                onCommit={value =>
+                  store.edit(`parameter:${stepId}:${spec.name}`, currentDocument => {
+                    const currentStep = currentDocument.steps.find(
+                      candidate => candidate.id === stepId
+                    );
+                    const binding = currentStep?.parameters[spec.name];
+                    if (binding?.from === 'input')
+                      return updateWorkflowInput(currentDocument, binding.inputId, {value});
+                    const dataset =
+                      spec.kind === 'dataset'
+                        ? datasets.find(candidate => candidate.id === value)
+                        : undefined;
+                    const values =
+                      dataset && currentStep
+                        ? getWorkbenchDatasetParameters(currentStep, operation, spec.name, dataset)
+                        : {[spec.name]: value};
+                    return Object.entries(values).reduce(
+                      (changed, [name, parameterValue]) =>
+                        setWorkflowParameter(changed, stepId, name, {
+                          from: 'static',
+                          value: parameterValue
+                        }),
+                      currentDocument
+                    );
+                  })
+                }
+              />
+              {row.inputId && (
+                <span className="hint">Workflow input: {workflowInput?.label ?? row.inputId}</span>
               )}
-            </div>
-          </ParameterField>
-        );
-      })}
+              <div>
+                {PROMOTABLE_KINDS.has(spec.kind) && (
+                  <WorkbenchButton
+                    type="button"
+                    data-testid={WORKBENCH_TEST_IDS.parameterPromote(spec.name)}
+                    aria-label={`${row.inputId ? 'Remove workflow input for' : 'Make workflow input for'} ${spec.label}`}
+                    aria-pressed={Boolean(row.inputId)}
+                    title="Make this a workflow input"
+                    disabled={!row.inputId && row.value === '' && spec.defaultValue === undefined}
+                    onClick={() =>
+                      store.edit(`promote:${stepId}:${spec.name}`, currentDocument =>
+                        row.inputId
+                          ? demoteWorkflowParameter(currentDocument, stepId, spec.name)
+                          : promoteWorkflowParameter(
+                              currentDocument,
+                              store.registry,
+                              stepId,
+                              spec.name,
+                              {value: row.value}
+                            ).document
+                      )
+                    }
+                  >
+                    {row.inputId ? 'Demote' : 'Promote'}
+                  </WorkbenchButton>
+                )}
+              </div>
+            </ParameterField>
+          );
+        })}
       {drawings !== null && (
         <WorkbenchMuted as="p" aria-live="polite">
           {formatWorkbenchDrawings(drawings)}

@@ -8,7 +8,7 @@ import {
   POLYGON_CONTIGUITY_PREPARATION_BYTES,
   preparePolygonContiguityTopology,
   type PreparedKeplerPolygonTopologySource
-} from './geometry-preparation';
+} from './geometry-preparation/index';
 import {
   GPUCommandGraph,
   type CompiledGPUCommandGraph,
@@ -63,6 +63,8 @@ type PolygonTopology = {
 };
 
 export type AnalysisPolygonWeightsLease = {
+  /** Opaque identity of the shared cache entry, identical across consumer imports. */
+  topology?: object;
   binding: KeplerPolygonWeightsBinding;
   /** Overflow, required slots, candidate overflow, and excluded geometry rows, in that order. */
   diagnostics: PolygonDiagnostics;
@@ -152,6 +154,7 @@ export class AnalysisPolygonWeightsCache {
     };
     try {
       return {
+        topology: cached,
         binding: cached.importBinding(graph),
         diagnostics: cached.diagnostics,
         encode: commandEncoder => {

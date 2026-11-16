@@ -4,6 +4,7 @@
 
 // Browser verification of Flow in H3 endpoint mode: cell centers become endpoints, flows aggregate
 // per origin-destination pair, and the native FlowmapLayer renders with picking and zoom clustering.
+import {setAnalysisSheetParameter} from './analysis-sheet-controls.mjs';
 import assert from 'node:assert/strict';
 import * as arrow from 'apache-arrow';
 import {latLngToCell, cellToLatLng} from 'h3-js';
@@ -104,7 +105,7 @@ try {
   await panel.getByLabel('Zone centroids GeoJSON', {exact: true}).fill(JSON.stringify(zones));
   await panel.getByLabel('Unique OD flows source', {exact: true}).selectOption('text');
   await panel.getByLabel('Unique OD flows GeoJSON', {exact: true}).fill(JSON.stringify(flows));
-  await panel.getByLabel(/^Weighted neighborhood size/).fill('0');
+  await setAnalysisSheetParameter(panel, 'neighborhoodSize', 0);
   await runNetworkCategoricalCatalog(page, panel, 'GPUKernelFlowSmoothing');
   assert.match(
     await panel.getByTestId('catalog-result').innerText(),

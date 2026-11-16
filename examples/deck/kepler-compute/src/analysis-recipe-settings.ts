@@ -189,10 +189,11 @@ export function validateAnalysisRecipeCapacity(
 /** Shared by replay preflight and execution so unsupported recipes cannot mutate native state. */
 export function getAnalysisRecipeSettings(
   recipe: KeplerAnalysisRecipe
-): Pick<AnalysisSettings, 'mode' | 'population' | 'column'> &
+): Pick<AnalysisSettings, 'mode' | 'population'> &
   Partial<
     Pick<
       AnalysisSettings,
+      | 'column'
       | 'classCount'
       | 'variance'
       | 'naturalBreaksMode'
@@ -240,7 +241,6 @@ export function getAnalysisRecipeSettings(
     return {
       mode: 'dbscan-points',
       population: recipe.population,
-      column: operation.longitudeColumn,
       dbscan: parseKeplerDBSCANSettings(settings)
     };
   }
@@ -389,7 +389,7 @@ export function getAnalysisRecipeColumns(recipe: KeplerAnalysisRecipe): readonly
   const settings = getAnalysisRecipeSettings(recipe);
   return [
     ...new Set([
-      settings.column,
+      ...(settings.column ? [settings.column] : []),
       ...(settings.cartogram ? [settings.cartogram.xColumn, settings.cartogram.yColumn] : []),
       ...(settings.polygon ? [settings.polygon.weights.geometryColumn] : []),
       ...(settings.denominatorColumn ? [settings.denominatorColumn] : []),

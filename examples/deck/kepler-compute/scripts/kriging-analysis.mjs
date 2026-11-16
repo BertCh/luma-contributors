@@ -12,6 +12,7 @@ import {PNG} from 'pngjs';
 import tiffDecoder from 'utif';
 import {getPlaywrightLaunchOptions} from '../../../../scripts/playwright/get-playwright-launch-options.mjs';
 import {pinViteModules} from './pin-vite-modules.mjs';
+import {setAnalysisSheetControl} from './analysis-sheet-controls.mjs';
 import {openNativeData, closeNativeDialog} from './native-navigation.mjs';
 
 const bounds = [-74, 40, -73.5, 40.5];
@@ -179,9 +180,11 @@ try {
   await panel.getByLabel('Dataset', {exact: true}).selectOption(datasetId);
   await panel.getByLabel('Numeric field', {exact: true}).selectOption('response');
   await panel.getByText('Configure ordinary kriging grid', {exact: true}).click();
-  await panel.getByLabel('Kriging longitude field', {exact: true}).selectOption('longitude');
-  await panel.getByLabel('Kriging latitude field', {exact: true}).selectOption('latitude');
-  await panel.getByLabel('Kriging variogram model', {exact: true}).selectOption('spherical');
+  assert.equal(await panel.locator('.analysis-kriging-settings').getByTestId('ax-analysis-sheet').count(), 1);
+  assert.match(await panel.locator('.analysis-kriging-settings').getByTestId('ax-resident-method').innerText(), /Catalog kriging uses a supplied variogram/);
+  await setAnalysisSheetControl(panel.getByLabel('Kriging longitude field', {exact: true}), 'longitude');
+  await setAnalysisSheetControl(panel.getByLabel('Kriging latitude field', {exact: true}), 'latitude');
+  await setAnalysisSheetControl(panel.getByLabel('Kriging variogram model', {exact: true}), 'spherical');
   for (const [label, value] of [
     ['Kriging west longitude', -74], ['Kriging south latitude', 40],
     ['Kriging east longitude', -73.5], ['Kriging north latitude', 40.5],
@@ -189,7 +192,7 @@ try {
     ['Kriging nearest samples', 3], ['Kriging minimum distinct positions', 2],
     ['Kriging nugget in squared response units', 0], ['Kriging partial sill in squared response units', 1],
     ['Kriging effective range in meters', 100000]
-  ]) await panel.getByLabel(label, {exact: true}).fill(String(value));
+  ]) await setAnalysisSheetControl(panel.getByLabel(label, {exact: true}), value);
   stage('run manually configured ordinary kriging and inspect both output metrics');
   await panel.getByRole('button', {name: 'Apply model and run kriging', exact: true}).click();
   await waitForGrid(datasetId);
@@ -253,7 +256,7 @@ try {
     await panel.getByLabel('Operation', {exact: true}).selectOption('z-score');
     await page.waitForFunction(id => !window.__keplerComputeTest.renderedLayers().some(layer =>
       layer.id === `resident-kriging-points-${id}`), datasetId);
-    await panel.getByLabel('Kriging variogram model', {exact: true}).selectOption(model);
+    await setAnalysisSheetControl(panel.getByLabel('Kriging variogram model', {exact: true}), model);
     assert.equal(await panel.getByLabel('Kriging variogram model', {exact: true}).inputValue(), model);
     await panel.getByRole('button', {name: 'Apply model and run kriging', exact: true}).click();
     await waitForGrid(datasetId);
@@ -298,23 +301,23 @@ try {
   await panel.getByLabel('Numeric field', {exact: true}).selectOption('response');
   if (!(await panel.locator('.analysis-kriging-settings').evaluate(element => element.open)))
     await panel.getByText('Configure ordinary kriging grid', {exact: true}).click();
-  await panel.getByLabel('Kriging longitude field', {exact: true}).selectOption('longitude');
-  await panel.getByLabel('Kriging latitude field', {exact: true}).selectOption('latitude');
+  await setAnalysisSheetControl(panel.getByLabel('Kriging longitude field', {exact: true}), 'longitude');
+  await setAnalysisSheetControl(panel.getByLabel('Kriging latitude field', {exact: true}), 'latitude');
   for (const [label, value] of [
     ['Kriging west longitude', -74], ['Kriging south latitude', 40],
     ['Kriging east longitude', -73.992], ['Kriging north latitude', 40.008],
     ['Kriging columns', 2], ['Kriging rows', 2], ['Kriging search radius in meters', 100000],
     ['Kriging nearest samples', 8], ['Kriging minimum distinct positions', 3]
-  ]) await panel.getByLabel(label, {exact: true}).fill(String(value));
+  ]) await setAnalysisSheetControl(panel.getByLabel(label, {exact: true}), value);
   stage('fit a covariance through each GPU Vecchia method and preserve fit provenance');
   const models = await panel.getByLabel('Kriging variogram model', {exact: true}).locator('option').evaluateAll(options => options.map(option => option.value));
   assert(models.includes('matern-3/2') && models.includes('matern-5/2'));
   for (const method of ['vecchia-likelihood', 'vecchia-fisher']) {
-    await panel.getByLabel('Variogram fitting method', {exact: true}).selectOption(method);
-    await panel.getByLabel('Kriging variogram model', {exact: true}).selectOption('exponential');
-    await panel.getByLabel('Kriging nugget in squared response units', {exact: true}).fill('0.05');
-    await panel.getByLabel('Kriging partial sill in squared response units', {exact: true}).fill('1');
-    await panel.getByLabel('Kriging effective range in meters', {exact: true}).fill('300');
+    await setAnalysisSheetControl(panel.getByLabel('Variogram fitting method', {exact: true}), method);
+    await setAnalysisSheetControl(panel.getByLabel('Kriging variogram model', {exact: true}), 'exponential');
+    await setAnalysisSheetControl(panel.getByLabel('Kriging nugget in squared response units', {exact: true}), '0.05');
+    await setAnalysisSheetControl(panel.getByLabel('Kriging partial sill in squared response units', {exact: true}), '1');
+    await setAnalysisSheetControl(panel.getByLabel('Kriging effective range in meters', {exact: true}), '300');
     await panel.getByRole('button', {name: 'Fit variogram automatically', exact: true}).click();
     const diagnosticsTable = panel.getByRole('table', {name: 'Variogram fit diagnostics', exact: true});
     await diagnosticsTable.waitFor({timeout: 60000});

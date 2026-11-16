@@ -2,7 +2,47 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {CatalogFeatureCollection} from '@luma-contributors/kepler';
+import type {
+  CatalogFeatureCollection,
+  KeplerDatasetProfileDeclarations
+} from '@luma-contributors/kepler';
+
+/** Author-known facts about these synthetic fixtures, never declarations about user input. */
+export function getNetworkCategoricalSampleDeclarations(
+  operationId: string,
+  inputName: string
+): KeplerDatasetProfileDeclarations | undefined {
+  switch (operationId) {
+    case 'map-matched-edge-volumes':
+    case 'network-potential-path-area':
+    case 'network-travel-time-percentiles':
+      return {coordinateModel: 'planar'};
+    case 'sinkhorn-divergence':
+      return {coordinateModel: 'planar', measurement: {source: 'amount', target: 'amount'}};
+    case 'kernel-flow-smoothing':
+      return {
+        coordinateModel: 'geographic',
+        ...(inputName === 'flows'
+          ? {measurement: {origin: 'identifier', destination: 'identifier'}}
+          : {rowSemantics: 'objects'})
+      };
+    case 'radiation-flow-model':
+      return {coordinateModel: 'geographic', measurement: {outflow: 'count'}};
+    case 'redcap-single-linkage':
+    case 'healpix-point-to-cell':
+    case 'healpix-cell-aggregation':
+    case 'datum-grid-transform':
+      return {coordinateModel: 'geographic'};
+    case 'colocation-quotient':
+    case 'local-category-dependence':
+    case 'spatial-entropy':
+    case 'category-pair-counts':
+    case 'geographical-detector':
+      return {coordinateModel: 'geographic', measurement: {category: 'nominal'}};
+    default:
+      return undefined;
+  }
+}
 
 function makePoints(
   coordinates: number[][],

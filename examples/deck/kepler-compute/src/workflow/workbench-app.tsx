@@ -3,19 +3,35 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {useEffect, useSyncExternalStore} from 'react';
+import {analysisDatasetContext} from '../analysis-dataset-context';
+import {rasterLiveHost} from '../main-raster-live';
 import {WorkbenchDialogs} from './workbench-dialogs';
 import {WorkbenchDock} from './workbench-dock';
 import {bindWorkbenchExtension} from './workbench-extension';
 import {createWorkbenchHost} from './workbench-host';
 import {WorkbenchSidePanel} from './workbench-side-panel';
 import {createWorkbenchStore, type WorkbenchStore} from './workbench-store';
+import {connectWorkbenchAnalysisSampleSources} from './workbench-analysis-samples';
 
 let store: WorkbenchStore | null = null;
 
 /** The one workbench of the app, created on first use. */
 export function getWorkbenchStore(): WorkbenchStore {
   if (!store) {
-    store = createWorkbenchStore({host: createWorkbenchHost()});
+    store = createWorkbenchStore({
+      host: createWorkbenchHost({
+        getRasterSources: () => {
+          const model = rasterLiveHost.getPanelModel();
+          return [...model.rasterLayers, ...model.bitmapLayers].flatMap(layer => {
+            const source =
+              rasterLiveHost.raster.getSource(layer.id) ??
+              rasterLiveHost.bitmap.getSource(layer.id);
+            return source ? [{source, label: layer.label}] : [];
+          });
+        }
+      })
+    });
+    connectWorkbenchAnalysisSampleSources(store);
     bindWorkbenchExtension(store);
     // Acceptance scripts drive the workbench through the store.
     if (import.meta.env.DEV) Object.assign(window, {__keplerWorkflowTest: {store}});
@@ -42,7 +58,12 @@ export function WorkbenchMount({
   sidePanelOpen: boolean;
 }): React.JSX.Element {
   const workbench = getWorkbenchStore();
-  useEffect(() => workbench.notifyExternalChange(), [workbench, externalRevision]);
+  const profileVersion = useSyncExternalStore(
+    analysisDatasetContext.subscribe,
+    analysisDatasetContext.getVersion,
+    analysisDatasetContext.getVersion
+  );
+  useEffect(() => workbench.notifyExternalChange(), [workbench, externalRevision, profileVersion]);
   useEffect(() => {
     document.documentElement.style.setProperty(
       '--workbench-dock-left',

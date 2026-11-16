@@ -3,7 +3,22 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {useEffect, useState} from 'react';
-import {MAXIMUM_KEPLER_IDW_SOURCE_ROWS, type KeplerIDWSettings} from '@luma-contributors/kepler';
+import {useAnalysisFormInitialization} from './analysis-form-initialization';
+
+import {
+  MAXIMUM_KEPLER_IDW_SOURCE_ROWS,
+  parseKeplerIDWSettings,
+  type KeplerIDWSettings,
+  type KeplerKrigingSettings,
+  type CatalogParameterValue
+} from '@luma-contributors/kepler';
+import {ResidentAnalysisSheetForm, type ResidentAnalysisSheetField} from './analysis-sheet';
+import {
+  usePointAnalysisSheet,
+  makePointSheetColumn,
+  type PointSheetValues,
+  type PointSheetSpecification
+} from './analysis-point-weights-panel';
 import type {AnalysisRuntime} from './analysis-runtime';
 import {interpolationSurfaceHover} from './interpolation-surface-hover';
 import type {InterpolationCell} from './interpolation-runtime';
@@ -33,149 +48,191 @@ const FIELDS = [
   }
 ] as const;
 
+/** Shared resident grid defaults retain AX publication roles and data-derived geographic bounds. */
+export function makeInterpolationSheetDefaults(
+  settings: KeplerIDWSettings | KeplerKrigingSettings | undefined,
+  initialization: ReturnType<typeof useAnalysisFormInitialization>
+): Record<string, CatalogParameterValue> {
+  return {
+    ...initialization.interpolation,
+    ...(settings
+      ? {
+          longitudeColumn: settings.longitudeColumn,
+          latitudeColumn: settings.latitudeColumn,
+          west: settings.grid.bounds[0],
+          south: settings.grid.bounds[1],
+          east: settings.grid.bounds[2],
+          north: settings.grid.bounds[3]
+        }
+      : {}),
+    width: settings?.grid.width ?? 32,
+    height: settings?.grid.height ?? 32
+  };
+}
+
+/** Both resident interpolators use the same sheet controls, source explanations and role checks. */
+export function createInterpolationSheetFields(
+  values: PointSheetValues,
+  columns: readonly string[],
+  prefix: string,
+  specifications: readonly PointSheetSpecification[],
+  source: (name: string) => string
+): ResidentAnalysisSheetField[] {
+  const label = prefix === 'kriging' ? 'Kriging' : 'Interpolation';
+  return [
+    makePointSheetColumn(
+      'longitudeColumn',
+      `${label} longitude field`,
+      `${prefix}-longitudeColumn`
+    ),
+    makePointSheetColumn('latitudeColumn', `${label} latitude field`, `${prefix}-latitudeColumn`),
+    ...specifications
+  ].map(({controlId, ...specification}) => ({
+    specification,
+    controlId,
+    value: values[specification.name] ?? '',
+    source: source(specification.name),
+    ...(specification.fieldRole ? {columns} : {})
+  }));
+}
+
+export function getInterpolationSheetChecks(
+  fields: readonly ResidentAnalysisSheetField[],
+  rowCount: number,
+  maximumRows: number,
+  readSettings: () => unknown
+): string[] {
+  const failures = fields.flatMap(field =>
+    field.specification.fieldRole && !field.columns?.includes(String(field.value))
+      ? [`${field.specification.label}: choose an available prepared numeric column.`]
+      : []
+  );
+  if (rowCount < 1 || rowCount > maximumRows)
+    failures.push(
+      `Interpolation source rows must be from 1 through ${maximumRows.toLocaleString()}; choose a supported dataset.`
+    );
+  try {
+    readSettings();
+  } catch (failure) {
+    failures.push(
+      `${failure instanceof Error ? failure.message : String(failure)}. Review the grid bounds, model and limits before applying.`
+    );
+  }
+  return failures;
+}
+
+/** Blank numeric controls must not become zero through Number(''). */
+export function readInterpolationSheetNumber(values: PointSheetValues, name: string): number {
+  if (String(values[name] ?? '').trim() === '') throw new Error(`Declare interpolation ${name}`);
+  return Number(values[name]);
+}
+
+export function getIDWSheetSettings(values: PointSheetValues): KeplerIDWSettings {
+  const number = (name: string) => readInterpolationSheetNumber(values, name);
+  return parseKeplerIDWSettings({
+    longitudeColumn: values['longitudeColumn'],
+    latitudeColumn: values['latitudeColumn'],
+    coordinateSpace: 'longitude-latitude',
+    metric: 'great-circle',
+    units: 'meters',
+    grid: {
+      bounds: ['west', 'south', 'east', 'north'].map(number),
+      width: number('width'),
+      height: number('height')
+    },
+    searchRadius: number('searchRadius'),
+    power: number('power'),
+    neighborCount: number('neighborCount'),
+    minimumNeighborCount: number('minimumNeighborCount'),
+    taper: values['taper']
+  });
+}
+
 /** Grid controls deliberately identify a new cell space, independent of source rows. */
 export function InterpolationPanel({analysis}: {analysis: AnalysisRuntime}) {
   const settings = analysis.settings.idw;
-  return (
-    <InterpolationControls key={JSON.stringify(settings)} analysis={analysis} settings={settings} />
+  const initialization = useAnalysisFormInitialization(analysis);
+  const sheet = usePointAnalysisSheet(
+    {
+      ...makeInterpolationSheetDefaults(settings, initialization),
+      searchRadius: settings?.searchRadius ?? 10000,
+      power: settings?.power ?? 2,
+      neighborCount: settings?.neighborCount ?? 8,
+      minimumNeighborCount: settings?.minimumNeighborCount ?? 3,
+      taper: settings?.taper ?? 'none',
+      editedFields: '[]'
+    },
+    settings,
+    analysis.coordinateRestorationKey ?? analysis.datasetId,
+    initialization.coordinateSource
   );
-}
-function InterpolationControls({
-  analysis,
-  settings
-}: {
-  analysis: AnalysisRuntime;
-  settings?: KeplerIDWSettings;
-}) {
-  const [draft, setDraft] = useState({
-    longitudeColumn: settings?.longitudeColumn ?? '',
-    latitudeColumn: settings?.latitudeColumn ?? '',
-    west: String(settings?.grid.bounds[0] ?? -74.1),
-    south: String(settings?.grid.bounds[1] ?? 40.65),
-    east: String(settings?.grid.bounds[2] ?? -73.9),
-    north: String(settings?.grid.bounds[3] ?? 40.85),
-    width: String(settings?.grid.width ?? 32),
-    height: String(settings?.grid.height ?? 32),
-    searchRadius: String(settings?.searchRadius ?? 10000),
-    power: String(settings?.power ?? 2),
-    neighborCount: String(settings?.neighborCount ?? 8),
-    minimumNeighborCount: String(settings?.minimumNeighborCount ?? 3),
-    taper: settings?.taper ?? 'none'
-  });
-  const [error, setError] = useState('');
+  const fields = createInterpolationSheetFields(
+    sheet.values,
+    analysis.availableColumns,
+    'interpolation',
+    [
+      ...FIELDS.map(field => ({
+        name: field.name,
+        label: field.label,
+        controlId: `interpolation-${field.name}`,
+        kind: field.step === '1' ? ('integer' as const) : ('number' as const),
+        minimum: field.minimum,
+        maximum: 'maximum' in field ? field.maximum : undefined,
+        level: ['neighborCount', 'minimumNeighborCount'].includes(field.name)
+          ? ('advanced' as const)
+          : ('basic' as const)
+      })),
+      {
+        name: 'taper',
+        label: 'Interpolation radius taper',
+        controlId: 'interpolation-taper',
+        kind: 'enum',
+        options: ['none', 'modified-shepard'],
+        level: 'advanced'
+      }
+    ],
+    name =>
+      !settings &&
+      ['west', 'south', 'east', 'north'].includes(name) &&
+      sheet.source(name) !== 'User override'
+        ? initialization.boundsSource
+        : sheet.source(name)
+  );
   return (
     <details className="analysis-interpolation-settings">
       <summary>Configure inverse-distance interpolation grid</summary>
+      <ResidentAnalysisSheetForm
+        key={JSON.stringify([analysis.coordinateRestorationKey, settings])}
+        fields={fields}
+        checks={getInterpolationSheetChecks(
+          fields,
+          analysis.rowCount,
+          MAXIMUM_KEPLER_IDW_SOURCE_ROWS,
+          () => getIDWSheetSettings(sheet.values)
+        )}
+        method="Resident IDW predicts the selected numeric field on a separate north-up longitude/latitude grid using spherical great-circle meters. It offers hard-radius inverse distance and Modified Shepard tapering. Catalog IDW uses its own cell-size grid controls; this resident method retains explicit bounds, dimensions and source-row tie breaking."
+        submitLabel="Apply grid and run interpolation"
+        onChange={(name, value) => sheet.change(name, value)}
+        onApply={current =>
+          analysis.configureInterpolation(getIDWSheetSettings({...sheet.values, ...current}))
+        }
+      />
       <p className="hint">
-        Interpolate the numeric field onto a separate north-up longitude/latitude grid. Distances
-        and the search radius use spherical great-circle meters. Cells do not represent original
-        source rows.
+        Up to 16.7 million source rows and cells (8,192 cells per axis); large grids run as tiled
+        GPU dispatches and are limited by device memory. Radius-expanded grids must stay away from
+        the poles and antimeridian. Float32 coordinates limit distance precision; source nulls and
+        nonfinite values are excluded.
       </p>
-      <form
-        onSubmit={event => {
-          event.preventDefault();
-          try {
-            analysis.configureInterpolation({
-              longitudeColumn: draft.longitudeColumn,
-              latitudeColumn: draft.latitudeColumn,
-              coordinateSpace: 'longitude-latitude',
-              metric: 'great-circle',
-              units: 'meters',
-              grid: {
-                bounds: [
-                  Number(draft.west),
-                  Number(draft.south),
-                  Number(draft.east),
-                  Number(draft.north)
-                ],
-                width: Number(draft.width),
-                height: Number(draft.height)
-              },
-              searchRadius: Number(draft.searchRadius),
-              power: Number(draft.power),
-              neighborCount: Number(draft.neighborCount),
-              minimumNeighborCount: Number(draft.minimumNeighborCount),
-              taper: draft.taper
-            });
-            setError('');
-          } catch (failure) {
-            setError(failure instanceof Error ? failure.message : String(failure));
-          }
-        }}
-      >
-        {(['longitudeColumn', 'latitudeColumn'] as const).map(field => (
-          <label key={field} htmlFor={`interpolation-${field}`}>
-            Interpolation {field === 'longitudeColumn' ? 'longitude' : 'latitude'} field
-            <select
-              id={`interpolation-${field}`}
-              aria-label={`Interpolation ${field === 'longitudeColumn' ? 'longitude' : 'latitude'} field`}
-              required
-              value={draft[field]}
-              onChange={event => setDraft({...draft, [field]: event.target.value})}
-            >
-              <option value="">Choose a coordinate field</option>
-              {analysis.availableColumns.map(column => (
-                <option key={column} value={column}>
-                  {column}
-                </option>
-              ))}
-            </select>
-          </label>
-        ))}
-        {FIELDS.map(field => (
-          <label key={field.name} htmlFor={`interpolation-${field.name}`}>
-            {field.label}
-            <input
-              id={`interpolation-${field.name}`}
-              type="number"
-              required
-              min={field.minimum}
-              max={'maximum' in field ? field.maximum : undefined}
-              step={field.step}
-              value={draft[field.name]}
-              onChange={event => setDraft({...draft, [field.name]: event.target.value})}
-            />
-          </label>
-        ))}
-        <label htmlFor="interpolation-taper">Interpolation radius taper</label>
-        <select
-          id="interpolation-taper"
-          value={draft.taper}
-          onChange={event =>
-            setDraft({
-              ...draft,
-              taper: event.target.value === 'modified-shepard' ? 'modified-shepard' : 'none'
-            })
-          }
-        >
-          <option value="none">Hard radius · inverse distance power</option>
-          <option value="modified-shepard">Modified Shepard · falls to zero at radius</option>
-        </select>
-        <p className="hint">
-          Up to 16.7 million source rows and cells (8,192 cells per axis); large grids run as tiled
-          GPU dispatches and are limited by device memory. Radius-expanded grids must stay away from
-          the poles and antimeridian. Float32 coordinates limit distance precision; source nulls and
-          nonfinite values are excluded.
-        </p>
-        <p className="hint">
-          Exact center hits use the smallest original source row and override the minimum-sample
-          threshold. Otherwise sparse cells are transparent nodata. Ties among nearest samples use
-          source-row order. Selection changes the contributing samples and can find replacement
-          nearest neighbors. This grid does not use the fixed statistical neighbor cache.
-        </p>
-        <p className="hint">
-          Power 0 gives an unweighted mean. This method supplies values and contributing counts,
-          without kriging variance, fitted parameters or cross-validation claims.
-        </p>
-        <button type="submit" disabled={analysis.rowCount > MAXIMUM_KEPLER_IDW_SOURCE_ROWS}>
-          Apply grid and run interpolation
-        </button>
-      </form>
-      {error && (
-        <p role="alert" className="error">
-          {error}
-        </p>
-      )}
+      <p className="hint">
+        Exact center hits use the smallest original source row and override the minimum-sample
+        threshold. Otherwise sparse cells are transparent nodata. Ties among nearest samples use
+        source-row order. Selection changes the contributing samples and can find replacement
+        nearest neighbors. This grid does not use the fixed statistical neighbor cache.
+      </p>
+      <p className="hint">
+        Power 0 gives an unweighted mean. This method supplies values and contributing counts,
+        without kriging variance, fitted parameters or cross-validation claims.
+      </p>
     </details>
   );
 }

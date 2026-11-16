@@ -17,6 +17,10 @@ import {
   validateWorkbenchExtension
 } from './workflow/workbench-extension';
 
+import {analysisDatasetContext, parseAnalysisProfileDeclarations} from './analysis-dataset-context';
+
+export const SANDBOX_EXTENSION_ANALYSIS_PROFILES = 'analysisProfileDeclarations';
+
 /** Workspace members saved under `settings.extensions` of the sandbox state. */
 export type StreamedWeightsExtension = {
   schemaVersion: 1;
@@ -37,6 +41,8 @@ export function collectSandboxExtensions(
   analyses: readonly AnalysisPolicySource[]
 ): Record<string, KeplerJSONValue> | undefined {
   const extensions: Record<string, KeplerJSONValue> = {};
+  const declarations = analysisDatasetContext.collectDeclarations();
+  if (declarations) extensions[SANDBOX_EXTENSION_ANALYSIS_PROFILES] = declarations;
   const catalog = serializeCatalogInvocationRecords();
   if (catalog) extensions[SANDBOX_EXTENSION_CATALOG] = catalog;
   const workflows = collectWorkbenchExtension();
@@ -89,6 +95,7 @@ export function validateSandboxExtensions(extensions: Record<string, KeplerJSONV
   const catalog = extensions?.[SANDBOX_EXTENSION_CATALOG];
   const streamed = extensions?.[SANDBOX_EXTENSION_STREAMED_WEIGHTS];
   return {
+    profiles: parseAnalysisProfileDeclarations(extensions?.[SANDBOX_EXTENSION_ANALYSIS_PROFILES]),
     catalog: catalog === undefined ? [] : parseCatalogInvocationRecords(catalog),
     streamedWeights: streamed === undefined ? undefined : parseStreamedWeightsExtension(streamed),
     workflows: validateWorkbenchExtension(extensions?.[SANDBOX_EXTENSION_WORKFLOWS])
@@ -104,6 +111,7 @@ export function applySandboxExtensions(
   if (validated.catalog.length) restoreCatalogInvocations(validated.catalog);
   else clearCatalogInvocations();
   applyWorkbenchExtension(validated.workflows);
+  analysisDatasetContext.restoreDeclarations(extensions?.[SANDBOX_EXTENSION_ANALYSIS_PROFILES]);
   for (const [datasetId, options] of Object.entries(validated.streamedWeights?.datasets ?? {}))
     setStreamedOptions(datasetId, options);
 }

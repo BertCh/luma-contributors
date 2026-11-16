@@ -4,6 +4,11 @@
 
 import {useId, useMemo, useState} from 'react';
 import * as arrow from 'apache-arrow';
+import {WorkbenchAnalysisGallery} from './workflow/workbench-analysis-gallery';
+import {
+  createWorkbenchSandboxAnalysis,
+  launchWorkbenchSandboxAnalysis
+} from './workflow/workbench-analysis-launch';
 import {
   SANDBOX_SAMPLES,
   createSandboxSample,
@@ -11,12 +16,19 @@ import {
   type SandboxSampleId
 } from './sandbox-samples';
 
-/** Local reproducible sources; preparation still requires the user's schema review and publication. */
+async function loadAnalysisWorkbench() {
+  const {getWorkbenchStore} = await import('./workflow/workbench-app');
+  return getWorkbenchStore();
+}
+
+/** Local reproducible sources paired with question-led analyses. */
 export function SampleGalleryPanel({onPrepare}: {onPrepare(sample: SandboxSample): void}) {
   const identifier = useId();
   const [sampleId, setSampleId] = useState<SandboxSampleId>('points-time');
   const [status, setStatus] = useState('');
+  const [running, setRunning] = useState(false);
   const sample = useMemo(() => createSandboxSample(sampleId), [sampleId]);
+  const template = useMemo(() => createWorkbenchSandboxAnalysis(sampleId), [sampleId]);
   return (
     <details className="sample-gallery">
       <summary>Try a sample dataset</summary>
@@ -26,6 +38,8 @@ export function SampleGalleryPanel({onPrepare}: {onPrepare(sample: SandboxSample
       </p>
       <label htmlFor={`${identifier}-sample`}>Sample dataset</label>
       <select
+        data-testid="ax-original-sample-select"
+        disabled={running}
         id={`${identifier}-sample`}
         value={sampleId}
         onChange={event => {
@@ -44,6 +58,29 @@ export function SampleGalleryPanel({onPrepare}: {onPrepare(sample: SandboxSample
       </select>
       <p>{sample.description.description}</p>
       <p>{sample.description.workflow}</p>
+      <p data-testid="ax-paired-sample-question">{template.title}</p>
+      <button
+        data-testid="ax-paired-sample-run"
+        disabled={running}
+        onClick={async () => {
+          setRunning(true);
+          setStatus('Running analysis…');
+          try {
+            await launchWorkbenchSandboxAnalysis(await loadAnalysisWorkbench(), sampleId);
+            setStatus('Analysis finished. Its result is open in the workbench.');
+          } catch (error) {
+            setStatus(error instanceof Error ? error.message : String(error));
+          } finally {
+            setRunning(false);
+          }
+        }}
+      >
+        Run sample analysis
+      </button>
+      <details>
+        <summary>Run a workflow sample by question</summary>
+        <WorkbenchAnalysisGallery loadStore={loadAnalysisWorkbench} />
+      </details>
       {sample.description.limitation && <p className="hint">{sample.description.limitation}</p>}
       <p>
         {sample.table.numRows} rows · {sample.table.batches.length} batches · generated locally

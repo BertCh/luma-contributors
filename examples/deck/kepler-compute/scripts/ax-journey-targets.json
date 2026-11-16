@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "description": "AX-70: all eight legacy journeys must execute. Optional AX surfaces remain unqualified when absent. A loaded sample must reach its paired result in one analysis action (research section 6). Timings are recorded, not gated until the reference machine is qualified.",
+  "journeys": [
+    {
+      "id": "suggestion-result:h3-cells",
+      "required": false,
+      "outcome": "result-visible",
+      "maximum": {"analysisActionCount": 1}
+    },
+    {
+      "id": "suggestion-result:points-time",
+      "required": false,
+      "outcome": "result-visible",
+      "maximum": {"analysisActionCount": 1}
+    },
+    {
+      "id": "suggestion-result:districts",
+      "required": false,
+      "outcome": "result-visible",
+      "maximum": {"analysisActionCount": 1}
+    },
+    {
+      "id": "suggestion-result:connections",
+      "required": false,
+      "outcome": "result-visible",
+      "maximum": {"analysisActionCount": 1}
+    },
+    {
+      "id": "suggestion-result:trips",
+      "required": false,
+      "outcome": "result-visible",
+      "maximum": {"analysisActionCount": 1}
+    },
+    {
+      "id": "suggestion-result:trip-observations",
+      "required": false,
+      "outcome": "result-visible",
+      "maximum": {"analysisActionCount": 1}
+    },
+    {
+      "id": "suggestion-result:numeric-grid",
+      "required": false,
+      "outcome": "result-visible",
+      "maximum": {"analysisActionCount": 1}
+    },
+    {
+      "id": "suggestion-result:directed-network",
+      "required": false,
+      "outcome": "result-visible",
+      "maximum": {"analysisActionCount": 1}
+    },
+    {"id": "surface:ax-analysis-sheet", "required": false, "outcome": "observed"},
+    {"id": "surface:ax-workflow-gallery", "required": false, "outcome": "observed"},
+    {
+      "id": "surface:ax-command-palette",
+      "required": false,
+      "outcome": "observed",
+      "maximum": {"analysisActionCount": 4}
+    },
+    {"id": "surface:ax-result-card", "required": false, "outcome": "observed"}
+  ]
+}

@@ -8,6 +8,7 @@ import {chromium} from 'playwright';
 import {getPlaywrightLaunchOptions} from '../../../../scripts/playwright/get-playwright-launch-options.mjs';
 import {pinViteModules} from './pin-vite-modules.mjs';
 import {openNativeData, closeNativeDialog} from './native-navigation.mjs';
+import {setAnalysisSheetControl} from './analysis-sheet-controls.mjs';
 
 function square(west, south, east, north) {
   return JSON.stringify({
@@ -89,14 +90,15 @@ try {
   await panel.getByLabel('Dataset', {exact: true}).selectOption(datasetId);
   await panel.getByLabel('Numeric field', {exact: true}).selectOption('measure');
   await panel.getByText('Configure polygon contiguity analysis', {exact: true}).click();
-  await panel.getByLabel('Polygon statistic', {exact: true}).selectOption('spatial-rate-polygons');
-  await panel.getByLabel('Polygon geometry field', {exact: true}).selectOption('geometry');
-  await panel.getByLabel('Polygon contiguity rule', {exact: true}).selectOption('queen');
-  await panel.getByLabel('Polygon directed neighbor capacity', {exact: true}).fill('4');
-  await panel.getByLabel('Polygon candidate pair capacity', {exact: true}).fill('64');
-  await panel.getByLabel('Polygon rate population field', {exact: true}).selectOption('population');
-  await panel.getByLabel('Polygon rate scale', {exact: true}).fill('100');
-  await panel.getByLabel('Polygon rate rows without neighbors', {exact: true}).selectOption('undefined');
+  await panel.locator('.analysis-polygon-settings').getByTestId('ax-analysis-sheet').waitFor();
+  await setAnalysisSheetControl(panel.getByLabel('Polygon statistic', {exact: true}), 'spatial-rate-polygons');
+  await setAnalysisSheetControl(panel.getByLabel('Polygon geometry field', {exact: true}), 'geometry');
+  await setAnalysisSheetControl(panel.getByLabel('Polygon contiguity rule', {exact: true}), 'queen');
+  await setAnalysisSheetControl(panel.getByLabel('Polygon directed neighbor capacity', {exact: true}), '4');
+  await setAnalysisSheetControl(panel.getByLabel('Polygon candidate pair capacity', {exact: true}), '64');
+  await setAnalysisSheetControl(panel.getByLabel('Polygon rate population field', {exact: true}), 'population');
+  await setAnalysisSheetControl(panel.getByLabel('Polygon rate scale', {exact: true}), '100');
+  await setAnalysisSheetControl(panel.getByLabel('Polygon rate rows without neighbors', {exact: true}), 'undefined');
   stage('queen rates preserve source rows and isolate D/E');
   await panel.getByRole('button', {name: 'Apply contiguity and run polygon analysis', exact: true}).click();
   // Queen rates are A=15, B=30, C=40; D has no neighbors and E has no polygon.
@@ -117,7 +119,7 @@ try {
   assert.equal(queenRecipe.operation.islandPolicy, 'undefined');
 
   stage('rook removes corner-only B–C adjacency');
-  await panel.getByLabel('Polygon contiguity rule', {exact: true}).selectOption('rook');
+  await setAnalysisSheetControl(panel.getByLabel('Polygon contiguity rule', {exact: true}), 'rook');
   await panel.getByRole('button', {name: 'Apply contiguity and run polygon analysis', exact: true}).click();
   await waitForRate(2, 15, 15, 2);
   stage('restore queen recipe and inspect native derived table');
@@ -144,12 +146,12 @@ try {
   await page.locator('.resident-table-modal').waitFor({state: 'hidden'});
 
   stage('configure polygon Quantile LISA legacy inference');
-  await panel.getByLabel('Polygon statistic', {exact: true}).selectOption('quantile-lisa-polygons');
-  await panel.getByLabel('Polygon Quantile LISA quantile count', {exact: true}).fill('2');
-  await panel.getByLabel('Polygon Quantile LISA selected quantile', {exact: true}).fill('1');
-  await panel.getByLabel('Polygon Quantile LISA seed', {exact: true}).fill('7');
-  await panel.getByLabel('Polygon Quantile LISA permutations', {exact: true}).fill('99');
-  await panel.getByLabel('Polygon Quantile LISA significance level', {exact: true}).fill('0.05');
+  await setAnalysisSheetControl(panel.getByLabel('Polygon statistic', {exact: true}), 'quantile-lisa-polygons');
+  await setAnalysisSheetControl(panel.getByLabel('Polygon Quantile LISA quantile count', {exact: true}), '2');
+  await setAnalysisSheetControl(panel.getByLabel('Polygon Quantile LISA selected quantile', {exact: true}), '1');
+  await setAnalysisSheetControl(panel.getByLabel('Polygon Quantile LISA seed', {exact: true}), '7');
+  await setAnalysisSheetControl(panel.getByLabel('Polygon Quantile LISA permutations', {exact: true}), '99');
+  await setAnalysisSheetControl(panel.getByLabel('Polygon Quantile LISA significance level', {exact: true}), '0.05');
   await panel.getByRole('button', {name: 'Apply contiguity and run polygon analysis', exact: true}).click();
   async function waitForQuantile() {
     await page.waitForFunction(() => {
@@ -170,8 +172,8 @@ try {
     islands: 'exclude', quantileMethod: 'type-5'
   });
   stage('restore polygon Quantile LISA recipe through native controls');
-  await panel.getByLabel('Polygon statistic', {exact: true}).selectOption('spatial-rate-polygons');
-  await panel.getByLabel('Polygon rate scale', {exact: true}).fill('100');
+  await setAnalysisSheetControl(panel.getByLabel('Polygon statistic', {exact: true}), 'spatial-rate-polygons');
+  await setAnalysisSheetControl(panel.getByLabel('Polygon rate scale', {exact: true}), '100');
   await panel.getByRole('button', {name: 'Apply contiguity and run polygon analysis', exact: true}).click();
   await waitForRate(4, 15, 40, 3);
   await panel.getByRole('button', {name: 'Restore recipe', exact: true}).click();
@@ -184,11 +186,11 @@ try {
   assert.equal(await panel.getByLabel('Polygon Quantile LISA significance level', {exact: true}).inputValue(), '0.05');
 
   stage('configure polygon Local Moran conditional inference');
-  await panel.getByLabel('Polygon statistic', {exact: true}).selectOption('local-moran-polygons');
-  await panel.getByLabel('Polygon Local Moran inference', {exact: true}).selectOption('permutation-conditional-two-sided');
-  await panel.getByLabel('Polygon Local Moran permutations', {exact: true}).fill('99');
-  await panel.getByLabel('Polygon Local Moran permutation seed', {exact: true}).fill('7');
-  await panel.getByLabel('Polygon multiple-testing correction', {exact: true}).selectOption('none');
+  await setAnalysisSheetControl(panel.getByLabel('Polygon statistic', {exact: true}), 'local-moran-polygons');
+  await setAnalysisSheetControl(panel.getByLabel('Polygon Local Moran inference', {exact: true}), 'permutation-conditional-two-sided');
+  await setAnalysisSheetControl(panel.getByLabel('Polygon Local Moran permutations', {exact: true}), '99');
+  await setAnalysisSheetControl(panel.getByLabel('Polygon Local Moran permutation seed', {exact: true}), '7');
+  await setAnalysisSheetControl(panel.getByLabel('Polygon multiple-testing correction', {exact: true}), 'none');
   await panel.getByRole('button', {name: 'Apply contiguity and run polygon analysis', exact: true}).click();
   await page.waitForFunction(() => {
     const text = document.querySelector('[aria-label="GPU analysis"]')?.textContent ?? '';

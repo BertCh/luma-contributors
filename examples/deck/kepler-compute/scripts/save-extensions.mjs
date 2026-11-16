@@ -4,6 +4,7 @@
 
 // SHARING5: catalog runs and chunked point-weights policy travel in the portable bundle under
 // state.settings.extensions and are restored after a reload (Saved runs list in the catalog panel).
+import {setAnalysisSheetParameter} from './analysis-sheet-controls.mjs';
 import assert from 'node:assert/strict';
 import {chromium} from 'playwright';
 import {getPlaywrightLaunchOptions} from '../../../../scripts/playwright/get-playwright-launch-options.mjs';
@@ -26,10 +27,11 @@ try {
   await page.waitForFunction(() => window.__keplerComputeTest?.getState().selectedCount === 256, undefined, {timeout: 60000});
   const panel = page.getByRole('region', {name: 'Analysis catalog', exact: true});
   await panel.getByLabel('Operation', {exact: true}).selectOption('network-service-area');
-  await panel.getByLabel(/^Coordinate system/).selectOption('planar');
-  await panel.getByLabel(/^One-way property/).fill('oneway');
-  await panel.getByLabel(/^Maximum snap distance/).fill('1');
-  await panel.getByLabel(/^Cost budgets/).fill('15');
+  await setAnalysisSheetParameter(panel, 'coordinateSystem', 'planar');
+  await setAnalysisSheetParameter(panel, 'onewayProperty', 'oneway');
+  await setAnalysisSheetParameter(panel, 'maximumSnapDistance', 1);
+  await setAnalysisSheetParameter(panel, 'budgets', [15]);
+  await panel.getByTestId('catalog-check-inputs').click();
   await panel.getByTestId('catalog-run').click();
   await panel.getByTestId('catalog-result').waitFor();
   await panel.getByTestId('catalog-saved-invocations').waitFor();

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {useEffect, useState} from 'react';
+import {useAnalysisFormDraft} from './analysis-form-initialization';
 import {
   makePointCoordinateDraft,
   getPointCoordinateDraftSettings,
@@ -31,24 +31,17 @@ const PROJECTED_BOUNDS = [
 ] as const;
 
 /** Restore all scalar recipe fields without resetting drafts on unrelated runtime updates. */
-export function usePointCoordinates(settings?: PointCoordinateSettings, resetKey?: unknown) {
-  const saved = makePointCoordinateDraft(settings);
-  const [draft, setDraft] = useState(() => makePointCoordinateDraft(settings));
-  useEffect(() => {
-    setDraft(makePointCoordinateDraft(settings));
-  }, [
-    resetKey,
-    saved.coordinateSpace,
-    saved.longitudeColumn,
-    saved.latitudeColumn,
-    saved.xColumn,
-    saved.yColumn,
-    saved.crs,
-    saved.minX,
-    saved.minY,
-    saved.maxX,
-    saved.maxY
-  ]);
+export function usePointCoordinates(
+  settings?: PointCoordinateSettings,
+  resetKey?: unknown,
+  initialization?: PointCoordinateDraft
+) {
+  const savedCoordinates = settings ? makePointCoordinateDraft(settings) : undefined;
+  const [draft, setDraft] = useAnalysisFormDraft(
+    savedCoordinates ?? initialization ?? makePointCoordinateDraft(),
+    JSON.stringify(savedCoordinates),
+    resetKey
+  );
   return {
     draft,
     setDraft,

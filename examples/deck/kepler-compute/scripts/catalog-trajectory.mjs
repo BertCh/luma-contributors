@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {setAnalysisSheetParameter} from './analysis-sheet-controls.mjs';
 import assert from 'node:assert/strict';
 import {openNativeData, closeNativeDialog} from './native-navigation.mjs';
 
@@ -57,30 +58,44 @@ export async function exerciseTrajectoryCatalog(page, panel) {
       `${id} has typed output`
     );
   }
-  // Native scalar tables have no GeoJSON column: explicitly map the point coordinate roles.
-  const pointDatasetId = 'trajectory-native-point-observations';
-  await page.evaluate(datasetId => {
-    const origin = Date.UTC(2026, 0, 1);
-    window.__keplerComputeTest.addNativeCpuDataset(
-      datasetId,
-      [
-        {name: 'track_id', type: 'string', format: '', analyzerType: 'STRING'},
-        {name: 'timestamp', type: 'real', format: '', analyzerType: 'FLOAT'},
-        {name: 'east', type: 'real', format: '', analyzerType: 'FLOAT'},
-        {name: 'north', type: 'real', format: '', analyzerType: 'FLOAT'}
-      ],
-      [
-        ['a', origin + 2000, -73.98, 40.74],
-        ['a', origin, -74, 40.74],
-        ['a', origin + 1000, -73.99, 40.74]
-      ]
-    );
-  }, pointDatasetId);
+  // Use the public preparation flow: default native ingestion now promotes CPU tables to
+  // resident data asynchronously. Discover the published identity instead of assuming the
+  // test-only CPU injection remains available in the native catalog list.
+  await openNativeData(page);
+  const workspace = page.getByRole('region', {name: 'Resident datasets', exact: true});
+  const origin = Date.UTC(2026, 0, 1);
+  await workspace.getByLabel('Open Arrow IPC file', {exact: true}).setInputFiles({
+    name: 'trajectory-point-observations.csv', mimeType: 'text/csv',
+    buffer: Buffer.from([
+      'track_id,timestamp,east,north',
+      `a,${origin + 2000},-73.98,40.74`,
+      `a,${origin},-74,40.74`,
+      `a,${origin + 1000},-73.99,40.74`
+    ].join('\n'))
+  });
+  const preparation = workspace.getByRole('region', {name: 'Prepare trajectory-point-observations.csv', exact: true});
+  await preparation.waitFor();
+  await workspace.getByLabel('Source longitude column', {exact: true}).selectOption('east');
+  await workspace.getByLabel('Source latitude column', {exact: true}).selectOption('north');
+  await preparation.getByRole('checkbox', {name: 'timestamp (Float64)', exact: true}).uncheck();
+  await preparation.getByLabel('Float64 conversion', {exact: true}).selectOption('round');
+  await preparation.getByLabel('Maximum absolute error', {exact: true}).fill('0.00001');
+  await preparation.getByRole('button', {name: 'Check schema and precision', exact: true}).click();
+  const previousIds = await page.evaluate(() => window.__keplerComputeTest.getState().publications.map(source => source.id));
+  await preparation.getByRole('button', {name: 'Publish selected fields', exact: true}).click();
+  await page.waitForFunction(knownIds => {
+    const source = window.__keplerComputeTest.getState().publications.find(candidate => !knownIds.includes(candidate.id));
+    if (source?.error) throw new Error(source.error);
+    return source?.rowCount === 3 && source.selectedCount === 3;
+  }, previousIds);
+  const pointDatasetId = await page.evaluate(knownIds =>
+    window.__keplerComputeTest.getState().publications.find(source => !knownIds.includes(source.id)).id,
+    previousIds
+  );
+  await closeNativeDialog(page);
   await panel.getByLabel('Operation', {exact: true}).selectOption('trajectory-thinning');
   await panel.getByLabel('Engine', {exact: true}).selectOption('cpu');
-  await panel.getByLabel(/^Thinning tolerance/).fill('0');
-  await panel.getByLabel(/^Point longitude column/).fill('east');
-  await panel.getByLabel(/^Point latitude column/).fill('north');
+  await setAnalysisSheetParameter(panel, 'tolerance', 0);
   await panel.getByLabel('Trajectory observations source', {exact: true}).selectOption('native');
   await panel
     .getByLabel('Trajectory observations dataset', {exact: true})
@@ -91,7 +106,13 @@ export async function exerciseTrajectoryCatalog(page, panel) {
     .selectOption(pointDatasetId);
   await panel
     .getByLabel('Trajectory observations geometry field', {exact: true})
-    .selectOption('Point rows (mapped longitude/latitude columns)');
+    .selectOption('@point:["",""]');
+  await panel.getByLabel('Trajectory observations X / longitude column', {exact: true}).selectOption('east');
+  await panel.getByLabel('Trajectory observations Y / latitude column', {exact: true}).selectOption('north');
+  // Numeric time and coordinate semantics require declarations after the gates-fix landing.
+  await setAnalysisSheetParameter(panel, 'coordinateSystem', 'EPSG:4326');
+  await setAnalysisSheetParameter(panel, 'timestampEncoding', 'unix-millisecond');
+  await panel.getByTestId('catalog-check-inputs').click();
   await panel.getByTestId('catalog-run').click();
   await panel.getByTestId('catalog-result').waitFor();
   assert.match(await panel.getByTestId('catalog-result').innerText(), /Trajectory tracks: 1 rows/);
@@ -104,7 +125,7 @@ export async function exerciseTrajectoryNativeTrips(page, datasetId, geometryFie
   const panel = page.getByRole('region', {name: 'Analysis catalog', exact: true});
   await panel.getByLabel('Operation', {exact: true}).selectOption('trajectory-thinning');
   await panel.getByLabel('Engine', {exact: true}).selectOption('cpu');
-  await panel.getByLabel(/^Thinning tolerance/).fill('0');
+  await setAnalysisSheetParameter(panel, 'tolerance', 0);
   await panel.getByLabel('Trajectory observations source', {exact: true}).selectOption('native');
   await panel.getByLabel('Trajectory observations dataset', {exact: true}).selectOption(datasetId);
   await panel

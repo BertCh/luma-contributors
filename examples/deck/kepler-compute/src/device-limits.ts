@@ -2,16 +2,18 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getAnalysisRequiredLimits} from '@luma-contributors/analysis/analysis-core';
+
 /**
  * WebGPU limits the host requests when it creates its device.
  *
  * The default limit of eight storage buffers per shader stage is too low for the crossfilter
  * controller, which binds one mask per filtered dimension plus its output in a single compute
- * pass. The host therefore asks the adapter for its maximum storage buffer count (and never less
- * than the default), and the resident explorer reports a clear error when a dataset still needs
- * more than the device offers.
+ * pass. The host asks for the adapter's maximum storage buffer count and binding/buffer sizes,
+ * so large resident datasets can use the available capacity. The resident explorer reports a
+ * clear error when a dataset still needs more than the device offers.
  */
-export type HostRequiredLimits = {maxStorageBuffersPerShaderStage?: number};
+export type HostRequiredLimits = Record<string, number>;
 
 let hostRequiredLimits: HostRequiredLimits = {};
 
@@ -19,10 +21,9 @@ let hostRequiredLimits: HostRequiredLimits = {};
 export async function resolveHostRequiredLimits(): Promise<HostRequiredLimits> {
   try {
     const adapter = await navigator.gpu?.requestAdapter();
-    const adapterLimit = adapter?.limits.maxStorageBuffersPerShaderStage;
-    if (typeof adapterLimit === 'number' && adapterLimit > 8) {
-      hostRequiredLimits = {maxStorageBuffersPerShaderStage: adapterLimit};
-    }
+    hostRequiredLimits = getAnalysisRequiredLimits(adapter?.limits, {
+      requestedStorageBuffersPerShaderStage: adapter?.limits.maxStorageBuffersPerShaderStage
+    });
   } catch {
     hostRequiredLimits = {};
   }

@@ -4,6 +4,13 @@
 
 import {
   describeWorkflowOperationForAssistant,
+  describeWorkflowTemplateForAssistant,
+  listWorkflowTemplatesForAssistant,
+  parseWorkflowTemplateForAssistant,
+  prepareWorkflowDraftForAssistant,
+  validateWorkflowForAssistant,
+  getNewWorkflowAssistantWarnings,
+  serializeWorkflowDocument,
   describeWorkflowForAssistant,
   getWorkflowAssistantTools,
   listWorkflowOperationsForAssistant,
@@ -17,6 +24,10 @@ import {
   type KeplerJSONValue
 } from '@luma-contributors/kepler';
 import type {WorkbenchStore} from './workbench-store';
+import {
+  createWorkbenchAnalysisDocument,
+  getWorkbenchAnalysisProfiles
+} from './workbench-analysis-launch';
 
 /** Tool definitions advertised by the host, including approval-gated edits and runs. */
 export function getWorkbenchAssistantTools(): ReturnType<typeof getWorkflowAssistantTools> {
@@ -35,6 +46,10 @@ export function runWorkbenchAssistantTool(
         return listWorkflowOperationsForAssistant(store.registry, call.arguments);
       case 'describeAnalysisOperation':
         return describeWorkflowOperationForAssistant(store.registry, call.arguments);
+      case 'listAnalysisTemplates':
+        return listWorkflowTemplatesForAssistant(call.arguments);
+      case 'describeAnalysisTemplate':
+        return describeWorkflowTemplateForAssistant(store.registry, call.arguments);
       case 'listWorkflows':
         return listWorkflowsForAssistant(store.getState().workflows, store.registry);
       case 'describeWorkflow': {
@@ -105,15 +120,69 @@ export function runWorkbenchAssistantTool(
         const state = store.getState();
         const {workflowId, target} = parseWorkflowRunRequest(state.workflows, call.arguments);
         const document = state.workflows.find(workflow => workflow.id === workflowId)!;
-        if (!options?.approved)
+        if (!options?.approved) {
+          const issues = validateWorkflowForAssistant(document, {
+            registry: store.registry,
+            host: store.host,
+            target
+          });
+          store.recordAssistantReview?.(document, issues, target);
           return {
             status: 'needs-approval',
             workflowTitle: document.title,
             steps: countWorkflowRunSteps(store, document, target),
-            cachedResultsKnown: state.activeWorkflowId === workflowId
+            cachedResultsKnown: state.activeWorkflowId === workflowId,
+            issues: issues.map(({severity, code, message}) => ({severity, code, message})),
+            message: [
+              'Running a workflow needs explicit user approval of this exact call.',
+              ...issues.filter(issue => issue.severity === 'warning').map(issue => issue.message)
+            ].join('\n')
           };
+        }
         store.setActiveWorkflow(workflowId);
         requireActiveWorkflow(store, workflowId, document.title, 'the run could start');
+        const current = store.getState().document!;
+        if (
+          JSON.stringify(serializeWorkflowDocument(current)) !==
+          JSON.stringify(serializeWorkflowDocument(document))
+        )
+          throw new WorkflowError(
+            'malformed',
+            `${document.title}: The approved workflow changed before the run could start. Review the current whole plan again.`
+          );
+        const issues = validateWorkflowForAssistant(current, {
+          registry: store.registry,
+          host: store.host,
+          target
+        });
+        if (issues.some(issue => issue.severity === 'error'))
+          throw new WorkflowError(
+            'malformed',
+            issues
+              .filter(issue => issue.severity === 'error')
+              .map(issue => issue.message)
+              .join('\n')
+          );
+        const reviewedIssues = store.getReviewedAssistantIssues?.(current, target);
+        if (!reviewedIssues) {
+          return {
+            status: 'needs-approval',
+            workflowTitle: current.title,
+            message:
+              'The workflow or execution target changed, or has not been reviewed. Request runWorkflow again and review the current whole plan before approving.'
+          };
+        }
+        const newWarnings = getNewWorkflowAssistantWarnings(issues, reviewedIssues);
+        if (newWarnings.length) {
+          const message = `Review the updated warnings with runWorkflow before approving this exact call again.\n${newWarnings.map(issue => issue.message).join('\n')}`;
+          store.setNotice({kind: 'info', message});
+          return {
+            status: 'needs-approval',
+            workflowTitle: document.title,
+            message,
+            issues: issues.map(({severity, code, message}) => ({severity, code, message}))
+          };
+        }
         void store.run({target}).catch(error =>
           store.setNotice({
             kind: 'error',
@@ -121,12 +190,33 @@ export function runWorkbenchAssistantTool(
               error instanceof Error ? error.message : `${document.title}: Workflow run failed.`
           })
         );
-        return {status: 'started', workflowTitle: document.title};
+        return {
+          status: 'started',
+          workflowTitle: document.title,
+          issues: issues.map(({severity, code, message}) => ({severity, code, message}))
+        };
       }
       case 'defineWorkflow': {
-        const draft = parseWorkflowDraft(call.arguments, {
+        const usesTemplate =
+          call.arguments !== null &&
+          typeof call.arguments === 'object' &&
+          Object.hasOwn(call.arguments, 'templateId');
+        const document = usesTemplate
+          ? (() => {
+              const {template, mapping} = parseWorkflowTemplateForAssistant(
+                call.arguments,
+                getWorkbenchAnalysisProfiles(store)
+              );
+              return createWorkbenchAnalysisDocument(template, store, mapping);
+            })()
+          : parseWorkflowDraft(call.arguments, {
+              registry: store.registry,
+              takenIds: store.getState().workflows.map(document => document.id),
+              preserveExplicitParameters: true
+            }).document;
+        const draft = prepareWorkflowDraftForAssistant(document, {
           registry: store.registry,
-          takenIds: store.getState().workflows.map(document => document.id)
+          host: store.host
         });
         store.proposeDraft({...draft, source: 'assistant'});
         return {

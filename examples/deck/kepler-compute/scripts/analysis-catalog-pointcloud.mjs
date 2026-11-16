@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {setAnalysisSheetParameter} from './analysis-sheet-controls.mjs';
 import assert from 'node:assert/strict';
 import {openNativeData, closeNativeDialog} from './native-navigation.mjs';
 
@@ -19,10 +20,10 @@ export async function checkPointCloudCatalogWorkflow(page, panel) {
   await panel.getByLabel('Engine', {exact: true}).selectOption('auto');
   for (const operation of POINT_CLOUD_OPERATIONS) {
     await panel.getByLabel('Operation', {exact: true}).selectOption(operation);
-    if (operation === 'pointcloud-change') await panel.getByLabel('Epochs share an aligned frame', {exact: true}).check();
+    if (operation === 'pointcloud-change') await setAnalysisSheetParameter(panel, 'alreadyAligned', true);
     if (operation === 'pointcloud-voxel-merge') {
-      await panel.getByLabel(/^Coordinate system/).selectOption('planar');
-      await panel.getByLabel('Parts own disjoint rows on the same voxel grid', {exact: true}).check();
+      await setAnalysisSheetParameter(panel, 'coordinateSystem', 'planar');
+      await setAnalysisSheetParameter(panel, 'disjointOwnedRows', true);
     }
     await panel.getByTestId('catalog-run').click();
     await panel.getByTestId('catalog-result').waitFor();

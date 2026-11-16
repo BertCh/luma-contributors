@@ -9,6 +9,7 @@ import {PNG} from 'pngjs';
 import {getPlaywrightLaunchOptions} from '../../../../scripts/playwright/get-playwright-launch-options.mjs';
 import {pinViteModules} from './pin-vite-modules.mjs';
 import {openNativeData, closeNativeDialog} from './native-navigation.mjs';
+import {setAnalysisSheetControl} from './analysis-sheet-controls.mjs';
 
 // Projected centers near New York. The first two circles overlap; the third has zero area.
 const centerX = -8237642;
@@ -85,16 +86,17 @@ try {
   const panel = page.getByRole('region', {name: 'GPU analysis', exact: true});
   await panel.getByLabel('Dataset', {exact: true}).selectOption(datasetId);
   await panel.getByText('Configure Dorling circle cartogram', {exact: true}).click();
-  await panel.getByLabel('Cartogram projected X field', {exact: true}).selectOption('x');
-  await panel.getByLabel('Cartogram projected Y field', {exact: true}).selectOption('y');
-  await panel.getByLabel('Cartogram nonnegative area-value field', {exact: true}).selectOption('area');
-  await panel.getByLabel('Cartogram declared projected CRS', {exact: true}).fill('EPSG:3857');
+  await panel.locator('.analysis-cartogram-panel').getByTestId('ax-analysis-sheet').waitFor();
+  await setAnalysisSheetControl(panel.getByLabel('Cartogram projected X field', {exact: true}), 'x');
+  await setAnalysisSheetControl(panel.getByLabel('Cartogram projected Y field', {exact: true}), 'y');
+  await setAnalysisSheetControl(panel.getByLabel('Cartogram nonnegative area-value field', {exact: true}), 'area');
+  await setAnalysisSheetControl(panel.getByLabel('Cartogram declared projected CRS', {exact: true}), 'EPSG:3857');
   for (const [index, label] of ['minimum X', 'minimum Y', 'maximum X', 'maximum Y'].entries())
-    await panel.getByLabel(`Cartogram ${label} in projected meters`, {exact: true}).fill(String(bounds[index]));
-  await panel.getByLabel('Cartogram area scale in projected square meters per value', {exact: true}).fill('100');
-  await panel.getByLabel('Cartogram maximum iterations', {exact: true}).fill('0');
-  await panel.getByLabel('Cartogram overlap tolerance in projected meters', {exact: true}).fill('1');
-  await panel.getByLabel('Cartogram attraction', {exact: true}).fill('0');
+    await setAnalysisSheetControl(panel.getByLabel(`Cartogram ${label} in projected meters`, {exact: true}), String(bounds[index]));
+  await setAnalysisSheetControl(panel.getByLabel('Cartogram area scale in projected square meters per value', {exact: true}), '100');
+  await setAnalysisSheetControl(panel.getByLabel('Cartogram maximum iterations', {exact: true}), '0');
+  await setAnalysisSheetControl(panel.getByLabel('Cartogram overlap tolerance in projected meters', {exact: true}), '1');
+  await setAnalysisSheetControl(panel.getByLabel('Cartogram attraction', {exact: true}), '0');
   stage('retain finite overlapping initial layout after zero iterations');
   await panel.getByRole('button', {name: 'Apply fields and run cartogram', exact: true}).click();
   await waitForInitialLayout();

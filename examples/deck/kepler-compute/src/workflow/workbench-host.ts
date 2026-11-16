@@ -7,6 +7,8 @@
 
 import {
   WorkflowError,
+  encodeKeplerResultPresentation,
+  getKeplerResultEncodingStyle,
   hashWorkflowValue,
   makeWorkflowData,
   getWorkflowSqlProblem,
@@ -17,6 +19,22 @@ import {
   type WorkflowDatasetProfile,
   type WorkflowDisplayStyle
 } from '@luma-contributors/kepler';
+import {
+  attachWorkbenchAnalysisProfile,
+  getWorkbenchAnalysisProfile
+} from './workbench-analysis-profile';
+import {
+  prepareAnalysisResultPublication,
+  getAnalysisResultDictionaries,
+  showAnalysisResultReport,
+  dismissAnalysisResultReport,
+  type AnalysisResultReportView
+} from '../analysis-result-publication';
+import {
+  createWorkbenchRasterDatasetAdapter,
+  type WorkbenchRasterSource
+} from './workbench-raster-input';
+import {validateMaximumCount, validateRequirement} from '@luma-contributors/analysis/analysis-core';
 import {store} from '../app-store';
 import {appState} from '../app-state';
 import {isResidentDataset, publishSource, datasetOperations} from '../publication';
@@ -26,6 +44,7 @@ import {residentDatasetIds, residentEviction, notify} from '../app-services';
 import {fieldPreparationCoordinator} from '../binding3-field-preparation';
 import {extractSelectedRows} from '../resident-drawing-actions';
 import {DATASET_ID} from '../sample-data';
+import {createAnalysisRunIdentity} from '../analysis-run-identity';
 import type {OwnedDuckDBConnection} from '../duckdb-runtime';
 import {
   chooseWorkflowDisplayChannel,
@@ -183,7 +202,12 @@ export async function runWorkflowSqlOnConnection(
  * The Kepler compute app as a workflow host: native and GPU-resident datasets in (all rows or the
  * current selection), step outputs out as published datasets with a layer.
  */
-export function createWorkbenchHost(): WorkflowHost {
+export function createWorkbenchHost(
+  options: {getRasterSources?(): readonly WorkbenchRasterSource[]} = {}
+): WorkflowHost {
+  const rasterDatasets = createWorkbenchRasterDatasetAdapter(
+    options.getRasterSources ?? (() => [])
+  );
   type Runtime = NonNullable<typeof appState.runtime>;
   type Publication = Runtime['publications'] extends Map<string, infer Value> ? Value : never;
   type Ownership = {
@@ -222,8 +246,37 @@ export function createWorkbenchHost(): WorkflowHost {
   function applyDisplayStyle(
     datasetId: string,
     schema: Parameters<typeof chooseWorkflowDisplayChannel>[0],
-    style: WorkflowDisplayStyle | undefined
+    style: WorkflowDisplayStyle | undefined,
+    encoding?: ReturnType<typeof encodeKeplerResultPresentation>,
+    classColumn?: string
   ): void {
+    if (encoding && classColumn) {
+      const visState = store.getState().keplerGl['compute']?.visState;
+      const field = visState?.datasets[datasetId]?.fields.find(
+        candidate => candidate.name === classColumn
+      );
+      if (!field)
+        throw new WorkflowError(
+          'publish-failed',
+          'AX presentation: encoded class column is missing.'
+        );
+      const {visConfig} = getKeplerResultEncodingStyle(encoding);
+      for (const layer of visState?.layers ?? []) {
+        if (layer.config.dataId !== datasetId) continue;
+        store.dispatch(
+          wrapTo(
+            'compute',
+            layerVisualChannelConfigChange(
+              layer,
+              {colorField: field, colorScale: 'customOrdinal'} as never,
+              'color',
+              visConfig as never
+            )
+          )
+        );
+      }
+      return;
+    }
     const choice = chooseWorkflowDisplayChannel(schema, style);
     if (!choice) return;
     const palette = KEPLER_COLOR_PALETTES.find(candidate => candidate.name === choice.rangeName);
@@ -254,11 +307,25 @@ export function createWorkbenchHost(): WorkflowHost {
       }
     }
   }
+  const reportPublications = new Map<string, AnalysisResultReportView>();
+  const reportPredecessors = new Map<string, Set<string>>();
   const publications = new Map<string, Ownership>();
   const publishedBounds = new Map<string, ReturnType<typeof getWorkflowDataBounds>>();
   // Exclusion follows dataset ids across recovery; cleanup follows exact runtime generations.
   const publishedDatasetIds = new Set<string>();
   const pendingIds = new Map<string, Runtime>();
+  const publicationRoots = new Map<string, string>();
+  // Each accepted successor owns unfinished predecessor cleanup, including earlier generations.
+  const pendingPredecessors = new Map<string, Map<string, Ownership>>();
+  let publicationSequence = 0;
+  const runtimeGenerations = new WeakMap<Runtime, number>();
+  let runtimeSequence = 0;
+  function getRuntimeRevision(): string {
+    const runtime = appState.runtime;
+    if (!runtime) return 'no-runtime';
+    if (!runtimeGenerations.has(runtime)) runtimeGenerations.set(runtime, ++runtimeSequence);
+    return `${runtimeGenerations.get(runtime)}:${runtime.session.deviceLost || runtime.device?.isLost ? 'lost' : 'ready'}`;
+  }
   // Kepler replaces index arrays on selection edits. Hash their contents once per array and
   // small configuration signature, keeping planning independent of the source row count.
   const nativeRevisionKeys = new WeakMap<
@@ -335,6 +402,26 @@ export function createWorkbenchHost(): WorkflowHost {
         }
       : undefined;
   }
+  function reconcileRecoveredOwnership(
+    datasetId: string,
+    expectedRoot: string,
+    owned: Ownership
+  ): Ownership {
+    const runtime = appState.runtime;
+    const restored = runtime && captureOwnership(runtime, datasetId);
+    // An explicit replacement adopts only a known workflow output's new runtime/device
+    // generation. Ordinary retraction remains bound to its captured ownership.
+    if (
+      restored &&
+      publicationRoots.get(datasetId) === expectedRoot &&
+      (owned.runtime !== runtime ||
+        owned.publication.dataset.deviceEpoch !== restored.publication.dataset.deviceEpoch)
+    ) {
+      publications.set(datasetId, restored);
+      return restored;
+    }
+    return owned;
+  }
   async function removeOwnedPublication(datasetId: string, owned: Ownership): Promise<void> {
     await datasetOperations.run(datasetId, 'remove', async () => {
       // The queue may wait across a workspace restore or a same-ID replacement. Never resolve
@@ -359,6 +446,36 @@ export function createWorkbenchHost(): WorkflowHost {
       if (appState.runtime === owned.runtime) notify();
     });
   }
+  async function retirePredecessors(successorId: string): Promise<void> {
+    const pending = pendingPredecessors.get(successorId);
+    if (!pending) return;
+    const failures: unknown[] = [];
+    for (const [datasetId, predecessor] of pending) {
+      try {
+        await retireReportPredecessors(datasetId);
+        await removeOwnedPublication(datasetId, predecessor);
+        if (
+          publications.get(datasetId) === predecessor &&
+          !predecessor.runtime.publications.has(datasetId) &&
+          !appState.runtime?.publications.has(datasetId)
+        ) {
+          publications.delete(datasetId);
+          publishedBounds.delete(datasetId);
+          publishedDatasetIds.delete(datasetId);
+          publicationRoots.delete(datasetId);
+        }
+        pending.delete(datasetId);
+      } catch (cause) {
+        failures.push(cause);
+      }
+    }
+    if (!pending.size) pendingPredecessors.delete(successorId);
+    if (failures.length)
+      throw new AggregateError(
+        failures,
+        `${successorId}: Predecessor retirement failed; cleanup will be retried when the output is removed.`
+      );
+  }
   async function removeOrphanedNativePublication(
     runtime: Runtime,
     datasetId: string,
@@ -381,8 +498,57 @@ export function createWorkbenchHost(): WorkflowHost {
       if (appState.runtime === runtime) notify();
     });
   }
+  async function retireReportPredecessors(datasetId: string): Promise<void> {
+    for (const predecessorId of reportPredecessors.get(datasetId) ?? []) {
+      await retractPublishedOutput(predecessorId);
+      reportPredecessors.get(datasetId)?.delete(predecessorId);
+    }
+    reportPredecessors.delete(datasetId);
+  }
+  async function retractPublishedOutput(datasetId: string): Promise<void> {
+    await retireReportPredecessors(datasetId);
+    await retirePredecessors(datasetId);
+    const report = reportPublications.get(datasetId);
+    if (report) {
+      dismissAnalysisResultReport(report);
+      reportPublications.delete(datasetId);
+      publicationRoots.delete(datasetId);
+      return;
+    }
+    const owned = publications.get(datasetId);
+    if (!owned) return;
+    try {
+      await removeOwnedPublication(datasetId, owned);
+      if (publications.get(datasetId) === owned) {
+        publications.delete(datasetId);
+        if (!appState.runtime?.publications.has(datasetId)) {
+          publishedBounds.delete(datasetId);
+          publishedDatasetIds.delete(datasetId);
+          publicationRoots.delete(datasetId);
+        }
+      }
+    } catch (cause) {
+      throw new WorkflowError(
+        'publish-failed',
+        `${datasetId}: Removing the published output failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+        {cause}
+      );
+    }
+  }
+  function queueReportHandoff(successorId: string, predecessorId: string): Promise<void> {
+    const pending = reportPredecessors.get(successorId) ?? new Set<string>();
+    pending.add(predecessorId);
+    reportPredecessors.set(successorId, pending);
+    return queuePublication(async () => {
+      await retractPublishedOutput(predecessorId);
+      pending.delete(predecessorId);
+      if (!pending.size) reportPredecessors.delete(successorId);
+    });
+  }
   return {
     focusOutput: datasetId => {
+      const report = reportPublications.get(datasetId);
+      if (report) showAnalysisResultReport(report);
       const bounds = publishedBounds.get(datasetId);
       if (bounds) store.dispatch(wrapTo('compute', fitBounds(bounds)));
     },
@@ -452,6 +618,10 @@ export function createWorkbenchHost(): WorkflowHost {
       );
       return pending;
     },
+    getRuntimeRevisionKey: getRuntimeRevision,
+    getAnalysisProfile: datasetId =>
+      rasterDatasets.list().find(entry => entry.profile.id === datasetId)?.data.analysisProfile ??
+      getWorkbenchAnalysisProfile(datasetId),
     getDevice: () => {
       const runtime = appState.runtime;
       return runtime && !runtime.session.deviceLost && !runtime.device.isLost
@@ -490,8 +660,9 @@ export function createWorkbenchHost(): WorkflowHost {
         {identityColumn: data.identityColumn}
       );
     },
-    listDatasets: () =>
-      Object.values(getDatasets())
+    listDatasets: () => [
+      ...rasterDatasets.list().map(entry => entry.profile),
+      ...Object.values(getDatasets())
         .filter(dataset => !isWorkflowDataset(dataset.id))
         .map(dataset => {
           const resident = isResidentDataset(dataset.id);
@@ -506,9 +677,13 @@ export function createWorkbenchHost(): WorkflowHost {
           const profile = profileNativeDataset(dataset, resident);
           profiles.set(dataset, {resident, dataRevision: dataset.dataRevision, profile});
           return profile;
-        }),
+        })
+    ],
     getDatasetRevisionKey: request => {
       try {
+        const raster = rasterDatasets.list().find(entry => entry.profile.id === request.datasetId);
+        if (raster)
+          return JSON.stringify([getRuntimeRevision(), raster.revision, request.population]);
         const dataset = findDataset(request);
         if (!dataset) return 'missing';
         if (!isResidentDataset(dataset.id)) {
@@ -550,18 +725,20 @@ export function createWorkbenchHost(): WorkflowHost {
           );
           const indices = request.population === 'selected' ? dataset.filteredIndex : undefined;
           const cached = nativeRevisionKeys.get(dataset);
-          if (cached?.signature === signature && cached.indices === indices) return cached.key;
+          if (cached?.signature === signature && cached.indices === indices)
+            return JSON.stringify([getRuntimeRevision(), cached.key]);
           const key = getNativeRevisionKey(
             {...dataset, selectionRevision},
             filters,
             request.population
           );
           nativeRevisionKeys.set(dataset, {signature, indices, key});
-          return key;
+          return JSON.stringify([getRuntimeRevision(), key]);
         }
         const explorer = getExplorer(dataset.id);
         if (!explorer) return 'missing';
         return JSON.stringify([
+          getRuntimeRevision(),
           dataset.id,
           explorer.dataset.deviceEpoch,
           explorer.dataset.revision,
@@ -576,6 +753,26 @@ export function createWorkbenchHost(): WorkflowHost {
     readDataset: async (request, signal) => {
       const label = request.datasetLabel ?? request.datasetId;
       checkAborted(signal, label);
+      const raster = rasterDatasets.list().find(entry => entry.profile.id === request.datasetId);
+      if (raster) {
+        validateRequirement(
+          'WorkbenchRaster',
+          request.population === 'all',
+          'population must be all for a decoded raster tile'
+        );
+        validateRequirement(
+          'WorkbenchRaster',
+          request.geometry.mode === 'none',
+          'geometry.mode must be none for a decoded raster tile'
+        );
+        validateMaximumCount(
+          'WorkbenchRaster',
+          'cell count',
+          raster.profile.rowCount,
+          request.maximumRows
+        );
+        return raster.data;
+      }
       const dataset = findDataset(request);
       if (!dataset)
         throw new WorkflowError(
@@ -589,12 +786,16 @@ export function createWorkbenchHost(): WorkflowHost {
           // including the per-layer polygon union, into filteredIdxCPU on an explicit read.
           if (request.population === 'selected')
             dataset.filterTableCPU(visState?.filters ?? [], visState?.layers ?? []);
-          return readNativeDatasetData(
-            dataset,
-            request,
-            request.population === 'selected'
-              ? (dataset.filteredIdxCPU ?? dataset.filteredIndex)
-              : undefined
+          return attachWorkbenchAnalysisProfile(
+            readNativeDatasetData(
+              dataset,
+              request,
+              request.population === 'selected'
+                ? (dataset.filteredIdxCPU ?? dataset.filteredIndex)
+                : undefined
+            ),
+            request.population,
+            request.geometry
           );
         }
         const runtime = appState.runtime;
@@ -633,10 +834,14 @@ export function createWorkbenchHost(): WorkflowHost {
           );
         // The extraction API reports empty selections as a distinct non-ready state.
         if (count.selectedCount === 0)
-          return makeWorkflowDataFromArrowTable(
-            explorer.dataset.value.source.slice(0, 0),
-            request,
-            dataset.label
+          return attachWorkbenchAnalysisProfile(
+            makeWorkflowDataFromArrowTable(
+              explorer.dataset.value.source.slice(0, 0),
+              request,
+              dataset.label
+            ),
+            request.population,
+            request.geometry
           );
         const extracted = await extractSelectedRows(runtime.session, explorer, {
           maximumRows: request.maximumRows,
@@ -660,7 +865,7 @@ export function createWorkbenchHost(): WorkflowHost {
           validateWorkflowRowIdentity(row, dataset.label);
           return row;
         });
-        return data;
+        return attachWorkbenchAnalysisProfile(data, request.population, request.geometry);
       } catch (cause) {
         checkAborted(signal, dataset.label);
         if (cause instanceof WorkflowError) throw cause;
@@ -671,50 +876,129 @@ export function createWorkbenchHost(): WorkflowHost {
         );
       }
     },
-    publishOutput: (request, signal) =>
-      queuePublication(async () => {
+    publishOutput: (request, signal) => {
+      // Capture before the host queue waits, including the runner's live source/content check.
+      const identity = createAnalysisRunIdentity({
+        signal,
+        getRuntime: () => appState.runtime,
+        getRevisionKey: getRuntimeRevision,
+        isCurrent: request.isCurrent
+      });
+      return queuePublication(async () => {
         checkAborted(signal, request.label);
+        if (!identity.isCurrent())
+          throw new WorkflowError(
+            'publish-failed',
+            `${request.label}: Analysis changed before publication.`
+          );
         const runtime = appState.runtime;
+        // Escape the separator inside each component: a-b/c and a/b-c must own different ids.
+        const expectedDatasetId = `workflow-${[request.workflowId, request.stepId, request.output]
+          .map(component => encodeURIComponent(component).replace(/-/g, '%2D'))
+          .join('-')}`;
+        const previousDatasetId = request.previousDatasetId;
+        // Import the successor independently. publishSource replaces same-ID data eagerly, so
+        // reusing the displayed id would leave a blank map when preparation fails or is cancelled.
+        const datasetId = previousDatasetId
+          ? `${expectedDatasetId}-generation-${++publicationSequence}`
+          : expectedDatasetId;
+        const staged = prepareAnalysisResultPublication(
+          request.data.table,
+          request.data.analysisPresentation,
+          request.data.analysisReport,
+          request.style?.colorColumn
+        );
+        const previousReport = previousDatasetId
+          ? reportPublications.get(previousDatasetId)
+          : undefined;
+        if (staged.analysisResult.destination === 'report') {
+          if (
+            reportPublications.has(datasetId) ||
+            publications.has(datasetId) ||
+            runtime?.publications.has(datasetId) ||
+            getDatasets()[datasetId]
+          )
+            throw new WorkflowError(
+              'publish-failed',
+              `${request.label}: Output id is already occupied.`
+            );
+          if (
+            previousDatasetId &&
+            previousDatasetId !== expectedDatasetId &&
+            publicationRoots.get(previousDatasetId) !== expectedDatasetId
+          )
+            throw new WorkflowError(
+              'publish-failed',
+              `${request.label}: Previous output belongs to another workflow.`
+            );
+          const report = {
+            id: datasetId,
+            label: request.label,
+            analysisResult: staged.analysisResult
+          };
+          reportPublications.set(datasetId, report);
+          publicationRoots.set(datasetId, expectedDatasetId);
+          showAnalysisResultReport(report);
+          if (!identity.isCurrent()) {
+            dismissAnalysisResultReport(report);
+            reportPublications.delete(datasetId);
+            publicationRoots.delete(datasetId);
+            throw new WorkflowError(
+              'publish-failed',
+              `${request.label}: Analysis changed during publication.`
+            );
+          }
+          return {
+            datasetId,
+            label: request.label,
+            ...(previousDatasetId
+              ? {
+                  commit: () => {
+                    if (!identity.isCurrent() || reportPublications.get(datasetId) !== report)
+                      throw new WorkflowError(
+                        'publish-failed',
+                        `${request.label}: Analysis changed before display handoff.`
+                      );
+                    return queueReportHandoff(datasetId, previousDatasetId);
+                  }
+                }
+              : {})
+          };
+        }
         if (!runtime || runtime.session.deviceLost)
           throw new WorkflowError(
             'publish-failed',
             `${request.label}: Publication requires an active device.`
           );
-        // Escape the separator inside each component: a-b/c and a/b-c must own different ids.
-        const expectedDatasetId = `workflow-${[request.workflowId, request.stepId, request.output]
-          .map(component => encodeURIComponent(component).replace(/-/g, '%2D'))
-          .join('-')}`;
-        const datasetId = request.previousDatasetId ?? expectedDatasetId;
         const previousPublication = runtime.publications.get(datasetId);
         const previousNativeDataset = getDatasets()[datasetId];
-        if (datasetId !== expectedDatasetId)
+        if (
+          previousDatasetId &&
+          previousDatasetId !== expectedDatasetId &&
+          publicationRoots.get(previousDatasetId) !== expectedDatasetId
+        )
           throw new WorkflowError(
             'publish-failed',
             `${request.label}: The previous dataset id does not identify this workflow output; hide the output and display it again.`
           );
-        if (
-          ((previousPublication || previousNativeDataset) && !request.previousDatasetId) ||
-          (previousNativeDataset && !previousPublication)
-        )
+        if (previousPublication || previousNativeDataset)
           throw new WorkflowError(
             'publish-failed',
             `${request.label}: Dataset id ${datasetId} is already occupied; hide this output and display it again, or remove the conflicting dataset.`
           );
         let observedNativeDataset: Ownership['nativeDataset'];
         let publicationStarted = false;
+        let previous = previousDatasetId ? publications.get(previousDatasetId) : undefined;
+        if (previousDatasetId && previous) {
+          previous = reconcileRecoveredOwnership(previousDatasetId, expectedDatasetId, previous);
+        }
         try {
-          const publication = makeWorkflowPublication(request.data, request.label);
-          if (request.previousDatasetId) {
-            const previous = captureOwnership(runtime, datasetId);
-            if (previous) await removeOwnedPublication(datasetId, previous);
-            if (runtime.publications.has(datasetId) || getDatasets()[datasetId])
-              throw new WorkflowError(
-                'publish-failed',
-                `${request.label}: The dataset changed during replacement; run the step again.`
-              );
-          }
+          const encoding = staged.analysisResult.encoding;
+          const classColumn = encoding?.classColumn;
+          const displayData = {...request.data, table: staged.displayTable};
+          const publication = makeWorkflowPublication(displayData, request.label);
           checkAborted(signal, request.label);
-          if (appState.runtime !== runtime)
+          if (!identity.isCurrent())
             throw new WorkflowError(
               'publish-failed',
               `${request.label}: Workspace changed before publication.`
@@ -725,7 +1009,10 @@ export function createWorkbenchHost(): WorkflowHost {
             columns: publication.table.schema.fields
               .map(field => field.name)
               .filter(name => name !== publication.geometryColumn),
-            float64: WORKFLOW_DISPLAY_FLOAT64_POLICY
+            float64: WORKFLOW_DISPLAY_FLOAT64_POLICY,
+            ...(encoding
+              ? {dictionaries: getAnalysisResultDictionaries(staged.analysisResult)}
+              : {})
           };
           pendingIds.set(datasetId, runtime);
           appState.requestedPublicationId = datasetId;
@@ -734,8 +1021,9 @@ export function createWorkbenchHost(): WorkflowHost {
             {
               table: publication.table,
               label: publication.label,
+              analysisResult: staged.analysisResult,
               isCurrent: () => {
-                const current = appState.runtime === runtime && !signal.aborted;
+                const current = identity.isCurrent();
                 if (current && runtime.publications.get(datasetId) !== previousPublication) {
                   const nativeDataset = getDatasets()[datasetId];
                   if (nativeDataset !== previousNativeDataset)
@@ -745,25 +1033,29 @@ export function createWorkbenchHost(): WorkflowHost {
               }
             },
             normalization,
-            publication.coordinates,
+            publication.coordinates ?? staged.analysisResult.coordinates,
             publication.geometryColumn
           );
           checkAborted(signal, request.label);
           const owned = captureOwnership(runtime, datasetId);
-          if (appState.runtime !== runtime || !owned || owned.publication === previousPublication)
+          if (!identity.isCurrent() || !owned || owned.publication === previousPublication)
             throw new WorkflowError(
               'publish-failed',
               `${request.label}: Workspace or publication changed during publication.`
             );
-          applyDisplayStyle(datasetId, publication.table.schema, request.style);
-          const bounds = getWorkflowDataBounds(request.data);
+          if (!request.data.analysisPresentation || request.style?.colorColumn || encoding)
+            applyDisplayStyle(
+              datasetId,
+              publication.table.schema,
+              request.style,
+              encoding,
+              classColumn
+            );
+          const bounds = getWorkflowDataBounds(displayData);
           if (!request.previousDatasetId) {
             if (bounds) store.dispatch(wrapTo('compute', fitBounds(bounds)));
           }
-          if (
-            appState.runtime !== runtime ||
-            runtime.publications.get(datasetId) !== owned.publication
-          )
+          if (!identity.isCurrent() || runtime.publications.get(datasetId) !== owned.publication)
             throw new WorkflowError(
               'publish-failed',
               `${request.label}: Workspace or publication changed during publication.`
@@ -771,6 +1063,58 @@ export function createWorkbenchHost(): WorkflowHost {
           publications.set(datasetId, owned);
           publishedBounds.set(datasetId, bounds);
           publishedDatasetIds.add(datasetId);
+          publicationRoots.set(datasetId, expectedDatasetId);
+          if (previousDatasetId && previousReport) {
+            return {
+              datasetId,
+              label: publication.label,
+              commit: () => {
+                if (
+                  !identity.isCurrent() ||
+                  runtime.publications.get(datasetId) !== owned.publication
+                )
+                  throw new WorkflowError(
+                    'publish-failed',
+                    `${request.label}: Analysis changed before display handoff.`
+                  );
+                return queueReportHandoff(datasetId, previousDatasetId);
+              }
+            };
+          }
+          if (previousDatasetId && previous) {
+            const predecessor = previous;
+            let retirement: Promise<void> | undefined;
+            return {
+              datasetId,
+              label: publication.label,
+              commit: () => {
+                if (retirement) return retirement;
+                // There is no await between accepting the successor and handing it to the
+                // runner. GPU retirement is cleanup of an already accepted display change.
+                if (
+                  !identity.isCurrent() ||
+                  runtime.publications.get(datasetId) !== owned.publication
+                )
+                  throw new WorkflowError(
+                    'publish-failed',
+                    `${request.label}: Analysis changed before display handoff.`
+                  );
+                const pending = new Map<string, Ownership>();
+                for (const [ancestorId, ancestor] of pendingPredecessors.get(previousDatasetId) ??
+                  []) {
+                  pending.set(
+                    ancestorId,
+                    reconcileRecoveredOwnership(ancestorId, expectedDatasetId, ancestor)
+                  );
+                }
+                pending.set(previousDatasetId, predecessor);
+                pendingPredecessors.delete(previousDatasetId);
+                pendingPredecessors.set(datasetId, pending);
+                retirement = queuePublication(() => retirePredecessors(datasetId));
+                return retirement;
+              }
+            };
+          }
           return {datasetId, label: publication.label};
         } catch (cause) {
           if (appState.requestedPublicationId === datasetId)
@@ -784,6 +1128,15 @@ export function createWorkbenchHost(): WorkflowHost {
               });
             else if (publicationStarted && !partial && observedNativeDataset)
               await removeOrphanedNativePublication(runtime, datasetId, observedNativeDataset);
+            if (
+              publicationStarted &&
+              publications.get(datasetId)?.publication === partial?.publication
+            ) {
+              publications.delete(datasetId);
+              publishedBounds.delete(datasetId);
+              publishedDatasetIds.delete(datasetId);
+              publicationRoots.delete(datasetId);
+            }
           } catch (cleanupError) {
             throw new WorkflowError(
               'publish-failed',
@@ -806,28 +1159,11 @@ export function createWorkbenchHost(): WorkflowHost {
           );
         } finally {
           pendingIds.delete(datasetId);
+          if (appState.requestedPublicationId === datasetId)
+            appState.requestedPublicationId = undefined;
         }
-      }),
-    retractOutput: datasetId =>
-      queuePublication(async () => {
-        const owned = publications.get(datasetId);
-        if (!owned) return;
-        try {
-          await removeOwnedPublication(datasetId, owned);
-          if (publications.get(datasetId) === owned) {
-            publications.delete(datasetId);
-            if (!appState.runtime?.publications.has(datasetId)) {
-              publishedBounds.delete(datasetId);
-              publishedDatasetIds.delete(datasetId);
-            }
-          }
-        } catch (cause) {
-          throw new WorkflowError(
-            'publish-failed',
-            `${datasetId}: Removing the published output failed: ${cause instanceof Error ? cause.message : String(cause)}`,
-            {cause}
-          );
-        }
-      })
+      });
+    },
+    retractOutput: datasetId => queuePublication(() => retractPublishedOutput(datasetId))
   };
 }

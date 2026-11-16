@@ -609,7 +609,8 @@ export class PublishedSourceRuntime {
         session: this.session,
         explorer: this.consumer.explorer,
         requestUpdate: this.requestUpdate,
-        polygonSource: this.retainedPolygonSource
+        polygonSource: this.retainedPolygonSource,
+        pointColumns: this.coordinates
       });
       this.analysis.subscribe(() => {
         this.consumer.invalidateDerived();

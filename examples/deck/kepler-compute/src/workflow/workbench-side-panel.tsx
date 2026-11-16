@@ -6,24 +6,28 @@ import {useId, useMemo, useState} from 'react';
 import styled from 'styled-components';
 import {
   addWorkflowStep,
-  applyWorkflowRecommendation,
-  getWorkflowRecommendationSubject,
+  connectWorkflowSteps,
+  getCatalogBinding,
+  getKeplerCuratedAnalysis,
+  suggestKeplerAnalyses,
   instantiateWorkflowTemplate,
   listWorkflowTemplates,
   makeUniqueWorkflowId,
-  recommendWorkflowOperations,
   updateWorkflowInput,
   WORKFLOW_LIMITS,
   WorkflowError,
+  type CatalogOperationBinding,
+  type WorkflowOperationRegistry,
   type WorkflowDatasetProfile,
   type WorkflowDocument,
   type WorkflowInput,
-  type WorkflowRecommendation,
+  type KeplerAnalysisSuggestion,
   type WorkflowRunnerState,
   type WorkflowRunRecord,
   type WorkflowStep,
   type WorkflowStepState
 } from '@luma-contributors/kepler';
+import {getWorkbenchAnalysisProfiles} from './workbench-analysis-launch';
 import {useWorkbenchState} from './use-workbench';
 import {WORKBENCH_COLORS, WORKBENCH_STATUS, WORKBENCH_TEST_IDS} from './workbench-contract';
 import type {WorkbenchStore} from './workbench-store';
@@ -158,7 +162,7 @@ function startSidePanelWorkflow(
   store: WorkbenchStore,
   source: QuickStartSource,
   title: string,
-  recommendation?: WorkflowRecommendation
+  recommendation?: KeplerAnalysisSuggestion
 ): void {
   // Replay needs the exact host label; reject unsupported source values before creating anything.
   try {
@@ -184,10 +188,45 @@ function startSidePanelWorkflow(
     !store.edit(`quick-start:${stepId}`, current => {
       const added = addWorkflowStep(current, store.registry, {...source, id: stepId});
       if (!recommendation) return added.document;
-      const analysis = applyWorkflowRecommendation(added.document, store.registry, recommendation, {
-        stepId,
-        output: 'data'
+      let document = added.document;
+      const sources = new Map([[String(source.parameters?.['dataset']), stepId]]);
+      const assignments = recommendation.applicability.inputAssignments;
+      for (const datasetId of Object.values(assignments)) {
+        if (!datasetId || sources.has(datasetId)) continue;
+        const dataset = store.host.listDatasets().find(candidate => candidate.id === datasetId);
+        if (!dataset)
+          throw new Error('The suggested input is no longer loaded. Refresh suggestions.');
+        const partner = addWorkflowStep(
+          document,
+          store.registry,
+          getSidePanelDatasetSource(dataset)
+        );
+        document = partner.document;
+        sources.set(datasetId, partner.stepId);
+      }
+      const curated = recommendation.curatedAnalysisId
+        ? getKeplerCuratedAnalysis(recommendation.curatedAnalysisId)
+        : undefined;
+      const analysis = addWorkflowStep(document, store.registry, {
+        operationId: recommendation.bindingId,
+        parameters: {
+          ...(curated?.execution.status === 'available' ? curated.execution.parameters : {}),
+          ...Object.fromEntries(
+            Object.entries(recommendation.applicability.fieldBindings).map(([name, columns]) => [
+              name,
+              typeof columns === 'string' ? columns : columns.join(',')
+            ])
+          )
+        }
       });
+      for (const [input, datasetId] of Object.entries(assignments)) {
+        const sourceId = datasetId && sources.get(datasetId);
+        if (sourceId)
+          analysis.document = connectWorkflowSteps(analysis.document, store.registry, {
+            from: {stepId: sourceId, output: 'data'},
+            to: {stepId: analysis.stepId, input}
+          });
+      }
       selectedStepId = analysis.stepId;
       return analysis.document;
     })
@@ -198,6 +237,26 @@ function startSidePanelWorkflow(
   if (!recommendation) store.openPalette({connectFrom: {stepId, output: 'data'}});
 }
 
+const RECOMMENDATION_BINDINGS = new WeakMap<WorkflowOperationRegistry, CatalogOperationBinding[]>();
+
+/** Use the shared AX profiles, declarations, ranking, readiness and remedies. */
+export function getSidePanelRecommendations(store: WorkbenchStore, datasetId: string) {
+  let bindings = RECOMMENDATION_BINDINGS.get(store.registry);
+  if (!bindings) {
+    bindings = store.registry.list().flatMap(operation => {
+      const binding = getCatalogBinding(operation.id);
+      return binding ? [binding] : [];
+    });
+    RECOMMENDATION_BINDINGS.set(store.registry, bindings);
+  }
+  const result = suggestKeplerAnalyses(bindings, getWorkbenchAnalysisProfiles(store), {
+    requiredDatasetId: datasetId,
+    maximumCount: 5,
+    executionEngine: store.host.getDevice() ? 'gpu' : 'cpu'
+  });
+  return [...result.suggestions, ...result.blocked];
+}
+
 function DatasetRecommendations({
   dataset,
   store
@@ -206,22 +265,7 @@ function DatasetRecommendations({
   store: WorkbenchStore;
 }): React.JSX.Element {
   const [open, setOpen] = useState(false);
-  const getRecommendations = useMemo(() => {
-    const cache = new WeakMap<WorkflowDatasetProfile, WorkflowRecommendation[]>();
-    return (profile: WorkflowDatasetProfile) => {
-      let recommendations = cache.get(profile);
-      if (!recommendations) {
-        recommendations = recommendWorkflowOperations(
-          store.registry,
-          getWorkflowRecommendationSubject(profile),
-          {limit: 5}
-        );
-        cache.set(profile, recommendations);
-      }
-      return recommendations;
-    };
-  }, [store.registry]);
-  const recommendations = open ? getRecommendations(dataset) : [];
+  const recommendations = open ? getSidePanelRecommendations(store, dataset.id) : [];
   return (
     <QuickStartDetails
       aria-label={`Suggested analyses for ${dataset.label}`}
@@ -238,17 +282,33 @@ function DatasetRecommendations({
                 data-testid={WORKBENCH_TEST_IDS.recommendation(
                   `${dataset.id}-${recommendation.id}`
                 )}
-                title={recommendation.label}
+                title={recommendation.title}
+                disabled={recommendation.status === 'blocked'}
+                data-status={recommendation.status}
                 onClick={() => {
                   const source = getSidePanelDatasetSource(dataset);
                   startSidePanelWorkflow(store, source, source.label ?? 'Dataset', recommendation);
                 }}
               >
-                <Truncated>{recommendation.label}</Truncated>
+                <Truncated>{recommendation.title}</Truncated>
               </WorkbenchButton>
-              <Truncated as="p" title={recommendation.reason}>
-                <WorkbenchMuted>{recommendation.reason}</WorkbenchMuted>
-              </Truncated>
+              <WorkbenchMuted>
+                {recommendation.status === 'ready'
+                  ? 'Ready'
+                  : recommendation.status === 'blocked'
+                    ? 'Requirements unmet'
+                    : 'Review mapping'}
+              </WorkbenchMuted>
+              <p>
+                <WorkbenchMuted>{recommendation.reasons.join('; ')}</WorkbenchMuted>
+              </p>
+              {recommendation.applicability.missing.map((missing, index) => (
+                <p key={index}>
+                  <WorkbenchMuted>
+                    {[missing.what, missing.remedy].filter(Boolean).join(' — ')}
+                  </WorkbenchMuted>
+                </p>
+              ))}
             </li>
           ))}
           {!recommendations.length && (

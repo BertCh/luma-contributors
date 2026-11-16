@@ -9,40 +9,55 @@
 // numbers can be re-measured after each release.
 //
 // Usage: node scripts/ax-journey-baseline.mjs [--url http://127.0.0.1:5391/] [--out <folder>]
-//          [--rows 256] [--only <journey id>,<journey id>] [--timeout-ms 30000]
+//          [--release <version>] [--targets <json>] [--rows 256]
+//          [--only <journey id>,<journey id>] [--timeout-ms 30000]
+// Defaults to releases/<version>/<timestamp>; existing evidence is never overwritten.
 //
 // A missing selector never skips a journey silently: the journey is recorded as failed with the
 // journey id, the step and the selector, the remaining journeys still run, and the process exits
-// with a non-zero status.
+// with a non-zero status. New AX surfaces are optional: absence is explicitly unqualified.
+import {readAnalysisSheetField} from './analysis-sheet-controls.mjs';
 import {execFileSync} from 'node:child_process';
-import {existsSync, mkdirSync, readFileSync, statSync, writeFileSync} from 'node:fs';
+import {createHash} from 'node:crypto';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  statSync,
+  writeFileSync
+} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {inflateSync} from 'node:zlib';
 import {chromium} from 'playwright';
 import {PNG} from 'pngjs';
 import {getPlaywrightLaunchOptions} from '../../../../scripts/playwright/get-playwright-launch-options.mjs';
+import {
+  AX_SURFACE_IDENTIFIERS,
+  accountJourney,
+  compareJourneys,
+  evaluateJourneyTargets,
+  GALLERY_SAMPLE_IDENTIFIERS,
+  getSuggestionResultFailure,
+  validateJourneyTargets
+} from './ax-journey-model.mjs';
 import {pinViteModules} from './pin-vite-modules.mjs';
+import {TEST_IDS} from './workflow-utils.mjs';
 
 const SCRIPT_DIRECTORY = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_DIRECTORY = path.resolve(SCRIPT_DIRECTORY, '../../../..');
-const DEFAULT_OUTPUT_DIRECTORY = path.join(
+const HISTORICAL_BASELINE_DIRECTORY = path.join(
   REPOSITORY_DIRECTORY,
   'dev-docs/research/analysis-workflow-ux-2026-11-14/baseline'
 );
 const VIEWPORT = {width: 1440, height: 1000};
 let waitTimeoutMilliseconds = 30000;
 const MAXIMUM_SCREENSHOT_BYTES = 300 * 1024;
-const GALLERY_SAMPLE_IDENTIFIERS = [
-  'h3-cells',
-  'points-time',
-  'districts',
-  'connections',
-  'trips',
-  'trip-observations',
-  'numeric-grid',
-  'directed-network'
-];
 const GALLERY_DEFAULT_SAMPLE_IDENTIFIER = 'points-time';
 const COORDINATE_FIELD_NAMES = new Set([
   'longitude',
@@ -51,10 +66,12 @@ const COORDINATE_FIELD_NAMES = new Set([
   'targetLatitude'
 ]);
 
-function parseOptions(argumentsList) {
+export function parseOptions(argumentsList) {
   const options = {
     url: 'http://127.0.0.1:5391/',
-    out: DEFAULT_OUTPUT_DIRECTORY,
+    out: null,
+    release: 'working-tree',
+    targets: path.join(SCRIPT_DIRECTORY, 'ax-journey-targets.json'),
     rows: 256,
     only: null,
     timeoutMilliseconds: 30000,
@@ -63,15 +80,37 @@ function parseOptions(argumentsList) {
   for (let index = 0; index < argumentsList.length; index++) {
     const name = argumentsList[index];
     const value = argumentsList[++index];
-    if (value === undefined || value.startsWith('--'))
-      throw new Error(`Missing value for ${name}`);
+    if (value === undefined || value.startsWith('--')) throw new Error(`Missing value for ${name}`);
     if (name === '--url') options.url = value;
     else if (name === '--out') options.out = path.resolve(value);
+    else if (name === '--release') options.release = value;
+    else if (name === '--targets') options.targets = path.resolve(value);
     else if (name === '--rows') options.rows = Number(value);
     else if (name === '--only') options.only = new Set(value.split(','));
     else if (name === '--timeout-ms') options.timeoutMilliseconds = Number(value);
     else throw new Error(`Unknown option ${name}`);
   }
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(options.release))
+    throw new Error('--release must be a single path-safe release identifier');
+  for (const value of [options.rows, options.timeoutMilliseconds]) {
+    if (!Number.isSafeInteger(value) || value <= 0)
+      throw new Error('--rows and --timeout-ms must be positive safe integers');
+  }
+  options.out ??= path.join(
+    path.dirname(HISTORICAL_BASELINE_DIRECTORY),
+    'releases',
+    options.release,
+    new Date().toISOString().replace(/[:.]/g, '-')
+  );
+  // Resolve existing ancestors as well: a symlink must not bypass baseline protection.
+  let ancestor = options.out;
+  while (!existsSync(ancestor)) ancestor = path.dirname(ancestor);
+  const resolvedOutput = path.resolve(realpathSync(ancestor), path.relative(ancestor, options.out));
+  const baseline = realpathSync(HISTORICAL_BASELINE_DIRECTORY);
+  if (resolvedOutput === baseline || resolvedOutput.startsWith(`${baseline}${path.sep}`))
+    throw new Error('AX-70: historical baseline output is read-only; choose a release folder');
+  if (existsSync(options.out) && readdirSync(options.out).length > 0)
+    throw new Error('AX-70: output folder must be empty to preserve previous run evidence');
   const address = new URL(options.url);
   if (!address.searchParams.has('rows')) address.searchParams.set('rows', String(options.rows));
   options.url = address.href;
@@ -87,7 +126,7 @@ class JourneyFailure extends Error {
 }
 
 /** Records user actions and timing for one journey on its own page. */
-class JourneyRecorder {
+export class JourneyRecorder {
   constructor(identifier, title, page) {
     this.identifier = identifier;
     this.title = title;
@@ -101,6 +140,8 @@ class JourneyRecorder {
     this.probes = [];
     this.notes = [];
     this.consoleErrors = [];
+    // Retain partial action evidence even when a selector fails.
+    page.axJourneyRecorder = this;
     page.on('pageerror', error => this.consoleErrors.push(`pageerror: ${error.message}`));
     page.on('console', message => {
       if (message.type() === 'error') this.consoleErrors.push(message.text().slice(0, 300));
@@ -120,6 +161,10 @@ class JourneyRecorder {
 
   click(locator) {
     return this.act('click', locator.toString(), () => locator.click());
+  }
+
+  press(locator, key) {
+    return this.act('press', `${locator.toString()} ${key}`, () => locator.press(key));
   }
 
   selectOption(locator, value) {
@@ -165,22 +210,11 @@ class JourneyRecorder {
   }
 
   toRecord(fields) {
-    const setupActionCount = this.steps.filter(step => step.phase === 'setup').length;
     return {
       id: this.identifier,
       title: this.title,
       steps: this.steps,
-      actionCount: this.steps.length,
-      setupActionCount,
-      analysisActionCount: this.steps.length - setupActionCount,
-      milliseconds:
-        this.startedAt !== null && this.finishedAt !== null
-          ? Math.round(this.finishedAt - this.startedAt)
-          : null,
-      setupMilliseconds:
-        this.startedAt !== null && this.setupFinishedAt !== null
-          ? Math.round(this.setupFinishedAt - this.startedAt)
-          : null,
+      ...accountJourney(this),
       ...fields,
       observations: this.observations,
       probes: this.probes,
@@ -216,7 +250,9 @@ async function loadSampleThroughGallery(recorder, sampleIdentifier) {
   if (defaultIdentifier !== sampleIdentifier) {
     await recorder.selectOption(gallerySelect, sampleIdentifier);
   } else {
-    recorder.notes.push(`${sampleIdentifier} is the gallery default, so no select action is needed.`);
+    recorder.notes.push(
+      `${sampleIdentifier} is the gallery default, so no select action is needed.`
+    );
   }
   const title = await recorder.observe('gallery sample title', () =>
     gallerySelect.locator(`option[value="${sampleIdentifier}"]`).innerText()
@@ -314,7 +350,9 @@ async function saveScreenshot(page, outputDirectory, name, files) {
   await page.screenshot({path: file, type: 'jpeg', quality: 60});
   const bytes = statSync(file).size;
   if (bytes > MAXIMUM_SCREENSHOT_BYTES)
-    throw new Error(`Screenshot ${name} is ${bytes} bytes, above the ${MAXIMUM_SCREENSHOT_BYTES} limit`);
+    throw new Error(
+      `Screenshot ${name} is ${bytes} bytes, above the ${MAXIMUM_SCREENSHOT_BYTES} limit`
+    );
   files.push({name, bytes});
 }
 
@@ -333,7 +371,10 @@ async function countDominantMapColors(page) {
   return [...counts.entries()]
     .filter(([, count]) => count > total * 0.002)
     .sort((first, second) => second[1] - first[1])
-    .map(([key, count]) => ({quantizedRgb: key.split(',').map(value => Number(value) * 16), pixels: count}));
+    .map(([key, count]) => ({
+      quantizedRgb: key.split(',').map(value => Number(value) * 16),
+      pixels: count
+    }));
 }
 
 async function readFormControls(recorder, formSelector) {
@@ -390,7 +431,8 @@ async function journeyFirstResult(page, options, sampleIdentifier, screenshotFil
   if (fieldOptions.length === 0) {
     recorder.markFinished();
     return recorder.toRecord({
-      endCondition: 'The numeric field list of the analysis panel is empty, so no operation can run.',
+      endCondition:
+        'The numeric field list of the analysis panel is empty, so no operation can run.',
       outcome: 'noAnalysisAvailable'
     });
   }
@@ -417,7 +459,8 @@ async function journeyFirstResult(page, options, sampleIdentifier, screenshotFil
     );
   // Probe after the clock stopped: not a counted step.
   recorder.probes.push({
-    probe: 'legend panel text after the result (opened by clicking the map legend button; not counted)',
+    probe:
+      'legend panel text after the result (opened by clicking the map legend button; not counted)',
     value: await readLegendText(recorder)
   });
   if (sampleIdentifier === 'points-time')
@@ -453,8 +496,7 @@ async function journeyPointHotspots(page, options, useReadingField, screenshotFi
   recorder.observations.blankFieldsBeforeEditing = controls
     .filter(control => control.value === '')
     .map(control => control.label);
-  if (useReadingField)
-    await recorder.selectOption(analysis.locator('#analysis-column'), 'reading');
+  if (useReadingField) await recorder.selectOption(analysis.locator('#analysis-column'), 'reading');
   await recorder.selectOption(analysis.locator('#analysis-point-hotspot-longitude'), 'longitude');
   await recorder.selectOption(analysis.locator('#analysis-point-hotspot-latitude'), 'latitude');
   await recorder.click(
@@ -488,7 +530,9 @@ async function readCatalogDatasetOptions(recorder) {
   const sourceSelect = panel.locator('select[aria-label$=" source"]').first();
   await recorder.selectOption(sourceSelect, 'native');
   const datasetSelect = panel.locator('select[aria-label$=" dataset"]').first();
-  return recorder.observe('catalog dataset select', () => datasetSelect.locator('option').allTextContents());
+  return recorder.observe('catalog dataset select', () =>
+    datasetSelect.locator('option').allTextContents()
+  );
 }
 
 /** Journey 3a: what the catalog dataset list holds after a gallery sample with geometry is prepared. */
@@ -540,8 +584,16 @@ async function journeyCatalogAfterNativeLoad(page, options, screenshotFiles) {
       JSON.stringify({
         type: 'FeatureCollection',
         features: [
-          {type: 'Feature', properties: {value: 1}, geometry: {type: 'Polygon', coordinates: square(-122.5, 37.7)}},
-          {type: 'Feature', properties: {value: 2}, geometry: {type: 'Polygon', coordinates: square(-122.4, 37.7)}}
+          {
+            type: 'Feature',
+            properties: {value: 1},
+            geometry: {type: 'Polygon', coordinates: square(-122.5, 37.7)}
+          },
+          {
+            type: 'Feature',
+            properties: {value: 2},
+            geometry: {type: 'Polygon', coordinates: square(-122.4, 37.7)}
+          }
         ]
       })
     )
@@ -573,7 +625,10 @@ async function journeyCatalogAfterNativeLoad(page, options, screenshotFiles) {
   recorder.markFinished();
   recorder.observations.autoPrepared = autoPrepared;
   recorder.observations.keplerDatasetCountText = await recorder.observe('Datasets heading', () =>
-    page.getByText(/^Datasets\(\d+\)$/).first().innerText()
+    page
+      .getByText(/^Datasets\(\d+\)$/)
+      .first()
+      .innerText()
   );
   recorder.observations.catalogDatasetOptions = catalogOptions;
   recorder.observations.analysisDatasetOptions = await recorder.observe(
@@ -581,7 +636,12 @@ async function journeyCatalogAfterNativeLoad(page, options, screenshotFiles) {
     () => getAnalysisSection(page).locator('#analysis-dataset option').allTextContents()
   );
   recorder.observations.preparedDatasetInCatalog = catalogOptions.includes(file.name);
-  await saveScreenshot(page, options.out, 'catalog-dataset-list-after-native-load.jpg', screenshotFiles);
+  await saveScreenshot(
+    page,
+    options.out,
+    'catalog-dataset-list-after-native-load.jpg',
+    screenshotFiles
+  );
   return recorder.toRecord({
     endCondition:
       'The first catalog input is switched to Native dataset and its dataset select options are read after the file was auto-prepared.',
@@ -606,12 +666,14 @@ async function journeyCatalogBuiltInSample(page, options, screenshotFiles) {
     page.evaluate(() => window.__keplerComputeTest.getState().nativeLayers.length)
   );
   await recorder.click(panel.getByTestId('catalog-run'));
-  await recorder.waitUntil(
-    'the catalog result block',
-    () => Boolean(document.querySelector('[data-testid="catalog-result"]'))
+  await recorder.waitUntil('the catalog result block', () =>
+    Boolean(document.querySelector('[data-testid="catalog-result"]'))
   );
   recorder.observations.catalogResultText = await recorder.observe('catalog result', () =>
-    panel.getByTestId('catalog-result').innerText().then(text => text.slice(0, 600))
+    panel
+      .getByTestId('catalog-result')
+      .innerText()
+      .then(text => text.slice(0, 600))
   );
   await recorder.click(panel.getByTestId('catalog-publish').first());
   await recorder.click(page.getByRole('button', {name: 'Add Data', exact: true}));
@@ -661,10 +723,15 @@ async function journeyCatalogBuiltInSample(page, options, screenshotFiles) {
   );
   styleRecorder.markFinished();
   styleRecorder.observations.legendText = legendText;
-  styleRecorder.observations.legendMentionsColorByField = /ramp|quantile|threshold|by /i.test(legendText);
+  styleRecorder.observations.legendMentionsColorByField = /ramp|quantile|threshold|by /i.test(
+    legendText
+  );
   styleRecorder.observations.dominantMapColors = await countDominantMapColors(page);
   styleRecorder.observations.layerPanelTypes = await styleRecorder.observe('layer panels', () =>
-    page.locator('.layer-panel').allInnerTexts().then(texts => texts.map(text => text.split('\n')[0]))
+    page
+      .locator('.layer-panel')
+      .allInnerTexts()
+      .then(texts => texts.map(text => text.split('\n')[0]))
   );
   await saveScreenshot(page, options.out, 'catalog-published-layer-legend.jpg', screenshotFiles);
   const styleRecord = styleRecorder.toRecord({
@@ -716,30 +783,33 @@ async function journeyInterpolationDefaults(page, options, screenshotFiles) {
   recorder.observations.krigingControls = krigingControls;
   // Actual extents of the gallery samples that carry coordinates, from the sample generator itself.
   recorder.observations.sampleExtents = await recorder.observe('sample extents', () =>
-    page.evaluate(async sampleIdentifiers => {
-      const module = await import('/src/sandbox-samples.ts');
-      const extents = {};
-      for (const identifier of sampleIdentifiers) {
-        const table = module.createSandboxSample(identifier).table;
-        const longitude = table.getChild('longitude');
-        const latitude = table.getChild('latitude');
-        if (!longitude || !latitude) continue;
-        const range = vector => {
-          let minimum = Infinity;
-          let maximum = -Infinity;
-          for (const value of vector.toArray()) {
-            if (Number.isNaN(value)) continue;
-            if (value < minimum) minimum = value;
-            if (value > maximum) maximum = value;
-          }
-          return [minimum, maximum];
-        };
-        const [west, east] = range(longitude);
-        const [south, north] = range(latitude);
-        extents[identifier] = {west, south, east, north};
-      }
-      return extents;
-    }, ['points-time', 'connections', 'trip-observations', 'numeric-grid'])
+    page.evaluate(
+      async sampleIdentifiers => {
+        const module = await import('/src/sandbox-samples.ts');
+        const extents = {};
+        for (const identifier of sampleIdentifiers) {
+          const table = module.createSandboxSample(identifier).table;
+          const longitude = table.getChild('longitude');
+          const latitude = table.getChild('latitude');
+          if (!longitude || !latitude) continue;
+          const range = vector => {
+            let minimum = Infinity;
+            let maximum = -Infinity;
+            for (const value of vector.toArray()) {
+              if (Number.isNaN(value)) continue;
+              if (value < minimum) minimum = value;
+              if (value > maximum) maximum = value;
+            }
+            return [minimum, maximum];
+          };
+          const [west, east] = range(longitude);
+          const [south, north] = range(latitude);
+          extents[identifier] = {west, south, east, north};
+        }
+        return extents;
+      },
+      ['points-time', 'connections', 'trip-observations', 'numeric-grid']
+    )
   );
   const fixed = recorder.observations.idwDefaultBounds;
   const extent = recorder.observations.sampleExtents['points-time'];
@@ -760,19 +830,717 @@ async function journeyInterpolationDefaults(page, options, screenshotFiles) {
   });
 }
 
+/** Absence is optional; page closure, invalid selectors and application errors still fail. */
+export async function waitForOptionalSurface(surface, timeoutMilliseconds) {
+  try {
+    await surface.waitFor({state: 'visible', timeout: timeoutMilliseconds});
+    return true;
+  } catch (failure) {
+    if (failure.name === 'TimeoutError') return false;
+    throw failure;
+  }
+}
+
+/** Follow the host's supported opening path before deciding an AX surface is absent. */
+export async function openWorkflowJourneySurface(recorder, surfaceIdentifier) {
+  const {page} = recorder;
+  const sidePanel = page.getByTestId(TEST_IDS.sidePanel).first();
+  const workflowsTab = page.locator('.side-panel__tab[data-for="workflows-nav"]').first();
+  if (!(await sidePanel.isVisible()) && (await workflowsTab.isVisible())) {
+    await recorder.click(workflowsTab);
+    await recorder.observe('Workflows side panel after navigation', () =>
+      sidePanel.waitFor({state: 'visible'})
+    );
+  }
+  const dock = page.getByTestId(TEST_IDS.dock).first();
+  const toolbar = dock.getByTestId(TEST_IDS.toolbar);
+  if (!(await toolbar.isVisible())) {
+    const expand = dock.getByTestId(TEST_IDS.dockToggle);
+    if (!(await expand.isVisible())) return false;
+    await recorder.click(expand);
+    await recorder.observe('expanded workbench toolbar', () => toolbar.waitFor({state: 'visible'}));
+  }
+  if (surfaceIdentifier === 'ax-command-palette') {
+    const selectedWorkflow = toolbar.getByTestId('workflow-select');
+    if (!(await selectedWorkflow.isEnabled()) || !(await selectedWorkflow.inputValue())) {
+      await recorder.click(toolbar.getByTestId(TEST_IDS.workflowNew));
+      await recorder.observe('new workflow selection', async () => {
+        if (!(await selectedWorkflow.inputValue()))
+          throw new Error('New workflow was not selected');
+      });
+    }
+  }
+  const opener = toolbar.getByTestId(
+    surfaceIdentifier === 'ax-command-palette' ? TEST_IDS.addStep : TEST_IDS.templates
+  );
+  if (!(await opener.isVisible())) return false;
+  await recorder.click(opener);
+  return true;
+}
+
+/**
+ * AX hosts must expose auditable result metadata; text/visibility alone cannot qualify a run.
+ * Suggestion buttons carry data-sample-id and data-suggestion-id. The result card carries those
+ * plus data-status="done", data-run-id, data-stale="false" and aria-busy="false".
+ * Until the optional surface implements this evidence contract it fails qualification.
+ */
+export async function runSuggestionToResult(recorder, surface, sampleIdentifier) {
+  const {page} = recorder;
+  const suggestion = surface.locator('button:not(:disabled), a[href]').first();
+  const suggestionIdentifier = await suggestion.getAttribute('data-suggestion-id');
+  if (
+    !suggestionIdentifier ||
+    (await suggestion.getAttribute('data-sample-id')) !== sampleIdentifier
+  )
+    throw new Error(
+      `AX-70: selected suggestion must identify sample ${sampleIdentifier} and its suggestion ID`
+    );
+  const resultCard = page.getByTestId('ax-result-card').first();
+  const previousRunIdentifier = (await resultCard.count())
+    ? await resultCard.getAttribute('data-run-id')
+    : null;
+  const expected = {sampleIdentifier, suggestionIdentifier, previousRunIdentifier};
+  recorder.observations.suggestionEvidence = expected;
+  await recorder.click(suggestion);
+  const handle = await recorder.waitUntil(
+    'a fresh completed AX suggestion result',
+    previousRun => {
+      const card = document.querySelector('[data-testid="ax-result-card"]');
+      if (!card || !card.getClientRects().length) return false;
+      const status = card.getAttribute('data-status');
+      const busy = card.getAttribute('aria-busy');
+      const hasError =
+        Boolean(card.querySelector('[role="alert"], [data-status="error"]')) ||
+        card.getAttribute('data-error') === 'true';
+      const text = card.textContent ?? '';
+      if (
+        !hasError &&
+        !/^\s*(?:error:|failed:)|GPU computation failed/i.test(text) &&
+        (['running', 'loading', 'pending'].includes(status) ||
+          busy === 'true' ||
+          (status === 'done' && card.getAttribute('data-run-id') === previousRun))
+      )
+        return false;
+      return {
+        status,
+        busy: busy === 'false' ? false : true,
+        stale: card.getAttribute('data-stale') === 'false' ? false : true,
+        sampleIdentifier: card.getAttribute('data-sample-id'),
+        suggestionIdentifier: card.getAttribute('data-suggestion-id'),
+        runIdentifier: card.getAttribute('data-run-id'),
+        hasError,
+        text
+      };
+    },
+    previousRunIdentifier
+  );
+  let result;
+  try {
+    result = await handle.jsonValue();
+  } finally {
+    await handle.dispose();
+  }
+  recorder.observations.resultEvidence = result;
+  const failure = getSuggestionResultFailure(result, expected);
+  if (failure) throw new Error(`AX-70: ${failure}`);
+  recorder.observations.resultText = result.text;
+  return result;
+}
+
+/** AX-22 opening gate, independent of the later one-action-result gate. */
+export async function runSuggestionOpening(recorder, surface) {
+  const suggestion = surface.locator('button[data-suggestion-id]:not(:disabled)').first();
+  if (!(await suggestion.count()))
+    throw new Error(
+      'AX-22: this loaded profile has no launchable suggestion; inspect the dataset mapping limitation.'
+    );
+  const expected = {
+    bindingId: await suggestion.getAttribute('data-binding-id'),
+    inputMappings: JSON.parse(await suggestion.getAttribute('data-input-mappings')),
+    fieldBindings: JSON.parse(await suggestion.getAttribute('data-field-bindings'))
+  };
+  const mappingFields = ['mode', 'datasetId', 'geometry', 'longitude', 'latitude'];
+  if (
+    !expected.bindingId ||
+    !expected.inputMappings ||
+    !Object.keys(expected.inputMappings).length ||
+    Object.values(expected.inputMappings).some(
+      mapping =>
+        !mapping ||
+        mappingFields.some(field => !Object.hasOwn(mapping, field)) ||
+        mapping.mode !== 'native' ||
+        !mapping.datasetId ||
+        !mapping.geometry ||
+        ((mapping.longitude !== null || mapping.latitude !== null) &&
+          (!mapping.longitude || !mapping.latitude))
+    )
+  )
+    throw new Error(
+      `AX-22 missing complete expected named input mappings: ${JSON.stringify(expected)}`
+    );
+  recorder.observations.openingExpectations = expected;
+  await recorder.click(suggestion);
+  const catalog = recorder.page.getByTestId('analysis-catalog');
+  await recorder.observe('suggested catalog binding', () => catalog.waitFor({state: 'visible'}));
+  await recorder.waitUntil(
+    'exact suggested operation',
+    bindingId => document.querySelector('#catalog-operation')?.value === bindingId,
+    expected.bindingId
+  );
+  const operation = await catalog.locator('#catalog-operation').inputValue();
+  if (operation !== expected.bindingId)
+    throw new Error(`AX-22: expected ${expected.bindingId}, got ${operation}`);
+  // Expectations were recorded on the suggestion before the catalog opened, from the
+  // assigned profiles. Compare named ports, never an unordered multiset of dataset IDs.
+  const mappings = await catalog.locator('[data-catalog-input]').evaluateAll(fieldsets =>
+    Object.fromEntries(
+      fieldsets.map(fieldset => [
+        fieldset.getAttribute('data-catalog-input'),
+        {
+          mode: fieldset.querySelector('select[aria-label$=" source"]')?.value ?? null,
+          datasetId: fieldset.querySelector('select[aria-label$=" dataset"]')?.value ?? null,
+          geometry: fieldset.querySelector('select[aria-label$=" geometry field"]')?.value ?? null,
+          longitude:
+            fieldset.querySelector('select[aria-label$=" X / longitude column"]')?.value ?? null,
+          latitude:
+            fieldset.querySelector('select[aria-label$=" Y / latitude column"]')?.value ?? null
+        }
+      ])
+    )
+  );
+  if (
+    !expected.inputMappings ||
+    Object.keys(mappings).length !== Object.keys(expected.inputMappings).length
+  )
+    throw new Error(`AX-22 named input mismatch: ${JSON.stringify({expected, mappings})}`);
+  for (const [inputName, mapping] of Object.entries(expected.inputMappings)) {
+    const actual = mappings[inputName];
+    if (!actual || Object.entries(mapping).some(([name, value]) => actual[name] !== value))
+      throw new Error(
+        `AX-22 input ${inputName} mapping mismatch: ${JSON.stringify({expected: mapping, actual})}`
+      );
+  }
+  for (const [parameter, columns] of Object.entries(expected.fieldBindings)) {
+    const actual = await readAnalysisSheetField(catalog, parameter);
+    const value = Array.isArray(columns) ? columns.join(',') : columns;
+    if (actual !== value) throw new Error(`AX-22 ${parameter}: expected ${value}, got ${actual}`);
+  }
+  recorder.observations.openingEvidence = {expected, mappings};
+}
+
+async function journeySuggestionOpening(page, options, sampleIdentifier, screenshotFiles) {
+  const recorder = new JourneyRecorder(
+    `suggestion-open:${sampleIdentifier}`,
+    `Open a suggestion for ${sampleIdentifier}`,
+    page
+  );
+  await startApplication(page, options);
+  const {title} = await loadSampleThroughGallery(recorder, sampleIdentifier);
+  // Selecting the active dataset is setup; the gate starts at its loaded card.
+  await chooseAnalysisDataset(recorder, title);
+  const surface = page
+    .getByTestId('ax-suggestions')
+    .filter({has: page.getByRole('heading', {name: 'Suggested for this data', exact: true})})
+    .first();
+  await recorder.observe('loaded dataset suggestions', () => surface.waitFor({state: 'visible'}));
+  recorder.markSetupFinished();
+  await runSuggestionOpening(recorder, surface);
+  recorder.markFinished();
+  await saveScreenshot(
+    page,
+    options.out,
+    `suggestion-open_${sampleIdentifier}.jpg`,
+    screenshotFiles
+  );
+  return recorder.toRecord({
+    outcome: 'observed',
+    endCondition:
+      'One click opened the exact binding with native datasets and suggested roles; no result gate claimed.'
+  });
+}
+
+/** The existing optional-surface hook also supports the AX-22 filtered browse gate. */
+async function journeySuggestionBrowse(page, options, screenshotFiles) {
+  const recorder = new JourneyRecorder(
+    'suggestion-browse:points-time',
+    'Browse analyses for the active dataset',
+    page
+  );
+  await startApplication(page, options);
+  const {title} = await loadSampleThroughGallery(recorder, 'points-time');
+  await chooseAnalysisDataset(recorder, title);
+  const surface = page.getByTestId('ax-suggestions').first();
+  await recorder.observe('dataset suggestion card', () => surface.waitFor({state: 'visible'}));
+  recorder.markSetupFinished();
+  const browse = surface
+    .locator('details')
+    .filter({has: page.getByText('Browse all that fit', {exact: true})});
+  await recorder.click(browse.locator('summary'));
+  const buttons = browse.locator('button[data-binding-id]');
+  await recorder.observe('compatible browse operations', () =>
+    buttons.first().waitFor({state: 'visible'})
+  );
+  const datasetId = await surface.getAttribute('data-dataset-id');
+  const candidates = await buttons.evaluateAll(elements =>
+    elements.map(element => ({
+      bindingId: element.getAttribute('data-binding-id'),
+      assignments: JSON.parse(element.getAttribute('data-input-assignments')),
+      disabled: element.disabled
+    }))
+  );
+  if (
+    !candidates.length ||
+    candidates.some(
+      candidate => candidate.disabled || !Object.values(candidate.assignments).includes(datasetId)
+    )
+  )
+    throw new Error(
+      `AX-22 browse does not fit the active dataset: ${JSON.stringify({datasetId, candidates})}`
+    );
+  recorder.observations.browseEvidence = {datasetId, candidates};
+  recorder.markFinished();
+  await saveScreenshot(page, options.out, 'suggestion-browse_points-time.jpg', screenshotFiles);
+  return recorder.toRecord({
+    outcome: 'observed',
+    endCondition:
+      'Browse all shows enabled operations assigned to the active dataset; Node specs check their applicability.'
+  });
+}
+
+/** Optional AX journeys become active as their host surfaces land. */
+async function journeyOptionalSurface(
+  page,
+  options,
+  surfaceIdentifier,
+  sampleIdentifier,
+  screenshotFiles
+) {
+  const identifier =
+    surfaceIdentifier === 'ax-suggestions'
+      ? `suggestion-result:${sampleIdentifier}`
+      : `surface:${surfaceIdentifier}`;
+  const recorder = new JourneyRecorder(
+    identifier,
+    `${surfaceIdentifier} on ${sampleIdentifier}`,
+    page
+  );
+  await startApplication(page, options);
+  const {title} = await loadSampleThroughGallery(recorder, sampleIdentifier);
+  recorder.observations.sampleTitle = title;
+  recorder.markSetupFinished();
+  const surface = page.getByTestId(surfaceIdentifier).first();
+  const absent = () => {
+    recorder.markFinished();
+    return recorder.toRecord({
+      outcome: 'surface-not-present',
+      reason: `surface not present: [data-testid="${surfaceIdentifier}"]`,
+      endCondition: 'Optional AX surface unavailable; no qualification claimed.'
+    });
+  };
+  if (!(await surface.isVisible())) {
+    recorder.phase = 'setup';
+    if (['ax-command-palette', 'ax-workflow-gallery'].includes(surfaceIdentifier)) {
+      await openWorkflowJourneySurface(recorder, surfaceIdentifier);
+    } else {
+      const opener = page.getByTestId(`${surfaceIdentifier}-open`).first();
+      if (await opener.isVisible()) await recorder.click(opener);
+    }
+    recorder.markSetupFinished();
+  }
+  if (
+    ['ax-analysis-sheet', 'ax-result-card'].includes(surfaceIdentifier) &&
+    !(await surface.isVisible())
+  ) {
+    const suggestion = page
+      .getByTestId('ax-suggestions')
+      .locator('button:not(:disabled), a[href]')
+      .first();
+    if (await suggestion.isVisible()) {
+      recorder.phase = 'setup';
+      await recorder.click(suggestion);
+      recorder.markSetupFinished();
+    }
+  }
+  // Allow React/profile publication to settle; only an optional surface timeout is a skip.
+  if (!(await waitForOptionalSurface(surface, Math.min(options.timeoutMilliseconds, 3000))))
+    return absent();
+  recorder.observations.surfaceText = (await surface.innerText()).slice(0, 2000);
+  if (surfaceIdentifier === 'ax-suggestions') {
+    // Preserve selection actions in the loaded-sample budget when the legacy host needs one.
+    if (await page.locator('#analysis-dataset').count())
+      await chooseAnalysisDataset(recorder, title);
+    await runSuggestionToResult(recorder, surface, sampleIdentifier);
+  } else if (surfaceIdentifier === 'ax-command-palette') {
+    const search = surface.locator('input').first();
+    // Focus must already be on the search control, as the AX-60 keyboard gate requires.
+    if (!(await search.evaluate(element => document.activeElement === element)))
+      throw new JourneyFailure(
+        identifier,
+        'palette search focus',
+        new Error('Search input is not focused')
+      );
+    for (const key of ['h', 'o', 't', 'Enter']) await recorder.press(search, key);
+    await recorder.observe('mapped analysis sheet after hot + Enter', () =>
+      page.getByTestId('ax-analysis-sheet').first().waitFor({state: 'visible'})
+    );
+    recorder.observations.analysisSheetText = await page
+      .getByTestId('ax-analysis-sheet')
+      .first()
+      .innerText();
+  }
+  recorder.markFinished();
+  await saveScreenshot(
+    page,
+    options.out,
+    `${identifier.replace(/[^\w-]/g, '_')}.jpg`,
+    screenshotFiles
+  );
+  return recorder.toRecord({
+    outcome: surfaceIdentifier === 'ax-suggestions' ? 'result-visible' : 'observed',
+    endCondition:
+      surfaceIdentifier === 'ax-suggestions'
+        ? 'Selecting the sample suggestion completes a fresh successful result with matching sample and suggestion IDs.'
+        : surfaceIdentifier === 'ax-command-palette'
+          ? 'Focused palette receives h, o, t, Enter and displays the analysis sheet.'
+          : 'The AX surface is visible; text and screenshot recorded (presence probe only).'
+  });
+}
+
+const SOURCE_EXCLUDED_DIRECTORIES = new Set([
+  '.git',
+  'node_modules',
+  '.ax',
+  '.typecheck',
+  '.cache',
+  '.yarn',
+  'dist',
+  'coverage',
+  '.playwright-artifacts',
+  '.docusaurus',
+  '.tanstack',
+  '.output',
+  '.reports',
+  'workflow-screenshots',
+  'kepler-demo-cache',
+  '__pycache__'
+]);
+const hashBytes = bytes => createHash('sha256').update(bytes).digest('hex');
+const hashObject = (kind, bytes) =>
+  createHash('sha1').update(`${kind} ${bytes.length}\0`).update(bytes).digest('hex');
+
+/** Minimal read-only object access for loose and packed SHA-1 repositories (no git subprocess). */
+function createRepositoryObjectReader(repositoryDirectory) {
+  const objectDirectory = path.join(repositoryDirectory, '.git/objects');
+  const objectCache = new Map();
+  const packCache = new Map();
+  const packDirectory = path.join(objectDirectory, 'pack');
+  const indexes = existsSync(packDirectory)
+    ? readdirSync(packDirectory)
+        .filter(name => name.endsWith('.idx'))
+        .map(name => ({name, bytes: readFileSync(path.join(packDirectory, name))}))
+    : [];
+  const readVariableInteger = (bytes, cursor) => {
+    let value = 0;
+    let multiplier = 1;
+    let byte;
+    do {
+      byte = bytes[cursor.offset++];
+      value += (byte & 0x7f) * multiplier;
+      multiplier *= 128;
+    } while (byte & 0x80);
+    return value;
+  };
+  const applyDelta = (base, delta) => {
+    const cursor = {offset: 0};
+    const baseSize = readVariableInteger(delta, cursor);
+    const resultSize = readVariableInteger(delta, cursor);
+    if (baseSize !== base.bytes.length) throw new Error('AX-70: packed delta base size mismatch');
+    const result = Buffer.alloc(resultSize);
+    let resultOffset = 0;
+    while (cursor.offset < delta.length) {
+      const instruction = delta[cursor.offset++];
+      if (instruction & 0x80) {
+        let copyOffset = 0;
+        let copySize = 0;
+        for (let index = 0; index < 4; index++) {
+          if (instruction & (1 << index)) copyOffset += delta[cursor.offset++] * 2 ** (index * 8);
+        }
+        for (let index = 0; index < 3; index++) {
+          if (instruction & (1 << (index + 4)))
+            copySize += delta[cursor.offset++] * 2 ** (index * 8);
+        }
+        copySize ||= 0x10000;
+        if (copyOffset + copySize > base.bytes.length || resultOffset + copySize > result.length)
+          throw new Error('AX-70: packed delta copy exceeds object size');
+        base.bytes.copy(result, resultOffset, copyOffset, copyOffset + copySize);
+        resultOffset += copySize;
+      } else {
+        if (
+          !instruction ||
+          cursor.offset + instruction > delta.length ||
+          resultOffset + instruction > result.length
+        )
+          throw new Error('AX-70: invalid packed delta insertion');
+        delta.copy(result, resultOffset, cursor.offset, cursor.offset + instruction);
+        cursor.offset += instruction;
+        resultOffset += instruction;
+      }
+    }
+    if (resultOffset !== resultSize) throw new Error('AX-70: packed delta result size mismatch');
+    return {kind: base.kind, bytes: result};
+  };
+  const readPackedObject = (packName, offset) => {
+    const cacheKey = `${packName}:${offset}`;
+    if (objectCache.has(cacheKey)) return objectCache.get(cacheKey);
+    if (!packCache.has(packName))
+      packCache.set(packName, readFileSync(path.join(packDirectory, packName)));
+    const pack = packCache.get(packName);
+    let cursor = offset;
+    let byte = pack[cursor++];
+    const type = (byte >> 4) & 7;
+    let size = byte & 15;
+    let multiplier = 16;
+    while (byte & 0x80) {
+      byte = pack[cursor++];
+      size += (byte & 127) * multiplier;
+      multiplier *= 128;
+    }
+    let base;
+    if (type === 6) {
+      byte = pack[cursor++];
+      let distance = byte & 127;
+      while (byte & 128) {
+        byte = pack[cursor++];
+        distance = (distance + 1) * 128 + (byte & 127);
+      }
+      base = readPackedObject(packName, offset - distance);
+    } else if (type === 7) {
+      base = readObject(pack.subarray(cursor, cursor + 20).toString('hex'));
+      cursor += 20;
+    }
+    const bytes = inflateSync(pack.subarray(cursor));
+    if (bytes.length !== size) throw new Error('AX-70: packed object size mismatch');
+    const object = base
+      ? applyDelta(base, bytes)
+      : {kind: {1: 'commit', 2: 'tree', 3: 'blob', 4: 'tag'}[type], bytes};
+    if (!object.kind) throw new Error('AX-70: unsupported packed object type');
+    objectCache.set(cacheKey, object);
+    return object;
+  };
+  const readObject = identifier => {
+    if (objectCache.has(identifier)) return objectCache.get(identifier);
+    const looseFile = path.join(objectDirectory, identifier.slice(0, 2), identifier.slice(2));
+    let object;
+    if (existsSync(looseFile)) {
+      const content = inflateSync(readFileSync(looseFile));
+      object = {
+        kind: content.subarray(0, content.indexOf(32)).toString(),
+        bytes: content.subarray(content.indexOf(0) + 1)
+      };
+    } else {
+      const requested = Buffer.from(identifier, 'hex');
+      for (const {name, bytes} of indexes) {
+        if (bytes.readUInt32BE(0) !== 0xff744f63 || bytes.readUInt32BE(4) !== 2)
+          throw new Error('AX-70: repository pack index must use version 2');
+        const count = bytes.readUInt32BE(8 + 255 * 4);
+        const namesOffset = 8 + 256 * 4;
+        let lower = 0;
+        let upper = count - 1;
+        while (lower <= upper) {
+          const middle = Math.floor((lower + upper) / 2);
+          const comparison = Buffer.compare(
+            bytes.subarray(namesOffset + middle * 20, namesOffset + (middle + 1) * 20),
+            requested
+          );
+          if (comparison < 0) lower = middle + 1;
+          else if (comparison > 0) upper = middle - 1;
+          else {
+            const offsetsStart = namesOffset + count * 24;
+            const shortOffset = bytes.readUInt32BE(offsetsStart + middle * 4);
+            const offset =
+              shortOffset & 0x80000000
+                ? Number(
+                    bytes.readBigUInt64BE(offsetsStart + count * 4 + (shortOffset & 0x7fffffff) * 8)
+                  )
+                : shortOffset;
+            object = readPackedObject(name.replace(/\.idx$/, '.pack'), offset);
+            break;
+          }
+        }
+        if (object) break;
+      }
+    }
+    if (!object || hashObject(object.kind, object.bytes) !== identifier)
+      throw new Error(`AX-70: repository object missing or corrupt: ${identifier}`);
+    objectCache.set(identifier, object);
+    return object;
+  };
+  return identifier => readObject(identifier).bytes;
+}
+
+/** Read-only repository identity; never invokes git or changes its metadata. */
+export function readSourceIdentity(outputDirectory, repositoryDirectory = REPOSITORY_DIRECTORY) {
+  const commit = readCommit(repositoryDirectory);
+  const files = [];
+  const excludedOutput = path.relative(repositoryDirectory, outputDirectory);
+  const visit = relativeDirectory => {
+    for (const entry of readdirSync(path.join(repositoryDirectory, relativeDirectory), {
+      withFileTypes: true
+    })) {
+      const relativeName = path.join(relativeDirectory, entry.name);
+      if (
+        relativeName === excludedOutput ||
+        relativeName === 'dev-docs/research/analysis-workflow-ux-2026-11-14/releases'
+      )
+        continue;
+      if (entry.isDirectory()) {
+        if (!SOURCE_EXCLUDED_DIRECTORIES.has(entry.name)) visit(relativeName);
+      } else if (!entry.name.endsWith('.tsbuildinfo') && entry.name !== '.DS_Store') {
+        const fullName = path.join(repositoryDirectory, relativeName);
+        const bytes = entry.isSymbolicLink()
+          ? Buffer.from(readlinkSync(fullName))
+          : readFileSync(fullName);
+        const mode = entry.isSymbolicLink()
+          ? '120000'
+          : lstatSync(fullName).mode & 0o111
+            ? '100755'
+            : '100644';
+        files.push({
+          path: relativeName,
+          mode,
+          sha256: hashBytes(bytes),
+          blob: hashObject('blob', bytes)
+        });
+      }
+    }
+  };
+  visit('');
+  files.sort((first, second) => (first.path < second.path ? -1 : first.path > second.path ? 1 : 0));
+  const identity = {
+    commit,
+    algorithm: 'sha256',
+    treeHash: hashBytes(JSON.stringify(files)),
+    files,
+    excludedDirectories: [...SOURCE_EXCLUDED_DIRECTORIES],
+    excludedOutput: [excludedOutput, 'dev-docs/research/analysis-workflow-ux-2026-11-14/releases'],
+    headTree: null,
+    dirty: null,
+    changedPaths: [],
+    untrackedPaths: [],
+    dirtyError: null,
+    indexHash: existsSync(path.join(repositoryDirectory, '.git/index'))
+      ? hashBytes(readFileSync(path.join(repositoryDirectory, '.git/index')))
+      : null
+  };
+  try {
+    const readObject = createRepositoryObjectReader(repositoryDirectory);
+    identity.headTree = /^tree ([a-f0-9]{40})/m.exec(readObject(commit.head).toString())?.[1];
+    if (!identity.headTree) throw new Error('HEAD tree unavailable');
+    const trackedFiles = new Map();
+    const readTree = (identifier, prefix = '') => {
+      const bytes = readObject(identifier);
+      let offset = 0;
+      while (offset < bytes.length) {
+        const separator = bytes.indexOf(0, offset);
+        const entry = bytes.subarray(offset, separator).toString();
+        const mode = entry.slice(0, entry.indexOf(' '));
+        const name = entry.slice(entry.indexOf(' ') + 1);
+        const objectIdentifier = bytes.subarray(separator + 1, separator + 21).toString('hex');
+        const relativeName = `${prefix}${name}`;
+        if (mode === '40000') readTree(objectIdentifier, `${relativeName}/`);
+        else trackedFiles.set(relativeName, {mode, blob: objectIdentifier});
+        offset = separator + 21;
+      }
+    };
+    readTree(identity.headTree);
+    const currentFiles = new Map(files.map(file => [file.path, file]));
+    // Include every tracked path, even those in otherwise excluded generated directories.
+    for (const [relativeName, expected] of trackedFiles) {
+      let current = currentFiles.get(relativeName);
+      if (!current && existsSync(path.join(repositoryDirectory, relativeName))) {
+        const fullName = path.join(repositoryDirectory, relativeName);
+        const symbolicLink = lstatSync(fullName).isSymbolicLink();
+        const bytes = symbolicLink ? Buffer.from(readlinkSync(fullName)) : readFileSync(fullName);
+        current = {
+          path: relativeName,
+          mode: symbolicLink ? '120000' : lstatSync(fullName).mode & 0o111 ? '100755' : '100644',
+          sha256: hashBytes(bytes),
+          blob: hashObject('blob', bytes)
+        };
+        files.push(current);
+      }
+      if (!current || current.blob !== expected.blob || current.mode !== expected.mode)
+        identity.changedPaths.push(relativeName);
+    }
+    identity.untrackedPaths = [...currentFiles.keys()].filter(name => !trackedFiles.has(name));
+    identity.dirty = identity.changedPaths.length > 0 || identity.untrackedPaths.length > 0;
+    files.sort((first, second) =>
+      first.path < second.path ? -1 : first.path > second.path ? 1 : 0
+    );
+    identity.treeHash = hashBytes(JSON.stringify(files));
+  } catch (failure) {
+    // Unsupported repositories still get a source fingerprint, never a false clean claim.
+    identity.dirtyError = `Cannot compare HEAD objects: ${String(failure)}`;
+  }
+  return identity;
+}
+
+async function readFixtureHashes(page) {
+  const fixtures = await page.evaluate(async identifiers => {
+    const {createSandboxSample} = await import('/src/sandbox-samples.ts');
+    return identifiers.map(sampleIdentifier => {
+      const {table} = createSandboxSample(sampleIdentifier);
+      return {
+        id: sampleIdentifier,
+        rows: table.numRows,
+        serialized: JSON.stringify(
+          {
+            fields: table.schema.fields.map(field => ({
+              name: field.name,
+              type: String(field.type),
+              nullable: field.nullable
+            })),
+            rows: table.toArray().map(row => row.toJSON())
+          },
+          (_key, value) =>
+            typeof value === 'bigint'
+              ? {bigint: String(value)}
+              : typeof value === 'number' && !Number.isFinite(value)
+                ? {number: String(value)}
+                : value
+        )
+      };
+    });
+  }, GALLERY_SAMPLE_IDENTIFIERS);
+  return {
+    algorithm: 'sha256',
+    encoding:
+      'JSON of Arrow field names/types/nullability and all rows; BigInts and nonfinite numbers tagged',
+    generator: {
+      path: 'examples/deck/kepler-compute/src/sandbox-samples.ts',
+      sha256: hashBytes(readFileSync(path.join(SCRIPT_DIRECTORY, '../src/sandbox-samples.ts')))
+    },
+    samples: fixtures.map(({id: sampleIdentifier, rows, serialized}) => ({
+      id: sampleIdentifier,
+      rows,
+      sha256: hashBytes(serialized)
+    }))
+  };
+}
+
 // ---------------------------------------------------------------------------------------------
 // Manifest
 // ---------------------------------------------------------------------------------------------
 
-function readCommit() {
+function readCommit(repositoryDirectory = REPOSITORY_DIRECTORY) {
   try {
-    const headText = readFileSync(path.join(REPOSITORY_DIRECTORY, '.git/HEAD'), 'utf8').trim();
+    const headText = readFileSync(path.join(repositoryDirectory, '.git/HEAD'), 'utf8').trim();
     if (!headText.startsWith('ref: ')) return {head: headText, reference: null};
     const reference = headText.slice(5);
-    const referenceFile = path.join(REPOSITORY_DIRECTORY, '.git', reference);
+    const referenceFile = path.join(repositoryDirectory, '.git', reference);
     if (existsSync(referenceFile))
       return {head: readFileSync(referenceFile, 'utf8').trim(), reference};
-    const packed = readFileSync(path.join(REPOSITORY_DIRECTORY, '.git/packed-refs'), 'utf8')
+    const packed = readFileSync(path.join(repositoryDirectory, '.git/packed-refs'), 'utf8')
       .split('\n')
       .find(line => line.endsWith(` ${reference}`));
     return {head: packed ? packed.split(' ')[0] : null, reference};
@@ -815,15 +1583,11 @@ async function readAdapterInformation(page) {
 
 async function main() {
   const options = parseOptions(process.argv.slice(2));
+  const targets = validateJourneyTargets(JSON.parse(readFileSync(options.targets, 'utf8')));
   waitTimeoutMilliseconds = options.timeoutMilliseconds;
-  mkdirSync(options.out, {recursive: true});
-  const launchOptions = getPlaywrightLaunchOptions({headless: true, backend: 'webgpu-core'});
-  const browser = await chromium.launch(launchOptions);
   const records = [];
   const failures = [];
   const screenshotFiles = [];
-  const startedAt = new Date();
-  let adapterInformation = null;
   const journeys = [
     ...GALLERY_SAMPLE_IDENTIFIERS.map(sampleIdentifier => ({
       id: `first-result:${sampleIdentifier}`,
@@ -852,68 +1616,199 @@ async function main() {
     {
       id: 'interpolation-defaults:points-sample',
       run: page => journeyInterpolationDefaults(page, options, screenshotFiles)
-    }
-  ].filter(journey => !options.only || [...options.only].some(prefix => journey.id.startsWith(prefix)));
+    },
+    {
+      id: 'suggestion-browse:points-time',
+      run: page => journeySuggestionBrowse(page, options, screenshotFiles)
+    },
+    ...GALLERY_SAMPLE_IDENTIFIERS.map(sampleIdentifier => ({
+      id: `suggestion-open:${sampleIdentifier}`,
+      run: page => journeySuggestionOpening(page, options, sampleIdentifier, screenshotFiles)
+    })),
+    ...GALLERY_SAMPLE_IDENTIFIERS.map(sampleIdentifier => ({
+      id: `suggestion-result:${sampleIdentifier}`,
+      run: page =>
+        journeyOptionalSurface(page, options, 'ax-suggestions', sampleIdentifier, screenshotFiles)
+    })),
+    ...AX_SURFACE_IDENTIFIERS.filter(identifier => identifier !== 'ax-suggestions').map(
+      identifier => ({
+        id: `surface:${identifier}`,
+        run: page =>
+          journeyOptionalSurface(
+            page,
+            options,
+            identifier,
+            GALLERY_DEFAULT_SAMPLE_IDENTIFIER,
+            screenshotFiles
+          )
+      })
+    )
+  ].filter(
+    journey => !options.only || [...options.only].some(prefix => journey.id.startsWith(prefix))
+  );
   if (journeys.length === 0) throw new Error('--only matched no journey');
 
+  const unknownTargets = targets.journeys.filter(
+    target =>
+      ![
+        ...GALLERY_SAMPLE_IDENTIFIERS.map(identifier => `suggestion-result:${identifier}`),
+        ...AX_SURFACE_IDENTIFIERS.map(identifier => `surface:${identifier}`)
+      ].includes(target.id)
+  );
+  if (unknownTargets.length)
+    throw new Error(
+      `Unknown target journey: ${unknownTargets.map(target => target.id).join(', ')}`
+    );
+  const startedAt = new Date();
+  const sourceIdentity = readSourceIdentity(options.out);
+  mkdirSync(options.out, {recursive: true});
+  const launchOptions = getPlaywrightLaunchOptions({headless: true, backend: 'webgpu-core'});
+  const manifest = {
+    schemaVersion: 2,
+    date: startedAt.toISOString(),
+    release: options.release,
+    status: 'running',
+    commit: sourceIdentity.commit,
+    sourceIdentity,
+    identityNote:
+      'Source files and HEAD objects read without git. treeHash identifies the measured source; dirty compares its contents to HEAD. indexHash separately identifies staging metadata. Unknown HEAD comparisons remain unqualified.',
+    browser: {name: 'chromium', version: null, launchOptions},
+    webgpuAdapter: null,
+    machine: {
+      model: readSysctl('hw.model'),
+      memoryBytes: Number(readSysctl('hw.memsize')) || os.totalmem(),
+      cpu: readSysctl('machdep.cpu.brand_string') ?? os.cpus()[0]?.model,
+      platform: `${os.platform()} ${os.release()} ${os.arch()}`,
+      nodeVersion: process.version
+    },
+    url: options.url,
+    parameters: {
+      rows: options.rows,
+      viewport: VIEWPORT,
+      timeoutMilliseconds: options.timeoutMilliseconds,
+      only: options.only ? [...options.only] : null
+    },
+    script: 'examples/deck/kepler-compute/scripts/ax-journey-baseline.mjs',
+    targets: {
+      path: path.relative(REPOSITORY_DIRECTORY, options.targets),
+      sha256: hashBytes(readFileSync(options.targets)),
+      policy: targets
+    },
+    latencyQualification:
+      'not-run: requires the designated reference machine; recorded durations are observations',
+    fixtures: null,
+    journeyIds: [],
+    failedJourneys: failures,
+    screenshots: screenshotFiles
+  };
+  const persist = () => {
+    manifest.journeyIds = records.map(record => record.id);
+    manifest.gateResults = evaluateJourneyTargets(records, targets);
+    manifest.comparisons = compareJourneys(
+      records,
+      JSON.parse(readFileSync(path.join(HISTORICAL_BASELINE_DIRECTORY, 'journeys.json'), 'utf8'))
+    );
+    writeFileSync(path.join(options.out, 'journeys.json'), `${JSON.stringify(records, null, 2)}\n`);
+    writeFileSync(
+      path.join(options.out, 'manifest.json'),
+      `${JSON.stringify(manifest, null, 2)}\n`
+    );
+  };
+  // Write identity before launch, fixture/adapter manifest before any timed journey.
+  persist();
+  let browser;
   try {
+    browser = await chromium.launch(launchOptions);
+    manifest.browser.version = browser.version();
+    const preparationPage = await browser.newPage({viewport: VIEWPORT});
+    try {
+      await pinViteModules(preparationPage);
+      await startApplication(preparationPage, options);
+      manifest.webgpuAdapter = await readAdapterInformation(preparationPage);
+      if (manifest.webgpuAdapter.error) throw new Error(manifest.webgpuAdapter.error);
+      manifest.fixtures = await readFixtureHashes(preparationPage);
+      manifest.referenceManifestCollectedAt = new Date().toISOString();
+      persist();
+    } finally {
+      await preparationPage.close();
+    }
     for (const journey of journeys) {
       const page = await browser.newPage({viewport: VIEWPORT});
       page.setDefaultTimeout(options.timeoutMilliseconds);
-      await pinViteModules(page);
       try {
+        await pinViteModules(page);
         const result = await journey.run(page);
         for (const record of Array.isArray(result) ? result : [result]) records.push(record);
-        process.stdout.write(`ok ${journey.id}\n`);
-        if (adapterInformation === null) adapterInformation = await readAdapterInformation(page);
+        process.stdout.write(`${records.at(-1).outcome} ${journey.id}\n`);
       } catch (failure) {
         const message = failure instanceof Error ? failure.message : String(failure);
         failures.push({id: journey.id, message});
-        records.push({id: journey.id, outcome: 'failed', error: message});
+        page.axJourneyRecorder?.markFinished();
+        records.push(
+          page.axJourneyRecorder?.toRecord({outcome: 'failed', error: message}) ?? {
+            id: journey.id,
+            outcome: 'failed',
+            error: message
+          }
+        );
         process.stderr.write(`FAILED ${message}\n`);
-        await page
-          .screenshot({path: path.join(options.out, `failed-${journey.id.replace(/[^\w-]/g, '_')}.jpg`), type: 'jpeg', quality: 50})
-          .catch(() => undefined);
+        await saveScreenshot(
+          page,
+          options.out,
+          `failed-${journey.id.replace(/[^\w-]/g, '_')}.jpg`,
+          screenshotFiles
+        ).catch(() => undefined);
       } finally {
         await page.close();
+        persist();
       }
     }
-    const browserVersion = browser.version();
-    const manifest = {
-      date: startedAt.toISOString(),
-      commit: readCommit(),
-      commitNote:
-        'Read from .git/HEAD without running git. The measured application is the working tree, which may hold uncommitted changes.',
-      browser: {name: 'chromium', version: browserVersion, launchOptions},
-      webgpuAdapter: adapterInformation,
-      machine: {
-        model: readSysctl('hw.model'),
-        memoryBytes: Number(readSysctl('hw.memsize')),
-        cpu: readSysctl('machdep.cpu.brand_string'),
-        platform: `${os.platform()} ${os.release()} ${os.arch()}`,
-        nodeVersion: process.version
-      },
-      url: options.url,
-      parameters: {
-        rows: options.rows,
-        viewport: VIEWPORT,
-        timeoutMilliseconds: options.timeoutMilliseconds,
-        only: options.only ? [...options.only] : null
-      },
-      script: 'examples/deck/kepler-compute/scripts/ax-journey-baseline.mjs',
-      journeyIds: records.map(record => record.id),
-      failedJourneys: failures,
-      screenshots: screenshotFiles
-    };
-    writeFileSync(path.join(options.out, 'journeys.json'), `${JSON.stringify(records, null, 2)}\n`);
-    writeFileSync(path.join(options.out, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+  } catch (failure) {
+    const message = failure instanceof Error ? failure.message : String(failure);
+    failures.push({id: 'run:environment', message});
+    records.push({id: 'run:environment', outcome: 'failed', error: message});
+    process.stderr.write(`FAILED ${message}\n`);
   } finally {
-    await browser.close();
+    try {
+      await browser?.close();
+    } catch (failure) {
+      const message = `Browser close failed: ${String(failure)}`;
+      failures.push({id: 'run:cleanup', message});
+      records.push({id: 'run:cleanup', outcome: 'failed', error: message});
+    }
+    const finalSourceIdentity = readSourceIdentity(options.out);
+    manifest.sourceStable =
+      sourceIdentity.treeHash === finalSourceIdentity.treeHash &&
+      sourceIdentity.indexHash === finalSourceIdentity.indexHash &&
+      sourceIdentity.commit.head === finalSourceIdentity.commit.head;
+    manifest.finalTreeHash = finalSourceIdentity.treeHash;
+    manifest.status = 'finished';
+    manifest.finishedAt = new Date().toISOString();
+    persist();
+    const identityGates = [
+      {id: 'source-stable', required: true, status: manifest.sourceStable ? 'passed' : 'failed'},
+      {
+        id: 'dirty-identity',
+        required: true,
+        status: sourceIdentity.dirty === null ? 'not-run' : 'passed'
+      }
+    ];
+    manifest.gateResults.gates.push(...identityGates);
+    manifest.gateResults.qualified &&= identityGates.every(gate => gate.status === 'passed');
+    if (identityGates.some(gate => gate.status === 'failed'))
+      manifest.gateResults.status = 'failed';
+    else if (!manifest.gateResults.qualified && manifest.gateResults.status === 'passed')
+      manifest.gateResults.status = 'incomplete';
+    writeFileSync(
+      path.join(options.out, 'manifest.json'),
+      `${JSON.stringify(manifest, null, 2)}\n`
+    );
   }
-  if (failures.length > 0) {
-    process.stderr.write(`${failures.length} journey(s) failed; see journeys.json\n`);
+  if (manifest.gateResults.status === 'failed') {
+    process.stderr.write('AX-70 gates failed; see manifest.json and journeys.json\n');
     process.exitCode = 1;
   }
 }
 
-await main();
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))
+  await main();

@@ -15,6 +15,7 @@ import {
   type WorkflowDatasetProfile,
   type WorkflowDatasetRequest
 } from '@luma-contributors/kepler';
+import {analysisDatasetContext, guessAnalysisPointColumns} from '../analysis-dataset-context';
 import {makeArrowTableFromCatalogTable} from '../analysis-catalog-table';
 
 /** Structural boundary shared by native Kepler tables and the Arrow readback adapter. */
@@ -30,7 +31,10 @@ export type NativeWorkflowDataset = {
 };
 
 /** Invalid geometry is retained as null, never removed from the population. */
-export type NativeWorkflowData = WorkflowData & {invalidGeometryCount: number};
+export type NativeWorkflowData = WorkflowData & {
+  invalidGeometryCount: number;
+  sourceColumnAliases?: Readonly<Record<string, string>>;
+};
 
 type Geometry = {type: string; coordinates?: unknown; geometries?: Geometry[]};
 
@@ -75,26 +79,36 @@ function readGeometry(value: unknown): Geometry | null {
   }
 }
 
-function getCoordinateRole(name: string): {role: 'longitude' | 'latitude'; group: string} | null {
-  const tokens = name
-    .replace(/([a-z])([A-Z])/g, '$1_$2')
-    .toLowerCase()
-    .split(/[^a-z0-9]+/);
-  const coordinateIndex = tokens.findIndex(token =>
-    ['lat', 'latitude', 'lng', 'lon', 'long', 'longitude'].includes(token)
-  );
-  if (coordinateIndex < 0) return null;
-  const coordinate = tokens[coordinateIndex];
-  return {
-    role: coordinate === 'lat' || coordinate === 'latitude' ? 'latitude' : 'longitude',
-    group: JSON.stringify([tokens.slice(0, coordinateIndex), tokens.slice(coordinateIndex + 1)])
-  };
-}
-
 export function profileNativeDataset(
   dataset: NativeWorkflowDataset,
   resident: boolean
 ): WorkflowDatasetProfile {
+  if (resident)
+    // workbench-host caches this object by native dataset identity. Resolve shared facts when
+    // read so later statistics, revision invalidation and removal remain visible through that cache.
+    return {
+      id: dataset.id,
+      get label() {
+        return analysisDatasetContext.get(dataset.id)?.profile.label ?? dataset.label;
+      },
+      get rowCount() {
+        return (
+          analysisDatasetContext.get(dataset.id)?.profile.rowCount ??
+          dataset.dataContainer.numRows()
+        );
+      },
+      resident,
+      get fields() {
+        return dataset.fields.map(field => ({...field}));
+      },
+      get geometryFields() {
+        return [...(analysisDatasetContext.get(dataset.id)?.profile.geometryColumns ?? [])];
+      },
+      get pointColumns() {
+        const pointColumns = analysisDatasetContext.get(dataset.id)?.profile.pointColumns;
+        return pointColumns ? {...pointColumns} : undefined;
+      }
+    };
   const geometryFields = dataset.fields
     .filter((_field, column) => {
       let observed = 0;
@@ -107,23 +121,7 @@ export function profileNativeDataset(
       return false;
     })
     .map(field => field.name);
-  const candidates = dataset.fields
-    .filter(field => ['integer', 'real'].includes(field.type))
-    .map(field => ({name: field.name, ...getCoordinateRole(field.name)}));
-  let pointColumns: WorkflowDatasetProfile['pointColumns'];
-  for (const candidate of candidates) {
-    if (!candidate.role) continue;
-    const partner = candidates.find(
-      other => other.role && other.role !== candidate.role && other.group === candidate.group
-    );
-    if (partner) {
-      pointColumns =
-        candidate.role === 'longitude'
-          ? {longitude: candidate.name, latitude: partner.name}
-          : {longitude: partner.name, latitude: candidate.name};
-      break;
-    }
-  }
+  const pointColumns = guessAnalysisPointColumns(dataset.fields);
   return {
     id: dataset.id,
     label: dataset.label,
@@ -203,6 +201,8 @@ export function readNativeDatasetData(
   }
   const columns: CatalogOutputTable['columns'] = Object.create(null);
   const columnTypes: CatalogOutputTable['columnTypes'] = Object.create(null);
+  const sourceColumnAliases: Record<string, string> = Object.create(null);
+  if (geometry.mode === 'geojson-field') sourceColumnAliases[geometry.field] = 'geometry';
   const usedNames = new Set(dataset.fields.map(field => field.name));
   usedNames.add('row_index');
   if (geometry.mode !== 'none') usedNames.add('geometry');
@@ -212,6 +212,7 @@ export function readNativeDatasetData(
       field.name === 'row_index' || (field.name === 'geometry' && geometry.mode !== 'none')
         ? getUniqueName(`${field.name}_source`, usedNames)
         : field.name;
+    sourceColumnAliases[field.name] = name;
     const values = rows.map(row => dataset.dataContainer.valueAt(row, column));
     const numeric = field.type === 'integer' || field.type === 'real';
     const type =
@@ -280,7 +281,10 @@ export function readNativeDatasetData(
       },
       {identityColumn: 'row_index'}
     ),
-    invalidGeometryCount
+    invalidGeometryCount,
+    ...(Object.entries(sourceColumnAliases).some(([source, converted]) => source !== converted)
+      ? {sourceColumnAliases}
+      : {})
   };
 }
 

@@ -14,7 +14,9 @@ const WORKFLOW_TOOL_NAMES = new Set([
   'listWorkflows',
   'describeWorkflow',
   'setWorkflowInputs',
-  'runWorkflow'
+  'runWorkflow',
+  'listAnalysisTemplates',
+  'describeAnalysisTemplate'
 ]);
 
 const CAPABILITY_BY_STATUS: Readonly<Record<string, string>> = {
@@ -85,9 +87,11 @@ export function withWorkbenchAssistant(
           accepted: false,
           code: 'not-approved',
           reason:
-            call.name === 'runWorkflow'
-              ? 'Running a workflow needs explicit user approval of this exact call.'
-              : 'Changing workflow inputs needs explicit user approval of this exact call.'
+            typeof (result as Record<string, unknown>)['message'] === 'string'
+              ? String((result as Record<string, unknown>)['message'])
+              : call.name === 'runWorkflow'
+                ? 'Running a workflow needs explicit user approval of this exact call.'
+                : 'Changing workflow inputs needs explicit user approval of this exact call.'
         };
       return {
         accepted: true,

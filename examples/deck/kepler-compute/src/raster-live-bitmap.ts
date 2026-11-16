@@ -76,6 +76,13 @@ export class BitmapLiveBinding {
     return {boundsWest, boundsSouth, boundsEast, boundsNorth};
   }
 
+  /** Borrow the decoded GeoTIFF while its bitmap layer is still present. */
+  getSource(layerId: string) {
+    return this.getBitmapLayers().some(layer => layer.id === layerId)
+      ? this.numericInputs.get(layerId)?.source
+      : undefined;
+  }
+
   /** Pixel values only exist for GeoTIFF-backed bitmaps; plain images answer undefined. */
   identify(layerId: string, longitude: number, latitude: number): RasterIdentifyResult | undefined {
     const input = this.numericInputs.get(layerId);

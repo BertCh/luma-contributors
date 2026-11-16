@@ -29,6 +29,19 @@ export type ResidentStyleLegendOptions = {
 };
 type NativeLegendProps = Parameters<ReturnType<typeof LayerColorLegendFactory>>[0];
 
+/** Exact AX classes carry the source field in the custom range, separately from storage. */
+export function getResidentStyleLegendTitle(
+  fieldName: string,
+  measure: string | undefined,
+  colorRange?: {type?: string; name?: string}
+): string {
+  return fieldName.startsWith('analysis_result_class (') &&
+    colorRange?.type === 'customOrdinal' &&
+    colorRange.name
+    ? colorRange.name
+    : measure || fieldName;
+}
+
 /** Inject at LayerColorLegendFactory so fill and stroke retain independent provenance. */
 export function createResidentStyleLegendFactory(options: ResidentStyleLegendOptions) {
   const maximumEntries = clamp(options.maximumEntries ?? 64, 1, 256);
@@ -54,12 +67,18 @@ export function createResidentStyleLegendFactory(options: ResidentStyleLegendOpt
         return <NativeLegend {...props} />;
       const snapshot = options.getLegend(props.layer.id, channel);
       const legend = snapshot && matchesResidentStyleLegend(snapshot) ? snapshot.legend : undefined;
-      const title =
-        props.description.measure ||
-        (typeof field === 'object' && 'name' in field ? String(field.name) : channel);
+      const title = getResidentStyleLegendTitle(
+        typeof field === 'object' && 'name' in field ? String(field.name) : channel,
+        props.description.measure,
+        props.layer.config.visConfig?.['colorRange']
+      );
       if (!legend) {
         return (
-          <div className="legend--layer__item" data-resident-style-legend={channel}>
+          <div
+            className="legend--layer__item"
+            data-resident-style-legend={channel}
+            data-resident-legend-layer={props.layer.id}
+          >
             <strong>{title}</strong>
             <div
               role="status"
@@ -77,7 +96,11 @@ export function createResidentStyleLegendFactory(options: ResidentStyleLegendOpt
       }
       if (legend.domainStatus === 'invalid-log-domain') {
         return (
-          <div className="legend--layer__item" data-resident-style-legend={channel}>
+          <div
+            className="legend--layer__item"
+            data-resident-style-legend={channel}
+            data-resident-legend-layer={props.layer.id}
+          >
             <strong>{title}</strong>
             <div role="status">
               The logarithmic domain crosses or touches zero. Choose a domain entirely above or
@@ -88,7 +111,11 @@ export function createResidentStyleLegendFactory(options: ResidentStyleLegendOpt
       }
       if (!legend.domain || legend.finiteCount === 0) {
         return (
-          <div className="legend--layer__item" data-resident-style-legend={channel}>
+          <div
+            className="legend--layer__item"
+            data-resident-style-legend={channel}
+            data-resident-legend-layer={props.layer.id}
+          >
             <strong>{title}</strong>
             <div>No finite values in the style domain.</div>
           </div>
@@ -100,7 +127,11 @@ export function createResidentStyleLegendFactory(options: ResidentStyleLegendOpt
       const rows = getResidentStyleLegendRows(legend, maximumEntries);
       const total = legend.labels?.length ?? palette.length;
       return (
-        <div className="legend--layer__item" data-resident-style-legend={channel}>
+        <div
+          className="legend--layer__item"
+          data-resident-style-legend={channel}
+          data-resident-legend-layer={props.layer.id}
+        >
           <strong>{title}</strong>
           {continuous && palette.length <= maximumEntries ? (
             <div>

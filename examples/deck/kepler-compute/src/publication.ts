@@ -3,6 +3,14 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {type KeplerDatasetSnapshot, type KeplerArrowDataset} from '@luma-contributors/kepler';
+import {getKeplerResultEncodingStyle, type KeplerResultEncoding} from '@luma-contributors/kepler';
+import {
+  ANALYSIS_RESULT_METADATA_KEY,
+  getAnalysisResultMetadata,
+  getAnalysisResultDictionaries,
+  showAnalysisResultReport,
+  prepareAnalysisResultPublication
+} from './analysis-result-publication';
 import {ComputeRuntime} from './compute-runtime';
 import {type CoordinateRoles, preparePublishedH3} from './source-publication';
 import {type TripPreparationOptions} from './trip-source-options';
@@ -73,7 +81,8 @@ export async function attachPublishedDataset(
   join?: ResidentJoinLineage,
   suitability?: ResidentSuitabilityLineage,
   /** Presentation of a native dataset being replaced in place; its layers and filters are kept. */
-  nativeConfig?: NativeDatasetConfig
+  nativeConfig?: NativeDatasetConfig,
+  analysisEncoding?: KeplerResultEncoding
 ): Promise<void> {
   if (appState.runtime !== activeRuntime || !isCurrent())
     throw new Error('Workspace or request changed before publication');
@@ -136,10 +145,19 @@ export async function attachPublishedDataset(
             ...(nativeConfig?.datasetColor ? {color: [...nativeConfig.datasetColor]} : {})
           },
           data: published.nativeData,
-          ...(getSampleMapProvenance(dataset.source?.metadata)
+          ...(getSampleMapProvenance(dataset.source?.metadata) ||
+          dataset.source?.metadata?.[ANALYSIS_RESULT_METADATA_KEY]
             ? {
                 metadata: {
-                  [SAMPLE_MAP_METADATA_KEY]: getSampleMapProvenance(dataset.source?.metadata)
+                  ...(getSampleMapProvenance(dataset.source?.metadata)
+                    ? {[SAMPLE_MAP_METADATA_KEY]: getSampleMapProvenance(dataset.source?.metadata)}
+                    : {}),
+                  ...(dataset.source?.metadata?.[ANALYSIS_RESULT_METADATA_KEY]
+                    ? {
+                        [ANALYSIS_RESULT_METADATA_KEY]:
+                          dataset.source.metadata[ANALYSIS_RESULT_METADATA_KEY]
+                      }
+                    : {})
                 }
               }
             : {}),
@@ -198,6 +216,12 @@ export async function attachPublishedDataset(
                                   : coordinates?.flow
                                     ? 'flow'
                                     : 'point',
+                          ...(analysisEncoding
+                            ? {
+                                visualChannels:
+                                  getKeplerResultEncodingStyle(analysisEncoding).visualChannels
+                              }
+                            : {}),
                           config: {
                             dataId: dataset.id,
                             label,
@@ -249,6 +273,9 @@ export async function attachPublishedDataset(
                               filled: true,
                               outline: false,
                               opacity: 0.8,
+                              ...(analysisEncoding
+                                ? getKeplerResultEncodingStyle(analysisEncoding).visConfig
+                                : {}),
                               ...(tripOptions ? {thickness: 2, trailLength: 180} : {})
                             }
                           }
@@ -335,8 +362,58 @@ async function publishSourceNow(
   /** Automatic preparation replaces a native dataset in place under its own ID and layers. */
   nativeReplacement?: {datasetId: string; nativeConfig?: NativeDatasetConfig}
 ): Promise<void> {
-  const activeRuntime = getActiveRuntime();
   if (!candidate.isCurrent()) throw new Error('Source changed before upload');
+  const result = candidate.analysisResult;
+  if (
+    result &&
+    (result.table.coordinateSystem === 'planar' ||
+      (result.table.raster && result.table.raster.crs !== 'EPSG:4326'))
+  ) {
+    // Recheck at upload as well: saved/staged candidates may predate the CRS-aware map guard.
+    const staged = prepareAnalysisResultPublication(
+      result.table,
+      result.presentation,
+      result.report,
+      result.encoding?.presentation.column
+    );
+    candidate = {...candidate, table: staged.table, analysisResult: staged.analysisResult};
+    // Workbench point publication may have extracted temporary longitude/latitude columns.
+    // The rebuilt geographic geometry copy no longer contains those display-only columns.
+    if (normalization.columns)
+      normalization = {
+        ...normalization,
+        columns: normalization.columns.filter(name => staged.table.getChild(name))
+      };
+    coordinates = staged.analysisResult.coordinates;
+    geometryColumn = staged.displayTable.geometryColumn;
+  }
+
+  if (candidate.analysisResult?.destination === 'report') {
+    showAnalysisResultReport({
+      id: candidate.analysisResult.table.id,
+      label: candidate.label,
+      analysisResult: candidate.analysisResult
+    });
+    return;
+  }
+  const activeRuntime = getActiveRuntime();
+  normalization = {
+    ...normalization,
+    ...(candidate.analysisResult?.encoding
+      ? {
+          columns: [
+            ...new Set([
+              ...(normalization.columns ?? candidate.table.schema.fields.map(field => field.name)),
+              candidate.analysisResult.encoding.classColumn
+            ])
+          ]
+        }
+      : {}),
+    dictionaries: {
+      ...normalization.dictionaries,
+      ...getAnalysisResultDictionaries(candidate.analysisResult)
+    }
+  };
   if (h3Column) preparePublishedH3(candidate.table, h3Column);
   const uploadStartMilliseconds = performance.now();
   const uploadBytesBefore = activeRuntime.uploadBytes ?? 0;
@@ -345,6 +422,9 @@ async function publishSourceNow(
     table: candidate.table,
     normalization,
     metadata: {
+      ...(candidate.analysisResult
+        ? {[ANALYSIS_RESULT_METADATA_KEY]: getAnalysisResultMetadata(candidate.analysisResult)}
+        : {}),
       ...(candidate.cellIndex ? {[CELL_INDEX_METADATA_KEY]: candidate.cellIndex} : {}),
       ...(nativeReplacement?.nativeConfig?.sampleMap
         ? {[SAMPLE_MAP_METADATA_KEY]: nativeReplacement.nativeConfig.sampleMap}
@@ -365,7 +445,8 @@ async function publishSourceNow(
       () => candidate.isCurrent(),
       undefined,
       undefined,
-      nativeReplacement?.nativeConfig
+      nativeReplacement?.nativeConfig,
+      candidate.analysisResult?.encoding
     );
     recordUploadMeasure(
       'publish-source',

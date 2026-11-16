@@ -7,6 +7,7 @@
 // reference engine as an explicit choice, GPU-only overlay and noding operations, serialization
 // restore, and staging the result into the Sources workflow, then publishing it as a native dataset.
 // Usage: node scripts/analysis-catalog.mjs [URL] (default: http://127.0.0.1:5318/?rows=256).
+import {setAnalysisSheetParameter} from './analysis-sheet-controls.mjs';
 import {exerciseValidationCatalog} from './analysis-catalog-validation.mjs';
 import {checkPointCloudCatalogWorkflow} from './analysis-catalog-pointcloud.mjs';
 import assert from 'node:assert/strict';
@@ -156,10 +157,11 @@ try {
 
   // Service area on the sample network: statuses and source edge IDs.
   await panel.getByLabel('Operation', {exact: true}).selectOption('network-service-area');
-  await panel.getByLabel(/^Coordinate system/).selectOption('planar');
-  await panel.getByLabel(/^One-way property/).fill('oneway');
-  await panel.getByLabel(/^Maximum snap distance/).fill('1');
-  await panel.getByLabel(/^Cost budgets/).fill('15');
+  await setAnalysisSheetParameter(panel, 'coordinateSystem', 'planar');
+  await setAnalysisSheetParameter(panel, 'onewayProperty', 'oneway');
+  await setAnalysisSheetParameter(panel, 'maximumSnapDistance', 1);
+  await setAnalysisSheetParameter(panel, 'budgets', [15]);
+  await panel.getByTestId('catalog-check-inputs').click();
   await panel.getByTestId('catalog-run').click();
   const result = panel.getByTestId('catalog-result');
   await result.waitFor();
@@ -175,6 +177,7 @@ try {
     /Engine: GPU \(.*GPUNetworkReachability/
   );
   await panel.getByLabel('Engine', {exact: true}).selectOption('cpu');
+  await panel.getByTestId('catalog-check-inputs').click();
   await panel.getByTestId('catalog-run').click();
   await page.waitForFunction(() =>
     /Engine: CPU reference/.test(
@@ -186,6 +189,7 @@ try {
 
   // GPU-only operations: overlay intersection and crossing noding on their samples.
   await panel.getByLabel('Operation', {exact: true}).selectOption('geometry-overlay-intersection');
+  await setAnalysisSheetParameter(panel, 'coordinateSystem', 'EPSG:4326');
   await panel.getByTestId('catalog-run').click();
   await page.waitForFunction(() =>
     /GPUPolygonOverlay/.test(
@@ -197,6 +201,7 @@ try {
     /Overlay intersection: [1-9]\d* rows/
   );
   await panel.getByLabel('Operation', {exact: true}).selectOption('network-crossing-noding');
+  await setAnalysisSheetParameter(panel, 'coordinateSystem', 'EPSG:4326');
   await panel.getByTestId('catalog-run').click();
   await page.waitForFunction(() =>
     /GPUNetworkNoding/.test(
@@ -204,10 +209,10 @@ try {
     )
   );
   await panel.getByLabel('Operation', {exact: true}).selectOption('network-service-area');
-  await panel.getByLabel(/^Coordinate system/).selectOption('planar');
-  await panel.getByLabel(/^One-way property/).fill('oneway');
-  await panel.getByLabel(/^Maximum snap distance/).fill('1');
-  await panel.getByLabel(/^Cost budgets/).fill('15');
+  await setAnalysisSheetParameter(panel, 'coordinateSystem', 'planar');
+  await setAnalysisSheetParameter(panel, 'onewayProperty', 'oneway');
+  await setAnalysisSheetParameter(panel, 'maximumSnapDistance', 1);
+  await setAnalysisSheetParameter(panel, 'budgets', [15]);
 
   // Serialization round trip restores parameters.
   await panel.getByRole('button', {name: 'Serialize invocation', exact: true}).click();
@@ -217,15 +222,14 @@ try {
   assert.equal(serialized.operationId, 'network-service-area');
   assert.deepEqual(serialized.parameters.budgets, [15]);
   assert.equal(typeof serialized.inputs.lines.contentHash, 'string');
-  await panel.getByLabel(/^Cost budgets/).fill('99');
+  await setAnalysisSheetParameter(panel, 'budgets', [99]);
   await panel.getByRole('button', {name: 'Restore parameters', exact: true}).click();
-  assert.equal(await panel.getByLabel(/^Cost budgets/).inputValue(), '15');
+  assert.equal(await panel.getByTestId('catalog-parameter-budgets').inputValue(), '15');
 
-  // Invalid parameter is refused with a visible error.
-  await panel.getByLabel(/^Cost budgets/).fill('-3');
-  await panel.getByTestId('catalog-run').click();
-  await panel.getByTestId('catalog-error').waitFor();
-  await panel.getByLabel(/^Cost budgets/).fill('15');
+  // Shared controls retain invalid text locally and show the parameter's range error.
+  await setAnalysisSheetParameter(panel, 'budgets', [-3]);
+  await panel.getByTestId('catalog-parameter-error-budgets').waitFor();
+  await setAnalysisSheetParameter(panel, 'budgets', [15]);
 
   // Geometry workflow: convex clip returns new part identities.
   await panel.getByLabel('Operation', {exact: true}).selectOption('geometry-convex-clip');
@@ -237,13 +241,39 @@ try {
   assert.deepEqual(failures, []);
   await closeNativeDialog(page);
 
-  // Native CSV fixture: point columns and epoch seconds are chosen through the catalog UI.
+  // Preserve numeric epoch seconds through Prepare data. The native Kepler CSV analyzer
+  // infers these integers as timestamps, whose original-view readback is ISO text; the
+  // spacetime bindings explicitly accept numeric epochs only.
   // Strip the checked-in fixture's two SPDX comment lines before passing it to the CSV loader.
   const fixture = await readFile(new URL('../data/spacetime-observations.csv', import.meta.url), 'utf8');
-  await page.getByRole('button', {name: 'Add Data', exact: true}).click();
-  await page.locator('.ReactModal__Content input[type=file]').setInputFiles({name: 'spacetime-observations.csv', mimeType: 'text/csv', buffer: Buffer.from(fixture.replace(/^#.*\r?\n/gm, ''))});
-  await page.locator('.ReactModal__Content').getByRole('button', {name: 'Add Data', exact: true}).click();
-  await page.waitForFunction(() => window.__keplerComputeTest.getState().publications.some(source => source.rowCount === 48 || source.selectedCount === 48), undefined, {timeout: 60000});
+  await openNativeData(page);
+  const csvWorkspace = page.getByRole('region', {name: 'Resident datasets', exact: true});
+  await csvWorkspace.getByLabel('Open Arrow IPC file', {exact: true}).setInputFiles({
+    name: 'spacetime-observations.csv', mimeType: 'text/csv',
+    buffer: Buffer.from(fixture.replace(/^#.*\r?\n/gm, ''))
+  });
+  const csvPreparation = csvWorkspace.getByRole('region', {name: 'Prepare spacetime-observations.csv', exact: true});
+  await csvPreparation.waitFor();
+  await csvPreparation.getByLabel('Float64 conversion', {exact: true}).selectOption('round');
+  await csvPreparation.getByLabel('Maximum absolute error', {exact: true}).fill('0.00001');
+  await csvPreparation.getByRole('button', {name: 'Check schema and precision', exact: true}).click();
+  const previousPublicationIds = await page.evaluate(() =>
+    window.__keplerComputeTest.getState().publications.map(source => source.id)
+  );
+  await csvPreparation.getByRole('button', {name: 'Publish selected fields', exact: true}).click();
+  await page.waitForFunction(
+    knownIds => {
+      // This hook exposes IDs and counts; it has no label property. The dataset selector
+      // below independently verifies the fixture label before any spacetime operation runs.
+      const publication = window.__keplerComputeTest.getState().publications.find(source =>
+        !knownIds.includes(source.id)
+      );
+      if (publication?.error) throw new Error(publication.error);
+      return publication?.rowCount === 48 && publication.selectedCount === 48;
+    },
+    previousPublicationIds,
+    {timeout: 60000}
+  );
   await closeNativeDialog(page);
   const spacetimeOperations = [
     ['space-time-kernel-density', 'GPUSpaceTimeKernelDensity', /voxelCount: 64/],
@@ -264,8 +294,7 @@ try {
   for (const [operationId, contributor, expectedText] of spacetimeOperations) {
     await panel.getByLabel('Operation', {exact: true}).selectOption(operationId);
     assert.match(await panel.getByTestId('catalog-limits').innerText(), /maximum 512 input rows/);
-    await panel.getByLabel('Time column', {exact: true}).fill('event_seconds');
-    await panel.getByLabel('Input epoch time unit', {exact: true}).selectOption('seconds');
+    await setAnalysisSheetParameter(panel, 'timeUnit', 'seconds');
     await panel.getByLabel('Event points source', {exact: true}).selectOption('native');
     const datasetSelector = panel.getByLabel('Event points dataset', {exact: true});
     const fixtureOption = datasetSelector.locator('option').filter({hasText: /^spacetime-observations(?:\.csv)? \(resident, 48 rows\)$/});
@@ -276,10 +305,10 @@ try {
     await panel.getByLabel('Event points geometry field', {exact: true}).selectOption({label: 'Point from numeric columns'});
     await panel.getByLabel('Event points X / longitude column', {exact: true}).selectOption('longitude');
     await panel.getByLabel('Event points Y / latitude column', {exact: true}).selectOption('latitude');
-    const permutations = panel.getByLabel(/^Conditional permutations/);
-    if (await permutations.count()) await permutations.fill('3');
-    const iterations = panel.getByLabel(/^Maximum EM iterations/);
-    if (await iterations.count()) await iterations.fill('3');
+    await panel.getByTestId('catalog-check-inputs').click();
+    await setAnalysisSheetParameter(panel, 'timeProperty', 'event_seconds');
+    await setAnalysisSheetParameter(panel, 'permutations', 3, {optional: true});
+    await setAnalysisSheetParameter(panel, 'maximumIterations', 3, {optional: true});
     await panel.getByTestId('catalog-run').click();
     await page.waitForFunction(name => document.querySelector('[data-testid="catalog-engine"]')?.textContent?.includes(name) || document.querySelector('[data-testid="catalog-error"]'), contributor, {timeout: 60000});
     assert.equal(await panel.getByTestId('catalog-error').count(), 0, `${operationId} succeeds`);

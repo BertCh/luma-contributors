@@ -172,6 +172,50 @@ async function runEditScenario(page, directory) {
   await dock(page).getByTestId(TEST_IDS.nodeDisable('clusters')).click();
   await runAll(page);
 
+  // AX-50: removing a completed middle step breaks the dependent result's lineage even
+  // when undo restores exactly the old parameters and edges. Parameter-only undo above
+  // continues to restore valid cached results.
+  const beforeCompletedRemoval = await getWorkbenchState(page);
+  await dock(page).getByTestId(TEST_IDS.node('members')).click();
+  await dock(page).getByTestId(TEST_IDS.canvas).focus();
+  await page.keyboard.press('Delete');
+  await dock(page).getByTestId(TEST_IDS.undo).click();
+  await waitForStepStatus(page, 'members', 'ready');
+  await waitForStepStatus(page, 'footprints', 'stale');
+  const afterRemovalUndo = await getWorkbenchState(page);
+  assert.deepEqual(
+    afterRemovalUndo.document,
+    beforeCompletedRemoval.document,
+    'Undo completed removal must restore the exact step and edges'
+  );
+  assert.equal(
+    afterRemovalUndo.runLog.length,
+    beforeCompletedRemoval.runLog.length,
+    'Undo removal must not execute a run'
+  );
+  for (const stepId of ['samples', 'clusters']) {
+    assert.equal(
+      afterRemovalUndo.steps[stepId].status,
+      'done',
+      `${stepId}: unrelated result stays current`
+    );
+    assert.equal(
+      afterRemovalUndo.steps[stepId].result.completedAt,
+      beforeCompletedRemoval.steps[stepId].result.completedAt,
+      `${stepId}: unrelated result must be retained`
+    );
+  }
+  await screenshot(page, directory, 'workflow-edit-undo-completed-removal-stale');
+  const afterRemovalRun = await runAll(page);
+  assert.deepEqual(
+    afterRemovalRun.runLog[0].steps.map(step => [step.stepId, step.cacheHit]),
+    [
+      ['members', false],
+      ['footprints', false]
+    ],
+    'Run stale after undo removal must compute the restored step and its dependents afresh'
+  );
+
   // An independent polygon branch makes this a kind refusal, without also introducing a cycle.
   await page.evaluate(() =>
     window.__keplerWorkflowTest.store.edit('refusal-fixture', document => ({

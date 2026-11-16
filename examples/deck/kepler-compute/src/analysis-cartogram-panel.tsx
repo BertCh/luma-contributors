@@ -2,139 +2,168 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {useEffect, useState} from 'react';
 import {
   MAXIMUM_KEPLER_DORLING_SOURCE_ROWS,
+  MAXIMUM_KEPLER_DORLING_ITERATIONS,
   parseKeplerDorlingSettings,
-  type KeplerDorlingSettings
+  type KeplerDorlingSettings,
+  type CatalogParameterValue
 } from '@luma-contributors/kepler';
+import {useAnalysisFormInitialization} from './analysis-form-initialization';
 import type {AnalysisRuntime} from './analysis-runtime';
-import {CartogramControls, type CartogramDraft} from './analysis-cartogram-controls';
 import {CartogramDeclarationForm} from './analysis2-cartogram-declaration-form';
 import {ResidentConsumerNotice} from './resident-consumer-notice';
+import {ResidentAnalysisSheetForm} from './analysis-sheet';
+import {
+  createResidentSheetFields,
+  getResidentSheetChecks,
+  readResidentSheetNumber
+} from './analysis-sheet-model';
+import {
+  usePointAnalysisSheet,
+  makePointSheetColumn,
+  type PointSheetValues,
+  type PointSheetSpecification
+} from './analysis-point-weights-panel';
 
-function makeDraft(
+export function makeCartogramSheetDefaults(
   settings: KeplerDorlingSettings | undefined,
-  valueColumn: string
-): CartogramDraft {
+  valueColumn: string,
+  initialization: ReturnType<typeof useAnalysisFormInitialization>
+): Record<string, CatalogParameterValue> {
   return {
-    xColumn: settings?.xColumn ?? '',
-    yColumn: settings?.yColumn ?? '',
+    xColumn: settings?.xColumn ?? initialization.coordinates.xColumn,
+    yColumn: settings?.yColumn ?? initialization.coordinates.yColumn,
     valueColumn: settings?.valueColumn ?? valueColumn,
     crs: settings?.crs ?? '',
-    minX: settings ? String(settings.bounds[0]) : '',
-    minY: settings ? String(settings.bounds[1]) : '',
-    maxX: settings ? String(settings.bounds[2]) : '',
-    maxY: settings ? String(settings.bounds[3]) : '',
-    areaScale: String(settings?.areaScale ?? 1),
-    maximumIterations: String(settings?.maximumIterations ?? 100),
-    overlapTolerance: String(settings?.overlapTolerance ?? 0.001),
-    attraction: String(settings?.attraction ?? 0.01)
+    minX: settings?.bounds[0] ?? initialization.coordinates.minX,
+    minY: settings?.bounds[1] ?? initialization.coordinates.minY,
+    maxX: settings?.bounds[2] ?? initialization.coordinates.maxX,
+    maxY: settings?.bounds[3] ?? initialization.coordinates.maxY,
+    areaScale: settings?.areaScale ?? 1,
+    maximumIterations: settings?.maximumIterations ?? 100,
+    overlapTolerance: settings?.overlapTolerance ?? 0.001,
+    attraction: settings?.attraction ?? 0.01,
+    editedFields: '[]'
   };
 }
 
-/** A saved cartogram owns its value and coordinate roles independently of the general numeric field. */
+export function getCartogramSheetSettings(values: PointSheetValues): KeplerDorlingSettings {
+  const number = (name: string) => readResidentSheetNumber(values, name);
+  return parseKeplerDorlingSettings({
+    coordinateSpace: 'planar',
+    metric: 'native',
+    units: 'meters',
+    xColumn: values['xColumn'],
+    yColumn: values['yColumn'],
+    valueColumn: values['valueColumn'],
+    crs: values['crs'],
+    bounds: ['minX', 'minY', 'maxX', 'maxY'].map(number),
+    areaScale: number('areaScale'),
+    maximumIterations: number('maximumIterations'),
+    overlapTolerance: number('overlapTolerance'),
+    attraction: number('attraction')
+  });
+}
+
+/** Saved cartograms own their value and coordinate roles independently of the general numeric field. */
 export function CartogramPanel({analysis}: {analysis: AnalysisRuntime}) {
-  const settings = analysis.settings.cartogram;
-  const valueColumn = settings?.valueColumn ?? analysis.settings.column;
-  const [draft, setDraft] = useState(() => makeDraft(settings, valueColumn));
-  const [error, setError] = useState('');
-  useEffect(() => {
-    setDraft(makeDraft(settings, valueColumn));
-    setError('');
-  }, [
-    analysis.datasetId,
-    settings?.xColumn,
-    settings?.yColumn,
-    valueColumn,
-    settings?.crs,
-    settings?.bounds[0],
-    settings?.bounds[1],
-    settings?.bounds[2],
-    settings?.bounds[3],
-    settings?.areaScale,
-    settings?.maximumIterations,
-    settings?.overlapTolerance,
-    settings?.attraction
-  ]);
+  const initialization = useAnalysisFormInitialization(analysis);
+  const saved = analysis.settings.cartogram;
+  const sheet = usePointAnalysisSheet(
+    makeCartogramSheetDefaults(saved, analysis.settings.column, initialization),
+    saved,
+    analysis.coordinateRestorationKey ?? analysis.datasetId,
+    initialization.coordinateSource
+  );
+  const specifications: PointSheetSpecification[] = [
+    makePointSheetColumn('xColumn', 'Cartogram projected X field', 'analysis-cartogram-xColumn'),
+    makePointSheetColumn('yColumn', 'Cartogram projected Y field', 'analysis-cartogram-yColumn'),
+    makePointSheetColumn(
+      'valueColumn',
+      'Cartogram nonnegative area-value field',
+      'analysis-cartogram-valueColumn'
+    ),
+    {
+      name: 'crs',
+      label: 'Cartogram declared projected CRS',
+      controlId: 'analysis-cartogram-crs',
+      kind: 'string',
+      maximumLength: 1024
+    },
+    ...(['minX', 'minY', 'maxX', 'maxY'] as const).map((name, index) => ({
+      name,
+      label: `Cartogram ${['minimum X', 'minimum Y', 'maximum X', 'maximum Y'][index]} in projected meters`,
+      controlId: `analysis-cartogram-${name}`,
+      kind: 'number' as const
+    })),
+    {
+      name: 'areaScale',
+      label: 'Cartogram area scale in projected square meters per value',
+      controlId: 'analysis-cartogram-areaScale',
+      kind: 'number',
+      minimum: 0
+    },
+    {
+      name: 'maximumIterations',
+      label: 'Cartogram maximum iterations',
+      controlId: 'analysis-cartogram-maximumIterations',
+      kind: 'integer',
+      minimum: 0,
+      maximum: MAXIMUM_KEPLER_DORLING_ITERATIONS,
+      level: 'advanced'
+    },
+    {
+      name: 'overlapTolerance',
+      label: 'Cartogram overlap tolerance in projected meters',
+      controlId: 'analysis-cartogram-overlapTolerance',
+      kind: 'number',
+      minimum: 0,
+      level: 'advanced'
+    },
+    {
+      name: 'attraction',
+      label: 'Cartogram attraction',
+      controlId: 'analysis-cartogram-attraction',
+      kind: 'number',
+      minimum: 0,
+      maximum: 1,
+      level: 'advanced'
+    }
+  ];
+  const fields = createResidentSheetFields(
+    sheet.values,
+    specifications,
+    name => {
+      const source = sheet.source(name);
+      if (saved || source === 'User override') return source;
+      if (['minX', 'minY', 'maxX', 'maxY'].includes(name))
+        return 'Dataset extent in source coordinate units; confirm projected meter bounds';
+      if (name === 'crs') return 'Explicit projected CRS declaration required';
+      if (name === 'valueColumn') return 'Numeric field above (publication role or user selection)';
+      return source;
+    },
+    () => analysis.availableColumns
+  );
+  const checks = getResidentSheetChecks(fields, () => getCartogramSheetSettings(sheet.values));
+  if (analysis.rowCount < 1 || analysis.rowCount > MAXIMUM_KEPLER_DORLING_SOURCE_ROWS)
+    checks.push(`Cartograms support 1 to ${MAXIMUM_KEPLER_DORLING_SOURCE_ROWS} source rows.`);
   return (
     <details className="analysis-cartogram-panel">
       <summary>Configure Dorling circle cartogram</summary>
-      <p className="hint">
-        Choose the value that determines circle area independently of other analyses. The current
-        analysis population controls which source rows participate in the layout.
-      </p>
-      <form
-        onSubmit={event => {
-          event.preventDefault();
-          try {
-            if (
-              [draft.xColumn, draft.yColumn, draft.valueColumn].some(
-                column => !column || !analysis.availableColumns.includes(column)
-              )
-            )
-              throw new Error('Choose prepared Float32 fields for X, Y and circle area values');
-            if (
-              [
-                draft.minX,
-                draft.minY,
-                draft.maxX,
-                draft.maxY,
-                draft.areaScale,
-                draft.maximumIterations,
-                draft.overlapTolerance,
-                draft.attraction
-              ].some(value => !value.trim())
-            )
-              throw new Error('Declare all cartogram bounds and layout parameters');
-            const next = parseKeplerDorlingSettings({
-              coordinateSpace: 'planar',
-              metric: 'native',
-              units: 'meters',
-              xColumn: draft.xColumn,
-              yColumn: draft.yColumn,
-              valueColumn: draft.valueColumn,
-              crs: draft.crs,
-              bounds: [
-                Number(draft.minX),
-                Number(draft.minY),
-                Number(draft.maxX),
-                Number(draft.maxY)
-              ],
-              areaScale: Number(draft.areaScale),
-              maximumIterations: Number(draft.maximumIterations),
-              overlapTolerance: Number(draft.overlapTolerance),
-              attraction: Number(draft.attraction)
-            });
-            analysis.configureCartogram(next);
-            setError('');
-          } catch (failure) {
-            setError(failure instanceof Error ? failure.message : String(failure));
-          }
-        }}
-      >
-        <CartogramControls
-          draft={draft}
-          onChange={setDraft}
-          columns={analysis.availableColumns}
-          rowCount={analysis.rowCount}
-        />
-        <button
-          type="submit"
-          disabled={analysis.rowCount < 1 || analysis.rowCount > MAXIMUM_KEPLER_DORLING_SOURCE_ROWS}
-        >
-          Apply fields and run cartogram
-        </button>
-      </form>
-      {settings && settings.crs !== 'EPSG:3857' && <CartogramDeclarationForm analysis={analysis} />}
-      {error && (
-        <ResidentConsumerNotice
-          consumer="analysis"
-          status="error"
-          className="error"
-          reason={error}
-        />
-      )}
+      <ResidentAnalysisSheetForm
+        key={JSON.stringify([analysis.coordinateRestorationKey, saved])}
+        fields={fields}
+        checks={checks}
+        method="Resident Dorling cartogram: X and Y must already be projected meter coordinates. Declare their CRS and finite bounds; declaring a CRS does not project or verify coordinates. Each eligible row becomes a circle with area = nonnegative value × area scale in projected square meters, not ground area. The current analysis population selects source rows. Zero-area circles remain stationary. Missing, nonfinite and negative values are excluded while retaining source identity. Layout is heuristic; zero iterations returns the initial layout and convergence is not guaranteed. Finite exhausted layouts remain available with diagnostics. Float32 precision can limit movement; coordinates are not recentered. Arbitrary declared projected CRSs produce table results; a map overlay requires EPSG:3857 and a compatible map projection contract."
+        submitLabel="Apply fields and run cartogram"
+        onDraftChange={sheet.markEdited}
+        onChange={sheet.change}
+        onApply={current =>
+          analysis.configureCartogram(getCartogramSheetSettings({...sheet.values, ...current}))
+        }
+      />
+      {saved && saved.crs !== 'EPSG:3857' && <CartogramDeclarationForm analysis={analysis} />}
     </details>
   );
 }

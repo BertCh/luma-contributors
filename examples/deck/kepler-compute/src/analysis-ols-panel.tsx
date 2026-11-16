@@ -2,155 +2,134 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {useState} from 'react';
 import {
   MAXIMUM_KEPLER_OLS_PREDICTORS,
   MAXIMUM_KEPLER_OLS_SOURCE_ROWS,
-  type KeplerOLSSettings
+  parseKeplerOLSSettings,
+  type KeplerOLSSettings,
+  type CatalogParameterValue
 } from '@luma-contributors/kepler';
+import {useAnalysisFormInitialization} from './analysis-form-initialization';
 import type {AnalysisRuntime} from './analysis-runtime';
-import {ResidentConsumerNotice} from './resident-consumer-notice';
+import {ResidentAnalysisSheetForm} from './analysis-sheet';
+import {
+  createResidentSheetFields,
+  getResidentSheetChecks,
+  readResidentSheetNumber
+} from './analysis-sheet-model';
+import {
+  usePointAnalysisSheet,
+  makePointSheetColumn,
+  type PointSheetValues,
+  type PointSheetSpecification
+} from './analysis-point-weights-panel';
 
-/** Submit the response and ordered predictor set together, without partially updating a fit. */
-export function OLSPanel({analysis}: {analysis: AnalysisRuntime}) {
-  const settings = analysis.settings.ols;
-  return (
-    <OLSControls
-      key={`${analysis.datasetId}:${JSON.stringify(settings)}`}
-      analysis={analysis}
-      settings={settings}
-    />
-  );
+export function makeOLSSheetDefaults(
+  saved: KeplerOLSSettings | undefined,
+  responseColumn: string
+): Record<string, CatalogParameterValue> {
+  return {
+    responseColumn: saved?.responseColumn ?? responseColumn,
+    predictorCount: saved?.predictorColumns.length ?? 1,
+    ...Object.fromEntries(
+      Array.from({length: MAXIMUM_KEPLER_OLS_PREDICTORS}, (_, index) => [
+        `predictor${index + 1}`,
+        saved?.predictorColumns[index] ?? ''
+      ])
+    ),
+    ridgeLambda: saved?.ridgeLambda ?? 0,
+    editedFields: '[]'
+  };
 }
 
-function OLSControls({
-  analysis,
-  settings
-}: {
-  analysis: AnalysisRuntime;
-  settings?: KeplerOLSSettings;
-}) {
-  const [responseColumn, setResponseColumn] = useState(settings?.responseColumn ?? '');
-  const [predictorColumns, setPredictorColumns] = useState<readonly string[]>(
-    settings?.predictorColumns ?? []
+/** Individual ordered roles preserve arbitrary column names, including commas, through replay. */
+export function getOLSSheetSettings(values: PointSheetValues): KeplerOLSSettings {
+  const count = readResidentSheetNumber(values, 'predictorCount');
+  if (!Number.isInteger(count) || count < 1 || count > MAXIMUM_KEPLER_OLS_PREDICTORS)
+    throw new Error('OLS requires 1 to 15 predictor columns');
+  return parseKeplerOLSSettings({
+    responseColumn: values['responseColumn'],
+    predictorColumns: Array.from({length: count}, (_, index) => values[`predictor${index + 1}`]),
+    intercept: 'included',
+    ridgeLambda: readResidentSheetNumber(values, 'ridgeLambda'),
+    variance: 'degrees-of-freedom',
+    missing: 'complete-cases'
+  });
+}
+
+/** Submit response and ordered predictors atomically while preserving the bespoke report. */
+export function OLSPanel({analysis}: {analysis: AnalysisRuntime}) {
+  const initialization = useAnalysisFormInitialization(analysis);
+  const saved = analysis.settings.ols;
+  const sheet = usePointAnalysisSheet(
+    makeOLSSheetDefaults(saved, analysis.settings.column || initialization.column),
+    saved,
+    analysis.coordinateRestorationKey ?? analysis.datasetId
   );
-  const [ridgeLambda, setRidgeLambda] = useState(String(settings?.ridgeLambda ?? 0));
-  const [error, setError] = useState('');
+  const count = Number(sheet.values['predictorCount']);
+  const specifications: PointSheetSpecification[] = [
+    makePointSheetColumn('responseColumn', 'OLS response field', 'analysis-ols-response'),
+    {
+      name: 'predictorCount',
+      label: 'OLS predictor count',
+      controlId: 'analysis-ols-predictor-count',
+      kind: 'integer',
+      minimum: 1,
+      maximum: MAXIMUM_KEPLER_OLS_PREDICTORS
+    },
+    ...Array.from(
+      {
+        length:
+          Number.isInteger(count) && count >= 1 && count <= MAXIMUM_KEPLER_OLS_PREDICTORS
+            ? count
+            : 0
+      },
+      (_, index) =>
+        makePointSheetColumn(
+          `predictor${index + 1}`,
+          `OLS predictor ${index + 1}`,
+          `analysis-ols-predictor-${index}`
+        )
+    ),
+    {
+      name: 'ridgeLambda',
+      label: 'OLS ridge penalty',
+      controlId: 'analysis-ols-ridge',
+      kind: 'number',
+      minimum: 0,
+      level: 'advanced'
+    }
+  ];
+  const fields = createResidentSheetFields(
+    sheet.values,
+    specifications,
+    name =>
+      !saved && name === 'responseColumn' && sheet.source(name) !== 'User override'
+        ? 'Numeric field above (publication role or user selection)'
+        : sheet.source(name),
+    name =>
+      name === 'responseColumn'
+        ? analysis.availableColumns
+        : analysis.availableColumns.filter(column => column !== sheet.values['responseColumn'])
+  );
+  const checks = getResidentSheetChecks(fields, () => getOLSSheetSettings(sheet.values));
+  if (analysis.rowCount < 1 || analysis.rowCount > MAXIMUM_KEPLER_OLS_SOURCE_ROWS)
+    checks.push(`OLS supports 1 to ${MAXIMUM_KEPLER_OLS_SOURCE_ROWS} source rows.`);
   return (
     <details className="analysis-ols-settings">
       <summary>Configure ordinary least squares regression</summary>
-      <p className="hint">
-        Fit a numeric response from one to 15 numeric predictors. An intercept is always included.
-        Only complete rows with finite response and predictor values enter the fit.
-      </p>
-      <form
-        onSubmit={event => {
-          event.preventDefault();
-          try {
-            analysis.configureOLS({
-              responseColumn,
-              predictorColumns: analysis.availableColumns.filter(column =>
-                predictorColumns.includes(column)
-              ),
-              intercept: 'included',
-              ridgeLambda: Number(ridgeLambda),
-              variance: 'degrees-of-freedom',
-              missing: 'complete-cases'
-            });
-            setError('');
-          } catch (failure) {
-            setError(failure instanceof Error ? failure.message : String(failure));
-          }
-        }}
-      >
-        <label htmlFor="analysis-ols-response">OLS response field</label>
-        <select
-          id="analysis-ols-response"
-          aria-label="OLS response field"
-          required
-          value={responseColumn}
-          onChange={event => {
-            setResponseColumn(event.target.value);
-            setPredictorColumns(predictorColumns.filter(column => column !== event.target.value));
-          }}
-        >
-          <option value="">Choose a response</option>
-          {analysis.availableColumns.map(column => (
-            <option key={column} value={column}>
-              {column}
-            </option>
-          ))}
-        </select>
-        <fieldset>
-          <legend>OLS predictors · {predictorColumns.length} selected</legend>
-          {analysis.availableColumns.map((column, index) => {
-            const selected = predictorColumns.includes(column);
-            return (
-              <label key={column} htmlFor={`analysis-ols-predictor-${index}`}>
-                <input
-                  id={`analysis-ols-predictor-${index}`}
-                  aria-label={`OLS predictor ${column}`}
-                  type="checkbox"
-                  checked={selected}
-                  disabled={
-                    column === responseColumn ||
-                    (!selected && predictorColumns.length >= MAXIMUM_KEPLER_OLS_PREDICTORS)
-                  }
-                  onChange={event =>
-                    setPredictorColumns(
-                      event.target.checked
-                        ? [...predictorColumns, column]
-                        : predictorColumns.filter(value => value !== column)
-                    )
-                  }
-                />
-                {column}
-                {column === responseColumn ? ' (response)' : ''}
-              </label>
-            );
-          })}
-        </fieldset>
-        <label htmlFor="analysis-ols-ridge">OLS ridge penalty</label>
-        <input
-          id="analysis-ols-ridge"
-          type="number"
-          min="0"
-          step="any"
-          required
-          value={ridgeLambda}
-          onChange={event => setRidgeLambda(event.target.value)}
-        />
-        <p className="hint">
-          Penalty 0 fits ordinary least squares. A positive penalty shrinks slopes in the original
-          predictor units, without penalizing the intercept. It depends on predictor scale; no
-          standardization or penalty selection is performed. Ridge reports are descriptive only.
-        </p>
-        <p className="hint">
-          At most 65,536 source rows. Calculations use Float32; strongly collinear or poorly scaled
-          predictors can fail or lose precision. Ordinary least squares standard errors assume
-          homoskedastic independent errors and use residual variance divided by n − p, with the
-          intercept counted in p. No robust or spatial covariance correction is applied.
-        </p>
-        <p className="hint">
-          The selected population is refitted using only selected complete rows. Fitted values and
-          residuals describe that training population, not held-out predictions. Excluded source
-          rows remain missing in both outputs.
-        </p>
-        <button
-          type="submit"
-          disabled={!predictorColumns.length || analysis.rowCount > MAXIMUM_KEPLER_OLS_SOURCE_ROWS}
-        >
-          Apply fields and fit regression
-        </button>
-      </form>
-      {error && (
-        <ResidentConsumerNotice
-          consumer="analysis"
-          status="error"
-          className="error"
-          reason={error}
-        />
-      )}
+      <ResidentAnalysisSheetForm
+        key={JSON.stringify([analysis.coordinateRestorationKey, saved])}
+        fields={fields}
+        checks={checks}
+        method="Resident OLS fits a numeric response from 1 to 15 ordered numeric predictors with an intercept. Only complete finite rows enter the fit. Penalty 0 fits ordinary least squares; a positive penalty shrinks slopes in original predictor units without penalizing the intercept. No standardization or penalty selection is performed. Ridge reports are descriptive only. Float32 can fail or lose precision for poorly scaled or collinear predictors. Classical standard errors assume homoskedastic independent errors and use residual variance divided by n − p, counting the intercept. No robust or spatial covariance correction is applied. Selection refits complete selected rows; fitted values and residuals describe the training population, not held-out predictions. Excluded rows remain missing."
+        submitLabel="Apply fields and fit regression"
+        onDraftChange={sheet.markEdited}
+        onChange={sheet.change}
+        onApply={current =>
+          analysis.configureOLS(getOLSSheetSettings({...sheet.values, ...current}))
+        }
+      />
     </details>
   );
 }

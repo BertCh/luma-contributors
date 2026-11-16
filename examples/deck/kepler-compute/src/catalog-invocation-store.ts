@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  parseAnalysisSensitivityProvenance,
+  type AnalysisSensitivityProvenance
+} from '@luma-contributors/kepler';
 import type {KeplerJSONValue} from '@luma-contributors/kepler';
 
 /** Where one catalog input came from; sample and text inputs are re-read, native inputs are re-resolved. */
@@ -19,6 +23,7 @@ export type CatalogInvocationRecord = {
   invocation: string;
   inputs: Record<string, CatalogInputReference>;
   engine: 'auto' | 'cpu';
+  sensitivity?: AnalysisSensitivityProvenance;
 };
 
 export const MAXIMUM_CATALOG_INVOCATIONS = 32;
@@ -53,9 +58,22 @@ export function recordCatalogInvocation(
         : input
     ])
   );
-  const key = JSON.stringify([record.operationId, record.invocation, inputs, record.engine]);
+  const key = JSON.stringify([
+    record.operationId,
+    record.invocation,
+    inputs,
+    record.engine,
+    record.sensitivity
+  ]);
   const existing = records.find(
-    item => JSON.stringify([item.operationId, item.invocation, item.inputs, item.engine]) === key
+    item =>
+      JSON.stringify([
+        item.operationId,
+        item.invocation,
+        item.inputs,
+        item.engine,
+        item.sensitivity
+      ]) === key
   );
   if (existing) return existing;
   const sequence = records.filter(item => item.operationId === record.operationId).length + 1;
@@ -114,7 +132,10 @@ export function parseCatalogInvocationRecords(value: unknown): CatalogInvocation
       operationId: raw['operationId'],
       invocation: raw['invocation'],
       engine: raw['engine'],
-      inputs
+      inputs,
+      ...(raw['sensitivity'] === undefined
+        ? {}
+        : {sensitivity: parseAnalysisSensitivityProvenance(raw['sensitivity'])})
     };
   });
 }

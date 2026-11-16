@@ -7,7 +7,7 @@ import {
   getPointCloudCatalogCoordinates
 } from './analysis-catalog-pointcloud';
 import {ComputeRuntime, type ExplorerSummary} from './compute-runtime';
-import React, {useState, useEffect} from 'react';
+import React, {useState, useEffect, useLayoutEffect} from 'react';
 import {ArrowStreamPanel} from './arrow-stream-panel';
 import {STREAM_ORIGIN_METADATA_KEY} from './remote-stream-source';
 import {appState} from './app-state';
@@ -20,7 +20,9 @@ import {
   setPolygonFilterLayer,
   layerVisConfigChange,
   setSuitabilityConfig,
-  setJoinConfig
+  setJoinConfig,
+  toggleModal,
+  toggleSidePanel
 } from '@kepler.gl/actions';
 import {type SourceCandidate, SourceWorkspacePanel} from './source-workspace-panel';
 import {DATASET_ID} from './sample-data';
@@ -57,8 +59,13 @@ import {MemoryBudgetPanel} from './memory-budget-panel';
 import {categoryCoverageRegistry} from './binding3-filter-runtime';
 import {RemoteRefetchSection} from './remote-refetch-host';
 import {AnalysisPanel} from './analysis-panel';
+import {AnalysisResultReportView} from './analysis-result-report-view';
 import {AnalysisCatalogPanel} from './analysis-catalog-panel';
+import {AnalysisSuggestionsPanel} from './analysis-suggestions-panel';
+import type {AnalysisSuggestionLaunch} from './analysis-suggestion-model';
 import {makeCatalogResidentDatasets} from './analysis-catalog-resident-input';
+import {analysisDatasetContext} from './analysis-dataset-context';
+import {AnalysisProfileDeclarations} from './analysis-profile-declarations';
 import {NativeSqlExplorer} from './native-sql-explorer';
 import {makeNativeSqlGpuExecutor, getResidentSqlGpuRuntime} from './resident-sql-gpu-runtime';
 import {SandboxPanel} from './sandbox-panel';
@@ -89,6 +96,7 @@ import {applyNativeConfig, reimportSource, getActiveRuntime} from './native-conf
 import {restoreBundle, formatAutomaticRecoveryStatus, formatEvictionStatus} from './recovery';
 import {nativeAutoPrepare} from './native-hosts';
 import {rasterLiveHost} from './main-raster-live';
+import {makeWorkbenchNativeAnalysisDatasets} from './workflow/workbench-analysis-profile';
 import {KeplerGl, mapStyles} from './map-container';
 import {WorkbenchMount, getWorkbenchStore, useWorkbenchDockInset} from './workflow/workbench-app';
 import {withWorkbenchAssistant} from './workflow/workbench-assistant-host';
@@ -142,6 +150,7 @@ export function App(): React.JSX.Element {
   const [stateRevision, setStateRevision] = useState(0);
   const [sandboxRuntime, setSandboxRuntime] = useState<ComputeRuntime | null>(appState.runtime);
   const [sourceCandidate, setSourceCandidate] = useState<SourceCandidate | null>(null);
+  const [analysisLaunch, setAnalysisLaunch] = useState<AnalysisSuggestionLaunch>();
   const [selectedAnalysisDatasetId, setSelectedAnalysisDatasetId] = useState(DATASET_ID);
   useEffect(() => {
     const datasets = store.getState().keplerGl['compute']?.visState?.datasets ?? {};
@@ -209,6 +218,25 @@ export function App(): React.JSX.Element {
   );
   useEffect(() => store.subscribe(() => setStateRevision(value => value + 1)), []);
 
+  const residentAnalysisDatasets =
+    appState.runtime && !appState.runtime.session.deviceLost
+      ? makeCatalogResidentDatasets(appState.runtime, () => appState.runtime)
+      : [];
+  const nativeDatasets = store.getState().keplerGl['compute']?.visState?.datasets ?? {};
+  const residentIds = new Set(residentAnalysisDatasets.map(dataset => dataset.id));
+  const analysisDatasets = [
+    ...residentAnalysisDatasets,
+    ...makeWorkbenchNativeAnalysisDatasets(
+      Object.values(nativeDatasets).filter(
+        dataset => !residentIds.has(dataset.id) && !isResidentDataset(dataset.id)
+      ),
+      dataset => store.getState().keplerGl['compute']?.visState?.datasets[dataset.id] === dataset
+    )
+  ];
+  // Publish metadata before paint, after rendering has committed and subscribers may update safely.
+  useLayoutEffect(() => {
+    analysisDatasetContext.synchronize(analysisDatasets);
+  }, [analysisDatasets]);
   const recovery = appState.deviceRecovery.status;
   return (
     <NativeWorkflows.Provider
@@ -550,6 +578,14 @@ export function App(): React.JSX.Element {
         ),
         analysis: (
           <>
+            <AnalysisProfileDeclarations datasets={analysisDatasets} />
+            {residentAnalysisDatasets.length > 0 && (
+              <AnalysisSuggestionsPanel
+                datasetId={selectedAnalysisDatasetId || residentAnalysisDatasets[0].id}
+                datasets={residentAnalysisDatasets}
+                onLaunch={setAnalysisLaunch}
+              />
+            )}
             {appState.runtime && !appState.runtime.session.deviceLost ? (
               <AnalysisPanel
                 analysis={appState.runtime.analysis}
@@ -576,11 +612,18 @@ export function App(): React.JSX.Element {
             ) : null}
             {appState.runtime && !appState.runtime.session.deviceLost ? (
               <AnalysisCatalogPanel
+                launchRequest={analysisLaunch}
+                onLaunchConsumed={launch =>
+                  setAnalysisLaunch(current => (current === launch ? undefined : current))
+                }
                 device={appState.runtime.session.device}
-                residentDatasets={makeCatalogResidentDatasets(
-                  appState.runtime,
-                  () => appState.runtime
-                )}
+                registry={appState.runtime.session.registry}
+                getCurrentRegistry={() =>
+                  appState.runtime?.session.deviceLost
+                    ? undefined
+                    : appState.runtime?.session.registry
+                }
+                residentDatasets={residentAnalysisDatasets}
                 datasets={Object.values(
                   store.getState().keplerGl['compute']?.visState?.datasets ?? {}
                 )
@@ -601,15 +644,17 @@ export function App(): React.JSX.Element {
                     label: published.label,
                     table: published.dataset.value.source
                   }))}
-                onPublish={(table, label, geometryColumn, tripOptions) => {
+                onPublish={(table, label, geometryColumn, tripOptions, analysisResult) => {
                   const activeRuntime = appState.runtime;
                   setSourceCandidate({
                     table,
                     label,
                     isCurrent: () => appState.runtime === activeRuntime,
+                    analysisResult,
                     suggestedGeometryColumn: geometryColumn,
                     suggestedTripOptions: tripOptions,
-                    suggestedCoordinates: getPointCloudCatalogCoordinates(table, label)
+                    suggestedCoordinates:
+                      analysisResult?.coordinates ?? getPointCloudCatalogCoordinates(table, label)
                   });
                 }}
               />
@@ -649,6 +694,13 @@ export function App(): React.JSX.Element {
             {appState.runtime ? (
               <SourceWorkspacePanel
                 candidate={sourceCandidate}
+                analysisDatasets={residentAnalysisDatasets}
+                onLaunchAnalysis={launch => {
+                  setAnalysisLaunch(launch);
+                  store.dispatch(wrapTo('compute', toggleModal(null)));
+                  if (store.getState().keplerGl['compute']?.uiState?.activeSidePanel !== 'layer')
+                    store.dispatch(wrapTo('compute', toggleSidePanel('layer')));
+                }}
                 datasets={Object.values(
                   store.getState().keplerGl['compute']?.visState?.datasets ?? {}
                 ).filter(dataset => !isResidentDataset(dataset.id))}
@@ -737,6 +789,7 @@ export function App(): React.JSX.Element {
         }}
         RTLTextPlugin={false}
       />
+      <AnalysisResultReportView />
       <WorkbenchMount
         externalRevision={stateRevision}
         sidePanelOpen={Boolean(store.getState().keplerGl['compute']?.uiState?.activeSidePanel)}

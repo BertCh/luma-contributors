@@ -4,6 +4,7 @@
 
 import type {
   KeplerJSONValue,
+  WorkflowAnalysisTemplate,
   WorkflowClipboard,
   WorkflowCollection,
   WorkflowDocument,
@@ -17,6 +18,8 @@ import type {
 
 import {
   copyWorkflowSteps,
+  validateWorkflowForAssistant,
+  getNewWorkflowAssistantWarnings,
   createWorkflowDocument,
   getWorkflowOperationRegistry,
   insertWorkflowSteps,
@@ -27,6 +30,8 @@ import {
   removeWorkflowSteps,
   serializeWorkflowCollection,
   serializeWorkflowDocument,
+  serializeWorkflowAnalysisTemplate,
+  validateWorkflowAnalysisTemplate,
   WorkflowError,
   WorkflowHistory,
   WorkflowRunner,
@@ -77,6 +82,7 @@ export type WorkbenchState = {
   runLog: readonly WorkflowRunRecord[];
   /** Workflows the user saved as templates; saved with the workspace. */
   templates: readonly WorkflowDocument[];
+  analysisTemplates?: readonly WorkflowAnalysisTemplate[];
   /** Number of steps on the workbench clipboard, 0 when it is empty. */
   clipboardStepCount: number;
 };
@@ -131,11 +137,23 @@ export type WorkbenchStore = {
   proposeDraft(draft: WorkbenchDraft): void;
   /** Adds the draft as a workflow and opens the dock; returns its id. */
   acceptDraft(): string | null;
+  /** Warning review is tied to the exact document and requested execution scope. */
+  getReviewedAssistantIssues(
+    document: WorkflowDocument,
+    target?: string
+  ): readonly WorkflowIssue[] | undefined;
+  recordAssistantReview(
+    document: WorkflowDocument,
+    issues: readonly WorkflowIssue[],
+    target?: string
+  ): void;
   rejectDraft(): void;
 
   // Composition
   /** Saves a copy of a workflow (default: the active one) as a template and returns its id. */
   saveTemplate(workflowId?: string): string;
+  saveAnalysisTemplate?(template: WorkflowAnalysisTemplate): string;
+  deleteAnalysisTemplate?(templateId: string): void;
   deleteTemplate(templateId: string): void;
   /** Adds a workflow from a user template and makes it active; returns its id. */
   useTemplate(templateId: string): string;
@@ -190,6 +208,12 @@ export function createWorkbenchStore(options: {
 }): WorkbenchStore {
   let registry = options.registry;
   const sessions = new Map<string, WorkflowSession>();
+  // A WeakMap ties reviews to immutable document identity, so edits/restores cannot inherit an
+  // acknowledgement from a different plan and discarded documents do not accumulate entries.
+  const assistantReviews = new WeakMap<
+    WorkflowDocument,
+    Map<string, {fingerprint: string; issues: readonly WorkflowIssue[]}>
+  >();
   const destructions = new Set<Promise<void>>();
   const listeners = new Set<() => void>();
   const notifications: Array<Array<() => void>> = [];
@@ -200,6 +224,7 @@ export function createWorkbenchStore(options: {
   let unsubscribeRunner: (() => void) | undefined;
   let workflows: readonly WorkflowDocument[] = [];
   let templates: readonly WorkflowDocument[] = [];
+  let analysisTemplates: readonly WorkflowAnalysisTemplate[] = [];
   let clipboard: WorkflowClipboard | null = null;
   let snapshotClipboard: WorkflowClipboard | null = null;
   let activeWorkflowId: string | null = null;
@@ -231,6 +256,7 @@ export function createWorkbenchStore(options: {
     notice,
     runLog: emptyRunLog,
     templates,
+    ...(analysisTemplates.length ? {analysisTemplates} : {}),
     clipboardStepCount: 0
   };
 
@@ -266,10 +292,12 @@ export function createWorkbenchStore(options: {
       notice,
       runLog: session?.runLog ?? emptyRunLog,
       templates,
+      ...(analysisTemplates.length ? {analysisTemplates} : {}),
       clipboardStepCount: clipboard?.steps.length ?? 0
     };
     if (
       clipboard === snapshotClipboard &&
+      state.analysisTemplates === (analysisTemplates.length ? analysisTemplates : undefined) &&
       (Object.keys(next) as Array<keyof WorkbenchState>).every(key => next[key] === state[key])
     )
       return;
@@ -446,6 +474,7 @@ export function createWorkbenchStore(options: {
       workflows = collection.workflows.map(copyAndFreeze);
     if (templates.length || collection.templates?.length)
       templates = (collection.templates ?? []).map(copyAndFreeze);
+    analysisTemplates = (collection.analysisTemplates ?? []).map(copyAndFreeze);
     clipboard = null;
     draft = null;
     notice = null;
@@ -593,7 +622,9 @@ export function createWorkbenchStore(options: {
       mutate(() => getSession()?.runner.cancel());
     },
     notifyExternalChange() {
-      mutate(() => getSession()?.runner.refreshExternal());
+      mutate(() => {
+        for (const session of sessions.values()) session.runner.refreshExternal();
+      });
     },
     getRunner: () => getSession()?.runner ?? null,
     setDock(patch) {
@@ -648,10 +679,54 @@ export function createWorkbenchStore(options: {
     acceptDraft() {
       return mutate(() => {
         if (!draft) return null;
-        const id = addDocument(draft.document);
+        if (draft.source === 'assistant') {
+          const issues = validateWorkflowForAssistant(draft.document, {
+            registry: store.registry,
+            host: store.host
+          });
+          const newWarnings = getNewWorkflowAssistantWarnings(issues, draft.issues);
+          if (issues.some(issue => issue.severity === 'error') || newWarnings.length) {
+            draft = copyAndFreeze({...draft, issues});
+            setError(
+              issues.some(issue => issue.severity === 'error')
+                ? issues
+                    .filter(issue => issue.severity === 'error')
+                    .map(issue => issue.message)
+                    .join('\n')
+                : `Review the updated warnings and approve the whole plan again.\n${newWarnings.map(issue => issue.message).join('\n')}`
+            );
+            return null;
+          }
+        }
+        const acceptedDraft = draft;
+        const id = addDocument(acceptedDraft.document);
+        if (id && acceptedDraft.source === 'assistant') {
+          const document = workflows.find(workflow => workflow.id === id)!;
+          store.recordAssistantReview(
+            document,
+            validateWorkflowForAssistant(document, {registry: store.registry, host: store.host})
+          );
+        }
         draft = null;
         if (!dock.open) dock = {...dock, open: true};
         return id;
+      });
+    },
+    getReviewedAssistantIssues(document, target) {
+      const review = assistantReviews.get(document)?.get(target ?? '');
+      return review?.fingerprint === JSON.stringify(serializeWorkflowDocument(document))
+        ? review.issues
+        : undefined;
+    },
+    recordAssistantReview(document, issues, target) {
+      let reviews = assistantReviews.get(document);
+      if (!reviews) {
+        reviews = new Map();
+        assistantReviews.set(document, reviews);
+      }
+      reviews.set(target ?? '', {
+        fingerprint: JSON.stringify(serializeWorkflowDocument(document)),
+        issues: copyAndFreeze(issues)
       });
     },
     rejectDraft() {
@@ -672,7 +747,7 @@ export function createWorkbenchStore(options: {
           );
           return '';
         }
-        if (templates.length >= WORKFLOW_LIMITS.maximumUserTemplates) {
+        if (templates.length + analysisTemplates.length >= WORKFLOW_LIMITS.maximumUserTemplates) {
           setError(`Templates: maximumUserTemplates is ${WORKFLOW_LIMITS.maximumUserTemplates}.`);
           return '';
         }
@@ -701,6 +776,43 @@ export function createWorkbenchStore(options: {
           setError(error);
           return '';
         }
+      });
+    },
+    saveAnalysisTemplate(supplied) {
+      return mutate(() => {
+        try {
+          if (templates.length + analysisTemplates.length >= WORKFLOW_LIMITS.maximumUserTemplates)
+            throw new WorkflowError(
+              'limit-exceeded',
+              `Templates: maximumUserTemplates is ${WORKFLOW_LIMITS.maximumUserTemplates}.`
+            );
+          const template = serializeWorkflowAnalysisTemplate(supplied);
+          const validation = validateWorkflowAnalysisTemplate(template, {registry: getRegistry()});
+          if (!validation.executable)
+            throw new WorkflowError(
+              'malformed',
+              validation.issues.map(issue => issue.message).join('\n')
+            );
+          template.id = makeUniqueWorkflowId(
+            template.id,
+            analysisTemplates.map(saved => saved.id)
+          );
+          template.document.id = template.id;
+          analysisTemplates = [...analysisTemplates, copyAndFreeze(template)];
+          notice = Object.freeze({
+            kind: 'info',
+            message: `Saved "${template.title}" as a reusable template.`
+          });
+          return template.id;
+        } catch (error) {
+          setError(error);
+          return '';
+        }
+      });
+    },
+    deleteAnalysisTemplate(templateId) {
+      mutate(() => {
+        analysisTemplates = analysisTemplates.filter(template => template.id !== templateId);
       });
     },
     deleteTemplate(templateId) {
@@ -775,6 +887,7 @@ export function createWorkbenchStore(options: {
         schemaVersion: 1,
         workflows: [...workflows],
         templates: [...templates],
+        analysisTemplates: [...analysisTemplates],
         ...(activeWorkflowId === null ? {} : {activeWorkflowId})
       });
     },

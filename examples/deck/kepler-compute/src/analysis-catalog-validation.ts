@@ -2,25 +2,37 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {KeplerDatasetProfileDeclarations} from '@luma-contributors/kepler';
+
+const VALIDATION_SAMPLE_OPERATIONS = [
+  'regression-gtwr',
+  'regression-mgtwr',
+  'interpolation-space-time-kriging',
+  'validation-vecchia-likelihood',
+  'validation-vecchia-fisher',
+  'validation-vecchia-space-time',
+  'validation-area-of-applicability',
+  'validation-conformal',
+  'validation-geo-conformal',
+  'validation-ensemble-scores',
+  'validation-gaussian-scores',
+  'validation-fdr'
+];
+
+/** These authored synthetic coordinates are geographic, including forms without a CRS parameter. */
+export function getCatalogValidationSampleDeclarations(
+  operationId: string
+): KeplerDatasetProfileDeclarations | undefined {
+  return VALIDATION_SAMPLE_OPERATIONS.includes(operationId)
+    ? {coordinateModel: 'geographic'}
+    : undefined;
+}
+
 /** Reproducible city-scale examples shared by the twelve validation catalog forms. */
 export function getCatalogValidationSampleInputs(
   operationId: string
 ): Record<string, string> | undefined {
-  const operations = [
-    'regression-gtwr',
-    'regression-mgtwr',
-    'interpolation-space-time-kriging',
-    'validation-vecchia-likelihood',
-    'validation-vecchia-fisher',
-    'validation-vecchia-space-time',
-    'validation-area-of-applicability',
-    'validation-conformal',
-    'validation-geo-conformal',
-    'validation-ensemble-scores',
-    'validation-gaussian-scores',
-    'validation-fdr'
-  ];
-  if (!operations.includes(operationId)) return undefined;
+  if (!VALIDATION_SAMPLE_OPERATIONS.includes(operationId)) return undefined;
   const makeRows = (query: boolean) =>
     JSON.stringify({
       type: 'FeatureCollection',

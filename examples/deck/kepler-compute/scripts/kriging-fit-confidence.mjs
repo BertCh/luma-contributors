@@ -10,6 +10,7 @@ import * as arrow from 'apache-arrow';
 import {chromium} from 'playwright';
 import {getPlaywrightLaunchOptions} from '../../../../scripts/playwright/get-playwright-launch-options.mjs';
 import {pinViteModules} from './pin-vite-modules.mjs';
+import {setAnalysisSheetControl} from './analysis-sheet-controls.mjs';
 import {openNativeData, closeNativeDialog} from './native-navigation.mjs';
 
 const side = 20;
@@ -24,7 +25,8 @@ for (let row = 0; row < side * side; row++) {
   latitudes[row] = bounds[1] + 0.4 * y;
   response[row] = 10 * Math.sin(3 * x) * Math.cos(2 * y) + Math.sin(8 * x + 3 * y);
 }
-const source = arrow.tableFromArrays({longitude: longitudes, latitude: latitudes, response});
+const source = arrow.tableFromArrays({longitude: longitudes, latitude: latitudes, response,
+  other: response.map(value => value * 2 + 1)});
 const browser = await chromium.launch(getPlaywrightLaunchOptions({headless: true, backend: 'webgpu-core'}));
 const page = await browser.newPage({viewport: {width: 1440, height: 1000}});
 const failures = [];
@@ -61,14 +63,14 @@ try {
   await panel.getByLabel('Dataset', {exact: true}).selectOption(datasetId);
   await panel.getByLabel('Numeric field', {exact: true}).selectOption('response');
   await panel.getByText('Configure ordinary kriging grid', {exact: true}).click();
-  await panel.getByLabel('Kriging longitude field', {exact: true}).selectOption('longitude');
-  await panel.getByLabel('Kriging latitude field', {exact: true}).selectOption('latitude');
+  await setAnalysisSheetControl(panel.getByLabel('Kriging longitude field', {exact: true}), 'longitude');
+  await setAnalysisSheetControl(panel.getByLabel('Kriging latitude field', {exact: true}), 'latitude');
   for (const [label, value] of [
     ['Kriging west longitude', bounds[0]], ['Kriging south latitude', bounds[1]],
     ['Kriging east longitude', bounds[2]], ['Kriging north latitude', bounds[3]],
     ['Kriging columns', 8], ['Kriging rows', 8], ['Kriging search radius in meters', 20000],
     ['Kriging nearest samples', 8], ['Kriging minimum distinct positions', 3]
-  ]) await panel.getByLabel(label, {exact: true}).fill(String(value));
+  ]) await setAnalysisSheetControl(panel.getByLabel(label, {exact: true}), value);
   currentStage = 'fit variogram automatically';
   await panel.getByRole('button', {name: 'Fit variogram automatically', exact: true}).click();
   const status = panel.getByRole('status').filter({hasText: 'Fitted'});
@@ -77,8 +79,8 @@ try {
   assert.match(await status.innerText(), /Fitted (spherical|exponential|gaussian|matern-3\/2|matern-5\/2): nugget .*range \d+ m from [\d,]+ pairs/);
   const fittedRange = Number(await panel.getByLabel('Kriging effective range in meters', {exact: true}).inputValue());
   assert(fittedRange > 0, `Expected a positive fitted range, got ${fittedRange}`);
-  await panel.getByLabel('Prediction interval level (blank: none, for example 0.95)', {exact: true}).fill('0.95');
-  await panel.getByLabel('Leave-one-out cross-validation', {exact: true}).check();
+  await setAnalysisSheetControl(panel.getByLabel('Prediction interval level (blank: none, for example 0.95)', {exact: true}), '0.95');
+  await setAnalysisSheetControl(panel.getByLabel('Leave-one-out cross-validation', {exact: true}), true);
   currentStage = 'run kriging with intervals and cross-validation';
   await panel.getByRole('button', {name: 'Apply model and run kriging', exact: true}).click();
   await page.waitForFunction(id => window.__keplerComputeTest.renderedLayers().some(layer =>
@@ -98,12 +100,28 @@ try {
   assert.equal(saved.operation.crossValidation, true);
   assert.equal(saved.operation.variogramFit.method, 'weighted-least-squares');
   assert.equal(saved.operation.variogram.rangeMeters, fittedRange);
+  // Reapplying a restored fit keeps provenance; edits alone keep the accepted recipe unchanged.
+  await panel.getByRole('button', {name: 'Restore recipe', exact: true}).click();
+  await panel.getByRole('button', {name: 'Apply model and run kriging', exact: true}).click();
+  const reapplied = await page.evaluate(identifier => JSON.parse(window.__keplerComputeTest.analysisForDataset(identifier).serializeRecipe()), datasetId);
+  assert.deepEqual(reapplied.operation, saved.operation);
+  currentStage = 'invalidate fit provenance after changing the response';
+  await panel.getByLabel('Numeric field', {exact: true}).selectOption('other');
+  await panel.getByRole('button', {name: 'Apply model and run kriging', exact: true}).click();
+  const changedResponse = await page.evaluate(identifier => JSON.parse(window.__keplerComputeTest.analysisForDataset(identifier).serializeRecipe()), datasetId);
+  assert.equal(changedResponse.operation.column, 'other');
+  assert.equal(changedResponse.operation.variogramFit, undefined);
+  await panel.getByRole('button', {name: 'Restore recipe', exact: true}).click();
+  await panel.getByRole('button', {name: 'Apply model and run kriging', exact: true}).click();
+  const restoredResponse = await page.evaluate(identifier => JSON.parse(window.__keplerComputeTest.analysisForDataset(identifier).serializeRecipe()), datasetId);
+  assert.deepEqual(restoredResponse.operation, saved.operation);
   assert.deepEqual(failures, []);
   console.log(JSON.stringify({passed: true, fittedRange, checks: [
     'automatic weighted-least-squares variogram fit fills explicit replayable parameters',
     'prediction interval columns and half-width diagnostics',
     'leave-one-out diagnostics over all retained samples',
-    'saved recipe carries confidence level, cross-validation flag and fit provenance'
+    'saved recipe carries confidence level, cross-validation flag and fit provenance',
+    'response changes invalidate fit provenance while recipe replay restores it'
   ]}));
 } catch (failure) {
   console.error(JSON.stringify({stage: currentStage, failures,

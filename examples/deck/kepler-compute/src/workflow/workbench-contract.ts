@@ -124,6 +124,7 @@ export const WORKBENCH_PORT_COLORS: Record<WorkflowPortKind, string> = {
   line: '#f5a968',
   polygon: '#84dc98',
   features: '#c9a8ff',
+  raster: '#e0c07a',
   table: '#b6bdc9'
 };
 
@@ -132,6 +133,7 @@ export const WORKBENCH_PORT_LABELS: Record<WorkflowPortKind, string> = {
   line: 'Lines',
   polygon: 'Polygons',
   features: 'Features',
+  raster: 'Raster band/grid',
   table: 'Table'
 };
 

@@ -8,6 +8,7 @@ import {chromium} from 'playwright';
 import {getPlaywrightLaunchOptions} from '../../../../scripts/playwright/get-playwright-launch-options.mjs';
 import {pinViteModules} from './pin-vite-modules.mjs';
 import {openNativeData, closeNativeDialog} from './native-navigation.mjs';
+import {setAnalysisSheetControl} from './analysis-sheet-controls.mjs';
 
 // X > 180 is valid in the declared projected CRS; the last row has a missing X coordinate.
 const source = arrow.tableFromArrays({
@@ -83,18 +84,18 @@ try {
   await panel.getByLabel('Dataset', {exact: true}).selectOption(datasetId);
   await panel.getByLabel('Numeric field', {exact: true}).selectOption('measure');
   await panel.getByText('Configure geographic neighbors and spatial rates', {exact: true}).click();
-  await panel.getByLabel('Spatial rate population field', {exact: true}).selectOption('population');
-  await panel.getByLabel('Neighbor coordinate system', {exact: true}).selectOption('planar');
-  await panel.getByLabel('Neighbor projected X field', {exact: true}).selectOption('x');
-  await panel.getByLabel('Neighbor projected Y field', {exact: true}).selectOption('y');
-  await panel.getByLabel('Neighbor declared projected CRS', {exact: true}).fill('EPSG:3857');
+  await setAnalysisSheetControl(panel.getByLabel('Spatial rate population field', {exact: true}), 'population');
+  await setAnalysisSheetControl(panel.getByLabel('Neighbor coordinate system', {exact: true}), 'planar');
+  await setAnalysisSheetControl(panel.getByLabel('Neighbor projected X field', {exact: true}), 'x');
+  await setAnalysisSheetControl(panel.getByLabel('Neighbor projected Y field', {exact: true}), 'y');
+  await setAnalysisSheetControl(panel.getByLabel('Neighbor declared projected CRS', {exact: true}), 'EPSG:3857');
   for (const [label, value] of [['minimum X', '179'], ['minimum Y', '-1'], ['maximum X', '201'], ['maximum Y', '1']])
-    await panel.getByLabel(`Neighbor projected ${label} in meters`, {exact: true}).fill(value);
-  await panel.getByLabel('Neighbor topology', {exact: true}).selectOption('distance-band');
-  await panel.getByLabel('Neighbor radius in meters', {exact: true}).fill('1.1');
-  await panel.getByLabel('Neighbor directed neighbor capacity', {exact: true}).fill('4');
-  await panel.getByLabel('Rate scale', {exact: true}).fill('100');
-  await panel.getByLabel('Rows without eligible neighbors', {exact: true}).selectOption('undefined');
+    await setAnalysisSheetControl(panel.getByLabel(`Neighbor projected ${label} in meters`, {exact: true}), value);
+  await setAnalysisSheetControl(panel.getByLabel('Neighbor topology', {exact: true}), 'distance-band');
+  await setAnalysisSheetControl(panel.getByLabel('Neighbor radius in meters', {exact: true}), '1.1');
+  await setAnalysisSheetControl(panel.getByLabel('Neighbor directed neighbor capacity', {exact: true}), '4');
+  await setAnalysisSheetControl(panel.getByLabel('Rate scale', {exact: true}), '100');
+  await setAnalysisSheetControl(panel.getByLabel('Rows without eligible neighbors', {exact: true}), 'undefined');
   stage('projected distance band preserves valid X beyond geographic longitude bounds');
   await panel.getByRole('button', {name: 'Apply neighbors and run spatial rates', exact: true}).click();
   await waitForProjectedRates();

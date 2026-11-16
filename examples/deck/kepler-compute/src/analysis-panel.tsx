@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {useEffect, useState} from 'react';
+import {useAnalysisFormInitialization} from './analysis-form-initialization';
 import {isAnalysisMode, isStandardizationMode, type AnalysisRuntime} from './analysis-runtime';
 import {HotspotPanel} from './analysis-hotspot-panel';
 import {PointWeightsPanel} from './analysis-point-weights-panel';
@@ -17,6 +18,8 @@ import {CartogramPanel, CartogramResults} from './analysis-cartogram-panel';
 import {RateResults} from './analysis-rate-results';
 import {KrigingPanel} from './analysis-kriging-panel';
 import {ResidentConsumerNotice} from './resident-consumer-notice';
+import {analysisDatasetContext} from './analysis-dataset-context';
+import {AnalysisRowMeaning} from './analysis-profile-declarations';
 
 export type AnalysisSource = {
   id: string;
@@ -126,6 +129,7 @@ export function AnalysisPanel({
 }
 
 function AnalysisControls({analysis}: {analysis: AnalysisRuntime}) {
+  const initialization = useAnalysisFormInitialization(analysis);
   const [, refresh] = useState(0);
   const [savedRecipe, setSavedRecipe] = useState('');
   const [error, setError] = useState('');
@@ -148,18 +152,26 @@ function AnalysisControls({analysis}: {analysis: AnalysisRuntime}) {
   };
   return (
     <>
+      {analysisDatasetContext.get(analysis.datasetId)?.profile && (
+        <AnalysisRowMeaning
+          profile={analysisDatasetContext.get(analysis.datasetId)!.profile}
+          onDeclare={rowSemantics =>
+            analysisDatasetContext.setDeclarations(analysis.datasetId, {
+              ...analysisDatasetContext.getDeclarations(analysis.datasetId),
+              rowSemantics
+            })
+          }
+        />
+      )}
       <label htmlFor="analysis-column">Numeric field</label>
       <select
         id="analysis-column"
-        disabled={
-          settings.mode === 'dbscan-points' ||
-          settings.mode === 'ols' ||
-          settings.mode === 'dorling-cartogram'
-        }
+        disabled={settings.mode === 'ols' || settings.mode === 'dorling-cartogram'}
         value={settings.column}
         onChange={event => invoke(() => analysis.setColumn(event.target.value))}
         style={{width: '100%'}}
       >
+        {!settings.column && <option value="">Choose a value field for numeric analyses</option>}
         {analysis.availableColumns.map(column => (
           <option key={column} value={column}>
             {column}
@@ -202,10 +214,10 @@ function AnalysisControls({analysis}: {analysis: AnalysisRuntime}) {
           Cluster · configured geographic DBSCAN
         </option>
         <option value="idw-points" disabled={!settings.idw}>
-          Interpolate · configured geographic grid
+          Interpolate · resident IDW geographic grid
         </option>
         <option value="kriging-points" disabled={!settings.kriging}>
-          Interpolate · configured ordinary kriging
+          Interpolate · resident kriging with fitting and validation
         </option>
         <option value="quantile-lisa-points" disabled={!settings.quantileLisa}>
           Quantile LISA · configured points
@@ -251,12 +263,18 @@ function AnalysisControls({analysis}: {analysis: AnalysisRuntime}) {
       <PointWeightsPanel analysis={analysis} />
       <PointHotspotPanel analysis={analysis} />
       <LocalMoranPanel
+        coordinateSource={initialization.coordinateSource}
+        coordinateInitialization={initialization.coordinates}
+        coordinateResetKey={analysis.coordinateRestorationKey}
         columns={analysis.availableColumns}
         rowCount={analysis.rowCount}
         settings={settings.localMoran}
         onApply={settings => analysis.configureLocalMoran(settings)}
       />
       <QuantileLisaPanel
+        coordinateSource={initialization.coordinateSource}
+        coordinateInitialization={initialization.coordinates}
+        coordinateResetKey={analysis.coordinateRestorationKey}
         columns={analysis.availableColumns}
         rowCount={analysis.rowCount}
         settings={settings.quantileLisa}

@@ -5,6 +5,11 @@
 import * as arrow from 'apache-arrow';
 import {validateCapacity} from '@luma-contributors/analysis/analysis-core';
 import type {CatalogFeatureCollection, CatalogOutputTable} from '@luma-contributors/kepler';
+import {
+  getKeplerOperationDescriptor,
+  getKeplerCuratedAnalysis,
+  createKeplerCuratedAnalysisSample
+} from '@luma-contributors/kepler';
 import type {SandboxTripOptions} from './trip-source-options';
 
 export const TRAJECTORY_POINT_FIELD = 'Point rows (mapped longitude/latitude columns)';
@@ -16,8 +21,13 @@ export type CatalogTrajectoryNativeDataset = {
   dataContainer: {numRows(): number; valueAt(row: number, column: number): unknown};
 };
 
-export function isTrajectoryCatalogOperation(operationId: string): boolean {
-  return operationId.startsWith('trajectory-');
+export function isTrajectoryCatalogOperation(operationId: string, inputName?: string): boolean {
+  return (
+    getKeplerOperationDescriptor(operationId)?.inputs.some(
+      input =>
+        input.kind === 'trajectories' && (inputName === undefined || input.name === inputName)
+    ) ?? false
+  );
 }
 
 /** Original retained Arrow only: never trigger GPU paging or read a lazy resident table. */
@@ -135,6 +145,20 @@ export function getCatalogTrajectorySampleInputs(
   operationId: string
 ): Record<string, string> | undefined {
   if (!isTrajectoryCatalogOperation(operationId)) return undefined;
+  const curated = getKeplerCuratedAnalysis(operationId.replace(/^curated-/, ''));
+  if (
+    curated?.sampleId &&
+    curated.execution.status === 'available' &&
+    curated.execution.bindingId === operationId
+  ) {
+    const sample = createKeplerCuratedAnalysisSample(curated.sampleId);
+    return Object.fromEntries(
+      Object.entries(curated.execution.inputs).map(([slot, input]) => [
+        input,
+        JSON.stringify(sample[slot])
+      ])
+    );
+  }
   const origin = Date.UTC(2026, 0, 1);
   // Two tracks, each with two stays separated by a moving section and one isolated spike.
   const features = [0, 1].map(track => ({

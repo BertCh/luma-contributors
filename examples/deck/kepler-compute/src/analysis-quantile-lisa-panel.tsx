@@ -2,185 +2,165 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {useEffect, useState} from 'react';
+import type {PointCoordinateDraft} from './analysis-point-coordinate-controls';
 import {MAXIMUM_KEPLER_QUANTILE_LISA_PERMUTATIONS} from '@luma-contributors/kepler';
 import {
   normalizeQuantileLisaSettings,
   type QuantileLisaSettings
 } from './analysis-quantile-lisa-settings';
-import {PointTopologyControls, usePointTopology} from './analysis-point-topology-controls';
-import {PointCoordinateControls, usePointCoordinates} from './analysis-point-coordinate-controls';
-import {validatePointCoordinateColumns} from './analysis-point-coordinate-settings';
-import {ResidentConsumerNotice} from './resident-consumer-notice';
+import {ResidentAnalysisSheetForm} from './analysis-sheet';
+import {
+  makePointSheetDefaults,
+  usePointAnalysisSheet,
+  createPointSheetFields,
+  getPointSheetTopology,
+  getPointSheetChecks,
+  type PointSheetValues
+} from './analysis-point-weights-panel';
 
-const NUMERIC_FIELDS = [
-  {key: 'quantileCount', label: 'Quantile LISA quantile count', minimum: 2, step: '1'},
-  {key: 'selectedQuantile', label: 'Quantile LISA selected quantile', minimum: 1, step: '1'},
-  {
-    key: 'seed',
-    label: 'Quantile LISA seed',
-    minimum: 0,
-    maximum: Number.MAX_SAFE_INTEGER,
-    step: '1'
-  },
-  {
-    key: 'permutationCount',
-    label: 'Quantile LISA permutations',
-    minimum: 1,
-    maximum: MAXIMUM_KEPLER_QUANTILE_LISA_PERMUTATIONS,
-    step: '1'
-  },
-  {
-    key: 'significanceLevel',
-    label: 'Quantile LISA significance level',
-    minimum: 0,
-    maximum: 1,
-    step: 'any'
-  }
-] as const;
-
-function makeDraft(settings?: QuantileLisaSettings) {
-  return {
-    quantileCount: String(settings?.quantileCount ?? 2),
-    selectedQuantile: String(settings?.selectedQuantile ?? 2),
-    seed: String(settings?.seed ?? 314159),
-    permutationCount: String(settings?.permutationCount ?? 199),
-    significanceLevel: String(settings?.significanceLevel ?? 0.05)
-  };
+export function getQuantileLisaSheetSettings(
+  values: PointSheetValues,
+  rowCount: number
+): QuantileLisaSettings {
+  return normalizeQuantileLisaSettings(
+    {
+      ...getPointSheetTopology(values, rowCount),
+      quantileCount: Number(values['quantileCount']),
+      selectedQuantile: Number(values['selectedQuantile']),
+      seed: Number(values['seed']),
+      permutationCount: Number(values['permutationCount']),
+      significanceLevel: Number(values['significanceLevel'])
+    },
+    rowCount
+  );
 }
 
 export function QuantileLisaPanel({
   columns,
   rowCount,
   settings,
+  coordinateInitialization,
+  coordinateResetKey,
+  coordinateSource,
   onApply
 }: {
+  coordinateInitialization?: PointCoordinateDraft;
+  coordinateResetKey?: unknown;
+  coordinateSource?: string;
   columns: readonly string[];
   rowCount: number;
   settings?: QuantileLisaSettings;
   onApply(settings: QuantileLisaSettings): void;
 }) {
-  const [draft, setDraft] = useState(() => makeDraft(settings));
-  const coordinates = usePointCoordinates(settings);
-  const topology = usePointTopology(settings, rowCount);
-  const [error, setError] = useState('');
-  useEffect(() => {
-    setDraft(makeDraft(settings));
-    setError('');
-  }, [
-    settings?.quantileCount,
-    settings?.selectedQuantile,
-    settings?.seed,
-    settings?.permutationCount,
-    settings?.significanceLevel
-  ]);
+  const sheet = usePointAnalysisSheet(
+    makePointSheetDefaults(settings, coordinateInitialization, rowCount, {
+      quantileCount: settings?.quantileCount ?? 2,
+      selectedQuantile: settings?.selectedQuantile ?? 2,
+      seed: settings?.seed ?? 314159,
+      permutationCount: settings?.permutationCount ?? 199,
+      significanceLevel: settings?.significanceLevel ?? 0.05
+    }),
+    settings,
+    coordinateResetKey,
+    coordinateSource
+  );
+  const fields = createPointSheetFields(
+    sheet.values,
+    columns,
+    'analysis-quantile-lisa',
+    'Quantile LISA',
+    sheet.source,
+    [
+      {
+        name: 'quantileCount',
+        label: 'Quantile LISA quantile count',
+        controlId: 'analysis-quantile-lisa-quantileCount',
+        kind: 'integer',
+        minimum: 2,
+        maximum: rowCount - 1
+      },
+      {
+        name: 'selectedQuantile',
+        label: 'Quantile LISA selected quantile',
+        controlId: 'analysis-quantile-lisa-selectedQuantile',
+        kind: 'integer',
+        minimum: 1,
+        maximum: Number(sheet.values['quantileCount'])
+      },
+      {
+        name: 'seed',
+        label: 'Quantile LISA seed',
+        controlId: 'analysis-quantile-lisa-seed',
+        kind: 'integer',
+        minimum: 0,
+        maximum: Number.MAX_SAFE_INTEGER,
+        level: 'advanced'
+      },
+      {
+        name: 'permutationCount',
+        label: 'Quantile LISA permutations',
+        controlId: 'analysis-quantile-lisa-permutationCount',
+        kind: 'integer',
+        minimum: 1,
+        maximum: MAXIMUM_KEPLER_QUANTILE_LISA_PERMUTATIONS,
+        level: 'advanced'
+      },
+      {
+        name: 'significanceLevel',
+        label: 'Quantile LISA significance level',
+        controlId: 'analysis-quantile-lisa-significanceLevel',
+        kind: 'number',
+        minimum: 0,
+        maximum: 1,
+        level: 'advanced'
+      }
+    ],
+    {
+      longitudeId: 'analysis-quantile-lisa-longitudeColumn',
+      latitudeId: 'analysis-quantile-lisa-latitudeColumn',
+      nearestId: 'analysis-quantile-lisa-k',
+      permutations: true
+    }
+  );
   return (
     <details className="analysis-quantile-lisa-settings">
       <summary>
         Configure Quantile LISA on{' '}
-        {coordinates.draft.coordinateSpace === 'planar' ? 'projected' : 'geographic'} points
+        {sheet.values['coordinateSpace'] === 'planar' ? 'projected' : 'geographic'} points
       </summary>
+      <ResidentAnalysisSheetForm
+        key={JSON.stringify([coordinateResetKey, settings])}
+        fields={fields}
+        checks={getPointSheetChecks(fields, () =>
+          getQuantileLisaSheetSettings(sheet.values, rowCount)
+        )}
+        method="Resident Quantile LISA counts binary-weight neighbors in a selected quantile. It retains the legacy directed pseudo p-value rule without multiple-testing correction; results are exploratory."
+        submitLabel="Apply neighbors and run Quantile LISA"
+        onChange={(name, value) => sheet.change(name, value)}
+        onApply={current =>
+          onApply(getQuantileLisaSheetSettings({...sheet.values, ...current}, rowCount))
+        }
+      />
       <p className="hint">
-        Choose one quantile of the numeric field and count neighboring points in that same quantile.
-        Choose geographic or projected meter coordinates; spatial weights are binary.
+        Type-5 quantiles include the lower boundary and exclude the upper boundary. Ties stay
+        together and can leave quantiles empty. Missing numeric values and invalid coordinates are
+        omitted before quantiling. Selection recomputes boundaries and removes neighbors from the
+        fixed source graph without replacements.
       </p>
-      <form
-        onSubmit={event => {
-          event.preventDefault();
-          try {
-            const coordinateSettings = coordinates.getSettings();
-            validatePointCoordinateColumns(coordinateSettings, columns);
-            onApply(
-              normalizeQuantileLisaSettings(
-                {
-                  ...coordinateSettings,
-                  ...topology.getSettings(),
-                  quantileCount: Number(draft.quantileCount),
-                  selectedQuantile: Number(draft.selectedQuantile),
-                  seed: Number(draft.seed),
-                  permutationCount: Number(draft.permutationCount),
-                  significanceLevel: Number(draft.significanceLevel)
-                },
-                rowCount
-              )
-            );
-            setError('');
-          } catch (failure) {
-            setError(failure instanceof Error ? failure.message : String(failure));
-          }
-        }}
-      >
-        <PointCoordinateControls
-          value={coordinates.draft}
-          onChange={coordinates.setDraft}
-          columns={columns}
-          idPrefix="analysis-quantile-lisa"
-          labelPrefix="Quantile LISA"
-          longitudeId="analysis-quantile-lisa-longitudeColumn"
-          latitudeId="analysis-quantile-lisa-latitudeColumn"
-        />
-        <PointTopologyControls
-          topology={topology}
-          coordinateSpace={coordinates.draft.coordinateSpace}
-          idPrefix="analysis-quantile-lisa"
-          labelPrefix="Quantile LISA"
-          nearestLabel="Quantile LISA nearest neighbors"
-          nearestId="analysis-quantile-lisa-k"
-          permutationMaximumNeighbors={64}
-        />
-        {NUMERIC_FIELDS.map(field => (
-          <label key={field.key} htmlFor={`analysis-quantile-lisa-${field.key}`}>
-            {field.label}
-            <input
-              id={`analysis-quantile-lisa-${field.key}`}
-              type="number"
-              required
-              min={field.minimum}
-              max={
-                'maximum' in field
-                  ? field.maximum
-                  : field.key === 'quantileCount'
-                    ? rowCount - 1
-                    : Number(draft.quantileCount)
-              }
-              step={field.step}
-              value={draft[field.key]}
-              onChange={event => setDraft({...draft, [field.key]: event.target.value})}
-            />
-          </label>
-        ))}
-        <p className="hint">
-          Type-5 quantiles include the lower boundary and exclude the upper boundary. Ties stay
-          together and can leave quantiles empty. Missing numeric values and invalid coordinates are
-          omitted before quantiling. Selection recomputes boundaries and removes neighbors from the
-          fixed source graph without replacements.
-        </p>
-        <p className="hint">
-          This compatibility statistic uses legacy directed pseudo p-values: (min(upper-tail count,
-          permutations − upper-tail count) + 1) / (permutations + 1). It is anti-conservative, has
-          no two-sided error-control guarantee and applies no multiple-testing correction. Tied or
-          constant memberships can appear significant. Treat results as exploratory.
-        </p>
-        <p className="hint">
-          Only selected-quantile members with positive local joins are tested. Isolated points are
-          excluded from inference. Gray includes nonsignificant and untested rows; red denotes
-          significance under the legacy rule; orange denotes isolated points. The table retains
-          membership, join count, pseudo p-value and legacy tail count. A fixed seed is reproducible
-          for the same source and selection. More rows, neighbors and permutations increase
-          computation time.
-        </p>
-        <button type="submit" disabled={rowCount < 3}>
-          Apply neighbors and run Quantile LISA
-        </button>
-      </form>
-      {error && (
-        <ResidentConsumerNotice
-          consumer="analysis"
-          status="error"
-          className="error"
-          reason={error}
-        />
-      )}
+      <p className="hint">
+        This compatibility statistic uses legacy directed pseudo p-values: (min(upper-tail count,
+        permutations − upper-tail count) + 1) / (permutations + 1). It is anti-conservative, has no
+        two-sided error-control guarantee and applies no multiple-testing correction. Tied or
+        constant memberships can appear significant. Treat results as exploratory.
+      </p>
+      <p className="hint">
+        Only selected-quantile members with positive local joins are tested. Isolated points are
+        excluded from inference. Gray includes nonsignificant and untested rows; red denotes
+        significance under the legacy rule; orange denotes isolated points. The table retains
+        membership, join count, pseudo p-value and legacy tail count. A fixed seed is reproducible
+        for the same source and selection. More rows, neighbors and permutations increase
+        computation time.
+      </p>
     </details>
   );
 }

@@ -10,6 +10,7 @@ import {
   exportWorkflowJSON,
   exportWorkflowTypeScript,
   importWorkflowJSON,
+  importWorkflowAnalysisTemplateJSON,
   instantiateWorkflowTemplate,
   listWorkflowTemplates,
   makeWorkflowFromCatalogHistory,
@@ -46,6 +47,8 @@ import {
   WorkbenchTabs
 } from './workbench-styles';
 import {useWorkbenchState} from './use-workbench';
+import {WorkbenchSaveTemplate, WorkbenchSavedTemplate} from './workbench-save-template';
+import {WorkbenchAnalysisGallery} from './workbench-analysis-gallery';
 
 const Scrim = styled.div`
   position: fixed;
@@ -213,6 +216,7 @@ function Modal({
 function Templates({store}: {store: WorkbenchStore}): React.JSX.Element {
   const state = useWorkbenchState(store);
   const [error, setError] = useState('');
+  const [savingTemplate, setSavingTemplate] = useState(false);
   const [deleteTemplateId, setDeleteTemplateId] = useState<string | null>(null);
   const userTemplates = useMemo(
     () =>
@@ -247,26 +251,31 @@ function Templates({store}: {store: WorkbenchStore}): React.JSX.Element {
   };
   return (
     <div data-testid={WORKBENCH_TEST_IDS.templates}>
+      <WorkbenchAnalysisGallery store={store} />
       {error && <p role="alert">{error}</p>}
       <WorkbenchSection>
         <h3>Your templates</h3>
         <WorkbenchButton
           data-testid={WORKBENCH_TEST_IDS.saveTemplate}
           disabled={!state.document?.steps.length}
-          onClick={() => {
-            try {
-              if (!store.saveTemplate())
-                setError(store.getState().notice?.message ?? 'The template could not be saved.');
-            } catch (failure) {
-              setError(readErrorMessage(failure));
-            }
-          }}
+          onClick={() => setSavingTemplate(true)}
         >
           Save current workflow as a template
         </WorkbenchButton>
+        {savingTemplate && state.document && (
+          <WorkbenchSaveTemplate
+            key={state.document.id}
+            document={state.document}
+            store={store}
+            onClose={() => setSavingTemplate(false)}
+          />
+        )}
+        {state.analysisTemplates?.map(template => (
+          <WorkbenchSavedTemplate key={template.id} template={template} store={store} />
+        ))}
         {!state.document?.steps.length && <p>Select a workflow with steps to save a template.</p>}
         <p>Adds these steps to the current workflow so you can connect them to your own.</p>
-        {!userTemplates.length && <p>No saved templates.</p>}
+        {!userTemplates.length && !state.analysisTemplates?.length && <p>No saved templates.</p>}
         <Cards>
           {userTemplates.map(({document, outline}) => (
             <Card key={document.id}>
@@ -713,7 +722,22 @@ export function WorkbenchTransfer({
                 disabled={!text.trim()}
                 onClick={() => {
                   try {
-                    if (store.addWorkflow(importWorkflowJSON(text))) store.setDialog(null);
+                    if (text.length > WORKFLOW_JSON_LIMITS.maximumFormattedCharacters)
+                      importWorkflowJSON(text);
+                    let decoded: unknown;
+                    try {
+                      decoded = JSON.parse(text);
+                    } catch {
+                      importWorkflowJSON(text);
+                    }
+                    if (decoded && typeof decoded === 'object' && 'document' in decoded) {
+                      const template = importWorkflowAnalysisTemplateJSON(text);
+                      if (!store.saveAnalysisTemplate?.(template))
+                        throw new Error(
+                          store.getState().notice?.message ?? 'The template could not be imported.'
+                        );
+                      store.setDialog('templates');
+                    } else if (store.addWorkflow(importWorkflowJSON(text))) store.setDialog(null);
                     else
                       setError(
                         store.getState().notice?.message ?? 'The workflow could not be added.'
