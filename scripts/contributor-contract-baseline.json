@@ -33,11 +33,6 @@
     "modules/analysis/src/raster-analysis/raster-medial-axis.ts": 1,
     "modules/analysis/src/raster-analysis/raster-watershed-forest.ts": 1
   },
-  "shader-analysis-limit": {
-    "modules/analysis/src/gpu-spatial-analysis/spatial-interpolation/gpu-local-kriging.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/spatial-interpolation/gpu-local-rbf.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/spatial-join/gpu-spatial-predicate-join.ts": 1
-  },
   "single-invocation-data-loop": {
     "modules/analysis/src/dataframe-analysis/column-classification/exact-natural-breaks-nodes.ts": 1,
     "modules/analysis/src/dataframe-analysis/column-classification/gpu-class-breaks.ts": 3,
@@ -55,17 +50,13 @@
     "modules/analysis/src/dataframe-analysis/time-window-filter/time-window-sorted-nodes.ts": 1,
     "modules/analysis/src/gpu-network/edge-bundling/edge-bundling-passes.ts": 1,
     "modules/analysis/src/gpu-network/gpu-network-inhomogeneous-k.ts": 1,
-    "modules/analysis/src/gpu-network/network-accessibility/gpu-network-cost-matrix.ts": 1,
     "modules/analysis/src/gpu-network/network-centrality/network-centrality-passes.ts": 1,
-    "modules/analysis/src/gpu-network/network-k-function/gpu-network-k-function.ts": 1,
     "modules/analysis/src/gpu-network/network-optimization/gpu-network-facility-optimization.ts": 2,
     "modules/analysis/src/gpu-network/network-optimization/gpu-network-flow.ts": 1,
     "modules/analysis/src/gpu-network/network-optimization/gpu-network-louvain.ts": 1,
     "modules/analysis/src/gpu-network/network-optimization/gpu-network-rational-access.ts": 1,
     "modules/analysis/src/gpu-network/network-optimization/gpu-network-time-routing.ts": 1,
     "modules/analysis/src/gpu-network/network-structure/gpu-network-structure.ts": 1,
-    "modules/analysis/src/gpu-network/recipes/network-scenarios-recipe.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/areal-interpolation/zone-anchor-nodes.ts": 1,
     "modules/analysis/src/gpu-spatial-analysis/cell-topology/gpu-s2-polygon-covering.ts": 2,
     "modules/analysis/src/gpu-spatial-analysis/delaunay-tessellation/gpu-delaunay-tessellation.ts": 3,
     "modules/analysis/src/gpu-spatial-analysis/distribution-dynamics/gpu-classification-fit.ts": 1,
@@ -80,14 +71,12 @@
     "modules/analysis/src/gpu-spatial-analysis/line-split/gpu-line-split.ts": 1,
     "modules/analysis/src/gpu-spatial-analysis/location-allocation/gpu-bounded-facility-allocation.ts": 1,
     "modules/analysis/src/gpu-spatial-analysis/location-allocation/gpu-location-allocation.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/lon-lat-polygons/lon-lat-polygon-preparation-kernels.ts": 1,
     "modules/analysis/src/gpu-spatial-analysis/multiple-testing/gpu-multiple-testing-adjustment.ts": 1,
     "modules/analysis/src/gpu-spatial-analysis/neighbor-search/neighbor-search-derived-parameters.ts": 1,
     "modules/analysis/src/gpu-spatial-analysis/permutation-inference/gpu-global-permutation-test.ts": 2,
     "modules/analysis/src/gpu-spatial-analysis/point-process/gpu-point-pattern-envelope.ts": 1,
     "modules/analysis/src/gpu-spatial-analysis/point-process/gpu-point-pattern-rank-envelope.ts": 1,
     "modules/analysis/src/gpu-spatial-analysis/point-process/gpu-spatial-balanced-sample.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/recipes/interpolation-diagnostics-recipe.ts": 1,
     "modules/analysis/src/gpu-spatial-analysis/rectangle-clip/rectangle-clip-kernels.ts": 1,
     "modules/analysis/src/gpu-spatial-analysis/region-statistics/region-statistics-grid.ts": 2,
     "modules/analysis/src/gpu-spatial-analysis/scan-statistics/gpu-spatial-scan-statistic.ts": 4,
@@ -98,7 +87,6 @@
     "modules/analysis/src/gpu-spatial-analysis/spatial-clustering/gpu-optics-xi.ts": 1,
     "modules/analysis/src/gpu-spatial-analysis/spatial-entropy/gpu-spatial-entropy.ts": 1,
     "modules/analysis/src/gpu-spatial-analysis/spatial-interaction/gpu-spatial-interaction.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/spatial-interpolation/conditional-simulation-blocked.ts": 1,
     "modules/analysis/src/gpu-spatial-analysis/spatial-regionalization/gpu-max-p-regions.ts": 3,
     "modules/analysis/src/gpu-spatial-analysis/spatial-regionalization/gpu-region-partition-evaluation.ts": 1,
     "modules/analysis/src/gpu-spatial-analysis/spatial-regionalization/gpu-skater-regions.ts": 1,
@@ -120,28 +108,22 @@
     "modules/analysis/src/gpu-spatial-analysis/spatial-regression/multiscale-inference.ts": 1,
     "modules/analysis/src/gpu-spatial-analysis/spatial-regression/panel-diagnostics.ts": 1,
     "modules/analysis/src/gpu-spatial-analysis/spatial-validation/gpu-area-of-applicability.ts": 2,
-    "modules/analysis/src/gpu-spatial-analysis/spatial-validation/gpu-nested-interpolation-validation.ts": 3,
     "modules/analysis/src/gpu-spatial-analysis/spatial-validation/spatial-validation-design.ts": 1,
     "modules/analysis/src/gpu-spatial-analysis/study-window/gpu-study-window-preparation.ts": 2,
-    "modules/analysis/src/gpu-spatial-analysis/trajectory-cleaning/gpu-trajectory-split.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/trajectory-cleaning/gpu-trajectory-thinning.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/trajectory-home-range/gpu-utilization-volume-isopleths.ts": 1,
     "modules/analysis/src/gpu-spatial-analysis/trajectory-restriction/trajectory-restriction-kernels.ts": 1,
     "modules/analysis/src/gpu-spatial-analysis/trajectory-staypoints/gpu-trajectory-locations.ts": 2,
     "modules/analysis/src/gpu-spatial-analysis/trajectory-staypoints/gpu-trajectory-segments.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/trajectory-staypoints/movement-common.ts": 1,
-    "modules/analysis/src/gpu-terrain/terrain-analysis/gpu-terrain-cumulative-viewshed.ts": 1,
-    "modules/analysis/src/gpu-terrain/terrain-illumination/gpu-terrain-horizon.ts": 1,
     "modules/analysis/src/gpu-terrain/terrain-illumination/gpu-texture-shading.ts": 1,
-    "modules/analysis/src/gpu-terrain/terrain-illumination/terrain-horizon-sweep.ts": 1,
-    "modules/analysis/src/gpu-terrain/terrain-processing/gpu-terrain-depression-hierarchy.ts": 1,
     "modules/analysis/src/raster-analysis/cost-distance/gpu-cost-distance-path.ts": 1,
     "modules/analysis/src/raster-analysis/cost-distance/raster-relaxation.ts": 1,
     "modules/analysis/src/raster-analysis/distance-field/distance-field-kernels.ts": 1,
     "modules/analysis/src/raster-analysis/gpu-raster-watershed-segmentation.ts": 1,
-    "modules/analysis/src/raster-analysis/raster-stretch/gpu-raster-stretch.ts": 1,
-    "modules/analysis/src/raster-analysis/remote-sensing/gpu-raster-region-graph.ts": 2,
-    "modules/analysis/src/raster-analysis/remote-sensing/raster-masked-registration.ts": 2
+    "modules/analysis/src/raster-analysis/raster-stretch/gpu-raster-stretch.ts": 1
+  },
+  "storage-binding-preflight": {
+    "modules/analysis/src/gpu-network/network-isochrones/gpu-network-isochrones.ts": [
+      "GPUNetworkIsochrones"
+    ]
   },
   "_reasons": {
     "single-invocation-data-loop": {
@@ -155,14 +137,11 @@
       "modules/analysis/src/dataframe-analysis/pair-statistics/gpu-variogram.ts": "Existing overflow loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
       "modules/analysis/src/dataframe-analysis/temporal-reduction/temporal-reduction-sorted-range.ts": "Existing unnamed kernel loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
       "modules/analysis/src/gpu-network/edge-bundling/edge-bundling-passes.ts": "Existing gate loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-network/network-accessibility/gpu-network-cost-matrix.ts": "Existing converged loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
       "modules/analysis/src/gpu-network/network-centrality/network-centrality-passes.ts": "Existing converged loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-network/network-k-function/gpu-network-k-function.ts": "Existing converged loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
       "modules/analysis/src/gpu-network/network-optimization/gpu-network-flow.ts": "Existing unnamed kernel loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
       "modules/analysis/src/gpu-network/network-optimization/gpu-network-louvain.ts": "Existing bounded-coarsened-local-moves loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
       "modules/analysis/src/gpu-network/network-optimization/gpu-network-rational-access.ts": "Existing integral-fractional-step loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
       "modules/analysis/src/gpu-network/network-optimization/gpu-network-time-routing.ts": "Existing unnamed kernel loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-spatial-analysis/areal-interpolation/zone-anchor-nodes.ts": "Existing anchor-claim loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
       "modules/analysis/src/gpu-spatial-analysis/delaunay-tessellation/gpu-delaunay-tessellation.ts": "Existing initialize-status, serial-insertion-continuation, serial-flip-continuation loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
       "modules/analysis/src/gpu-spatial-analysis/distribution-dynamics/gpu-classification-fit.ts": "Existing summary loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
       "modules/analysis/src/gpu-spatial-analysis/geographical-detector/gpu-geographical-detector.ts": "Existing summary loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
@@ -197,17 +176,10 @@
       "modules/analysis/src/gpu-spatial-analysis/spatial-regression/gwr-grid-index.ts": "Existing grid-bounds loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
       "modules/analysis/src/gpu-spatial-analysis/spatial-regression/multiscale-inference.ts": "Existing full-inference-summary loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
       "modules/analysis/src/gpu-spatial-analysis/spatial-validation/gpu-area-of-applicability.ts": "Existing mean-distance, threshold loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-spatial-analysis/trajectory-cleaning/gpu-trajectory-split.ts": "Existing unnamed kernel loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-spatial-analysis/trajectory-cleaning/gpu-trajectory-thinning.ts": "Existing unnamed kernel loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-spatial-analysis/trajectory-home-range/gpu-utilization-volume-isopleths.ts": "Existing level-2 loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
       "modules/analysis/src/gpu-spatial-analysis/trajectory-restriction/trajectory-restriction-kernels.ts": "Existing unnamed kernel loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
       "modules/analysis/src/gpu-spatial-analysis/trajectory-staypoints/gpu-trajectory-locations.ts": "Existing unnamed kernel loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
       "modules/analysis/src/gpu-spatial-analysis/trajectory-staypoints/gpu-trajectory-segments.ts": "Existing unnamed kernel loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-spatial-analysis/trajectory-staypoints/movement-common.ts": "Existing track-offsets loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-terrain/terrain-analysis/gpu-terrain-cumulative-viewshed.ts": "Existing batch-table loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-terrain/terrain-illumination/gpu-terrain-horizon.ts": "Existing sector-ranges loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
       "modules/analysis/src/gpu-terrain/terrain-illumination/gpu-texture-shading.ts": "Existing anchor loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-terrain/terrain-illumination/terrain-horizon-sweep.ts": "Existing sweep-sector-table loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
       "modules/analysis/src/raster-analysis/cost-distance/gpu-cost-distance-path.ts": "Existing walk loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
       "modules/analysis/src/raster-analysis/cost-distance/raster-relaxation.ts": "Existing iteration-group-gate loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
       "modules/analysis/src/raster-analysis/distance-field/distance-field-kernels.ts": "Existing jump-flood-steps loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
@@ -217,10 +189,8 @@
       "modules/analysis/src/gpu-spatial-analysis/multiple-testing/gpu-multiple-testing-adjustment.ts": "Review follow-up: conditional expressions/guarded writes expose 1 additional existing loop invocation(s); retained pending data-range/bounded-work review.",
       "modules/analysis/src/gpu-spatial-analysis/neighbor-search/neighbor-search-derived-parameters.ts": "Review follow-up: conditional expressions/guarded writes expose 1 additional existing loop invocation(s); retained pending data-range/bounded-work review."
     },
-    "shader-analysis-limit": {
-      "modules/analysis/src/gpu-spatial-analysis/spatial-interpolation/gpu-local-kriging.ts": "Existing shader builder exceeds the named 256-variant static-analysis budget. Reported as partial analysis, not as a duplicate-declaration defect; retained pending a separate builder/analysis simplification. Contributor sources unchanged.",
-      "modules/analysis/src/gpu-spatial-analysis/spatial-interpolation/gpu-local-rbf.ts": "Existing shader builder exceeds the named 256-variant static-analysis budget. Reported as partial analysis, not as a duplicate-declaration defect; retained pending a separate builder/analysis simplification. Contributor sources unchanged.",
-      "modules/analysis/src/gpu-spatial-analysis/spatial-join/gpu-spatial-predicate-join.ts": "Existing shader builder exceeds the named 256-variant static-analysis budget. Reported as partial analysis, not as a duplicate-declaration defect; retained pending a separate builder/analysis simplification. Contributor sources unchanged."
+    "storage-binding-preflight": {
+      "modules/analysis/src/gpu-network/network-isochrones/gpu-network-isochrones.ts": "IMP landing: accepted AX-owned storage-binding-preflight finding; no AX source change in this integration."
     }
   }
 }

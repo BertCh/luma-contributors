@@ -7,6 +7,7 @@
 //   node scripts/check-contributor-contract.mjs                  new findings only; exit 1 if any
 //   node scripts/check-contributor-contract.mjs --all            every finding
 //   node scripts/check-contributor-contract.mjs --rule <id>      one rule only
+//   node scripts/check-contributor-contract.mjs --all --paths <file-or-directory> [...]
 //   node scripts/check-contributor-contract.mjs --update-baseline
 //
 // The baseline (scripts/contributor-contract-baseline.json) records existing findings by rule and
@@ -48,7 +49,8 @@ const RULE_IDENTIFIERS = [
   'luma-reexport',
   'multiple-classes',
   'root-file',
-  'unregistered-contributor'
+  'unregistered-contributor',
+  'storage-binding-preflight'
 ];
 
 // These rules reached zero. Updating or hand-editing a baseline must never excuse a regression.
@@ -769,6 +771,256 @@ const getDuplicateWGSLNames = text => {
   return duplicates;
 };
 
+// 11. storage-binding-preflight: a conservative, syntax-only declaration-order audit.
+// Follow local/imported helpers and this-methods, but never execute deferred callbacks. A check
+// must dominate declarations on every syntactic path. This checks presence/order, not whether
+// every scratch formula or aligned view range was covered; reviewers still verify those sizes.
+const STORAGE_PREFLIGHT_HELPERS = new Set([
+  'validateGPUStorageBindingByteLength',
+  'validateGraphChunkBindingRanges',
+  'validateGraphChunkDispatchBindings'
+]);
+const STORAGE_DECLARATION_HELPERS = new Set([
+  'createTransientView',
+  'createTransientVectorView',
+  'createWGSLKernelNode',
+  'createGraphChunkGroupKernelNode',
+  'createGPUComputeCommandNode',
+  'createGPUCopyCommandNode'
+]);
+const getReferenceName = expression => {
+  const declaration = resolveDeclaration(expression);
+  return typeScript.isImportSpecifier(declaration ?? expression)
+    ? (declaration.propertyName ?? declaration.name).text
+    : declaration?.name?.text ?? expression.name?.text ?? expression.text;
+};
+// Named-capacity wrappers are preflights too when their accepted maximum derives from the
+// device storage binding. Follow local/imported returns and const aliases, without typechecking.
+const referencesStorageBindingLimit = (node, visiting = new Set()) => {
+  if (!node || visiting.has(node)) return false;
+  const nextVisiting = new Set(visiting).add(node);
+  if (typeScript.isPropertyAccessExpression(node) && node.name.text === 'maxStorageBufferBindingSize') return true;
+  if (typeScript.isCallExpression(node) &&
+    ['getStorageBindingElementLimit', 'getAnalysisMaximumRowCount'].includes(getReferenceName(node.expression))) return true;
+  const resolved = resolveDeclaration(node);
+  if (resolved && resolved !== node && referencesStorageBindingLimit(resolved, nextVisiting)) return true;
+  if (typeScript.isCallExpression(node)) {
+    const helper = resolveDeclaration(node.expression);
+    if (helper?.body && referencesStorageBindingLimit(helper.body, nextVisiting)) return true;
+  }
+  let found = false;
+  typeScript.forEachChild(node, child => {
+    found ||= referencesStorageBindingLimit(child, nextVisiting);
+  });
+  return found;
+};
+const isStorageCapacityCheck = call => {
+  const name = getReferenceName(call.expression);
+  const limit = name === 'validateCapacity' ? call.arguments[4]
+    : name === 'validateMaximumCount' ? call.arguments[3]
+      : name === 'validateRequirement' ? call.arguments[1] : null;
+  return referencesStorageBindingLimit(limit);
+};
+
+// A loop that checks the aligned range of every present view is a collection preflight even
+// for an empty collection. Optional-view guards are allowed; unrelated conditional checks and
+// any declarations inside the loop are not accepted as a summary.
+const isCollectionBindingPreflight = loop => {
+  if (!typeScript.isForOfStatement(loop)) return false;
+  const names = new Set();
+  visitNodes(loop.initializer, node => {
+    if (typeScript.isIdentifier(node)) names.add(node.text);
+  });
+  let foundRangeCheck = false;
+  let safe = true;
+  const inspect = node => {
+    if (typeScript.isFunctionLike(node)) return;
+    if (typeScript.isIfStatement(node)) {
+      let condition = node.expression;
+      while (isExpressionWrapper(condition)) condition = condition.expression;
+      if (typeScript.isPrefixUnaryExpression(condition) && condition.operator === typeScript.SyntaxKind.ExclamationToken) {
+        condition = condition.operand;
+      }
+      if (!typeScript.isIdentifier(condition) || !names.has(condition.text)) safe = false;
+    }
+    if (typeScript.isCallExpression(node)) {
+      const name = getReferenceName(node.expression);
+      if (STORAGE_DECLARATION_HELPERS.has(name) || /^(createTransientBuffer|createBuffer|createDataView|add)$/.test(name)) safe = false;
+      if (name === 'validateGPUStorageBindingByteLength') {
+        visitNodes(node.arguments[3], value => {
+          if (typeScript.isCallExpression(value) && getReferenceName(value.expression) === 'getViewBindingRange') foundRangeCheck = true;
+        });
+      }
+    }
+    typeScript.forEachChild(node, child => { inspect(child); });
+  };
+  inspect(loop.statement);
+  return safe && foundRangeCheck;
+};
+
+const getStoragePreflightFinding = declaration => {
+  const members = getClassMembers(declaration);
+  const entry = members.find(member => member.name?.getText().replace(/['"]/g, '') === 'getCommandNodes');
+  const entryBody = entry?.body ?? entry?.initializer?.body;
+  if (!entryBody) return null;
+  let hasRowStorage = false;
+  let firstUncheckedDeclaration = null;
+  const visiting = new Set();
+  const parameterValues = new Map();
+  const isNonemptyIterable = (expression, seen = new Set()) => {
+    if (!expression || seen.has(expression)) return false;
+    const nextSeen = new Set(seen).add(expression);
+    if (typeScript.isArrayLiteralExpression(expression)) {
+      return expression.elements.some(element => !typeScript.isSpreadElement(element));
+    }
+    if (typeScript.isCallExpression(expression) && typeScript.isPropertyAccessExpression(expression.expression) &&
+      expression.expression.name.text === 'entries') {
+      return isNonemptyIterable(expression.expression.expression, nextSeen);
+    }
+    const resolved = resolveDeclaration(expression);
+    if (parameterValues.has(resolved)) return isNonemptyIterable(parameterValues.get(resolved), nextSeen);
+    if (resolved && resolved !== expression) return isNonemptyIterable(resolved, nextSeen);
+    return false;
+  };
+  // Metadata visitors often use Set.add. Only the contributor graph (including forwarded
+  // helper parameters and typed graph aliases) has a graph-mutating add method.
+  const isCommandGraphReceiver = (expression, seen = new Set()) => {
+    if (!expression || seen.has(expression)) return false;
+    const nextSeen = new Set(seen).add(expression);
+    const resolved = resolveDeclaration(expression);
+    if (resolved === entry.parameters?.[0]) return true;
+    if (resolved?.type && /\bGPUCommandGraph\b/.test(resolved.type.getText())) return true;
+    if (parameterValues.has(resolved)) return isCommandGraphReceiver(parameterValues.get(resolved), nextSeen);
+    if (resolved && typeScript.isNewExpression(resolved)) {
+      return getReferenceName(resolved.expression) === 'GPUCommandGraph';
+    }
+    return typeScript.isPropertyAccessExpression(expression) && expression.name.text === 'graph';
+  };
+  const analyze = (node, states) => {
+    if (!node || !states.size) return states;
+    if (typeScript.isFunctionLike(node)) return states;
+    if (typeScript.isReturnStatement(node)) {
+      analyze(node.expression, states);
+      return new Set();
+    }
+    if (typeScript.isThrowStatement(node)) return new Set();
+    if (typeScript.isIfStatement(node)) {
+      const conditions = analyze(node.expression, states);
+      return new Set([
+        ...analyzeBody(node.thenStatement, new Set(conditions)),
+        ...analyzeBody(node.elseStatement, new Set(conditions))
+      ]);
+    }
+    if (typeScript.isConditionalExpression(node)) {
+      const conditions = analyze(node.condition, states);
+      return new Set([
+        ...analyze(node.whenTrue, new Set(conditions)),
+        ...analyze(node.whenFalse, new Set(conditions))
+      ]);
+    }
+    if (typeScript.isBinaryExpression(node) && [
+      typeScript.SyntaxKind.AmpersandAmpersandToken,
+      typeScript.SyntaxKind.BarBarToken,
+      typeScript.SyntaxKind.QuestionQuestionToken
+    ].includes(node.operatorToken.kind)) {
+      const leftStates = analyze(node.left, states);
+      return new Set([...leftStates, ...analyze(node.right, new Set(leftStates))]);
+    }
+    if (typeScript.isSwitchStatement(node)) {
+      const conditions = analyze(node.expression, states);
+      return new Set([...conditions, ...node.caseBlock.clauses.flatMap(clause =>
+        [...analyzeBody(clause, new Set(conditions))])]);
+    }
+    if (typeScript.isTryStatement(node)) {
+      const outcomes = new Set([
+        ...analyzeBody(node.tryBlock, new Set(states)),
+        ...analyzeBody(node.catchClause?.block, new Set(states))
+      ]);
+      return analyzeBody(node.finallyBlock, outcomes);
+    }
+    if (typeScript.isIterationStatement(node, false)) {
+      // The loop may run zero times; checks inside it do not dominate subsequent declarations.
+      let iterationStates = new Set(states);
+      typeScript.forEachChild(node, child => {
+        iterationStates = analyzeBody(child, iterationStates);
+      });
+      // A literal nonempty list (also through a shared helper parameter) runs at least once.
+      // Unknown row/chunk/round loops retain the zero-iteration path.
+      return isCollectionBindingPreflight(node) ? new Set([true])
+        : typeScript.isForOfStatement(node) && isNonemptyIterable(node.expression)
+          ? iterationStates : states;
+    }
+    if (typeScript.isCallExpression(node)) {
+      let nextStates = states;
+      for (const argument of node.arguments) nextStates = analyze(argument, nextStates);
+      const name = getReferenceName(node.expression);
+      if (STORAGE_PREFLIGHT_HELPERS.has(name) || isStorageCapacityCheck(node)) return new Set([true]);
+      const isGraphDeclaration =
+        typeScript.isPropertyAccessExpression(node.expression) &&
+        (/^(createTransientBuffer|createBuffer|createDataView)$/.test(name) ||
+          (name === 'add' && isCommandGraphReceiver(node.expression.expression)));
+      if (STORAGE_DECLARATION_HELPERS.has(name) || isGraphDeclaration) {
+        if (nextStates.has(false)) firstUncheckedDeclaration ??= node;
+        if (name === 'createTransientView') {
+          hasRowStorage ||= getStaticNumber(node.arguments[3]) === undefined;
+        } else if (name === 'createTransientVectorView' || name === 'createTransientBuffer') {
+          hasRowStorage = true;
+        } else if (/KernelNode|ComputeCommandNode/.test(name)) {
+          const properties = resolveDeclaration(node.arguments[1] ?? node.arguments[0]);
+          const invocation = properties && typeScript.isObjectLiteralExpression(properties)
+            ? getPropertyValue(getProperty(properties, 'invocationCount'))
+            : null;
+          // A one-invocation reference kernel may still bind a row-sized input. Without a
+          // type checker, any caller-provided binding array is potentially row-proportional.
+          hasRowStorage ||= getStaticNumber(invocation) === undefined ||
+            Boolean(properties && typeScript.isObjectLiteralExpression(properties) &&
+              getProperty(properties, 'bindings'));
+        }
+        return nextStates;
+      }
+      let helper = resolveDeclaration(node.expression);
+      if (typeScript.isPropertyAccessExpression(node.expression) &&
+        node.expression.expression.kind === typeScript.SyntaxKind.ThisKeyword) {
+        helper = members.find(member => member.name?.getText() === node.expression.name.text);
+      }
+      const body = helper?.body ?? helper?.initializer?.body;
+      if (body && !visiting.has(body)) {
+        visiting.add(body);
+        const previousParameters = new Map(parameterValues);
+        for (const [index, parameter] of (helper.parameters ?? []).entries()) {
+          parameterValues.set(parameter, node.arguments[index]);
+        }
+        // Returns end the helper's path, not the caller's. Preserve incoming unchecked paths
+        // unless the helper demonstrably checks them before returning.
+        const returns = [];
+        const previousReturns = returnStates;
+        returnStates = returns;
+        const remaining = analyzeBody(body, nextStates);
+        returnStates = previousReturns;
+        visiting.delete(body);
+        parameterValues.clear();
+        for (const [parameter, value] of previousParameters) parameterValues.set(parameter, value);
+        return new Set([...remaining, ...returns]);
+      }
+      return nextStates;
+    }
+    let nextStates = states;
+    typeScript.forEachChild(node, child => { nextStates = analyzeBody(child, nextStates); });
+    return nextStates;
+  };
+  let returnStates = [];
+  const analyzeBody = (node, states) => {
+    if (node && typeScript.isReturnStatement(node)) {
+      const nextStates = analyze(node.expression, states);
+      returnStates.push(...nextStates);
+      return new Set();
+    }
+    return analyze(node, states);
+  };
+  analyzeBody(entryBody, new Set([false]));
+  return hasRowStorage ? firstUncheckedDeclaration : null;
+};
+
 for (const file of checkedFiles) {
   const text = fileTexts.get(file);
   const lines = text.split('\n');
@@ -806,6 +1058,16 @@ for (const file of checkedFiles) {
   for (const declaration of contributorClasses) {
     if (!isProducerClass(declaration)) {
       addFinding('missing-producer-declaration', file, {
+        symbol: declaration.name.text,
+        lines: [getLineNumber(text, declaration.getStart())]
+      });
+    }
+  }
+
+  for (const declaration of contributorClasses) {
+    const unchecked = getStoragePreflightFinding(declaration);
+    if (unchecked) {
+      addFinding('storage-binding-preflight', file, {
         symbol: declaration.name.text,
         lines: [getLineNumber(text, declaration.getStart())]
       });
@@ -988,6 +1250,25 @@ const isNewFinding = (finding, baseline) => {
 const arguments_ = process.argv.slice(2);
 const ruleIndex = arguments_.indexOf('--rule');
 const selectedRule = ruleIndex >= 0 ? arguments_[ruleIndex + 1] : null;
+const selectedPaths = [];
+for (let index = 0; index < arguments_.length; index++) {
+  if (arguments_[index] !== '--paths') continue;
+  const firstPathIndex = index + 1;
+  while (arguments_[index + 1] && !arguments_[index + 1].startsWith('--')) {
+    selectedPaths.push(path.relative(process.cwd(), path.resolve(arguments_[++index])));
+  }
+  if (index < firstPathIndex) {
+    process.stderr.write('--paths requires at least one file or directory\n');
+    process.exit(2);
+  }
+}
+if (selectedPaths.length && arguments_.includes('--update-baseline')) {
+  process.stderr.write('--paths cannot be combined with --update-baseline; update the complete baseline explicitly\n');
+  process.exit(2);
+}
+const matchesSelectedPath = file => !selectedPaths.length || selectedPaths.some(selected =>
+  selected === '' || file === selected || file.startsWith(`${selected}${path.sep}`));
+
 if (selectedRule && !RULE_IDENTIFIERS.includes(selectedRule)) {
   process.stderr.write(`Unknown rule '${selectedRule}'. Rules: ${RULE_IDENTIFIERS.join(', ')}\n`);
   process.exit(2);
@@ -1009,7 +1290,7 @@ if (arguments_.includes('--update-baseline')) {
 
 const baseline = loadBaseline();
 const shownFindings = findings
-  .filter(finding => !selectedRule || finding.rule === selectedRule)
+  .filter(finding => (!selectedRule || finding.rule === selectedRule) && matchesSelectedPath(finding.file))
   .sort(compareFindings);
 const newFindings = shownFindings.filter(finding => isNewFinding(finding, baseline));
 const printedFindings = arguments_.includes('--all') ? shownFindings : newFindings;

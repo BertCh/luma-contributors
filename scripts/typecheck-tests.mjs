@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-// Typechecks tests in two tsc runs (see vitest.config.ts for the run exclusions):
-// 1. everything except the specs that import examples/deck/kepler-compute;
+// Typechecks tests in three tsc runs (see vitest.config.ts for the run exclusions):
+// 1. everything except the specs that import examples/deck/kepler-compute or website sources;
 // 2. those example-backed specs, with the example's tsconfig settings (jsx react-jsx, vite/client
 //    types) and a larger heap, because one program over the specs and the example sources runs
-//    out of memory at 8 GB under the root settings.
+//    out of memory at 8 GB under the root settings;
+// 3. website-backed specs (they import website/src), with the website's settings and its
+//    virtual-module declarations, because website sources are not written for the root settings.
 import {spawnSync} from 'node:child_process';
 import {existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync} from 'node:fs';
 import {dirname, join, relative} from 'node:path';
@@ -69,6 +71,23 @@ function listExampleBackedTestFiles() {
 
 const exampleBackedFiles = listExampleBackedTestFiles();
 
+function listWebsiteBackedTestFiles() {
+  const files = [];
+  for (const moduleName of readdirSync(join(rootDirectory, 'modules'))) {
+    const directory = join(rootDirectory, 'modules', moduleName, 'test');
+    if (!existsSync(directory)) continue;
+    for (const file of listTestFiles(directory)) {
+      const path = relative(rootDirectory, file);
+      if (!exampleBackedFiles.includes(path) && readFileSync(file, 'utf8').includes('website/src/')) {
+        files.push(path);
+      }
+    }
+  }
+  return files.sort();
+}
+
+const websiteBackedFiles = listWebsiteBackedTestFiles();
+
 const mainTsconfig = {
   extends: '../tsconfig.json',
   include: ['../modules/*/src', '../modules/*/test', '../test/**/*'],
@@ -76,6 +95,7 @@ const mainTsconfig = {
     '../modules/**/dist',
     '../node_modules',
     ...exampleBackedFiles.map((filePath) => `../${filePath}`),
+    ...websiteBackedFiles.map((filePath) => `../${filePath}`),
     '../examples/deck/kepler-compute/**'
   ]
 };
@@ -98,7 +118,25 @@ const exampleSpecsTsconfig = {
   exclude: ['../node_modules', '../modules/**/dist']
 };
 
+// The root settings supply the source path mapping; the website settings follow (bundler
+// resolution, verbatim module syntax); two root strictness flags the website does not use are off.
+const websiteSpecsTsconfig = {
+  extends: ['../tsconfig.json', '../website/tsconfig.json'],
+  compilerOptions: {
+    noEmit: true,
+    incremental: false,
+    noPropertyAccessFromIndexSignature: false,
+    noImplicitOverride: false
+  },
+  include: ['../website/src/env.d.ts', ...websiteBackedFiles.map((filePath) => `../${filePath}`)],
+  exclude: ['../node_modules', '../modules/**/dist']
+};
+
 mkdirSync(join(rootDirectory, '.typecheck'), {recursive: true});
+writeFileSync(
+  join(rootDirectory, '.typecheck/tsconfig.website-specs.json'),
+  `${JSON.stringify(websiteSpecsTsconfig, null, 2)}\n`
+);
 writeFileSync(
   join(rootDirectory, '.typecheck/tsconfig.tests.json'),
   `${JSON.stringify(mainTsconfig, null, 2)}\n`
@@ -113,7 +151,8 @@ const tscBinary = join(rootDirectory, 'node_modules/.bin/tsc');
 let exitCode = 0;
 for (const [label, configuration, heapMegabytes] of [
   ['tests', '.typecheck/tsconfig.tests.json', 16384],
-  ['example-backed specs', '.typecheck/tsconfig.example-specs.json', 16384]
+  ['example-backed specs', '.typecheck/tsconfig.example-specs.json', 16384],
+  ['website-backed specs', '.typecheck/tsconfig.website-specs.json', 8192]
 ]) {
   console.log(`typecheck-tests: ${label}`);
   const result = spawnSync(tscBinary, ['-p', configuration, '--noEmit'], {
