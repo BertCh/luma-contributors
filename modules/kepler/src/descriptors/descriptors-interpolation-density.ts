@@ -8,6 +8,14 @@ import type {
   KeplerOperationRequirement
 } from './operation-descriptor-types';
 
+// Apply policy: IDW search radius, power and minimum count, and kriging model, range and search
+// radius are packed runtime parameters in catalog-platform3-b-grids.ts. includeEmptyCells only
+// filters publication rows. They are live. Neighbour count also sizes maximumNeighborCount,
+// so it rebuilds. KDE's retained graph fixes indexGridSize across live bandwidth changes;
+// kernel, grid and coordinate settings
+// change shader constants, allocation or prepared inputs and also rebuild. Kriging sill and
+// nugget change the normalization of prepared sample values, so they rebuild.
+
 // Descriptors for the three `interpolation` and three `density` catalog bindings. All of their
 // grids are built in the local metre frame for EPSG:4326 data (`preparePointGrid` and
 // `prepareLineDensity` in `catalog-platform3-b-grids.ts`) and in coordinate units for planar
@@ -31,7 +39,17 @@ function describeConstant(
   level: 'basic' | 'advanced',
   activeWhen?: KeplerOperationParameterDescriptor['activeWhen']
 ): KeplerOperationParameterDescriptor {
-  return {name, defaultPolicy: {from: 'constant'}, level, ...(activeWhen ? {activeWhen} : {})};
+  return {
+    name,
+    apply: ['power', 'minimumNeighborCount', 'includeEmptyCells', 'model', 'searchRadius'].includes(
+      name
+    )
+      ? 'live'
+      : 'rebuild',
+    defaultPolicy: {from: 'constant'},
+    level,
+    ...(activeWhen ? {activeWhen} : {})
+  };
 }
 
 /** Cell size of a display grid over the extent of `input`, scaled to stay within the cell cap. */
@@ -42,6 +60,7 @@ function describeCellSize(
 ): KeplerOperationParameterDescriptor {
   return {
     name: 'cellSize',
+    apply: 'rebuild',
     defaultPolicy: {from: 'data', input, rule: 'extent-shorter-side-over-250', factor},
     level
   };
@@ -149,6 +168,7 @@ export const INTERPOLATION_DENSITY_OPERATION_DESCRIPTORS: readonly KeplerOperati
       // numeric radius). The rule ignores isolated samples, which then leave nodata cells.
       {
         name: 'searchRadius',
+        apply: 'live',
         defaultPolicy: {
           from: 'data',
           input: 'points',
@@ -196,6 +216,7 @@ export const INTERPOLATION_DENSITY_OPERATION_DESCRIPTORS: readonly KeplerOperati
       // stand-in; the binding's 1000 m is arbitrary for data of any other size.
       {
         name: 'range',
+        apply: 'live',
         defaultPolicy: {
           from: 'data',
           input: 'points',
@@ -210,6 +231,7 @@ export const INTERPOLATION_DENSITY_OPERATION_DESCRIPTORS: readonly KeplerOperati
       // Still a stand-in, not a fit.
       {
         name: 'sill',
+        apply: 'rebuild',
         defaultPolicy: {
           from: 'data',
           input: 'points',
@@ -278,6 +300,7 @@ export const INTERPOLATION_DENSITY_OPERATION_DESCRIPTORS: readonly KeplerOperati
       // A rate moved as extensive is summed: two halves with rates 10 and 20 gave 30.
       {
         name: 'variableType',
+        apply: 'rebuild',
         defaultPolicy: {
           from: 'field-measurement',
           input: 'sources',
@@ -357,6 +380,7 @@ export const INTERPOLATION_DENSITY_OPERATION_DESCRIPTORS: readonly KeplerOperati
       // also assumes one unimodal cloud and over-smooths clustered data.
       {
         name: 'bandwidth',
+        apply: 'live',
         defaultPolicy: {
           from: 'data',
           input: 'points',
@@ -439,6 +463,7 @@ export const INTERPOLATION_DENSITY_OPERATION_DESCRIPTORS: readonly KeplerOperati
       // a map of zeros and ones. The cell count is the point count over four, far below the cap.
       {
         name: 'cellSize',
+        apply: 'rebuild',
         defaultPolicy: {
           from: 'data',
           input: 'points',

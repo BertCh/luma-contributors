@@ -10,6 +10,7 @@ import {
   WorkbenchSidePanel,
   formatSidePanelDuration,
   getSidePanelDatasetSource,
+  getSidePanelRecommendations,
   getSidePanelDisplayLabel,
   getSidePanelInputProblem,
   getSidePanelRunLabel,
@@ -25,7 +26,6 @@ import {
 } from '../../../../../examples/deck/kepler-compute/src/workflow/workbench-store';
 import {updateWorkflowInput} from '../../../src/workflows/workflow-edit';
 import {getWorkflowSourceOperations} from '../../../src/workflows/workflow-source-operations';
-import {getWorkflowTableOperations} from '../../../src/workflows/workflow-table-operations';
 import {
   WorkflowError,
   WORKFLOW_LIMITS,
@@ -37,6 +37,12 @@ import {
   type WorkflowStepResult,
   type WorkflowStepStatus
 } from '../../../src/workflows/workflow-types';
+import {
+  getCatalogBinding,
+  getWorkflowOperationRegistry,
+  profileKeplerFeatureCollection,
+  suggestKeplerAnalyses
+} from '@luma-contributors/kepler';
 import {listWorkflowTemplates} from '../../../src/workflows/workflow-templates';
 import {
   makeFixtureDocument,
@@ -184,6 +190,8 @@ function makeStore(patch: Partial<WorkbenchState> = {}) {
       return null;
     },
     rejectDraft: () => recordCall('rejectDraft'),
+    getReviewedAssistantIssues: () => [],
+    recordAssistantReview: () => {},
     saveTemplate: () => '',
     deleteTemplate: () => {},
     useTemplate: templateId => {
@@ -287,6 +295,29 @@ const quickStartDataset: WorkflowDatasetProfile = {
   pointColumns: {longitude: 'longitude', latitude: 'latitude'}
 };
 
+function makeAnalysisRecommendationStore(
+  rowSemantics: 'events' | 'surface-samples' = 'events',
+  label = 'Observations'
+) {
+  const dataset = {...quickStartDataset, label, rowCount: 12};
+  const profile = profileKeplerFeatureCollection(
+    {
+      type: 'FeatureCollection',
+      features: Array.from({length: 12}, (_, index) => ({
+        type: 'Feature',
+        geometry: {type: 'Point', coordinates: [index % 4, Math.floor(index / 4)]},
+        properties: {rainfall: index + 1}
+      }))
+    },
+    {datasetId: dataset.id, label, coordinateSystem: 'planar', declarations: {rowSemantics}}
+  );
+  const host = makeFixtureHost([dataset]);
+  host.getAnalysisProfile = () => profile;
+  host.getDevice = () => ({}) as NonNullable<ReturnType<typeof host.getDevice>>;
+  const store = createWorkbenchStore({host, registry: getWorkflowOperationRegistry()});
+  return {store, dataset, profile};
+}
+
 function makeRecommendationHarness(store: WorkbenchStore, dataset: WorkflowDatasetProfile) {
   const element = findElement(renderPanelTree(store), child => child.props['dataset'] === dataset);
   const component = element.type as (props: {
@@ -347,53 +378,61 @@ function makeRecommendationHarness(store: WorkbenchStore, dataset: WorkflowDatas
 }
 
 describe('suggested analyses in the side panel', () => {
-  test('computes only on opening, limits suggestions to five and caches by profile identity', async () => {
-    const operationIds = [
-      'density-clustering',
-      'kernel-density-grid',
-      'recipe-hot-spot-lattice',
-      'voronoi-diagram',
-      'local-outlier-factor',
-      'k-means'
-    ];
-    const fixtureScale = makeFixtureRegistry().get('fixture-scale')!;
-    const operations = operationIds.map(operationId => ({
-      ...fixtureScale,
-      id: operationId,
-      inputs: fixtureScale.inputs.map(input => ({...input, maximumRows: 5000}))
-    }));
-    const dataset = {...quickStartDataset, geometryFields: []};
-    const store = makeQuickStartStore(dataset, operations);
-    const getOperation = vi.spyOn(store.registry, 'get');
+  test('uses shared AX suggestions and shows readiness/remedies for declared rain gauges', async () => {
+    const {store, dataset, profile} = makeAnalysisRecommendationStore('surface-samples');
     try {
-      expect(renderToStaticMarkup(createElement(WorkbenchSidePanel, {store}))).toContain(
-        'Suggested analyses'
-      );
       const suggestions = makeRecommendationHarness(store, dataset);
-      expect(getOperation).not.toHaveBeenCalled();
-      expect(suggestions.markup()).not.toContain(WORKBENCH_TEST_IDS.recommendation(''));
+      expect(suggestions.markup()).not.toContain('data-status=');
       suggestions.toggle(true);
+      const bindings = store.registry.list().flatMap(operation => {
+        const binding = getCatalogBinding(operation.id);
+        return binding ? [binding] : [];
+      });
+      const expected = suggestKeplerAnalyses(bindings, [profile], {
+        requiredDatasetId: profile.datasetId,
+        maximumCount: 5,
+        executionEngine: 'gpu'
+      });
+      expect(getSidePanelRecommendations(store, dataset.id)).toEqual([
+        ...expected.suggestions,
+        ...expected.blocked
+      ]);
       const markup = suggestions.markup();
-      const identifiers = Array.from(markup.matchAll(/data-testid="([^"]+)"/g), match => match[1]);
-      expect(identifiers).toEqual(
-        operationIds
-          .slice(0, 5)
-          .map(operationId => WORKBENCH_TEST_IDS.recommendation(`observations-${operationId}`))
-      );
-      expect(markup).toContain('Find clusters');
-      expect(markup).toContain('Find dense groups of points and flag isolated observations.');
-      const firstLookupCount = getOperation.mock.calls.length;
+      for (const recommendation of [...expected.suggestions, ...expected.blocked]) {
+        expect(markup).toContain(
+          WORKBENCH_TEST_IDS.recommendation(`${dataset.id}-${recommendation.id}`)
+        );
+        expect(markup).toContain(`data-status="${recommendation.status}"`);
+      }
+      expect(
+        expected.suggestions.some(suggestion => suggestion.bindingId === 'kernel-density-grid')
+      ).toBe(false);
+      expect(
+        expected.suggestions.some(suggestion => suggestion.bindingId === 'recipe-hot-spot-lattice')
+      ).toBe(false);
+      expect(markup).toMatch(/Ready|Review mapping|Requirements unmet/);
+      for (const recommendation of [...expected.suggestions, ...expected.blocked]) {
+        for (const missing of recommendation.applicability.missing) {
+          expect(markup).toContain(
+            renderToStaticMarkup(createElement(react.Fragment, null, missing.what))
+          );
+          if (missing.remedy)
+            expect(markup).toContain(
+              renderToStaticMarkup(createElement(react.Fragment, null, missing.remedy))
+            );
+        }
+      }
+      // A changed declaration must replace the recommendations even when the dataset card is unchanged.
+      store.host.getAnalysisProfile = () => ({
+        ...profile,
+        rowSemantics: {value: 'events', source: 'declared'}
+      });
       suggestions.render();
-      suggestions.toggle(false);
-      suggestions.toggle(true);
-      expect(getOperation).toHaveBeenCalledTimes(firstLookupCount);
-      suggestions.render({...dataset});
-      const nextLookupCount = getOperation.mock.calls.length;
-      expect(nextLookupCount).toBeGreaterThan(firstLookupCount);
-      suggestions.render(dataset);
-      expect(getOperation).toHaveBeenCalledTimes(nextLookupCount);
+      expect(getSidePanelRecommendations(store, dataset.id)).not.toEqual([
+        ...expected.suggestions,
+        ...expected.blocked
+      ]);
     } finally {
-      getOperation.mockRestore();
       await store.clear();
     }
   });
@@ -401,62 +440,83 @@ describe('suggested analyses in the side panel', () => {
   test.each([
     false,
     true
-  ])('adds a source and a configured analysis as one edit (active workflow: %s)', async active => {
-    const dataset = {...quickStartDataset, geometryFields: [], pointColumns: undefined};
-    const store = makeQuickStartStore(dataset, getWorkflowTableOperations());
+  ])('adds shared AX assignments and fields as one undoable edit (active: %s)', async active => {
+    const {store, dataset} = makeAnalysisRecommendationStore();
     const edit = vi.spyOn(store, 'edit');
-    const create = vi.spyOn(store, 'createWorkflow');
-    const openPalette = vi.spyOn(store, 'openPalette');
     try {
       if (active) store.addWorkflow(makeFixtureDocument());
       const originalSteps = store.getState().document?.steps ?? [];
+      const recommendation = getSidePanelRecommendations(store, dataset.id).find(
+        candidate => candidate.status !== 'blocked'
+      )!;
+      expect(recommendation).toBeDefined();
       const suggestions = makeRecommendationHarness(store, dataset);
       suggestions.toggle(true);
-      expect(suggestions.markup()).toContain(
-        'Keep rows matching an expression; edit the initial expression to choose your subset.'
-      );
-      suggestions.click('observations-table-filter-rows');
+      suggestions.click(`${dataset.id}-${recommendation.id}`);
       const state = store.getState();
-      expect(create.mock.calls).toEqual(active ? [] : [[{title: 'Observations'}]]);
-      expect(state.document?.title).toBe(active ? 'Fixture workflow' : 'Observations');
       expect(state.document?.steps).toHaveLength(originalSteps.length + 2);
-      expect(state.document?.steps.slice(originalSteps.length)).toMatchObject([
-        {
-          id: 'source-dataset',
-          operationId: 'source-dataset',
-          parameters: {
-            dataset: {from: 'static', value: 'observations'},
-            datasetLabel: {from: 'static', value: 'Observations'},
-            geometryMode: {from: 'static', value: 'none'}
-          }
-        },
-        {
-          id: 'table-filter-rows',
-          operationId: 'table-filter-rows',
-          inputs: {rows: {stepId: 'source-dataset', output: 'data'}},
-          parameters: {expression: {from: 'static', value: 'true'}}
-        }
-      ]);
+      const added = state.document!.steps.slice(originalSteps.length);
+      expect(added[0]).toMatchObject({
+        operationId: 'source-dataset',
+        parameters: {dataset: {from: 'static', value: dataset.id}}
+      });
+      expect(added[1].operationId).toBe(recommendation.bindingId);
+      expect(Object.values(added[1].inputs)).toEqual([{stepId: added[0].id, output: 'data'}]);
+      for (const [name, columns] of Object.entries(recommendation.applicability.fieldBindings))
+        expect(added[1].parameters[name]).toEqual({
+          from: 'static',
+          value: typeof columns === 'string' ? columns : columns.join(',')
+        });
       expect(edit.mock.calls.map(([tag]) => tag)).toEqual(['quick-start:source-dataset']);
-      expect(state.selectedStepIds).toEqual(['table-filter-rows']);
+      expect(state.selectedStepIds).toEqual([added[1].id]);
       expect(state.dock).toMatchObject({open: true, inspectorTab: 'parameters'});
-      expect(openPalette).not.toHaveBeenCalled();
-      expect(state.palette.open).toBe(false);
       expect(state.runLog).toEqual([]);
       store.undo();
       expect(store.getState().document?.steps).toEqual(originalSteps);
-      expect(store.getState().canUndo).toBe(false);
     } finally {
       edit.mockRestore();
-      create.mockRestore();
-      openPalette.mockRestore();
+      await store.clear();
+    }
+  });
+
+  test('connects both datasets of a shared AX comparison recommendation in one edit', async () => {
+    const {store, dataset, profile} = makeAnalysisRecommendationStore('events', 'Before');
+    const partner = {...dataset, id: 'after', label: 'After'};
+    const partnerProfile = {...profile, datasetId: partner.id, label: partner.label};
+    store.host.listDatasets = () => [dataset, partner];
+    store.host.getAnalysisProfile = datasetId =>
+      datasetId === dataset.id ? profile : partnerProfile;
+    try {
+      const recommendation = getSidePanelRecommendations(store, dataset.id).find(
+        candidate => candidate.status !== 'blocked' && new Set(candidate.datasetIds).size === 2
+      );
+      expect(recommendation).toBeDefined();
+      const suggestions = makeRecommendationHarness(store, dataset);
+      suggestions.toggle(true);
+      suggestions.click(`${dataset.id}-${recommendation!.id}`);
+      const document = store.getState().document!;
+      expect(document.steps).toHaveLength(3);
+      const analysis = document.steps.find(step => step.operationId === recommendation!.bindingId)!;
+      for (const [input, datasetId] of Object.entries(
+        recommendation!.applicability.inputAssignments
+      )) {
+        const source = document.steps.find(
+          step =>
+            step.parameters['dataset']?.from === 'static' &&
+            step.parameters['dataset'].value === datasetId
+        )!;
+        expect(analysis.inputs[input]).toEqual({stepId: source.id, output: 'data'});
+      }
+      expect(store.getState().runLog).toEqual([]);
+      store.undo();
+      expect(store.getState().document?.steps).toEqual([]);
+    } finally {
       await store.clear();
     }
   });
 
   test('refuses the whole edit when the analysis would exceed the step limit', async () => {
-    const dataset = {...quickStartDataset, geometryFields: [], pointColumns: undefined};
-    const store = makeQuickStartStore(dataset, getWorkflowTableOperations());
+    const {store, dataset} = makeAnalysisRecommendationStore();
     try {
       const document = makeFixtureDocument();
       document.steps = Array.from({length: WORKFLOW_LIMITS.maximumSteps - 1}, (_, index) => ({
@@ -469,7 +529,9 @@ describe('suggested analyses in the side panel', () => {
       const before = store.getState().document;
       const suggestions = makeRecommendationHarness(store, dataset);
       suggestions.toggle(true);
-      suggestions.click('observations-table-filter-rows');
+      suggestions.click(
+        `${dataset.id}-${getSidePanelRecommendations(store, dataset.id).find(candidate => candidate.status !== 'blocked')!.id}`
+      );
       expect(store.getState().document).toBe(before);
       expect(store.getState().document?.steps).toHaveLength(63);
       expect(store.getState().notice).toEqual({
@@ -524,13 +586,7 @@ describe('side panel quick starts and saved templates', () => {
   });
 
   test('F2 refuses the same hidden-label problem for recommendations without editing an active workflow', async () => {
-    const dataset = {
-      ...quickStartDataset,
-      label: 'x'.repeat(121),
-      geometryFields: [],
-      pointColumns: undefined
-    };
-    const store = makeQuickStartStore(dataset, getWorkflowTableOperations());
+    const {store, dataset} = makeAnalysisRecommendationStore('events', 'x'.repeat(121));
     try {
       store.addWorkflow(makeFixtureDocument());
       store.select(['source']);
@@ -538,7 +594,9 @@ describe('side panel quick starts and saved templates', () => {
       const before = store.getState().document;
       const suggestions = makeRecommendationHarness(store, dataset);
       suggestions.toggle(true);
-      suggestions.click(`${dataset.id}-table-filter-rows`);
+      suggestions.click(
+        `${dataset.id}-${getSidePanelRecommendations(store, dataset.id).find(candidate => candidate.status !== 'blocked')!.id}`
+      );
       expect(store.getState().document).toBe(before);
       expect(store.getState().selectedStepIds).toEqual(['source']);
       expect(store.getState().canUndo).toBe(false);

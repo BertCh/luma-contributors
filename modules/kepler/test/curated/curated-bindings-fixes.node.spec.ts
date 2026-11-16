@@ -4,13 +4,23 @@
 
 import {describe, expect, it} from 'vitest';
 import type {CatalogFeature, CatalogFeatureCollection} from '../../src/analysis/catalog-geojson';
-import {makeSeededGenerator} from '../../src/analysis/catalog-platform3-b-common';
+import {getFeatureAnchor, makeSeededGenerator} from '../../src/analysis/catalog-platform3-b-common';
+import {makeLocalFrame} from '../../src/analysis/catalog-local-frame';
+import {buildAnalysisSet} from '../../src/analysis/catalog-platform3-b-statistics';
+import {measureDistance} from '../../src/analysis/catalog-geojson';
+import {fitOrdinaryLeastSquares} from '../../src/analysis/catalog-platform4-regression';
+import {fitStandardizedLeastSquares} from '../../src/curated/bindings/curated-regression-with-diagnostics-binding';
+import {profileKeplerFeatureCollection} from '../../src/profile/dataset-profile';
+import {getKeplerOperationDescriptor} from '../../src/descriptors/operation-descriptors';
+import {planKeplerResultPresentation} from '../../src/presentation/result-presentation';
 import {
   getCanonicalOrder,
   getSignificanceAttainability,
+  runCanonicalMoranPermutationTest,
+  runMoranPermutationTest,
   runConditionalLocalPermutationTest
 } from '../../src/curated/bindings/curated-binding-utils';
-import {KEPLER_CURATED_BINDINGS} from '../../src/curated/bindings';
+import {KEPLER_CURATED_BINDINGS} from '../../src/curated/bindings/index';
 import {createKeplerCuratedAnalysisSample} from '../../src/curated/curated-analysis-samples';
 import {CURATED_RUNTIME_CAUTION_SUMMARY_KEYS} from '../../src/descriptors/descriptors-curated';
 import {
@@ -709,6 +719,48 @@ describe('excess risk: the smoothed ratio', () => {
 });
 
 describe('DBSCAN boundaries', () => {
+  it.each([
+    {
+      name: 'exact pair without translation',
+      horizontal: [0, 1],
+      vertical: [0, 0],
+      labels: [0, 0]
+    },
+    {
+      name: 'pair just outside the requested radius without translation',
+      horizontal: [0, 1.0000000005],
+      vertical: [0, 0],
+      labels: [-1, -1]
+    },
+    {
+      name: 'exact pair after an inexact frame translation',
+      horizontal: [3, 4, 0.1],
+      vertical: [0, 0, 100],
+      labels: [0, 0, -1]
+    },
+    {
+      name: 'pair just outside the requested radius after translation',
+      horizontal: [3, 4.0000000005, 0.1],
+      vertical: [0, 0, 100],
+      labels: [-1, -1, -1]
+    }
+  ])('AX-87: catalog and curated agree for $name', ({horizontal, vertical, labels}) => {
+    const points = makePoints(horizontal, vertical);
+    for (const bindingId of ['density-clustering', 'curated-clusters-and-footprints']) {
+      const result = runCuratedBinding(
+        bindingId,
+        {epsilon: 1, minimumPoints: 2, ...PLANAR},
+        {points}
+      );
+      const table = getResultTable(result, 'points');
+      expect(getNumbers(table, 'cluster'), bindingId).toEqual(labels);
+      expect(table.columns['is_core'], bindingId).toEqual(labels.map(label => label >= 0));
+      expect(result.summary['noiseCount'], bindingId).toBe(
+        labels.filter(label => label < 0).length
+      );
+    }
+  });
+
   const run = (xs: number[], ys: number[], epsilon: number, minimumPoints: number) =>
     runCuratedBinding(
       'curated-clusters-and-footprints',
@@ -868,4 +920,301 @@ it('warns that coincident anchors affect inference for unique-anchor rows too', 
       KEPLER_CURATED_BINDINGS.find(binding => binding.id === bindingId)!.declaredBehavior.join(' ')
     ).toContain('inference throughout the dataset');
   }
+});
+
+// AX-87 probes compare the retained safeguards with the fixed catalog routines directly.
+// Numerical measurements can be captured with CURATED_MARGINS_FILE; assertions pin the decisions.
+describe('AX-87: safeguards with distinct semantics', () => {
+  it('retains island presentation exclusion because the hot-spot scheme cannot encode not-tested', () => {
+    const features = makePoints([0, 0, 1, 1, 1000], [0, 1, 0, 1, 1000], index => ({
+      value: [1, 2, 3, 4, 60][index]
+    }));
+    const result = runCuratedBinding(
+      'hotspot-gi-star',
+      {...PLANAR, valueProperty: 'value', neighborhood: 'distance-band', distanceBand: 1.5},
+      {features}
+    );
+    const table = result.tables[0];
+    expect(table.columns['classification'][4]).toBe('not-tested');
+    const output = getKeplerOperationDescriptor('hotspot-gi-star')!.outputs[0];
+    const guarded = planKeplerResultPresentation(table, output)!;
+    const columns = {...table.columns};
+    delete columns['neighbor_count'];
+    const unguarded = planKeplerResultPresentation({...table, columns}, output)!;
+    expect(guarded.classScheme).toBe('hot-spot-confidence-bins');
+    expect(guarded.excludedRows).toEqual([4]);
+    expect(unguarded.scale).toBe('categorical');
+    expect(unguarded.classScheme).toBeUndefined();
+    recordBindingMargin(
+      'AX-87 Gi-star islands correctly excluded by presentation',
+      guarded.excludedRows!.length
+    );
+  });
+
+  it('still needs canonical permutation streams after the neighbor tie fix', () => {
+    const points = makePoints(
+      Array.from({length: 25}, (_, index) => index % 5),
+      Array.from({length: 25}, (_, index) => Math.floor(index / 5)),
+      index => ({value: Math.sin((index + 1) * 2 * 1.7953)})
+    );
+    const evaluate = (collection: CatalogFeatureCollection) => {
+      const analysis = buildAnalysisSet(collection, 'value', {
+        neighborhood: 'knn',
+        neighborCount: 3,
+        distanceBand: 1,
+        rowStandardize: true,
+        coordinateSystem: 'planar'
+      });
+      const frame = makeLocalFrame('planar', []);
+      const anchors = collection.features.map(feature => getFeatureAnchor(feature, frame)!);
+      return {
+        canonical: runCanonicalMoranPermutationTest(
+          analysis.values,
+          analysis.weights.neighbors,
+          analysis.weights.weights,
+          anchors,
+          999,
+          43
+        ),
+        inputOrder: runMoranPermutationTest(
+          analysis.values,
+          analysis.weights.neighbors,
+          analysis.weights.weights,
+          999,
+          43
+        ),
+        neighborIds: new Map(
+          collection.features.map((feature, row) => [
+            feature.id,
+            analysis.weights.neighbors[row].map(other => collection.features[other].id)
+          ])
+        )
+      };
+    };
+    const first = evaluate(points);
+    const reversed = evaluate({...points, features: [...points.features].reverse()});
+    expect(reversed.neighborIds).toEqual(first.neighborIds);
+    expect(reversed.canonical).toEqual(first.canonical);
+    const delta = reversed.inputOrder.pseudoPValue - first.inputOrder.pseudoPValue;
+    recordBindingMargin('AX-87 input-order permutation reversal p-value delta', delta);
+    expect(Math.abs(delta)).toBeGreaterThan(0);
+  });
+
+  it('compares the two OLS fits, implied covariance and auxiliary diagnostics on the reviewer fixture', () => {
+    const response = Float64Array.from(REGRESSION_SCALED.y);
+    const predictors = Float64Array.from(
+      REGRESSION_SCALED.income.flatMap((value, row) => [value, REGRESSION_SCALED.share[row]])
+    );
+    const sample = {
+      response,
+      predictors,
+      predictorCount: 2,
+      count: response.length,
+      featureIndex: new Int32Array(response.length),
+      coordinates: [] as [number, number][],
+      droppedCount: 0,
+      names: ['income', 'share']
+    };
+    const catalog = fitOrdinaryLeastSquares(sample);
+    const curated = fitStandardizedLeastSquares(response, predictors, 2, response.length);
+    for (const column of [
+      'coefficients',
+      'standardErrors',
+      'tStatistics',
+      'fitted',
+      'residuals'
+    ] as const) {
+      const delta = Math.max(
+        ...Array.from(curated[column], (value, row) => Math.abs(value - catalog[column][row]))
+      );
+      recordBindingMargin(`AX-87 OLS ${column} maximum absolute delta`, delta);
+      expect(
+        getMaximumRelativeError(Array.from(curated[column]), Array.from(catalog[column])),
+        column
+      ).toBeLessThan(1e-9);
+    }
+    // Standard-error squares pin the diagonal of the estimated covariance in original units.
+    const varianceDelta = Math.max(
+      ...curated.standardErrors.map((value, column) =>
+        Math.abs(value ** 2 - catalog.standardErrors[column] ** 2)
+      )
+    );
+    recordBindingMargin('AX-87 OLS covariance diagonal maximum absolute delta', varianceDelta);
+    for (const column of [
+      'rSquared',
+      'adjustedRSquared',
+      'residualSumOfSquares',
+      'sigmaSquared'
+    ] as const) {
+      recordBindingMargin(
+        `AX-87 OLS ${column} absolute delta`,
+        Math.abs(curated[column] - catalog[column])
+      );
+      expect(curated[column]).toBeCloseTo(catalog[column], 9);
+    }
+    const catalogAuxiliary = fitOrdinaryLeastSquares({
+      ...sample,
+      response: Float64Array.from(catalog.residuals, value => value ** 2)
+    });
+    const curatedAuxiliary = fitStandardizedLeastSquares(
+      Float64Array.from(curated.residuals, value => value ** 2),
+      predictors,
+      2,
+      response.length
+    );
+    const delta = response.length * Math.abs(curatedAuxiliary.rSquared - catalogAuxiliary.rSquared);
+    recordBindingMargin('AX-87 OLS Koenker-Bassett absolute delta', delta);
+    expect(delta).toBeLessThan(1e-9);
+  });
+
+  it('retains the fused OLS scale range and stricter identification threshold', () => {
+    const response = Float64Array.from([1, 4, 2, 7, 6, 9, 8, 12]);
+    for (const scale of [1e-200, 1e200]) {
+      const predictors = Float64Array.from(response, (_, row) => row * scale);
+      const curated = fitStandardizedLeastSquares(response, predictors, 1, response.length);
+      expect(Array.from(curated.fitted).every(Number.isFinite)).toBe(true);
+      const evaluateCatalog = () =>
+        fitOrdinaryLeastSquares({
+          response,
+          predictors,
+          predictorCount: 1,
+          count: response.length,
+          featureIndex: new Int32Array(response.length),
+          coordinates: [],
+          droppedCount: 0,
+          names: ['scaled']
+        });
+      expect(evaluateCatalog).toThrow(scale < 1 ? /nonzero spread/ : /collinear/);
+    }
+    const predictors = Float64Array.from(
+      Array.from(response, (_, row) => [row, row + (row % 2) * 1e-5]).flat()
+    );
+    expect(() => fitStandardizedLeastSquares(response, predictors, 2, response.length)).toThrow(
+      /collinear/
+    );
+    const catalog = fitOrdinaryLeastSquares({
+      response,
+      predictors,
+      predictorCount: 2,
+      count: response.length,
+      featureIndex: new Int32Array(response.length),
+      coordinates: [],
+      droppedCount: 0,
+      names: ['first', 'near-copy']
+    });
+    expect(catalog.coefficients.every(Number.isFinite)).toBe(true);
+  });
+
+  it('retains profile anchor range, degenerate-ring fallback and geographic line semantics', () => {
+    const frame = makeLocalFrame('planar', []);
+    const profileAnchor = (feature: CatalogFeature, coordinateSystem: 'planar' | 'EPSG:4326') =>
+      profileKeplerFeatureCollection(
+        {type: 'FeatureCollection', features: [feature]},
+        {datasetId: 'ax87', label: 'AX-87 anchor probe', coordinateSystem}
+      ).spacing!.center;
+    const degenerate: CatalogFeature = {
+      geometry: {
+        type: 'Polygon',
+        coordinates: [
+          [
+            [0, 0],
+            [2, 0],
+            [10, 0],
+            [0, 0]
+          ]
+        ]
+      },
+      properties: {}
+    };
+    const degenerateCatalog = getFeatureAnchor(degenerate, frame)!;
+    const degenerateProfile = profileAnchor(degenerate, 'planar');
+    recordBindingMargin(
+      'AX-87 degenerate polygon centroid x delta',
+      degenerateProfile[0] - degenerateCatalog[0]
+    );
+    expect(degenerateProfile[0]).toBe(5);
+    expect(degenerateCatalog[0]).toBe(3);
+    const line: CatalogFeature = {
+      geometry: {
+        type: 'LineString',
+        coordinates: [
+          [0, 0],
+          [1, 0],
+          [10, 0]
+        ]
+      },
+      properties: {}
+    };
+    const lineCatalog = getFeatureAnchor(line, frame)!;
+    const lineProfile = profileAnchor(line, 'EPSG:4326');
+    recordBindingMargin(
+      'AX-87 geographic line centroid longitude delta',
+      lineProfile[0] - lineCatalog[0]
+    );
+    expect(lineProfile[0]).toBeCloseTo(5, 12);
+    expect(lineCatalog[0]).toBe(11 / 3);
+    for (const scale of [1e-200, 1e200]) {
+      const triangle: CatalogFeature = {
+        geometry: {
+          type: 'Polygon',
+          coordinates: [
+            [
+              [0, 0],
+              [2 * scale, 0],
+              [0, scale],
+              [0, 0]
+            ]
+          ]
+        },
+        properties: {}
+      };
+      const profile = profileAnchor(triangle, 'planar');
+      const catalog = getFeatureAnchor(triangle, frame)!;
+      expect(profile[0] / scale).toBeCloseTo(2 / 3, 12);
+      expect(profile[1] / scale).toBeCloseTo(1 / 3, 12);
+      expect(catalog[0] / scale).not.toBeCloseTo(2 / 3, 12);
+    }
+  });
+
+  it('distinguishes exact planar radius boundaries from a geographic metric mismatch', () => {
+    const planar = makePoints([3, 4, 0.1], [0, 0, 100]);
+    const exact = runCuratedBinding(
+      'density-clustering',
+      {...PLANAR, epsilon: 1, minimumPoints: 2},
+      {points: planar}
+    );
+    expect(getNumbers(getResultTable(exact, 'points'), 'cluster')).toEqual([0, 0, -1]);
+    const positions: [number, number][] = [
+      [-1, 60],
+      [1, 60],
+      [-1, 61],
+      [1, 61]
+    ];
+    const geographic = makePoints(
+      positions.map(position => position[0]),
+      positions.map(position => position[1])
+    );
+    const band = Math.max(
+      ...positions.map((position, row) =>
+        Math.min(
+          ...positions
+            .filter((_, other) => row !== other)
+            .map(other => measureDistance(position, other, 'EPSG:4326'))
+        )
+      )
+    );
+    const getIslands = (distanceBand: number) =>
+      buildAnalysisSet(geographic, '', {
+        neighborhood: 'distance-band',
+        neighborCount: 3,
+        distanceBand,
+        rowStandardize: true,
+        coordinateSystem: 'EPSG:4326'
+      }).weights.neighbors.filter(neighbors => neighbors.length === 0).length;
+    recordBindingMargin('AX-87 geographic exact spherical band', band);
+    recordBindingMargin('AX-87 geographic islands without margin', getIslands(band));
+    recordBindingMargin('AX-87 geographic islands with margin', getIslands(band * 1.01));
+    expect(getIslands(band)).toBeGreaterThan(0);
+    expect(getIslands(band * 1.01)).toBe(0);
+  });
 });

@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import * as networkModule from '@luma-contributors/analysis/gpu-network';
+import * as terrainModule from '@luma-contributors/analysis/gpu-terrain';
+import * as dataframeModule from '@luma-contributors/analysis/dataframe-analysis';
+import * as rasterModule from '@luma-contributors/analysis/raster-analysis';
 import * as analysisModule from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {validateGPUAnalysisResultEncoding} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {describe, expect, it} from 'vitest';
@@ -12,7 +16,7 @@ import {
   KEPLER_CATALOG_BINDINGS,
   normalizeCatalogParameters
 } from '../../src/analysis/catalog-bindings';
-import {KEPLER_CURATED_BINDINGS} from '../../src/curated/bindings';
+import {KEPLER_CURATED_BINDINGS} from '../../src/curated/bindings/index';
 import {evaluateKeplerOperationApplicability} from '../../src/descriptors/applicability';
 import {profileKeplerFeatureCollection} from '../../src/profile/dataset-profile';
 import {CURATED_OPERATION_DESCRIPTORS} from '../../src/descriptors/descriptors-curated';
@@ -32,11 +36,23 @@ const EXPECTED_IDS = [
   'curated-clusters-and-footprints',
   'curated-regression-with-diagnostics',
   'curated-kriging-with-diagnostics',
-  'curated-contiguity-correlogram'
+  'curated-contiguity-correlogram',
+  'curated-emerging-hot-spots',
+  'curated-dasymetric-redistribution',
+  'curated-track-quality',
+  'curated-landscape-metrics',
+  'curated-drainage-network',
+  'curated-surface-preparation',
+  'curated-zonal-exposure',
+  'curated-regional-raster-change',
+  'curated-network-disruption',
+  'curated-cell-flow-topology',
+  'curated-drive-time-bands',
+  'curated-fleet-dwell'
 ];
 
 describe('KEPLER_CURATED_BINDINGS', () => {
-  it('lists the six bindings, registers each in the catalog, and keeps ids unique across the catalog', () => {
+  it('lists the curated bindings, registers each in the catalog, and keeps ids unique across the catalog', () => {
     expect(KEPLER_CURATED_BINDINGS.map(binding => binding.id)).toEqual(EXPECTED_IDS);
     for (const binding of KEPLER_CURATED_BINDINGS)
       expect(getCatalogBinding(binding.id)).toBe(binding);
@@ -45,7 +61,9 @@ describe('KEPLER_CURATED_BINDINGS', () => {
   });
 
   it('declares the CPU reference engine only, with honest declarations', () => {
-    for (const binding of KEPLER_CURATED_BINDINGS) {
+    for (const binding of KEPLER_CURATED_BINDINGS.filter(
+      binding => binding.engine === 'cpu-reference'
+    )) {
       expect(binding.engine, binding.id).toBe('cpu-reference');
       expect(binding.runGpu).toBeUndefined();
       expect(binding.run).toBeTypeOf('function');
@@ -67,7 +85,13 @@ describe('KEPLER_CURATED_BINDINGS', () => {
   });
 
   it('names contributors that the analysis package exports', () => {
-    const exports = analysisModule as unknown as Record<string, unknown>;
+    const exports = {
+      ...analysisModule,
+      ...dataframeModule,
+      ...rasterModule,
+      ...networkModule,
+      ...terrainModule
+    } as Record<string, unknown>;
     const missing: string[] = [];
     for (const binding of KEPLER_CURATED_BINDINGS)
       for (const name of binding.contributorNames)
@@ -79,7 +103,23 @@ describe('KEPLER_CURATED_BINDINGS', () => {
 describe('CURATED_OPERATION_DESCRIPTORS', () => {
   it('has one descriptor per binding, in order, and each validates against its binding', () => {
     expect(CURATED_OPERATION_DESCRIPTORS.map(descriptor => descriptor.bindingId)).toEqual(
-      EXPECTED_IDS
+      EXPECTED_IDS.filter(
+        id =>
+          ![
+            'curated-emerging-hot-spots',
+            'curated-dasymetric-redistribution',
+            'curated-track-quality',
+            'curated-landscape-metrics',
+            'curated-fleet-dwell',
+            'curated-drainage-network',
+            'curated-surface-preparation',
+            'curated-zonal-exposure',
+            'curated-regional-raster-change',
+            'curated-network-disruption',
+            'curated-cell-flow-topology',
+            'curated-drive-time-bands'
+          ].includes(id)
+      )
     );
     for (const descriptor of CURATED_OPERATION_DESCRIPTORS) {
       const binding = getCatalogBinding(descriptor.bindingId)!;

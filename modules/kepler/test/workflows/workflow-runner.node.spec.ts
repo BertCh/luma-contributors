@@ -24,6 +24,8 @@ import {
   makeFixtureTable
 } from './workflow-fixtures';
 
+const fixtureDevice = {} as Device;
+
 function makeDeferred() {
   let resolve!: () => void;
   const promise = new Promise<void>(complete => {
@@ -633,7 +635,7 @@ describe('WorkflowRunner fallback policy', () => {
       }
     ]);
     const host = makeFixtureHost();
-    host.getDevice = () => ({}) as Device;
+    host.getDevice = () => fixtureDevice;
     const {runner, document} = createFixture({host, registry});
     await runner.run();
     const copy: WorkflowDocument['steps'][number] = {
@@ -680,7 +682,7 @@ describe('WorkflowRunner fallback policy', () => {
       }
     ]);
     const host = makeFixtureHost();
-    if (policy !== 'no-device') host.getDevice = () => ({}) as Device;
+    if (policy !== 'no-device') host.getDevice = () => fixtureDevice;
     const {runner, document} = createFixture({host, registry});
     if (policy === 'cpu') document.steps[1].engine = 'cpu';
     if (policy === 'stop') document.steps[1].onFallback = 'stop';
@@ -752,19 +754,17 @@ describe('WorkflowRunner cancellation and edits during execution', () => {
     await runner.destroy();
   });
 
-  test('an edit during execution leaves snapshot results stale and the next run uses the edit', async () => {
+  test('an edit during execution cancels obsolete work and the next run uses the edit', async () => {
     const {runner, entered, release, document} = makeControlledFixture();
     const running = runner.run();
     await entered.promise;
-    const oldKey = runner.getState().steps['scale'].key;
     runner.setDocument(editFactor(document, 7));
     expect(runner.getState().steps['scale'].status).toBe('ready');
     release.resolve();
     const record = await running;
-    expect(record.status).toBe('done');
-    expect(readStatuses(runner)).toEqual(['done', 'stale', 'stale']);
-    expect(runner.getState().steps['scale'].result?.key).toBe(oldKey);
-    expect(runner.getState().steps['scale'].result?.parameters['factor']).toBe(3);
+    expect(record.status).toBe('cancelled');
+    expect(readStatuses(runner)).toEqual(['done', 'ready', 'ready']);
+    expect(runner.getState().steps['scale'].result).toBeUndefined();
     await runner.run();
     expect(runner.getState().steps['scale'].result?.parameters['factor']).toBe(7);
     await runner.destroy();
@@ -1096,9 +1096,9 @@ describe('WorkflowRunner auto-run debounce', () => {
       release.resolve();
       await flushMicrotasks();
       await vi.advanceTimersByTimeAsync(399);
-      expect(calls).toHaveLength(3);
+      expect(calls).toHaveLength(2);
       await vi.advanceTimersByTimeAsync(1);
-      expect(calls).toHaveLength(5);
+      expect(calls).toHaveLength(4);
       expect(runner.getState().steps['scale'].result?.parameters['factor']).toBe(9);
       await runner.destroy();
     } finally {
@@ -1224,7 +1224,7 @@ describe('WorkflowRunner independent review regressions', () => {
       }
     ]);
     const host = makeFixtureHost();
-    host.getDevice = () => ({}) as Device;
+    host.getDevice = () => fixtureDevice;
     const {runner, document} = createFixture({host, registry});
     await runner.run();
     runner.setDocument(editFactor(document, 4));
@@ -1436,7 +1436,7 @@ describe('WorkflowRunner review boundary coverage', () => {
       }
     ]);
     const host = makeFixtureHost();
-    host.getDevice = () => ({}) as Device;
+    host.getDevice = () => fixtureDevice;
     const {runner, document} = createFixture({host, registry});
     await runner.run();
     document.steps[1].onFallback = 'stop';
@@ -1597,7 +1597,7 @@ describe('WorkflowRunner review publication and snapshot stability', () => {
       }
     ]);
     const host = makeFixtureHost();
-    host.getDevice = () => ({}) as Device;
+    host.getDevice = () => fixtureDevice;
     const {runner, document} = createFixture({host, registry});
     await runner.run();
     document.steps[1].onFallback = 'stop';
@@ -1835,4 +1835,307 @@ describe('WorkflowRunner second-wave review regressions', () => {
     expect(calls).toEqual([]);
     await runner.destroy();
   });
+});
+
+describe('AX lifecycle safeguards', () => {
+  test('runtime generation invalidates a queued display without any source revision change', async () => {
+    const host = makeFixtureHost();
+    let runtimeRevision = 'first';
+    host.getRuntimeRevisionKey = () => runtimeRevision;
+    const registry = replaceOperations(makeFixtureRegistry(), [
+      {id: 'fixture-source', getExternalRevisionKey: undefined}
+    ]);
+    const {runner, document} = createFixture({host, registry});
+    document.steps[1].display = [];
+    runner.setDocument(document);
+    await runner.run();
+    const entered = makeDeferred();
+    const release = makeDeferred();
+    const requests: WorkflowPublishRequest[] = [];
+    host.publishOutput = async request => {
+      requests.push(request);
+      entered.resolve();
+      await release.promise;
+      return {datasetId: 'partial', label: request.label};
+    };
+    document.steps[0].display = ['data'];
+    document.steps[1].display = ['scaled'];
+    runner.setDocument(document);
+    await entered.promise;
+    runtimeRevision = 'second';
+    runner.refreshExternal();
+    expect(requests[0].isCurrent?.()).toBe(false);
+    release.resolve();
+    await flushMicrotasks();
+    expect(requests.map(request => request.stepId)).toEqual(['source']);
+    expect(host.retracted).toEqual(['partial']);
+    expect(readStatuses(runner)).toEqual(['stale', 'stale', 'stale']);
+    expect(runner.getState().steps['scale'].published).toBeUndefined();
+    await runner.destroy();
+  });
+
+  test('F3: starting a run retains a still-current background display request', async () => {
+    const host = makeFixtureHost();
+    const entered = makeDeferred();
+    const release = makeDeferred();
+    let publicationSignal: AbortSignal | undefined;
+    const publish = host.publishOutput!;
+    host.publishOutput = async (request, signal) => {
+      publicationSignal = signal;
+      entered.resolve();
+      await release.promise;
+      if (signal.aborted) throw new WorkflowError('cancelled', 'Display cancelled');
+      return publish(request, signal);
+    };
+    const {runner, document, calls} = createFixture({host});
+    document.steps[1].display = [];
+    runner.setDocument(document);
+    expect((await runner.run()).status).toBe('done');
+    document.steps[1].display = ['scaled'];
+    runner.setDocument(document);
+    await entered.promise;
+    const rerun = runner.run();
+    await flushMicrotasks();
+    expect(publicationSignal?.aborted).toBe(false);
+    release.resolve();
+    expect((await rerun).status).toBe('done');
+    await flushMicrotasks();
+    expect(host.published).toHaveLength(1);
+    expect(runner.getState().steps['scale'].published?.['scaled'].datasetId).toBe(
+      host.published[0].datasetId
+    );
+    expect(
+      runner.getState().steps['scale'].issues.some(issue => issue.code === 'publish-failed')
+    ).toBe(false);
+    expect(calls).toEqual(['fixture-source:source', 'fixture-scale:scale', 'fixture-count:count']);
+    await runner.destroy();
+  });
+
+  test('F3: intentional display cancellation does not leave a failure that suppresses a later run', async () => {
+    const host = makeFixtureHost();
+    const entered = makeDeferred();
+    const release = makeDeferred();
+    const publish = host.publishOutput!;
+    let invocation = 0;
+    host.publishOutput = async (request, signal) => {
+      if (++invocation === 1) {
+        entered.resolve();
+        await release.promise;
+        if (signal.aborted) throw new WorkflowError('cancelled', 'Display cancelled');
+      }
+      return publish(request, signal);
+    };
+    const {runner, document} = createFixture({host});
+    document.steps[1].display = [];
+    runner.setDocument(document);
+    await runner.run();
+    document.steps[1].display = ['scaled'];
+    runner.setDocument(document);
+    await entered.promise;
+    runner.cancel();
+    release.resolve();
+    await flushMicrotasks();
+    expect(
+      runner.getState().steps['scale'].issues.some(issue => issue.code === 'publish-failed')
+    ).toBe(false);
+    expect((await runner.run()).status).toBe('done');
+    await flushMicrotasks();
+    expect(host.published).toHaveLength(1);
+    expect(runner.getState().steps['scale'].published).toBeDefined();
+    await runner.destroy();
+  });
+
+  test.each([
+    false,
+    true
+  ])('a revision during computation cancels obsolete work (notify: %s)', async notify => {
+    const {runner, host, entered, release, calls} = makeControlledFixture();
+    const running = runner.run();
+    await entered.promise;
+    host.revision++;
+    if (notify) runner.refreshExternal();
+    release.resolve();
+    expect((await running).status).toBe('cancelled');
+    expect(host.published).toEqual([]);
+    expect(calls).not.toContain('fixture-count:count');
+    expect(runner.getState().steps['scale'].result).toBeUndefined();
+    expect((await runner.run()).status).toBe('done');
+    expect(host.published).toHaveLength(1);
+    await runner.destroy();
+  });
+
+  test.each([
+    'revision',
+    'parameter',
+    'removal',
+    'cancel',
+    'device'
+  ] as const)('%s during awaited publication retracts a partial output and cannot publish downstream', async change => {
+    const host = makeFixtureHost();
+    let device = fixtureDevice;
+    host.getDevice = () => device;
+    const entered = makeDeferred();
+    const release = makeDeferred();
+    const requests: WorkflowPublishRequest[] = [];
+    let publicationSignal: AbortSignal | undefined;
+    host.publishOutput = async (request, signal) => {
+      requests.push(request);
+      publicationSignal = signal;
+      entered.resolve();
+      await release.promise;
+      return {datasetId: 'partial', label: request.label};
+    };
+    const {runner, document, calls} = createFixture({host});
+    const running = runner.run();
+    await entered.promise;
+    if (change === 'revision') {
+      host.revision++;
+      runner.refreshExternal();
+    }
+    if (change === 'parameter') runner.setDocument(editFactor(document, 7));
+    if (change === 'removal') runner.setDocument({...document, steps: [document.steps[0]]});
+    if (change === 'cancel') runner.cancel();
+    if (change === 'device') {
+      device = {} as Device;
+      runner.refreshExternal();
+    }
+    expect(publicationSignal?.aborted).toBe(true);
+    expect(requests[0].isCurrent?.()).toBe(false);
+    release.resolve();
+    expect((await running).status).toBe('cancelled');
+    expect(calls).not.toContain('fixture-count:count');
+    expect(host.retracted).toEqual(['partial']);
+    expect(runner.getState().steps['scale']?.published).toBeUndefined();
+    await runner.destroy();
+    expect(host.retracted).toEqual(['partial']);
+  });
+
+  test('checks live revision keys before queued publication and after awaited publication without notification', async () => {
+    const host = makeFixtureHost();
+    const {runner, document} = createFixture({host});
+    document.steps[0].display = ['data'];
+    runner.setDocument(document);
+    await runner.run();
+    const entered = makeDeferred();
+    const release = makeDeferred();
+    const requests: WorkflowPublishRequest[] = [];
+    host.publishOutput = async request => {
+      requests.push(request);
+      entered.resolve();
+      await release.promise;
+      return {datasetId: 'partial', label: request.label};
+    };
+    document.steps[0].displayStyle = {data: {palette: 'sequential'}};
+    document.steps[1].displayStyle = {scaled: {palette: 'diverging'}};
+    runner.setDocument(document);
+    await entered.promise;
+    host.revision++;
+    expect(requests[0].isCurrent?.()).toBe(false);
+    release.resolve();
+    await flushMicrotasks();
+    expect(requests.map(request => request.stepId)).toEqual(['source']);
+    expect(host.retracted).toEqual(['partial']);
+    expect(runner.getState().steps['source'].published?.['data'].datasetId).toBe('published-1');
+    await runner.destroy();
+  });
+
+  test('remove then undo keeps dependents stale until fresh execution, preserving unrelated results', async () => {
+    const {runner, document, calls} = createFixture();
+    await runner.run();
+    const dependent = runner.getState().steps['count'].result;
+    runner.setDocument({...document, steps: document.steps.filter(step => step.id !== 'scale')});
+    runner.setDocument(document);
+    expect(readStatuses(runner)).toEqual(['done', 'ready', 'stale']);
+    expect(runner.getState().steps['count'].result).toBe(dependent);
+    calls.length = 0;
+    expect((await runner.run()).status).toBe('done');
+    expect(calls).toEqual(['fixture-scale:scale', 'fixture-count:count']);
+    expect(runner.getState().steps['count'].result?.cacheHit).toBe(false);
+    await runner.destroy();
+  });
+
+  test('a changed branch run after removal cannot restore an earlier dependent cache on undo', async () => {
+    const {runner, document} = createFixture();
+    await runner.run();
+    const removed = structuredClone(document);
+    removed.steps.splice(1, 1);
+    removed.steps[1].inputs['rows'] = {stepId: 'source', output: 'data'};
+    runner.setDocument(removed);
+    await runner.run();
+    runner.setDocument(document);
+    expect(readStatuses(runner)).toEqual(['done', 'ready', 'stale']);
+    expect((await runner.run()).steps.map(step => [step.stepId, step.cacheHit])).toEqual([
+      ['scale', false],
+      ['count', false]
+    ]);
+    await runner.destroy();
+  });
+
+  test('a rejection after an unannounced revision change is recorded as cancellation', async () => {
+    const host = makeFixtureHost();
+    const registry = replaceOperations(makeFixtureRegistry(), [
+      {
+        id: 'fixture-source',
+        run: async () => {
+          host.revision++;
+          throw new Error('Extraction failed after revision');
+        }
+      }
+    ]);
+    const {runner} = createFixture({host, registry});
+    expect((await runner.run()).status).toBe('cancelled');
+    expect(runner.getState().steps['source'].error).toBeUndefined();
+    expect(host.published).toEqual([]);
+    await runner.destroy();
+  });
+});
+
+test('runtime replacement republishes a same-key result and accepts its successor before retirement', async () => {
+  const host = makeFixtureHost();
+  let runtimeRevision = 'first';
+  host.getRuntimeRevisionKey = () => runtimeRevision;
+  const requests: WorkflowPublishRequest[] = [];
+  const events: string[] = [];
+  const entered = makeDeferred();
+  const release = makeDeferred();
+  host.publishOutput = async request => {
+    requests.push(request);
+    const datasetId = `generation-${requests.length}`;
+    if (requests.length === 2) {
+      entered.resolve();
+      await release.promise;
+    }
+    return {
+      datasetId,
+      label: request.label,
+      commit: async () => {
+        events.push(`accept:${datasetId}`);
+        if (request.previousDatasetId) events.push(`retire:${request.previousDatasetId}`);
+      }
+    };
+  };
+  const registry = replaceOperations(makeFixtureRegistry(), [
+    {id: 'fixture-source', getExternalRevisionKey: undefined}
+  ]);
+  const {runner} = createFixture({host, registry});
+  try {
+    await runner.run();
+    const firstKey = runner.getState().steps['scale'].result?.key;
+    runtimeRevision = 'second';
+    runner.refreshExternal();
+    const rerun = runner.run();
+    await entered.promise;
+    expect(runner.getState().steps['scale'].published?.['scaled'].datasetId).toBe('generation-1');
+    expect(events).toEqual(['accept:generation-1']);
+    release.resolve();
+    await rerun;
+    expect(requests).toHaveLength(2);
+    expect(requests[1].previousDatasetId).toBe('generation-1');
+    expect(runner.getState().steps['scale'].result?.key).toBe(firstKey);
+    expect(runner.getState().steps['scale'].published?.['scaled'].datasetId).toBe('generation-2');
+    expect(events).toEqual(['accept:generation-1', 'accept:generation-2', 'retire:generation-1']);
+  } finally {
+    release.resolve();
+    await runner.destroy();
+  }
 });

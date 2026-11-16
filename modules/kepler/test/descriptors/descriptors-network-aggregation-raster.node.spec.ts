@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {evaluateGPUAnalysisParameterCondition} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
 import {
   computeGPUAnalysisSpacingStatistics,
   matchGPUAnalysisFieldRole,
@@ -353,7 +355,7 @@ const CASES: BindingCase[] = [
     id: 'network-k-function',
     inputs: {lines: STREETS, points: KFUNCTION_POINTS},
     parameters: {...NETWORK_VALUES, costMode: 'length', radii: [8, 15, 30, 60]},
-    columns: {onewayProperty: NETWORK_COLUMNS.onewayProperty}
+    columns: NETWORK_COLUMNS
   },
   {
     id: 'network-edge-bundling',
@@ -703,7 +705,7 @@ describe('network, aggregation and raster descriptors: requirements match the bi
 
   it.each(
     DESCRIPTOR_IDS
-  )('%s states raw input capacities separately from uncertain graph edge caps', id => {
+  )('%s states raw input capacities separately from topology-specific graph edge caps', id => {
     const descriptor = getDescriptor(id);
     const cap = getEdgeCap(id);
     for (const spec of getBinding(id).inputs) {
@@ -722,15 +724,13 @@ describe('network, aggregation and raster descriptors: requirements match the bi
         expect(vertices?.limit, `${id} lines vertices`).toBe(spec.maximumVertices);
         const warning = descriptor.requirements.find(
           requirement =>
-            requirement.id === 'maximum-vertices' &&
-            requirement.severity === 'warn' &&
+            requirement.id === 'maximum-network-edges' &&
+            requirement.severity === 'block' &&
             requirement.input === 'lines'
         );
-        // The warning states the measured graph edge cap.
+        // Physical edges consume this cap, independently of directed arcs.
         expect(warning?.limit, id).toBe(cap);
-        expect(warning?.remedy, id).toContain(
-          `${warning!.limit!.toLocaleString('en-US')} graph edges`
-        );
+        expect(warning?.remedy, id).toContain('physical edge count');
       } else if (spec.maximumVertices === spec.maximumFeatures) {
         expect(vertices, `${id} ${spec.name} vertices`).toBeUndefined();
       } else {
@@ -756,13 +756,13 @@ describe('network, aggregation and raster descriptors: requirements match the bi
 
   it.each(
     ROUTING_CAP_IDS
-  )('%s: warns about possible edge overflow without substituting vertices for edges', id => {
+  )('%s: states exact edge capacity without substituting vertices for edges', id => {
     const testCase = getCase(id);
     const limit = getDescriptor(id).requirements.find(
       requirement =>
-        requirement.id === 'maximum-vertices' &&
+        requirement.id === 'maximum-network-edges' &&
         requirement.input === 'lines' &&
-        requirement.severity === 'warn'
+        requirement.severity === 'block'
     )!.limit!;
     const run = (side: number) =>
       runCase(
@@ -779,12 +779,12 @@ describe('network, aggregation and raster descriptors: requirements match the bi
     expect(() => run(99)).not.toThrow();
   });
 
-  it('network-centrality: warns near 1,500 vertices and the run throws above 1,500 nodes', () => {
+  it('network-centrality: declares a 1,500-node capacity and the run throws above it', () => {
     const testCase = getCase('network-centrality');
     const warning = getDescriptor('network-centrality').requirements.find(
       requirement =>
-        requirement.id === 'maximum-vertices' &&
-        requirement.severity === 'warn' &&
+        requirement.id === 'maximum-network-nodes' &&
+        requirement.severity === 'block' &&
         requirement.limit === 1500
     );
     expect(warning?.limit).toBe(1500);
@@ -793,7 +793,7 @@ describe('network, aggregation and raster descriptors: requirements match the bi
     // 105 by 105 junctions are 11,025 nodes.
     expect(() => run(105)).toThrow('network-centrality: lines exceed the 1,500 node limit');
     // 38 by 38 junctions are 1,444 nodes: the run is fine although its 2,888 vertices pass the
-    // warning, which is why the requirement is a warning and not a block.
+    // node cap, demonstrating why the requirement must use nodes.
     expect(() => run(38)).not.toThrow();
     expect(2 * 38 * 38).toBeGreaterThan(warning!.limit!);
   });
@@ -916,7 +916,14 @@ describe('network, aggregation and raster descriptors: the engines agree with th
       const changed = observe(() =>
         runCase(testCase, {...testCase.columns, [parameter]: 'no_such_column'})
       );
-      expect(changed, `${id}.${parameter}`).not.toBe(baseline);
+      if (
+        id === 'network-k-function' &&
+        ['forwardCostProperty', 'reverseCostProperty'].includes(parameter)
+      ) {
+        // K accepts length costs only. These ABI column parameters are conditional roles but
+        // deliberately have no effect in the supported mode.
+        expect(changed, `${id}.${parameter} inactive in length mode`).toBe(baseline);
+      } else expect(changed, `${id}.${parameter}`).not.toBe(baseline);
     }
   });
 
@@ -957,9 +964,7 @@ describe('network, aggregation and raster descriptors: the engines agree with th
         );
         const required =
           typeof field.required === 'object'
-            ? field.required.equals.includes(
-                baselineParameters[field.required.whenParameter] as string
-              )
+            ? evaluateGPUAnalysisParameterCondition(field.required, baselineParameters)
             : field.required;
         if (required) {
           // Required: leaving the column out throws or silently changes the answer.
@@ -1466,6 +1471,8 @@ describe('network, aggregation and raster descriptors: class schemes', () => {
 describe('network, aggregation and raster descriptors: fix round', () => {
   const COST_ROLES = ['forward-cost', 'reverse-cost'];
   const COST_READING_IDS = NETWORK_IDS.filter(id => {
+    // K retains column roles for its binding ABI, but rejects property-cost execution.
+    if (id === 'network-k-function') return false;
     const descriptor = getDescriptor(id);
     return descriptor.inputs.some(input =>
       input.fields.some(
@@ -2158,15 +2165,17 @@ describe('review regressions: network applicability and descriptor contracts', (
     ).toBe(19999);
   });
 
-  it('centrality warns at 1,521 nodes without claiming to know the graph count', () => {
+  it('centrality stays unknown without topology facts despite a large vertex count', () => {
     const lines = makeRectangularGrid(39, 39);
     const assessment = assessNetwork('network-centrality', lines);
     expect(assessment.status).not.toBe('blocked');
-    expect(assessment.warnings.some(warning => warning.includes('1,500 network nodes'))).toBe(true);
     expect(
       assessment.requirements.some(
         requirement =>
-          requirement.severity === 'warn' && requirement.remedy?.includes('1,500 network nodes')
+          requirement.id === 'maximum-network-nodes' &&
+          requirement.severity === 'block' &&
+          requirement.state === 'unknown' &&
+          requirement.remedy?.includes('1,500 network nodes')
       )
     ).toBe(true);
     expect(() =>
@@ -2251,7 +2260,7 @@ describe('review regressions: network applicability and descriptor contracts', (
       'blocked'
     );
     expect(assessNetwork('network-build-graph', lines, {costMode: 'property'}).status).toBe(
-      'ready'
+      'needs-confirmation'
     );
   });
 
@@ -2261,7 +2270,17 @@ describe('review regressions: network applicability and descriptor contracts', (
     expect(
       descriptor.parameters.find(parameter => parameter.name === 'costMode')?.defaultPolicy
     ).toEqual({from: 'constant'});
-    expect(descriptor.inputs[0].fields.map(field => field.role)).toEqual(['one-way']);
+    expect(descriptor.inputs[0].fields.map(field => field.role)).toEqual([
+      'forward-cost',
+      'reverse-cost',
+      'one-way'
+    ]);
+    expect(descriptor.parameters.map(parameter => parameter.name)).not.toContain(
+      'forwardCostProperty'
+    );
+    expect(descriptor.parameters.map(parameter => parameter.name)).not.toContain(
+      'reverseCostProperty'
+    );
     expect(
       descriptor.requirements.some(requirement =>
         ['forward-cost', 'reverse-cost'].includes(requirement.role ?? '')

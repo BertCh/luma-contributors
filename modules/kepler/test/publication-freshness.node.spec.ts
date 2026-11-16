@@ -3,6 +3,12 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import * as arrow from 'apache-arrow';
+import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
+import type {CatalogOutputTable} from '../src/analysis/catalog-geojson';
+import {
+  getAnalysisResultReportView,
+  dismissAnalysisResultReport
+} from '../../../examples/deck/kepler-compute/src/analysis-result-publication';
 import {afterAll, beforeEach, expect, test, vi} from 'vitest';
 import type {ComputeRuntime} from '../../../examples/deck/kepler-compute/src/compute-runtime';
 
@@ -133,6 +139,96 @@ test.each([
   }
   expect(appState.requestedPublicationId).toBeUndefined();
   expect(publicationsInProgress.size).toBe(0);
+});
+
+test.each([
+  'planar',
+  'EPSG:3857'
+] as const)('upload boundary rechecks %s on a legacy map candidate', async sourceCrs => {
+  const geometry = JSON.stringify({
+    type: 'Point',
+    coordinates: [1113194.9079327357, 2273030.926987689]
+  });
+  const table: CatalogOutputTable = {
+    id: 'crs-result',
+    label: 'CRS result',
+    rowCount: 1,
+    coordinateSystem: 'planar',
+    geometryColumn: 'geometry',
+    columns: {geometry: [geometry], value: [9]},
+    columnTypes: {geometry: 'string', value: 'float64'},
+    ...(sourceCrs === 'EPSG:3857'
+      ? {
+          raster: {
+            type: 'raster' as const,
+            id: 'mercator',
+            crs: sourceCrs,
+            cellSizeMode: 'web-mercator' as const,
+            grid: makeGPURasterMetadata({width: 1, height: 1}),
+            band: {
+              index: 1,
+              values: new Float32Array([1]),
+              validity: new Uint8Array([1]),
+              noDataValue: null
+            }
+          }
+        }
+      : {})
+  };
+  const source = arrow.tableFromArrays({geometry: [geometry], value: [9]});
+  const dataset = {id: 'crs-result', value: {source}};
+  const publications = new Map();
+  const importArrowDataset = vi.fn(
+    ({
+      table: displayTable,
+      normalization
+    }: {
+      table: arrow.Table;
+      normalization: {columns: string[]};
+    }) => {
+      expect(normalization.columns).toEqual(['value']);
+      const point = JSON.parse(String(displayTable.getChild('geometry')!.get(0)));
+      expect(point.coordinates[0]).toBeCloseTo(10, 10);
+      expect(point.coordinates[1]).toBeCloseTo(20, 10);
+      return dataset;
+    }
+  );
+  context.runtime = {
+    publications,
+    device: {isLost: false},
+    requestUpdate: vi.fn(),
+    removePublication: vi.fn(),
+    attachDataset: vi.fn(async () => {
+      const published = {consumer: {explorer: {isCurrent: true}}, nativeData: {fields: []}};
+      publications.set(dataset.id, published);
+      return published;
+    }),
+    session: {importArrowDataset, registry: {getDataset: () => dataset}, removeDataset: vi.fn()}
+  } as unknown as ComputeRuntime;
+  appState.requestedPublicationId = dataset.id;
+  // A saved/staged result can still say "map"; it must pass the current shared CRS guard.
+  await publishSource(
+    {
+      table: source,
+      label: table.label,
+      isCurrent: () => true,
+      analysisResult: {table, destination: 'map'}
+    },
+    {columns: ['value', 'longitude', 'latitude']},
+    undefined,
+    'geometry'
+  );
+  if (sourceCrs === 'planar') {
+    expect(importArrowDataset).not.toHaveBeenCalled();
+    expect(publications.size).toBe(0);
+    const report = getAnalysisResultReportView()!;
+    expect(report.analysisResult.destination).toBe('report');
+    expect(report.analysisResult.mapMessage).toMatch(/planar.*no declared projection/);
+    expect(report.analysisResult.table).toBe(table);
+    dismissAnalysisResultReport(report);
+    appState.requestedPublicationId = undefined;
+  } else expect(importArrowDataset).toHaveBeenCalledOnce();
+  expect(table.columns['geometry']).toEqual([geometry]);
 });
 
 afterAll(() => {

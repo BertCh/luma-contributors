@@ -6,9 +6,12 @@ import {validateRequirement} from '@luma-contributors/analysis/analysis-core';
 import type {
   CatalogOperationBinding,
   CatalogParameterSpec,
+  CatalogPreviewPlan,
   CatalogRunOutput
 } from './catalog-binding-types';
 import type {CatalogCoordinateSystem} from './catalog-geojson';
+import {getCatalogFeatureInputs} from './catalog-data-input';
+import {CatalogGpuSession} from './catalog-gpu-session';
 import {
   addCatalogDiagnostic,
   appendCatalogRow,
@@ -46,6 +49,7 @@ import {
   computeIdwFieldGpu,
   computeKernelDensityField,
   computeKernelDensityFieldGpu,
+  createKernelDensityResources,
   computeKrigingField,
   computeLineDensity,
   computeLineLengthPerPolygon,
@@ -338,6 +342,88 @@ const KDE_BINDING: CatalogOperationBinding = {
   ],
   limitation:
     'Fixed bandwidth, exact gather and no edge correction or study-window polygon; zero-density cells are not published by default.',
+  planPreview: (inputs, values): CatalogPreviewPlan => {
+    const points = getCatalogFeatureInputs(inputs)['points'];
+    validateRequirement('KernelDensityPreview', Boolean(points), 'points must be GeoJSON features');
+    const prepared = preparePointGrid(
+      points!,
+      values['weightProperty'] as string,
+      COORDINATE(values),
+      values['cellSize'] as number,
+      values['padding'] as number
+    );
+    const cells = prepared.grid.columns * prepared.grid.rows;
+    // Index topology depends on population, not live bandwidth. Exact gathers still visit every
+    // intersected index cell, so changing bandwidth does not change the estimator or its support.
+    const side = Math.max(1, Math.min(128, Math.ceil(Math.sqrt(prepared.sample.count / 4))));
+    const paddedSamples = 2 ** Math.ceil(Math.log2(Math.max(1, prepared.sample.count)));
+    // Conservative peak envelopes: caller arrays and staging, grid index scans and stable row
+    // ordering/sort scratch, reductions, uniforms and compiled intermediates. The GPU spec checks
+    // actual device allocations against admission. Two CPU results cover replacement plus JSON.
+    const gpuByteLength = 1024 * 1024 + 1024 * paddedSamples + 256 * (cells + side * side);
+    const cpuByteLength = 2 * (cells * 2048 + prepared.sample.count * 128);
+    return {
+      key: JSON.stringify([
+        values['cellSize'],
+        values['padding'],
+        values['coordinateSystem'],
+        values['weightProperty'],
+        values['kernel']
+      ]),
+      gpuByteLength,
+      cpuByteLength,
+      create: async ({device}) => {
+        const session = new CatalogGpuSession(
+          device,
+          'catalog-kernel-density-preview',
+          gpuByteLength
+        );
+        let resources: ReturnType<typeof createKernelDensityResources> | undefined;
+        return {
+          initialize: async signal => {
+            signal.throwIfAborted();
+            resources = createKernelDensityResources(
+              session,
+              prepared.sample,
+              prepared.grid,
+              readKernelSettings(values),
+              Boolean(values['weightProperty']),
+              side
+            );
+            await session.compile(signal);
+          },
+          execute: async (parameters, signal) => {
+            signal.throwIfAborted();
+            validateRequirement(
+              'KernelDensityPreview',
+              Boolean(resources),
+              'initialize must complete before execute'
+            );
+            resources!.updateBandwidth(parameters['bandwidth'] as number);
+            let field: GridField;
+            try {
+              session.run(signal);
+              field = {values: await session.readFloat32(resources!.output)};
+            } finally {
+              await session.waitForCompletion();
+            }
+            signal.throwIfAborted();
+            return finishGrid(
+              {...prepared, diagnostics: [...prepared.diagnostics]},
+              field,
+              'density-cells',
+              'Density cells',
+              'density',
+              index => !(field.values[index] > 0),
+              parameters['includeEmptyCells'] as boolean,
+              ['GPUKernelDensity']
+            );
+          },
+          destroy: () => session.dispose()
+        };
+      }
+    };
+  },
   run: (inputs, values) => {
     const context = preparePointGrid(
       inputs['points'],

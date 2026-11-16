@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getGPUAnalysisParameterComparisons} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
 import {describe, expect, it} from 'vitest';
 import {
   getCatalogBinding,
@@ -675,7 +677,11 @@ describe('GEOMETRY_B_OPERATION_DESCRIPTORS', () => {
           parameter => parameter.name
         );
         for (const parameter of descriptor.parameters) {
-          if (parameter.activeWhen) expect(names).toContain(parameter.activeWhen.parameter);
+          if (parameter.activeWhen)
+            for (const comparison of getGPUAnalysisParameterComparisons(parameter.activeWhen))
+              expect(names).toContain(
+                'parameter' in comparison ? comparison.parameter : comparison.whenParameter
+              );
         }
       }
     });

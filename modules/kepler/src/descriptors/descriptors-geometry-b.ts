@@ -8,6 +8,10 @@ import type {
   KeplerOperationRequirement
 } from './operation-descriptor-types';
 
+// Apply policy: the sphere radius of s2-cell-measures only rescales output measures (live).
+// Other settings change prepared geometry, row/vertex allocation, graph construction
+// or compiled shader constants. Rebuild keeps those resources consistent with the chosen value.
+
 // Descriptors for the second half of the geometry domain: what each binding means to a user.
 // The numbers in `requirements` repeat the binding's own input capacities; the spec compares
 // them with the binding so the two cannot drift apart.
@@ -42,7 +46,13 @@ function describeConstant(
   level: 'basic' | 'advanced' = 'advanced',
   activeWhen?: KeplerOperationParameterDescriptor['activeWhen']
 ): KeplerOperationParameterDescriptor {
-  return {name, defaultPolicy: {from: 'constant'}, level, ...(activeWhen ? {activeWhen} : {})};
+  return {
+    name,
+    apply: 'rebuild',
+    defaultPolicy: {from: 'constant'},
+    level,
+    ...(activeWhen ? {activeWhen} : {})
+  };
 }
 
 /**
@@ -555,6 +565,7 @@ export const GEOMETRY_B_OPERATION_DESCRIPTORS: readonly KeplerOperationDescripto
       // the binding's own unit (`crs`) is.
       {
         name: 'radius',
+        apply: 'rebuild',
         defaultPolicy: {
           from: 'data',
           input: 'points',
@@ -617,6 +628,7 @@ export const GEOMETRY_B_OPERATION_DESCRIPTORS: readonly KeplerOperationDescripto
     parameters: [
       {
         name: 'dotValue',
+        apply: 'rebuild',
         defaultPolicy: {
           from: 'data',
           input: 'polygons',
@@ -653,6 +665,11 @@ export const GEOMETRY_B_OPERATION_DESCRIPTORS: readonly KeplerOperationDescripto
       {
         tableId: 'dots',
         kind: 'points',
+        presentationException: {
+          type: 'uniform-style',
+          reason:
+            'Each dot represents the same amount; colour would imply a second measurement. Show equal dots uniformly and read the value per dot in the chosen parameters.'
+        },
         interpretation: {summary: 'row-count', cautions: []},
         next: ['where-concentrated']
       }
@@ -673,8 +690,18 @@ export const GEOMETRY_B_OPERATION_DESCRIPTORS: readonly KeplerOperationDescripto
     parameters: [
       describeConstant('direction', 'basic'),
       describeConstant('useDataCenter', 'basic', {parameter: 'direction', equals: ['forward']}),
-      describeConstant('originLongitude'),
-      describeConstant('originLatitude')
+      describeConstant('originLongitude', 'advanced', {
+        anyOf: [
+          {parameter: 'direction', equals: ['inverse']},
+          {parameter: 'useDataCenter', equals: [false]}
+        ]
+      }),
+      describeConstant('originLatitude', 'advanced', {
+        anyOf: [
+          {parameter: 'direction', equals: ['inverse']},
+          {parameter: 'useDataCenter', equals: [false]}
+        ]
+      })
     ],
     // No coordinate requirement: forward needs longitude and latitude and inverse needs metres,
     // and a requirement cannot depend on the direction.
@@ -683,13 +710,18 @@ export const GEOMETRY_B_OPERATION_DESCRIPTORS: readonly KeplerOperationDescripto
       {
         tableId: 'local-frame-features',
         kind: 'polygons',
+        presentationException: {
+          type: 'uniform-style',
+          reason:
+            'This output changes coordinate units without adding a comparable per-feature measure; show the converted geometry uniformly.'
+        },
         kindFrom: 'features',
         interpretation: {summary: 'row-count', cautions: []}
       }
     ],
     notes: [
       'Forward turns longitude and latitude into metres east and north of the origin; inverse turns metres back. The inverse always uses the origin below, so enter the origin the forward step used.',
-      'The origin longitude and latitude apply when converting back, or when the data centre is not used going forward. They are not hidden by the form because that depends on two parameters at once.',
+      'The origin longitude and latitude apply when converting back, or when the data centre is not used going forward. They are hidden while forward conversion uses the data centre.',
       'Forward outputs planar metres; inverse outputs longitude and latitude. Declare the output coordinate system accordingly. Properties are not copied.'
     ]
   },
@@ -1037,6 +1069,11 @@ export const GEOMETRY_B_OPERATION_DESCRIPTORS: readonly KeplerOperationDescripto
       {
         tableId: 's2-hierarchy',
         kind: 'cells',
+        presentationException: {
+          type: 'uniform-style',
+          reason:
+            'Cell identifiers and child or neighbour positions describe a relation, not magnitude; show the related cells uniformly and inspect the relation in the table.'
+        },
         // No column to colour by: the relation is the position among the children or neighbours.
         interpretation: {summary: 'row-count', cautions: []}
       }
@@ -1052,7 +1089,11 @@ export const GEOMETRY_B_OPERATION_DESCRIPTORS: readonly KeplerOperationDescripto
     action: 'Measure global grid cells',
     prominence: 3,
     inputs: [{name: 'points', kind: 'points', fields: []}],
-    parameters: [describeConstant('level', 'basic'), describeConstant('radius')],
+    // Sphere radius only rescales the already computed unit-sphere area and perimeter.
+    parameters: [
+      describeConstant('level', 'basic'),
+      {...describeConstant('radius'), apply: 'live'}
+    ],
     requirements: [
       ...limitCapacity('points', 20000, 200000),
       {
@@ -1099,6 +1140,11 @@ export const GEOMETRY_B_OPERATION_DESCRIPTORS: readonly KeplerOperationDescripto
       {
         tableId: 's2-cap-cover',
         kind: 'cells',
+        presentationException: {
+          type: 'uniform-style',
+          reason:
+            'All cells cover the same radius at one level; show coverage uniformly without treating cell identifiers as quantities.'
+        },
         interpretation: {summary: 'row-count', cautions: []}
       }
     ],

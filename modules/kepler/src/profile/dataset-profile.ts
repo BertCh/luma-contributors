@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {parseKeplerIsoTimestamp, KEPLER_IMPOSSIBLE_TIMESTAMP} from './iso-timestamp';
 import {
+  AnalysisGeographicExtentAccumulator,
   computeGPUAnalysisSpacingStatistics,
   guessGPUAnalysisCoordinateModel,
   guessGPUAnalysisMeasurementLevel,
@@ -33,6 +35,7 @@ import {
 } from '../analysis/catalog-geojson';
 import {getFeatureAnchor} from '../analysis/catalog-platform3-b-common';
 import type {LocalFrame} from '../analysis/catalog-local-frame';
+import {KeplerDistinctCounter, getKeplerDistinctCountExactLimit} from './distinct-count-statistics';
 import type {KeplerDatasetProfile, KeplerDatasetProfileDeclarations} from './dataset-profile-types';
 
 // Collects what the host knows about a dataset the moment it is loaded: its shape, coordinates,
@@ -54,6 +57,8 @@ export type KeplerProfileStorageType = 'string' | 'float64' | 'int32' | 'boolean
  */
 export type KeplerDatasetProfileColumn = GPUAnalysisColumnProfile & {
   storage: KeplerProfileStorageType;
+  /** Present only when every row was inspected and contains a valid ISO timestamp string. */
+  timestampEncoding?: 'iso8601';
 };
 
 /** Geometry families of the rows of a dataset. */
@@ -98,6 +103,13 @@ export type KeplerDatasetProfileOptions = {
    */
   maximumSampleSize?: number;
   /**
+   * Decision thresholds to refine exactly, through one additional distinct value, for this
+   * revision. Sets grow only to KEPLER_PROFILE_MAXIMUM_REFINED_DISTINCT_COUNT; a threshold
+   * straddling the remaining guaranteed bounds stays unknown. Sampling still describes only
+   * inspected rows. Reprofiling with these thresholds reuses the normal accepted-value rules.
+   */
+  distinctCountThresholds?: readonly number[];
+  /**
    * Coordinate system of the geometry, when the host knows it. A feature collection carries none
    * (the catalog takes it as a binding parameter), so the host passes it here. `EPSG:4326` is
    * geographic, `planar` is planar. A `coordinateModel` declaration overrides it.
@@ -131,6 +143,8 @@ export type KeplerProfileColumnTable = {
 };
 
 export type KeplerColumnTableProfileOptions = KeplerDatasetProfileOptions & {
+  /** Infer point geometry from coordinate column names; false preserves an explicit table interpretation. */
+  inferPointColumns?: boolean;
   /** Numeric columns that hold the longitude and latitude (or x and y) of point rows. */
   pointColumns?: {longitude: string; latitude: string};
   /** Columns that hold GeoJSON geometry text. Defaults to the table's `geometryColumn`. */
@@ -148,22 +162,7 @@ export type KeplerRecommendationSubject = {
 // Limits
 // ---------------------------------------------------------------------------------------------
 
-/**
- * Distinct values are counted exactly with a set up to this many. A set of 10,000 numbers or short
- * strings costs well under a megabyte, and a column with more distinct values than this is not a
- * category whatever its exact count is.
- */
-export const KEPLER_PROFILE_MAXIMUM_EXACT_DISTINCT_COUNT = 10_000;
-
-/**
- * Past the exact limit the distinct count is an estimate by linear counting: each value sets one
- * bit of a bitmap of this many bits (128 KiB), chosen by a 32-bit hash, and the estimate is
- * -m ln(z / m) with m the bit count and z the bits still clear. The standard error is under 0.1
- * percent up to about a million distinct values, and the estimate is clamped to the non-null
- * count. Linear counting is deterministic and one hash per value, which a sketch with several
- * registers would not be at this cost.
- */
-const DISTINCT_BITMAP_BIT_COUNT = 1 << 20;
+export {KEPLER_PROFILE_MAXIMUM_EXACT_DISTINCT_COUNT} from './distinct-count-statistics';
 
 /** A text column with at most this many distinct values, and at most half as many as rows, is a category. */
 export const KEPLER_PROFILE_MAXIMUM_CATEGORY_DISTINCT_COUNT = 100;
@@ -197,195 +196,9 @@ const CATALOG_GEOMETRY_BY_FAMILY = {point: 'point', line: 'line', polygon: 'poly
 // Distinct counting
 // ---------------------------------------------------------------------------------------------
 
-const hashScratchFloat = new Float64Array(1);
-const hashScratchWords = new Uint32Array(hashScratchFloat.buffer);
-
-/** Murmur3 32-bit finaliser: every input bit changes about half of the output bits. */
-function mixHash(value: number): number {
-  let hash = value >>> 0;
-  hash ^= hash >>> 16;
-  hash = Math.imul(hash, 0x85ebca6b);
-  hash ^= hash >>> 13;
-  hash = Math.imul(hash, 0xc2b2ae35);
-  hash ^= hash >>> 16;
-  return hash >>> 0;
-}
-
-function hashValue(value: number | string): number {
-  if (typeof value === 'number') {
-    // `value + 0` turns -0 into 0 so that both count as one value, like a Set does.
-    hashScratchFloat[0] = value + 0;
-    return mixHash(hashScratchWords[0] ^ mixHash(hashScratchWords[1] + 0x9e3779b9));
-  }
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < value.length; index++) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return mixHash(hash);
-}
-
-/** Counts distinct numbers or strings: exact with a set, then a linear-counting estimate. */
-class DistinctCounter {
-  private exactValues: Set<number | string> | null = new Set();
-  private bitmap: Uint32Array | null = null;
-
-  add(value: number | string): void {
-    if (this.exactValues) {
-      this.exactValues.add(value);
-      if (this.exactValues.size > KEPLER_PROFILE_MAXIMUM_EXACT_DISTINCT_COUNT) this.spill();
-      return;
-    }
-    this.setBit(hashValue(value));
-  }
-
-  isExact(): boolean {
-    return this.exactValues !== null;
-  }
-
-  /** Distinct values seen: exact, or the linear-counting estimate. */
-  getCount(): number {
-    if (this.exactValues) return this.exactValues.size;
-    const bitmap = this.bitmap as Uint32Array;
-    let setBitCount = 0;
-    for (let index = 0; index < bitmap.length; index++) {
-      let word = bitmap[index];
-      while (word) {
-        word &= word - 1;
-        setBitCount++;
-      }
-    }
-    const clearBitCount = DISTINCT_BITMAP_BIT_COUNT - setBitCount;
-    // A full bitmap has no estimate; the clamp to the non-null count in the caller bounds it.
-    if (clearBitCount === 0) return DISTINCT_BITMAP_BIT_COUNT * Math.log(DISTINCT_BITMAP_BIT_COUNT);
-    return Math.round(
-      -DISTINCT_BITMAP_BIT_COUNT * Math.log(clearBitCount / DISTINCT_BITMAP_BIT_COUNT)
-    );
-  }
-
-  private spill(): void {
-    this.bitmap = new Uint32Array(DISTINCT_BITMAP_BIT_COUNT >>> 5);
-    for (const value of this.exactValues as Set<number | string>) this.setBit(hashValue(value));
-    this.exactValues = null;
-  }
-
-  private setBit(hash: number): void {
-    const bitIndex = hash & (DISTINCT_BITMAP_BIT_COUNT - 1);
-    (this.bitmap as Uint32Array)[bitIndex >>> 5] |= 1 << (bitIndex & 31);
-  }
-}
-
 // ---------------------------------------------------------------------------------------------
 // Column statistics
 // ---------------------------------------------------------------------------------------------
-
-/** Returned by {@link parseIsoTimestamp} for text that has the shape of a timestamp but names an impossible time. */
-const IMPOSSIBLE_TIMESTAMP = Number.NEGATIVE_INFINITY;
-
-function readDigits(text: string, start: number, count: number): number {
-  let value = 0;
-  for (let index = start; index < start + count; index++) {
-    const code = text.charCodeAt(index);
-    if (code < 48 || code > 57) return -1;
-    value = value * 10 + (code - 48);
-  }
-  return value;
-}
-
-function isLeapYear(year: number): boolean {
-  return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
-}
-
-const DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-
-/** Days from 1970-01-01 to a proleptic Gregorian date (Hinnant's algorithm); valid for year 0 and up. */
-function getDaysFromCivil(year: number, month: number, day: number): number {
-  const shiftedYear = month <= 2 ? year - 1 : year;
-  const era = Math.floor(shiftedYear / 400);
-  const yearOfEra = shiftedYear - era * 400;
-  const dayOfYear = Math.floor((153 * (month + (month > 2 ? -3 : 9)) + 2) / 5) + day - 1;
-  const dayOfEra =
-    yearOfEra * 365 + Math.floor(yearOfEra / 4) - Math.floor(yearOfEra / 100) + dayOfYear;
-  return era * 146097 + dayOfEra - 719468;
-}
-
-/**
- * Milliseconds since the epoch of an ISO 8601 date or date-time string (`YYYY-MM-DD`, optionally
- * `THH:MM`, `:SS`, `.fraction` and a `Z` or `+HH:MM` / `+HHMM` zone). NaN when the text does not
- * have that shape. {@link IMPOSSIBLE_TIMESTAMP} when it has the shape but not a real time: a day
- * beyond the month's length (leap years honoured), month outside 1 to 12, hour above 23 (so
- * `24:00:00` is rejected), minute or second above 59, a zone offset beyond 23:59. The engine's
- * `Date.parse` rolls such text over to another date, so the check is done here. A date-time
- * without a zone designator is read as UTC, because `Date.parse` would read it in the zone of the
- * machine and the same data would then profile differently on two machines.
- */
-function parseIsoTimestamp(text: string): number {
-  // Cheap rejection first: most text is not a timestamp, and this runs on every string.
-  const length = text.length;
-  if (length < 10 || text.charCodeAt(4) !== 45 || text.charCodeAt(7) !== 45) return Number.NaN;
-  const year = readDigits(text, 0, 4);
-  const month = readDigits(text, 5, 2);
-  const day = readDigits(text, 8, 2);
-  if (year < 0 || month < 0 || day < 0) return Number.NaN;
-  let hour = 0;
-  let minute = 0;
-  let second = 0;
-  let fractionMilliseconds = 0;
-  let offsetMinutes = 0;
-  let offsetHour = 0;
-  let offsetMinute = 0;
-  if (length > 10) {
-    if (text.charCodeAt(10) !== 84 || text.charCodeAt(13) !== 58) return Number.NaN;
-    hour = readDigits(text, 11, 2);
-    minute = readDigits(text, 14, 2);
-    if (hour < 0 || minute < 0) return Number.NaN;
-    let position = 16;
-    if (position < length && text.charCodeAt(position) === 58) {
-      second = readDigits(text, position + 1, 2);
-      if (second < 0) return Number.NaN;
-      position += 3;
-      if (position < length && text.charCodeAt(position) === 46) {
-        position++;
-        const fractionStart = position;
-        let scale = 100;
-        while (position < length) {
-          const code = text.charCodeAt(position);
-          if (code < 48 || code > 57) break;
-          if (scale >= 1) fractionMilliseconds += (code - 48) * scale;
-          scale /= 10;
-          position++;
-        }
-        if (position === fractionStart) return Number.NaN;
-        fractionMilliseconds = Math.floor(fractionMilliseconds);
-      }
-    }
-    if (position < length) {
-      const code = text.charCodeAt(position);
-      if (code === 90) {
-        if (position + 1 !== length) return Number.NaN;
-      } else if (code === 43 || code === 45) {
-        offsetHour = readDigits(text, position + 1, 2);
-        const minuteStart = text.charCodeAt(position + 3) === 58 ? position + 4 : position + 3;
-        offsetMinute = readDigits(text, minuteStart, 2);
-        if (offsetHour < 0 || offsetMinute < 0 || minuteStart + 2 !== length) return Number.NaN;
-        offsetMinutes = (offsetHour * 60 + offsetMinute) * (code === 45 ? -1 : 1);
-      } else {
-        return Number.NaN;
-      }
-    }
-  }
-  if (month < 1 || month > 12) return IMPOSSIBLE_TIMESTAMP;
-  const daysInMonth = month === 2 && isLeapYear(year) ? 29 : DAYS_IN_MONTH[month - 1];
-  if (day < 1 || day > daysInMonth) return IMPOSSIBLE_TIMESTAMP;
-  if (hour > 23 || minute > 59 || second > 59 || offsetHour > 23 || offsetMinute > 59)
-    return IMPOSSIBLE_TIMESTAMP;
-  return (
-    getDaysFromCivil(year, month, day) * 86_400_000 +
-    ((hour * 60 + minute) * 60 + second) * 1000 +
-    fractionMilliseconds -
-    offsetMinutes * 60_000
-  );
-}
 
 const powerScratchFloat = new Float64Array(1);
 const powerScratchWords = new Uint32Array(powerScratchFloat.buffer);
@@ -428,6 +241,8 @@ type ResolvedColumnType = {
  * strings, booleans, dates) so the type can be settled at the end, and allocates nothing per row.
  */
 class ColumnAccumulator {
+  constructor(private readonly distinctExactLimit: number) {}
+
   numberCount = 0;
   nonFiniteCount = 0;
   stringCount = 0;
@@ -447,7 +262,7 @@ class ColumnAccumulator {
   hasUnsafeIntegers = false;
   /** Strings with the shape of a timestamp that name an impossible time (`2021-02-29`). */
   impossibleTimestampCount = 0;
-  private bigIntegerDistinct: DistinctCounter | null = null;
+  private bigIntegerDistinct: KeplerDistinctCounter | null = null;
   private minimum = Number.POSITIVE_INFINITY;
   private maximum = Number.NEGATIVE_INFINITY;
   private allIntegral = true;
@@ -455,10 +270,10 @@ class ColumnAccumulator {
   private allInt32 = true;
   private timeMinimum = Number.POSITIVE_INFINITY;
   private timeMaximum = Number.NEGATIVE_INFINITY;
-  private numberDistinct: DistinctCounter | null = null;
-  private stringDistinct: DistinctCounter | null = null;
-  private dateDistinct: DistinctCounter | null = null;
-  private timestampStringDistinct: DistinctCounter | null = null;
+  private numberDistinct: KeplerDistinctCounter | null = null;
+  private stringDistinct: KeplerDistinctCounter | null = null;
+  private dateDistinct: KeplerDistinctCounter | null = null;
+  private timestampStringDistinct: KeplerDistinctCounter | null = null;
 
   add(value: unknown): void {
     switch (typeof value) {
@@ -482,7 +297,8 @@ class ColumnAccumulator {
           // Beyond 2^53 the double used for the statistics is rounded, so the values are counted
           // as distinct by their exact text; the column is typed number and its guess withheld.
           this.hasUnsafeIntegers = true;
-          this.bigIntegerDistinct = this.bigIntegerDistinct ?? new DistinctCounter();
+          this.bigIntegerDistinct =
+            this.bigIntegerDistinct ?? new KeplerDistinctCounter(this.distinctExactLimit);
           this.bigIntegerDistinct.add(value.toString());
           this.addNumber(Number(value), false);
         } else {
@@ -524,7 +340,8 @@ class ColumnAccumulator {
     }
     if (this.allInt32 && (value > INT32_MAXIMUM || value < INT32_MINIMUM)) this.allInt32 = false;
     if (countDistinct) {
-      this.numberDistinct = this.numberDistinct ?? new DistinctCounter();
+      this.numberDistinct =
+        this.numberDistinct ?? new KeplerDistinctCounter(this.distinctExactLimit);
       this.numberDistinct.add(value);
     }
   }
@@ -546,17 +363,18 @@ class ColumnAccumulator {
 
   private addString(value: string): void {
     this.stringCount++;
-    const timestamp = parseIsoTimestamp(value);
-    if (timestamp === IMPOSSIBLE_TIMESTAMP) {
+    const timestamp = parseKeplerIsoTimestamp(value);
+    if (timestamp === KEPLER_IMPOSSIBLE_TIMESTAMP) {
       this.impossibleTimestampCount++;
     } else if (timestamp === timestamp) {
       this.isoStringCount++;
-      this.timestampStringDistinct = this.timestampStringDistinct ?? new DistinctCounter();
+      this.timestampStringDistinct =
+        this.timestampStringDistinct ?? new KeplerDistinctCounter(this.distinctExactLimit);
       this.timestampStringDistinct.add(value);
       if (timestamp < this.timeMinimum) this.timeMinimum = timestamp;
       if (timestamp > this.timeMaximum) this.timeMaximum = timestamp;
     }
-    this.stringDistinct = this.stringDistinct ?? new DistinctCounter();
+    this.stringDistinct = this.stringDistinct ?? new KeplerDistinctCounter(this.distinctExactLimit);
     this.stringDistinct.add(value);
   }
 
@@ -565,7 +383,7 @@ class ColumnAccumulator {
     this.dateCount++;
     if (milliseconds < this.timeMinimum) this.timeMinimum = milliseconds;
     if (milliseconds > this.timeMaximum) this.timeMaximum = milliseconds;
-    this.dateDistinct = this.dateDistinct ?? new DistinctCounter();
+    this.dateDistinct = this.dateDistinct ?? new KeplerDistinctCounter(this.distinctExactLimit);
     this.dateDistinct.add(milliseconds);
   }
 
@@ -587,8 +405,8 @@ class ColumnAccumulator {
   private getDistinct(
     type: GPUAnalysisColumnType,
     keepsAllValues: boolean
-  ): {count: number; estimate: boolean} | undefined {
-    const counters: DistinctCounter[] = [];
+  ): {count: number; estimate: boolean; lowerBound: number; upperBound: number} | undefined {
+    const counters: KeplerDistinctCounter[] = [];
     let booleanValues = 0;
     if (type === 'number' || type === 'integer') {
       if (this.numberDistinct) counters.push(this.numberDistinct);
@@ -610,12 +428,17 @@ class ColumnAccumulator {
       }
     }
     let count = booleanValues;
+    let lowerBound = booleanValues;
+    let upperBound = booleanValues;
     let estimate = false;
     for (const counter of counters) {
-      count += counter.getCount();
-      if (!counter.isExact()) estimate = true;
+      const statistics = counter.getStatistics();
+      count += statistics.count;
+      lowerBound += statistics.lowerBound;
+      upperBound += statistics.upperBound;
+      if (!statistics.exact) estimate = true;
     }
-    return count === 0 ? undefined : {count, estimate};
+    return count === 0 ? undefined : {count, estimate, lowerBound, upperBound};
   }
 
   /**
@@ -733,11 +556,20 @@ class ColumnAccumulator {
       column.distinctCount = Math.min(distinct.count, validCount);
       if (distinct.estimate) column.distinctCountIsEstimate = true;
     }
+    column.distinctCountLowerBound = distinct?.lowerBound ?? 0;
+    column.distinctCountUpperBound = Math.min(distinct?.upperBound ?? 0, validCount);
 
     if (type === 'boolean') column.storage = 'boolean';
     else if (type === 'integer') column.storage = this.allInt32 ? 'int32' : 'float64';
     else if (type === 'number') column.storage = 'float64';
     else if (type === 'time') column.storage = this.stringCount > 0 ? 'string' : 'float64';
+    if (
+      type === 'time' &&
+      rowsSeen === rowCount &&
+      rowsSeen > 0 &&
+      this.isoStringCount === rowsSeen
+    )
+      column.timestampEncoding = 'iso8601';
     return column;
   }
 }
@@ -1027,136 +859,6 @@ function getPolygonAnchor(geometry: CatalogGeometry): [number, number] | undefin
 
 type Extent = [number, number, number, number];
 
-/** Longitude buckets of the covering arc: a gap between occupied buckets is exact, one inside a bucket (under 0.1 degree) is not seen. */
-const ARC_BUCKETS_PER_DEGREE = 10;
-const ARC_BUCKET_COUNT = 360 * ARC_BUCKETS_PER_DEGREE;
-
-/**
- * Collects the extent of positions in one pass and constant memory (two buckets arrays of 3,600
- * numbers): the plain minimum and maximum, and the geographic covering extent.
- *
- * The covering extent follows the convention of the spacing statistics of the analysis package
- * (`computeGPUAnalysisSpacingStatistics`, whose geographic extent helper is not exported; the
- * rule is restated here and the two are tested to agree through `getGPUAnalysisExtentSizes`):
- * `[west, south, east, north]` where the longitude range is the smallest arc that covers every
- * longitude and every geometry edge, 360 degrees minus the largest uncovered gap modulo 360. When
- * that arc is narrower than the plain range, west and east are the ends of the arc in
- * [-180, 180] and west is GREATER than east if the arc crosses the antimeridian (a box from 178 to
- * 182 is `[178, south, -178, north]`); otherwise it equals the plain extent. The arc is found
- * from occupied longitude intervals in each 0.1 degree bucket of the circle, so every gap of
- * 0.1 degree or more is exact; data with no such gap covers the whole circle and gets the plain
- * extent. Longitudes written 0 to 360 are normalised modulo 360 for the arc computation only;
- * the stored coordinates and the plain extent keep the source values. A dataset at 150 to 250 is
- * one arc of 100 degrees and keeps the source range `[150, south, 250, north]` (east above 180,
- * which the sizes measure correctly); a dataset at 350 and 10 becomes `[-10, south, 10, north]`.
- */
-class ExtentAccumulator {
-  private count = 0;
-  private minimumX = Number.POSITIVE_INFINITY;
-  private minimumY = Number.POSITIVE_INFINITY;
-  private maximumX = Number.NEGATIVE_INFINITY;
-  private maximumY = Number.NEGATIVE_INFINITY;
-  private bucketMinimum = new Float64Array(ARC_BUCKET_COUNT).fill(Number.POSITIVE_INFINITY);
-  private bucketMaximum = new Float64Array(ARC_BUCKET_COUNT).fill(Number.NEGATIVE_INFINITY);
-
-  add(x: number, y: number): void {
-    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
-    this.count++;
-    if (x < this.minimumX) this.minimumX = x;
-    if (x > this.maximumX) this.maximumX = x;
-    if (y < this.minimumY) this.minimumY = y;
-    if (y > this.maximumY) this.maximumY = y;
-    const wrapped = ((x % 360) + 360) % 360;
-    const bucket = Math.min(Math.floor(wrapped * ARC_BUCKETS_PER_DEGREE), ARC_BUCKET_COUNT - 1);
-    if (wrapped < this.bucketMinimum[bucket]) this.bucketMinimum[bucket] = wrapped;
-    if (wrapped > this.bucketMaximum[bucket]) this.bucketMaximum[bucket] = wrapped;
-  }
-
-  /**
-   * GeoJSON edges interpolate the coordinates as written (RFC 7946 section 3.1.1). Crossing
-   * geometries should be cut at 180 into separate parts (section 3.1.9); a broad uncut edge
-   * therefore covers its interior longitudes, rather than silently choosing its complement.
-   */
-  addPath(positions: readonly CatalogPosition[], close: boolean): void {
-    let previous: CatalogPosition | undefined;
-    for (const position of positions) {
-      this.add(position[0], position[1]);
-      if (previous) this.addEdge(previous, position);
-      previous = position;
-    }
-    if (close && previous && positions.length > 0) this.addEdge(previous, positions[0]);
-  }
-
-  private addEdge(first: CatalogPosition, second: CatalogPosition): void {
-    if (![first[0], first[1], second[0], second[1]].every(Number.isFinite)) return;
-    const minimum = Math.min(first[0], second[0]);
-    const width = Math.abs(second[0] - first[0]);
-    if (width >= 360) {
-      this.addLongitudeInterval(0, 360);
-      return;
-    }
-    const start = ((minimum % 360) + 360) % 360;
-    const end = start + width;
-    this.addLongitudeInterval(start, Math.min(end, 360));
-    if (end > 360) this.addLongitudeInterval(0, end - 360);
-  }
-
-  private addLongitudeInterval(start: number, end: number): void {
-    const firstBucket = Math.min(Math.floor(start * ARC_BUCKETS_PER_DEGREE), ARC_BUCKET_COUNT - 1);
-    const lastBucket = Math.min(Math.floor(end * ARC_BUCKETS_PER_DEGREE), ARC_BUCKET_COUNT - 1);
-    for (let bucket = firstBucket; bucket <= lastBucket; bucket++) {
-      this.bucketMinimum[bucket] = Math.min(
-        this.bucketMinimum[bucket],
-        Math.max(start, bucket / ARC_BUCKETS_PER_DEGREE)
-      );
-      this.bucketMaximum[bucket] = Math.max(
-        this.bucketMaximum[bucket],
-        Math.min(end, (bucket + 1) / ARC_BUCKETS_PER_DEGREE)
-      );
-    }
-  }
-
-  /** Minimum and maximum of every coordinate, as found; undefined without a position. */
-  getPlain(): Extent | undefined {
-    return this.count > 0
-      ? [this.minimumX, this.minimumY, this.maximumX, this.maximumY]
-      : undefined;
-  }
-
-  /** The extent for geographic coordinates, see the class comment; undefined without a position. */
-  getCovering(): Extent | undefined {
-    const plain = this.getPlain();
-    if (!plain) return undefined;
-    let firstMinimum = Number.NaN;
-    let previousMaximum = Number.NaN;
-    let westValue = 0;
-    let eastValue = 0;
-    let largestGap = -1;
-    for (let bucket = 0; bucket < ARC_BUCKET_COUNT; bucket++) {
-      const minimum = this.bucketMinimum[bucket];
-      if (minimum === Number.POSITIVE_INFINITY) continue;
-      if (Number.isNaN(firstMinimum)) {
-        firstMinimum = minimum;
-      } else if (minimum - previousMaximum > largestGap) {
-        largestGap = minimum - previousMaximum;
-        westValue = minimum;
-        eastValue = previousMaximum;
-      }
-      previousMaximum = this.bucketMaximum[bucket];
-    }
-    // The gap across 0/360 runs from the largest longitude round to the smallest.
-    if (firstMinimum + 360 - previousMaximum > largestGap) {
-      largestGap = firstMinimum + 360 - previousMaximum;
-      westValue = firstMinimum;
-      eastValue = previousMaximum;
-    }
-    const arcWidth = 360 - largestGap;
-    if (!(arcWidth < plain[2] - plain[0] - 1e-9)) return plain;
-    const toSigned = (degrees: number): number => (degrees > 180 ? degrees - 360 : degrees);
-    return [toSigned(westValue), plain[1], toSigned(eastValue), plain[3]];
-  }
-}
-
 /**
  * Puts complete parts in the feature's covering longitude arc. A part moves as a whole, so a
  * broad uncut edge keeps its literal interior; only the relative frames of separate parts change.
@@ -1166,7 +868,7 @@ function getGeographicGeometryAnchor(geometry: CatalogGeometry): [number, number
   const lines = getLineParts(geometry);
   let west: number | undefined;
   if (polygons.length > 1 || lines.length > 1) {
-    const extent = new ExtentAccumulator();
+    const extent = new AnalysisGeographicExtentAccumulator();
     for (const polygon of polygons) for (const ring of polygon) extent.addPath(ring, true);
     for (const line of lines) extent.addPath(line, false);
     west = extent.getCovering()?.[0];
@@ -1201,6 +903,7 @@ function getGeographicGeometryAnchor(geometry: CatalogGeometry): [number, number
 
 type GeometryAnalysis = {
   counts: KeplerGeometryFeatureCounts;
+  packedCounts: NonNullable<KeplerDatasetProfile['geometryPackedFeatureCounts']>;
   dominant?: GeometryFamily;
   vertexCount: number;
   /** Plain minimum and maximum of every vertex. */
@@ -1225,15 +928,16 @@ type GeometryAnalysis = {
  * Spacing locations: for points, every position (a multi-point row gives several); for lines, one
  * anchor per row (a length-weighted centroid for geographic coordinates, the catalog's vertex
  * mean for planar coordinates); for polygons,
- * one per row from {@link getPolygonAnchor}. The profile's polygon anchors can differ from the
- * catalog's `getFeatureAnchor` for polygons with holes or with parts of mixed orientation, and for
- * small polygons: the catalog's ignores holes, lets parts of opposite orientation cancel and falls
- * back to the vertex mean below an absolute area of 1e-12.
+ * one per row from {@link getPolygonAnchor}. The catalog now handles holes, mixed ring orientation
+ * and small polygons too. The profile retains scaled ring arithmetic for extreme coordinate ranges,
+ * a length-weighted fallback for unresolved area, and geographic multipart longitude alignment
+ * (AX-87 differential probes); these are distinct from the catalog's frame-space centroid.
  */
 function analyzeGeometry(geometries: ArrayLike<CatalogGeometry | undefined>): GeometryAnalysis {
   const counts: KeplerGeometryFeatureCounts = {point: 0, line: 0, polygon: 0, withoutGeometry: 0};
+  const packedCounts = {point: 0, line: 0, polygon: 0};
   let vertexCount = 0;
-  const extentAccumulator = new ExtentAccumulator();
+  const extentAccumulator = new AnalysisGeographicExtentAccumulator();
   const widen = (position: readonly [number, number]): void => {
     extentAccumulator.add(position[0], position[1]);
   };
@@ -1247,12 +951,21 @@ function analyzeGeometry(geometries: ArrayLike<CatalogGeometry | undefined>): Ge
     }
     counts[family]++;
     vertexCount += countFeatureVertices({geometry});
-    if (family === 'point') for (const position of getPointPositions(geometry)) widen(position);
-    else if (family === 'line')
-      for (const part of getLineParts(geometry)) extentAccumulator.addPath(part, false);
-    else
-      for (const polygon of getPolygonParts(geometry))
+    // Match the part-list gates in packCatalogPoints/Lines/Polygons during the existing pass.
+    if (family === 'point') {
+      const positions = getPointPositions(geometry);
+      if (positions.length) packedCounts.point++;
+      for (const position of positions) widen(position);
+    } else if (family === 'line') {
+      const parts = getLineParts(geometry);
+      if (parts.length) packedCounts.line++;
+      for (const part of parts) extentAccumulator.addPath(part, false);
+    } else {
+      const polygons = getPolygonParts(geometry);
+      if (polygons.length) packedCounts.polygon++;
+      for (const polygon of polygons)
         for (const ring of polygon) extentAccumulator.addPath(ring, true);
+    }
   }
 
   let dominant: GeometryFamily | undefined;
@@ -1289,6 +1002,7 @@ function analyzeGeometry(geometries: ArrayLike<CatalogGeometry | undefined>): Ge
 
   return {
     counts,
+    packedCounts,
     dominant,
     vertexCount,
     extent: extentAccumulator.getPlain(),
@@ -1369,6 +1083,7 @@ type SpatialFacts = {
   /** Geometry anchors in a common longitude frame; point tables use locations for both models. */
   geographicLocations?: Float64Array;
   geometryFeatureCounts?: KeplerGeometryFeatureCounts;
+  geometryPackedFeatureCounts?: KeplerDatasetProfile['geometryPackedFeatureCounts'];
   /** Why the coordinates are what they are, when something besides the extent decided it. */
   coordinateReason?: string;
   pointColumns?: {longitude: string; latitude: string};
@@ -1386,18 +1101,114 @@ type ProfileInternals = {
   spacingByModel: Record<GPUAnalysisCoordinateModel, GPUAnalysisSpacingStatistics | undefined>;
   modelNotes: Record<GPUAnalysisCoordinateModel, string[]>;
   /** Plain and covering extents of every vertex, for either coordinate model. */
-  plainExtent?: Extent;
-  coveringExtent?: Extent;
-  undeclared?: KeplerProfiledDataset;
+  plainExtent?: Readonly<Extent>;
+  coveringExtent?: Readonly<Extent>;
+  undeclared?: KeplerDatasetProfile;
 };
 
 const PROFILE_INTERNALS = new WeakMap<object, ProfileInternals>();
+const PROFILE_BASELINES = new WeakMap<object, KeplerDatasetProfile>();
+const PROFILE_DECLARATIONS = new WeakMap<object, KeplerDatasetProfileDeclarations>();
 
-/** The profile as it was before declarations were applied through `options.declarations`, or the profile itself. */
+/** The profile as it was before declarations were applied, or the profile itself. */
 export function getKeplerDatasetProfileUndeclared<ProfileType extends KeplerDatasetProfile>(
   profile: ProfileType
 ): ProfileType {
-  return (PROFILE_INTERNALS.get(profile)?.undeclared as ProfileType | undefined) ?? profile;
+  return (
+    ((PROFILE_BASELINES.get(profile) ?? PROFILE_INTERNALS.get(profile)?.undeclared) as
+      | ProfileType
+      | undefined) ?? profile
+  );
+}
+
+/**
+ * Refines network facts while preserving private coordinate summaries and the undeclared
+ * baseline. Refine the baseline too, so cache reinsertion can remove declarations and retain
+ * graph facts. Neither input profile is mutated.
+ */
+export function withKeplerDatasetNetworkProfile<ProfileType extends KeplerDatasetProfile>(
+  profile: ProfileType,
+  network: KeplerDatasetProfile['network']
+): ProfileType {
+  if (profile.network === network) return profile;
+  const next = {...profile, network};
+  const internals = PROFILE_INTERNALS.get(profile);
+  if (internals)
+    PROFILE_INTERNALS.set(next, {
+      ...internals,
+      undeclared: internals.undeclared
+        ? withKeplerDatasetNetworkProfile(internals.undeclared, network)
+        : undefined
+    });
+  const baseline = PROFILE_BASELINES.get(profile);
+  if (baseline) PROFILE_BASELINES.set(next, withKeplerDatasetNetworkProfile(baseline, network));
+  const declarations = PROFILE_DECLARATIONS.get(profile);
+  if (declarations) PROFILE_DECLARATIONS.set(next, declarations);
+  return next;
+}
+
+/** Publishes statistics without promoting declarations or anchor bounds into source facts. */
+export function withKeplerDatasetProfileStatistics(
+  profile: KeplerDatasetProfile,
+  statistics: Partial<Pick<KeplerDatasetProfile, 'columns' | 'spacing' | 'contiguity'>>
+): KeplerDatasetProfile {
+  const base = getKeplerDatasetProfileUndeclared(profile);
+  const next = {...base, ...statistics};
+  if (statistics.columns)
+    next.columns = statistics.columns.map(column => {
+      if (column.measurementSource !== 'declared') return column;
+      const original = base.columns.find(candidate => candidate.name === column.name);
+      const cleaned = {...column};
+      for (const key of [
+        'measurement',
+        'measurementSource',
+        'measurementReason',
+        'measurementConfidence'
+      ] as const) {
+        delete cleaned[key];
+        if (original?.[key] !== undefined) Object.assign(cleaned, {[key]: original[key]});
+      }
+      return cleaned;
+    });
+  const candidate = statistics.spacing;
+  const pointGeometry =
+    !base.mixedGeometry &&
+    (base.catalogGeometry === 'point' || (!base.catalogGeometry && base.kind === 'points'));
+  const expectedCount = base.vertexCount ?? (base.pointColumns ? base.rowCount : undefined);
+  const completeLocations =
+    candidate?.locationCoverage === 'all-locations' &&
+    (expectedCount === undefined || candidate.pointCount === expectedCount);
+  const spacing = pointGeometry && !completeLocations ? undefined : candidate;
+  const previous = PROFILE_INTERNALS.get(base);
+  const internals: ProfileInternals = {
+    spacingByModel: {...(previous?.spacingByModel ?? {geographic: undefined, planar: undefined})},
+    modelNotes: {...(previous?.modelNotes ?? {geographic: [], planar: []})},
+    plainExtent:
+      previous?.plainExtent ?? (base.coordinates?.model === 'planar' ? base.extent : undefined),
+    coveringExtent:
+      previous?.coveringExtent ??
+      (base.coordinates?.model === 'geographic' ? base.extent : undefined)
+  };
+  if (spacing) {
+    internals.spacingByModel[spacing.coordinateModel] = spacing;
+    if (
+      pointGeometry &&
+      completeLocations &&
+      !spacing.sampled &&
+      spacing.sampleSize === spacing.pointCount
+    ) {
+      if (spacing.coordinateModel === 'planar') internals.plainExtent = spacing.extent;
+      else internals.coveringExtent = spacing.extent;
+    }
+  }
+  next.spacing = spacing?.coordinateModel === base.coordinates?.model ? spacing : base.spacing;
+  const extent =
+    base.coordinates?.model === 'planar' ? internals.plainExtent : internals.coveringExtent;
+  if (extent) next.extent = extent;
+  PROFILE_INTERNALS.set(next, internals);
+  setGuessedRowSemantics(next as KeplerProfiledDataset);
+  const declarations = PROFILE_DECLARATIONS.get(profile);
+  return declarations ? applyKeplerDatasetProfileDeclarations(next, declarations) : next;
 }
 
 /** Marks the notes that describe the coordinate model, so that a change of model can replace them. */
@@ -1518,6 +1329,8 @@ function assembleProfile(
   if (spatial.catalogGeometry) profile.catalogGeometry = spatial.catalogGeometry;
   if (spatial.pointColumns) profile.pointColumns = spatial.pointColumns;
   if (spatial.vertexCount !== undefined) profile.vertexCount = spatial.vertexCount;
+  if (spatial.geometryPackedFeatureCounts)
+    profile.geometryPackedFeatureCounts = spatial.geometryPackedFeatureCounts;
   if (spatial.geometryFeatureCounts) {
     profile.geometryFeatureCounts = spatial.geometryFeatureCounts;
     const {point, line, polygon} = spatial.geometryFeatureCounts;
@@ -1615,6 +1428,7 @@ export function profileKeplerFeatureCollection(
 ): KeplerProfiledDataset {
   const functionName = 'profileKeplerFeatureCollection';
   validateOptions(functionName, options);
+  const distinctExactLimit = getKeplerDistinctCountExactLimit(options.distinctCountThresholds);
   if (!collection || !Array.isArray(collection.features))
     throw new Error(`${functionName} collection must be a FeatureCollection with a features array`);
 
@@ -1629,7 +1443,7 @@ export function profileKeplerFeatureCollection(
     for (const key in properties) {
       let accumulator = accumulators.get(key);
       if (!accumulator) {
-        accumulator = new ColumnAccumulator();
+        accumulator = new ColumnAccumulator(distinctExactLimit);
         accumulators.set(key, accumulator);
       }
       accumulator.add(properties[key]);
@@ -1673,6 +1487,7 @@ function buildGeometryFacts(
       kind: 'attributes',
       locations: new Float64Array(0),
       geometryFeatureCounts: geometry.counts,
+      geometryPackedFeatureCounts: geometry.packedCounts,
       notes
     };
   }
@@ -1685,6 +1500,7 @@ function buildGeometryFacts(
     locations: geometry.anchors,
     geographicLocations: geometry.geographicAnchors,
     geometryFeatureCounts: geometry.counts,
+    geometryPackedFeatureCounts: geometry.packedCounts,
     notes
   };
 }
@@ -1794,7 +1610,7 @@ function gatherColumnPoints(
   latitudes: ArrayLike<unknown>
 ): {locations: Float64Array; extent?: Extent; coveringExtent?: Extent} {
   const locations: number[] = [];
-  const extentAccumulator = new ExtentAccumulator();
+  const extentAccumulator = new AnalysisGeographicExtentAccumulator();
   for (let index = 0; index < longitudes.length; index++) {
     const x = longitudes[index];
     const y = latitudes[index];
@@ -1844,6 +1660,7 @@ export function profileKeplerColumnTable(
 ): KeplerProfiledDataset {
   const functionName = 'profileKeplerColumnTable';
   validateOptions(functionName, options);
+  const distinctExactLimit = getKeplerDistinctCountExactLimit(options.distinctCountThresholds);
   const input = isCatalogOutputTable(table) ? readCatalogOutputTable(table) : table;
   const rowCount = input.rowCount;
   if (!Number.isInteger(rowCount) || rowCount < 0)
@@ -1884,7 +1701,7 @@ export function profileKeplerColumnTable(
   for (const column of input.columns) {
     valuesByName.set(column.name, column.values);
     if (geometryColumns.includes(column.name)) continue;
-    const accumulator = new ColumnAccumulator();
+    const accumulator = new ColumnAccumulator(distinctExactLimit);
     for (let sampleIndex = 0; sampleIndex < sampleRowCount; sampleIndex++)
       accumulator.add(column.values[getSampleRowIndex(rowCount, sampleRowCount, sampleIndex)]);
     columns.push(
@@ -1916,7 +1733,7 @@ export function profileKeplerColumnTable(
     spatial = buildGeometryFacts(geometries, notes);
     if (geometryColumns.length > 1)
       notes.push(`Only the first geometry column "${geometryColumns[0]}" is analysed.`);
-  } else {
+  } else if (options.pointColumns || options.inferPointColumns !== false) {
     const chosen = chooseCoordinateColumns(options.pointColumns, columns, valuesByName, notes);
     notes.push(...describePlanarPairs(columns, chosen?.pointColumns));
     if (chosen) {
@@ -2076,20 +1893,26 @@ export function applyKeplerDatasetProfileDeclarations<ProfileType extends Kepler
       delete next.spacing;
       const existingNotes = (profile as unknown as {notes?: readonly string[]}).notes ?? [];
       const notes = existingNotes.filter(note => !note.startsWith(MODEL_NOTE_PREFIX));
-      if (internals) {
-        const extent = model === 'geographic' ? internals.coveringExtent : internals.plainExtent;
-        if (extent) next.extent = extent;
-        const spacing = internals.spacingByModel[model];
-        if (spacing) next.spacing = spacing;
-        notes.push(...internals.modelNotes[model]);
-      } else {
-        const extent = profile.extent;
-        if (extent && extent[0] > extent[2] && model === 'planar')
+      const extent = model === 'geographic' ? internals?.coveringExtent : internals?.plainExtent;
+      const spacing = internals?.spacingByModel[model];
+      if (extent) next.extent = extent;
+      if (spacing) next.spacing = spacing;
+      if (internals) notes.push(...internals.modelNotes[model]);
+      if (!extent && profile.extent) {
+        if (profile.extent[0] > profile.extent[2] && model === 'planar')
           notes.push(
             `${MODEL_NOTE_PREFIX}the extent crosses the antimeridian (west greater than east) and was not recomputed for the declared planar model, which this profile holds no locations for; profile the dataset again with the declaration.`
           );
+        else if (
+          internals ||
+          profile.catalogGeometry === 'line' ||
+          profile.catalogGeometry === 'polygon'
+        )
+          notes.push(
+            `${MODEL_NOTE_PREFIX}the full geometry extent was not recomputed for the declared ${model} model; profile the dataset again with full geometry coordinates.`
+          );
       }
-      if (!internals && profile.spacing) {
+      if (!spacing && profile.spacing) {
         notes.push(
           `${MODEL_NOTE_PREFIX}spacing was dropped because the coordinate model was declared ${model} and this profile holds no locations to recompute it from; profile the dataset again with the declaration.`
         );
@@ -2108,7 +1931,15 @@ export function applyKeplerDatasetProfileDeclarations<ProfileType extends Kepler
   // may have changed; a declared value is left alone.
   if (!declarations.rowSemantics && (declarations.measurement || declarations.coordinateModel))
     setGuessedRowSemantics(next as unknown as KeplerProfiledDataset);
-  if (internals) PROFILE_INTERNALS.set(next, {...internals});
+  if (internals)
+    PROFILE_INTERNALS.set(next, {...internals, undeclared: internals.undeclared ?? profile});
+  PROFILE_BASELINES.set(next, getKeplerDatasetProfileUndeclared(profile));
+  const previous = PROFILE_DECLARATIONS.get(profile);
+  PROFILE_DECLARATIONS.set(next, {
+    ...previous,
+    ...declarations,
+    measurement: {...previous?.measurement, ...declarations.measurement}
+  });
   return next;
 }
 

@@ -4,6 +4,10 @@
 
 import {
   GPU_ANALYSIS_DEFAULT_RULES,
+  GPU_GEOMETRY_ORIENTATION_PARAMETER_LENGTH,
+  GPU_LINE_SIMPLIFICATION_PARAMETER_LENGTH,
+  getGPUGeometryOrientationParameterValues,
+  getGPULineSimplificationParameterValues,
   resolveGPUAnalysisDefault,
   validateGPUAnalysisResultEncoding
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
@@ -711,8 +715,11 @@ describe('grid-generator default cell size', () => {
 });
 
 describe('geometry-a descriptors on every accepted geometry', () => {
-  it('geometry-measures has no presentation, since no column exists for all three kinds', () => {
-    expect(getDescriptor('geometry-measures').outputs[0].presentation).toBeUndefined();
+  it('geometry-measures explicitly uses a uniform style because no column exists for all three kinds', () => {
+    const output = getDescriptor('geometry-measures').outputs[0];
+    expect(output.presentation).toBeUndefined();
+    expect(output.presentationException?.type).toBe('uniform-style');
+    expect(output.presentationException?.reason).toContain('no shared measure');
   });
 
   it('nearest-feature-join and buffer-selection give a distance for point, line and polygon features', async () => {
@@ -978,5 +985,86 @@ describe('geometry-a unconditional overlap regression', () => {
         {left, right}
       )
     ).rejects.toThrow('GPU device required');
+  });
+});
+
+describe('uniform parameter review regressions', () => {
+  it('keeps line simplification tolerance live while selection changes in a fixed parameter buffer', async () => {
+    const binding = getCatalogBinding('line-simplification')!;
+    const descriptor = getDescriptor(binding.id);
+    expect(descriptor.parameters.find(parameter => parameter.name === 'tolerance')?.apply).toBe(
+      'live'
+    );
+    // Coordinate interpretation still changes preparation and therefore requires a rebuild.
+    expect(
+      descriptor.parameters.find(parameter => parameter.name === 'coordinateSystem')?.apply
+    ).toBe('rebuild');
+    const coordinates = [
+      [0, 0],
+      [5, 3],
+      [10, 0]
+    ];
+    const lines = makeCollection([makeLine(coordinates)]);
+    const parameters = new Float32Array(GPU_LINE_SIMPLIFICATION_PARAMETER_LENGTH);
+    const parameterBuffer = parameters.buffer;
+    for (const [tolerance, expectedVertices] of [
+      [1, 3],
+      [5, 2]
+    ]) {
+      expect(getGPULineSimplificationParameterValues({tolerance}, parameters)).toBe(parameters);
+      expect(parameters.buffer).toBe(parameterBuffer);
+      expect(parameters).toHaveLength(GPU_LINE_SIMPLIFICATION_PARAMETER_LENGTH);
+      expect(parameters[0]).toBe(tolerance);
+      const result = await runCatalogOperationAsync(
+        binding,
+        {tolerance, coordinateSystem: 'planar'},
+        {lines},
+        {engine: 'cpu'}
+      );
+      const table = result.tables[0];
+      expect(table.rowCount).toBe(1);
+      expect(table.columns['vertices_before']).toEqual([3]);
+      expect(table.columns['vertices_after']).toEqual([expectedVertices]);
+      const geometry = JSON.parse(table.columns['geometry'][0] as string) as {
+        coordinates: number[][];
+      };
+      expect(geometry.coordinates).toEqual(
+        expectedVertices === 3 ? coordinates : [coordinates[0], coordinates[2]]
+      );
+    }
+  });
+
+  it('keeps shell orientation live while winding changes without changing the polygon layout', async () => {
+    const binding = getCatalogBinding('geometry-orientation')!;
+    const descriptor = getDescriptor(binding.id);
+    expect(
+      descriptor.parameters.find(parameter => parameter.name === 'shellOrientation')?.apply
+    ).toBe('live');
+    const ring = makeSquareRing(0, 0, 10);
+    const polygons = makeCollection([makePolygon([ring])]);
+    const parameters = new Float32Array(GPU_GEOMETRY_ORIENTATION_PARAMETER_LENGTH);
+    const parameterBuffer = parameters.buffer;
+    for (const shellOrientation of ['counterclockwise', 'clockwise'] as const) {
+      const exteriorClockwise = shellOrientation === 'clockwise';
+      expect(getGPUGeometryOrientationParameterValues({exteriorClockwise}, parameters)).toBe(
+        parameters
+      );
+      expect(parameters.buffer).toBe(parameterBuffer);
+      expect(parameters).toHaveLength(GPU_GEOMETRY_ORIENTATION_PARAMETER_LENGTH);
+      expect(parameters[0]).toBe(exteriorClockwise ? 1 : 0);
+      const result = await runCatalogOperationAsync(
+        binding,
+        {shellOrientation},
+        {polygons},
+        {engine: 'cpu'}
+      );
+      const table = result.tables[0];
+      expect(table.rowCount).toBe(1);
+      expect(table.columns['rings_reversed']).toEqual([exteriorClockwise ? 1 : 0]);
+      const geometry = JSON.parse(table.columns['geometry'][0] as string) as {
+        coordinates: number[][][];
+      };
+      expect(geometry.coordinates).toEqual([exteriorClockwise ? [...ring].reverse() : ring]);
+    }
   });
 });

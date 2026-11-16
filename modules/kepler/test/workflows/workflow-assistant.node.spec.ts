@@ -5,6 +5,11 @@
 import {describe, expect, test, vi} from 'vitest';
 import {
   describeWorkflowOperationForAssistant,
+  describeWorkflowTemplateForAssistant,
+  listWorkflowTemplatesForAssistant,
+  parseWorkflowTemplateForAssistant,
+  prepareWorkflowDraftForAssistant,
+  validateWorkflowForAssistant,
   describeWorkflowForAssistant,
   getWorkflowAssistantTools,
   listWorkflowsForAssistant,
@@ -17,6 +22,7 @@ import {
   parseWorkflowDocument,
   serializeWorkflowDocument
 } from '../../src/workflows/workflow-document';
+import {getWorkflowOperationRegistry} from '../../src/workflows/workflow-operations';
 import * as workflowExport from '../../src/workflows/workflow-export';
 import {planWorkflow} from '../../src/workflows/workflow-plan';
 import {WorkflowRunner} from '../../src/workflows/workflow-runner';
@@ -90,7 +96,7 @@ function makeSavedDocument() {
 
 describe('saved workflows as assistant tools', () => {
   test('publishes saved-workflow schemas and explicit approval requirements', () => {
-    const tools = getWorkflowAssistantTools().slice(3);
+    const tools = getWorkflowAssistantTools().slice(3, 7);
     expect(tools.map(tool => tool.parameters)).toEqual([
       {type: 'object', properties: {}, required: [], additionalProperties: false},
       {
@@ -365,7 +371,7 @@ describe('saved workflows as assistant tools', () => {
 });
 
 describe('workflow assistant tool contracts', () => {
-  test('publishes exactly the seven tools and JSON object schemas', () => {
+  test('publishes operation, saved workflow and curated template tools and JSON object schemas', () => {
     const tools = getWorkflowAssistantTools();
     expect(tools.map(tool => tool.name)).toEqual([
       'listAnalysisOperations',
@@ -374,7 +380,9 @@ describe('workflow assistant tool contracts', () => {
       'listWorkflows',
       'describeWorkflow',
       'setWorkflowInputs',
-      'runWorkflow'
+      'runWorkflow',
+      'listAnalysisTemplates',
+      'describeAnalysisTemplate'
     ]);
     for (const tool of tools) {
       expect(JSON.parse(JSON.stringify(tool.parameters))).toEqual(tool.parameters);
@@ -413,7 +421,7 @@ describe('workflow assistant tool contracts', () => {
       additionalProperties: false
     });
     expect(tools[2].parameters).toMatchObject({
-      required: ['title', 'steps'],
+      anyOf: [{required: ['title', 'steps']}, {required: ['templateId', 'datasets', 'columns']}],
       properties: {
         title: {type: 'string', maxLength: 80},
         description: {type: 'string', maxLength: 500},
@@ -1386,5 +1394,74 @@ describe('assistant workflow drafts', () => {
     } finally {
       outline.mockRestore();
     }
+  });
+});
+
+describe('AX assistant planning', () => {
+  test('discovers and describes shared template roles, measurements, units and requirements without rows', () => {
+    const registry = getWorkflowOperationRegistry();
+    const result = listWorkflowTemplatesForAssistant({query: 'rates'});
+    expect(result).toMatchObject({
+      templates: expect.arrayContaining([expect.objectContaining({id: 'rate-cluster-map'})])
+    });
+    const description = describeWorkflowTemplateForAssistant(registry, {
+      templateId: 'rate-cluster-map'
+    });
+    expect(description).toMatchObject({
+      id: 'rate-cluster-map',
+      status: 'available',
+      slots: [
+        expect.objectContaining({
+          fields: expect.arrayContaining([
+            expect.objectContaining({role: 'population', measurement: ['count'], required: true})
+          ])
+        })
+      ],
+      operation: expect.objectContaining({
+        analysis: expect.objectContaining({requirements: expect.any(Array)})
+      })
+    });
+    const density = describeWorkflowTemplateForAssistant(registry, {templateId: 'density-surface'});
+    expect(density).toMatchObject({
+      operation: expect.objectContaining({
+        parameters: expect.arrayContaining([
+          expect.objectContaining({name: 'bandwidth', unit: expect.any(String)})
+        ])
+      })
+    });
+    expect(JSON.stringify(description)).not.toMatch(
+      /"type":"FeatureCollection"|"coordinates":\[|"features":\[/
+    );
+    expectMalformed(() => listWorkflowTemplatesForAssistant({query: 3}), 'arguments.query');
+    expectMalformed(
+      () =>
+        describeWorkflowTemplateForAssistant(registry, {templateId: 'density-surface', rows: []}),
+      'arguments.rows'
+    );
+    expect(() =>
+      parseWorkflowTemplateForAssistant({templateId: 'invented', datasets: {}, columns: {}}, [])
+    ).toThrow(/not available/);
+  });
+
+  test('validates through the template parser as well as the graph planner', () => {
+    const document = makeFixtureDocument();
+    // Graph planning does not parse document ids; the AX template parser does.
+    document.id = '';
+    expect(planWorkflow(document, {registry: makeFixtureRegistry()}).issues).toEqual([]);
+    expect(
+      validateWorkflowForAssistant(document, {registry: makeFixtureRegistry()}).some(
+        issue => issue.severity === 'error' && issue.message.includes('id')
+      )
+    ).toBe(true);
+  });
+
+  test('freezes the resolved defaults in the approved document and never executes a proposal', () => {
+    const calls: string[] = [];
+    const registry = makeFixtureRegistry(calls);
+    const draft = prepareWorkflowDraftForAssistant(makeFixtureDocument(), {registry});
+    expect(draft.document.settings.autoRun).toBe(false);
+    expect(draft.document.steps[0].parameters['count']).toEqual({from: 'static', value: 4});
+    expect(calls).toEqual([]);
+    expect(draft.issues.filter(issue => issue.severity === 'error')).toEqual([]);
   });
 });

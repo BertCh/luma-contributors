@@ -304,11 +304,12 @@ export function buildSituations(): Situation[] {
       description:
         '5,000 crime incident points: incident_id, date (ISO), category (8), severity_code (1-5)',
       expectation: {
-        first: ['hot-spot-map', 'density-surface', 'clusters-and-footprints'],
+        // The new curated temporal method reads ISO event times, so it is a valid lead.
+        first: ['emerging-hot-spots', 'hot-spot-map', 'density-surface', 'clusters-and-footprints'],
         never: ['idw-surface', 'kriging-with-diagnostics', 'regression-with-diagnostics'],
         roles: {'hot-spot-map': {valueProperty: []}, 'density-surface': {weightProperty: []}},
         forbiddenColumns: ['incident_id', 'severity_code'],
-        note: 'Events: hot spots of incident count (no value column) or density. Weight must stay empty (severity_code is ordinal, incident_id an id). Time column enables comparison but a single layer cannot do before/after.'
+        note: 'Events: hot spots of incident count (no value column) or density. Weight must stay empty (severity_code is ordinal, incident_id an id). ISO event time enables emerging hot spots on this one layer; before/after comparison still needs two layers.'
       },
       datasets: [profileCollection('crimes', 'crimes', features)]
     });

@@ -45,6 +45,8 @@ import {
   runCatalogOperationAsync
 } from '../src/analysis/catalog-bindings';
 import {SPACETIME_BINDINGS} from '../src/analysis/catalog-spacetime-bindings';
+import {getKeplerOperationDescriptor} from '../src/descriptors/operation-descriptors';
+import {planKeplerResultPresentation} from '../src/presentation/result-presentation';
 import {withCatalogGpuSession, type CatalogGpuSession} from '../src/analysis/catalog-gpu-session';
 import {
   SPACETIME_SUBSECOND_TEST_POINTS,
@@ -699,6 +701,33 @@ for (const binding of SPACETIME_BINDINGS)
       expect(result).toBeDefined();
       expect(result.rowCount).toBeLessThanOrEqual(output.maximumRows);
       for (const identity of output.identityColumns) expect(result.columns[identity]).toBeDefined();
+    }
+    const descriptor = getKeplerOperationDescriptor(binding.id);
+    if (!descriptor) throw new Error(`${binding.id}: missing hand-written space-time descriptor`);
+    for (const output of descriptor.outputs) {
+      const result = actual.tables.find(candidate => candidate.id === output.tableId);
+      if (!result) throw new Error(`${binding.id}: missing output table ${output.tableId}`);
+      if (!output.presentation) continue;
+      const column = output.presentation.column;
+      if (!result.columns[column])
+        throw new Error(
+          `${binding.id}.${output.tableId}: presentation column ${column} is absent; available columns: ${Object.keys(result.columns).join(', ')}`
+        );
+      const presentation = planKeplerResultPresentation(result, output);
+      if (
+        !presentation ||
+        presentation.column !== column ||
+        (!presentation.legend.length && !presentation.ranges.length)
+      )
+        throw new Error(
+          `${binding.id}.${output.tableId}: no usable presentation/legend for ${column}`
+        );
+      expect(presentation.rowCount).toBe(result.rowCount);
+      const classes = presentation.legend.length ? presentation.legend : presentation.ranges;
+      expect(
+        classes.reduce((count, entry) => count + entry.count, 0) + presentation.missingCount,
+        `${binding.id}.${column}: legend accounts for all rows`
+      ).toBe(result.rowCount);
     }
     const pointTable = actual.tables.find(candidate => candidate.id === 'points');
     if (pointTable) expect(pointTable.geometryColumn).toBe('geometry');

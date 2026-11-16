@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {
+  CatalogGpuContext,
   CatalogOperationBinding,
   CatalogParameterSpec,
   CatalogRunOutput
@@ -28,7 +29,7 @@ import {
   type KrigingSettings
 } from '../../analysis/catalog-platform3-b-grids';
 import {
-  PLATFORM3_CPU_CLEANUP,
+  PLATFORM3_GPU_OR_CPU_CLEANUP,
   makeInputSpec,
   makeNumberParameter,
   makeOutputSpec,
@@ -45,6 +46,8 @@ import {
   makeCuratedError,
   readColumnParameter
 } from './curated-binding-utils';
+
+import {computeCuratedKrigingGpu} from './curated-kriging-with-diagnostics-gpu';
 
 const BINDING_ID = 'curated-kriging-with-diagnostics';
 
@@ -220,8 +223,8 @@ function mergeCoincidentSamples(sample: Sample): {
   membersOfGroup: number[][];
 } {
   const groups = new Map<string, number[]>();
-  // The catalog resolves equal-distance neighbour ties by index. Insert locations in the same
-  // anchor order as permutation inference before fitting, grid prediction and cross-validation.
+  // The catalog now breaks neighbour ties canonically. Keep a stable location order here too:
+  // empirical variogram pair sums and fitting must accumulate in the same order after a shuffle.
   const {order} = getCanonicalOrder(
     Array.from({length: sample.count}, (_, index) => [sample.x[index], sample.y[index]])
   );
@@ -309,7 +312,8 @@ export function computeLeaveOneOut(sample: Sample, settings: KrigingSettings): L
   return {predicted, variance, failedCount};
 }
 
-function runKrigingWithDiagnostics(inputs: Inputs, values: Values): CatalogRunOutput {
+/** Shared input preparation and variogram fitting; does not execute either kriging engine. */
+export function prepareCuratedKriging(inputs: Inputs, values: Values) {
   const valueProperty = readColumnParameter(BINDING_ID, values, 'valueProperty');
   const coordinateSystem = values['coordinateSystem'] as CatalogCoordinateSystem;
   const cellSize = values['cellSize'] as number;
@@ -323,7 +327,7 @@ function runKrigingWithDiagnostics(inputs: Inputs, values: Values): CatalogRunOu
       `no feature has a point position and a numeric ${valueProperty}`
     );
   }
-  const {frame, grid, diagnostics} = context;
+  const {grid, diagnostics} = context;
   const {
     merged: sample,
     mergedCount,
@@ -420,27 +424,53 @@ function runKrigingWithDiagnostics(inputs: Inputs, values: Values): CatalogRunOu
     searchRadius: values['searchRadius'] as number
   };
 
-  // Prediction and kriging variance on the grid, by the catalog's own kriging field.
-  let field: ReturnType<typeof computeKrigingField>;
-  try {
-    field = computeKrigingField(sample, grid, settings);
-  } catch (failure) {
-    if (failure instanceof KeplerAllocationError) {
-      const cells = grid.columns * grid.rows;
-      const work = cells * sample.count;
-      throw new KeplerAllocationError('capacity', {
-        cause: failure,
-        message: `${BINDING_ID}: ${cells} cells times ${sample.count} samples is ${work} units of work, over the CPU reference limit of ${CPU_WORK_BOUND}; raise cellSize to at least ${Math.ceil(cellSize * Math.sqrt(work / CPU_WORK_BOUND))} or use fewer samples`
-      });
-    }
-    throw failure;
-  }
+  return {
+    context,
+    sample,
+    groupOfSample,
+    membersOfGroup,
+    empirical,
+    settings,
+    maximumLag,
+    fitCriterion
+  };
+}
+
+/** Shared publication keeps source identities, units and diagnostic interpretation identical. */
+function finishCuratedKriging(
+  inputs: Inputs,
+  prepared: ReturnType<typeof prepareCuratedKriging>,
+  field: ReturnType<typeof computeKrigingField>,
+  leaveOneOut: LeaveOneOutResult,
+  gpuSummary: Record<string, number> = {}
+): CatalogRunOutput {
+  const {
+    context,
+    sample,
+    groupOfSample,
+    membersOfGroup,
+    empirical,
+    settings,
+    maximumLag,
+    fitCriterion
+  } = prepared;
+  const {frame, grid, diagnostics} = context;
+  const {model, nugget, sill, range} = settings;
+  // Both engines publish the same grid and validation schema.
+  if (gpuSummary['gpuInvalidCellCount'])
+    addCatalogDiagnostic(
+      diagnostics,
+      'insufficient-kriging-neighbors',
+      'warning',
+      'Cells with no usable sample within the search radius are nodata.',
+      gpuSummary['gpuInvalidCellCount']
+    );
   if (field.singularCount)
     addCatalogDiagnostic(
       diagnostics,
       'singular-kriging-system',
       'warning',
-      'Cells whose kriging system is singular are nodata.',
+      'Cells whose kriging system is singular or numerically unreliable are nodata.',
       field.singularCount
     );
   const cellTable = makeGridTable(frame, grid, field, {
@@ -452,7 +482,6 @@ function runKrigingWithDiagnostics(inputs: Inputs, values: Values): CatalogRunOu
   });
 
   // Leave-one-out cross-validation.
-  const leaveOneOut = computeLeaveOneOut(sample, settings);
   if (leaveOneOut.failedCount)
     addCatalogDiagnostic(
       diagnostics,
@@ -585,6 +614,7 @@ function runKrigingWithDiagnostics(inputs: Inputs, values: Values): CatalogRunOu
     tables: [cellTable, validationTable, variogramTable],
     diagnostics,
     summary: {
+      ...gpuSummary,
       sampleCount: sample.count,
       cellCount: grid.columns * grid.rows,
       model,
@@ -593,10 +623,10 @@ function runKrigingWithDiagnostics(inputs: Inputs, values: Values): CatalogRunOu
       range,
       fitCriterion,
       maximumLag,
-      crossValidationCount: summary.count,
-      rootMeanSquareError: summary.rootMeanSquareError,
-      meanError: summary.meanError,
-      meanAbsoluteError: summary.meanAbsoluteError,
+      crossValidationCount: gpuSummary['crossValidationCount'] ?? summary.count,
+      rootMeanSquareError: gpuSummary['rootMeanSquareError'] ?? summary.rootMeanSquareError,
+      meanError: gpuSummary['meanError'] ?? summary.meanError,
+      meanAbsoluteError: gpuSummary['meanAbsoluteError'] ?? summary.meanAbsoluteError,
       meanStandardizedError: summary.meanStandardizedError,
       rootMeanSquareStandardizedError: summary.rootMeanSquareStandardizedError,
       coverage95: summary.coverage,
@@ -607,6 +637,49 @@ function runKrigingWithDiagnostics(inputs: Inputs, values: Values): CatalogRunOu
       poorModelFit: poorFitReasons.length ? 1 : 0,
       poorModelFitReasons: poorFitReasons.join('; ')
     }
+  };
+}
+
+function runKrigingWithDiagnostics(inputs: Inputs, values: Values): CatalogRunOutput {
+  const prepared = prepareCuratedKriging(inputs, values);
+  const {
+    sample,
+    settings,
+    context: {grid}
+  } = prepared;
+  const cellSize = grid.cellSize;
+  let field: ReturnType<typeof computeKrigingField>;
+  try {
+    field = computeKrigingField(sample, grid, settings);
+  } catch (failure) {
+    if (failure instanceof KeplerAllocationError) {
+      const cells = grid.columns * grid.rows;
+      const work = cells * sample.count;
+      throw new KeplerAllocationError('capacity', {
+        cause: failure,
+        message: `${BINDING_ID}: ${cells} cells times ${sample.count} samples is ${work} units of work, over the CPU reference limit of ${CPU_WORK_BOUND}; raise cellSize to at least ${Math.ceil(cellSize * Math.sqrt(work / CPU_WORK_BOUND))} or use fewer samples`
+      });
+    }
+    throw failure;
+  }
+  return finishCuratedKriging(inputs, prepared, field, computeLeaveOneOut(sample, settings));
+}
+
+async function runGpuKrigingWithDiagnostics(
+  context: CatalogGpuContext,
+  inputs: Inputs,
+  values: Values
+): Promise<CatalogRunOutput> {
+  const prepared = prepareCuratedKriging(inputs, values);
+  const result = await computeCuratedKrigingGpu(
+    context,
+    prepared.sample,
+    prepared.context.grid,
+    prepared.settings
+  );
+  return {
+    ...finishCuratedKriging(inputs, prepared, result.field, result.leaveOneOut, result.summary),
+    dispatchedContributors: ['GPUKriging']
   };
 }
 
@@ -622,8 +695,8 @@ export const CURATED_KRIGING_WITH_DIAGNOSTICS_BINDING: CatalogOperationBinding =
     'Fits a variogram to the measured values, predicts the value and the kriging variance on a grid by ordinary kriging, and predicts every measurement from the others to report the root mean square error, the mean error and the mean standardised error.',
   capabilityIds: ['density-and-interpolation', 'coverage-local-prediction'],
   contributorNames: ['GPUKriging'],
-  gpuContributorNames: [],
-  engine: 'cpu-reference',
+  gpuContributorNames: ['GPUKriging'],
+  engine: 'gpu-or-cpu',
   inputs: [makeInputSpec('points', 'Measurements', ['point'], MAXIMUM_SAMPLES, MAXIMUM_SAMPLES)],
   parameters: PARAMETERS,
   outputs: [
@@ -643,7 +716,7 @@ export const CURATED_KRIGING_WITH_DIAGNOSTICS_BINDING: CatalogOperationBinding =
     ),
     makeOutputSpec('variogram', 'Empirical and fitted variogram', 'none', ['bin'], 60)
   ],
-  cleanup: PLATFORM3_CPU_CLEANUP,
+  cleanup: `${PLATFORM3_GPU_OR_CPU_CLEANUP} Cleanup also runs on dispatch or readback failure; the caller retains its device.`,
   declaredBehavior: [
     'The cross-validation table lists every input feature in input order with a status: analysed, merged-into-earlier-sample (a sample at exactly the same location as an earlier one; it carries its own value and the location prediction, and no error), missing-value or missing-geometry. Samples at exactly the same location are merged to their mean value and counted, so each location is one sample in the fit and the summary; fewer than 8 distinct locations throw.',
     'The empirical semivariogram is the Matheron estimator in equal-width lag bins up to the largest lag (a third of the data diagonal unless set), in metres in a local frame for EPSG:4326 and coordinate units for planar; a model (spherical, exponential or gaussian) is fitted by Cressie-weighted least squares and, with model auto, the one with the smallest common criterion is kept. Parameters are rounded to float32 by the fit.',
@@ -651,9 +724,11 @@ export const CURATED_KRIGING_WITH_DIAGNOSTICS_BINDING: CatalogOperationBinding =
     'Model checks (screening bounds, not tests) raise the run-time caution poor-model-fit: summary key poorModelFit is 1 and poorModelFitReasons lists the reasons, with a diagnostic, when the range exceeds the largest lag (not identified: white noise can give a range several times the lag), the nugget is above 75 percent of the total sill (Cambardella et al. 1994: weak spatial dependence), the root mean square standardised leave-one-out error is outside 0.8 to 1.25 (it is 1 when the kriging variance is right; the band allows a variance 56 percent off at its ends), or fewer than 90 percent of leave-one-out errors are within 1.96 standard errors (nominal 95; about 1.5 binomial deviations below it for 40 samples). These incomplete isotropic screens may miss white noise, trends or periodic data; no warning does not establish a good or identified fit. A high omnidirectional nugget can mask anisotropy. The bounds are fixed, so they are noisier for fewer than about 30 samples.',
     'Ordinary kriging uses the nearest samples within the search radius (at most the neighbour count) per cell; locations are ordered by local-frame x then y before neighbour selection, so equal-distance ties select the same locations under input reordering. A cell whose system is singular, or with no sample in reach, is nodata and counted.',
     'Leave-one-out predicts each sample from the nearest others within the search radius (at most the neighbour count, so it is local, as the grid is) with the same variogram, without refitting; the error is predicted minus observed and the standardised error is the error over the square root of the kriging variance; a failed prediction is counted and left out of the summary.',
-    'At most 2000 samples and 40000 cells; sample times cell work above 60 million throws a capacity error that names the binding, the limit and the cell size that would fit.'
+    'The GPU path dispatches addInterpolationDiagnosticsRecipe (GPUKriging plus residual and reduction nodes) on the same local-frame samples and fitted or stated model; the empirical variogram and fitting remain on the CPU. It supports 4 to 16 neighbours; larger requests fall back to the CPU with a visible reason, never clamp. Before GPU allocation, measurement origins are compared for float32 round-trip error (at most 1e-6 * max(1, abs(value)) in measurement units); unrepresentable measurements or distinct locations that collide in float32 cause a visible CPU fallback. GPU solves use float32 and reject ill-conditioned systems as nodata; recipe stage invalid/uncertain counts are retained in the summary. GPU sample_count is null because GPUKriging does not expose retained neighbourhood counts.',
+    'At most 2000 samples and 40000 cells; CPU sample times cell work above 60 million throws a capacity error that names the binding, the limit and the cell size that would fit.'
   ],
   limitation:
-    'CPU reference engine only; the GPU path (GPUKriging with its cross-validation outputs) is future work. Isotropic model with no trend, anisotropy or block kriging; the variogram is fitted once and not refitted inside each leave-one-out step, so the errors are slightly optimistic. The kriging neighbourhood is local, so the system differs from a global solve when the neighbour count is below the sample count.',
-  run: (inputs, values) => runKrigingWithDiagnostics(inputs, values)
+    'GPU float32 solves can mark ill-conditioned cells and leave-one-out predictions nodata where the float64 CPU reference succeeds; the GPU neighbourhood limit is 16, versus 64 on the CPU. Isotropic model with no trend, anisotropy or block kriging; the variogram is fitted once and not refitted inside each leave-one-out step, so the errors are slightly optimistic. The kriging neighbourhood is local, so the system differs from a global solve when the neighbour count is below the sample count.',
+  run: (inputs, values) => runKrigingWithDiagnostics(inputs, values),
+  runGpu: runGpuKrigingWithDiagnostics
 };

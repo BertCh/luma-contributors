@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {CatalogRasterInput} from './catalog-raster-input';
 import {toRadians} from '@math.gl/core';
 import {EARTH_RADIUS_METERS, getGreatCircleDistanceMeters} from './catalog-geodesy';
 
@@ -37,6 +38,10 @@ export type CatalogOutputTable = {
   columnTypes: Record<string, CatalogColumnType>;
   /** Column holding GeoJSON geometry text; the native Sources workflow publishes it as geometry. */
   geometryColumn?: string;
+  /** Coordinate system of derived geometry, when the producing operation knows it. */
+  coordinateSystem?: CatalogCoordinateSystem;
+  /** Computational raster; scalar columns and optional polygons are its display/provenance view. */
+  raster?: CatalogRasterInput;
 };
 
 export {EARTH_RADIUS_METERS};

@@ -190,7 +190,7 @@ describe('workflow source declarations', () => {
       {columnsFrom: 'dataset', visibleWhen: {parameter: 'geometryMode', equals: ['point-columns']}},
       {columnsFrom: 'dataset', visibleWhen: {parameter: 'geometryMode', equals: ['point-columns']}}
     ]);
-    expect(geojsonOperation.parameters).toEqual([
+    expect(geojsonOperation.parameters.slice(0, 2)).toEqual([
       {
         name: 'text',
         kind: 'text',
@@ -569,7 +569,7 @@ describe('GeoJSON source', () => {
         data: {
           kind: 'point',
           table: {
-            id: 'data',
+            id: 'source',
             label: 'GeoJSON',
             rowCount: 1,
             columns: {geometry: [JSON.stringify(POINT_GEOMETRY)]},

@@ -4,6 +4,7 @@
 
 import {expect, test} from 'vitest';
 import * as spatialAnalysis from '@luma-contributors/analysis/gpu-spatial-analysis';
+import * as terrainContributors from '@luma-contributors/analysis/gpu-terrain';
 import * as network from '@luma-contributors/analysis/gpu-network';
 import * as geometryContributors from '@luma-contributors/analysis/geospatial-analysis';
 import * as dataframeContributors from '@luma-contributors/analysis/dataframe-analysis';
@@ -443,10 +444,11 @@ test('noded pieces prorate property costs and map back to input features', () =>
   expect(table.columns['source_indices']).toEqual(['9,7', null]);
 });
 
-test('every GPU contributor a binding names exists as an export of the graph package', () => {
+test('every GPU contributor a binding names exists at its public package entry point', () => {
   const exports = {
     ...spatialAnalysis,
     ...network,
+    ...terrainContributors,
     ...geometryContributors,
     ...publishedRasterContributors,
     ...rasterContributors,
@@ -461,18 +463,23 @@ test('every GPU contributor a binding names exists as an export of the graph pac
 });
 
 test('bindings declare their engine honestly and GPU-only operations carry no CPU engine', () => {
-  const ids = KEPLER_CATALOG_BINDINGS.map(binding => binding.id);
-  expect(new Set(ids).size).toBe(ids.length);
+  const bindingIds = KEPLER_CATALOG_BINDINGS.map(binding => binding.id);
+  expect(new Set(bindingIds).size).toBe(bindingIds.length);
   for (const binding of KEPLER_CATALOG_BINDINGS) {
+    // Feature and typed-data bindings expose different runner methods for the same engine.
+    const hasCpuEngine = typeof binding.run === 'function' || typeof binding.runData === 'function';
+    const hasGpuEngine =
+      typeof binding.runGpu === 'function' || typeof binding.runDataGpu === 'function';
     if (binding.engine === 'cpu-reference') {
-      expect(binding.runGpu).toBeUndefined();
+      expect(hasCpuEngine, `${binding.id}: CPU reference engine required`).toBe(true);
+      expect(hasGpuEngine, `${binding.id}: CPU-only binding must have no GPU engine`).toBe(false);
       expect(binding.gpuContributorNames).toEqual([]);
     } else if (binding.engine === 'gpu') {
-      expect(binding.run).toBeUndefined();
-      expect(binding.runGpu).toBeDefined();
+      expect(hasCpuEngine, `${binding.id}: GPU-only binding must have no CPU engine`).toBe(false);
+      expect(hasGpuEngine, `${binding.id}: GPU engine required`).toBe(true);
     } else {
-      expect(binding.run).toBeDefined();
-      expect(binding.runGpu).toBeDefined();
+      expect(hasCpuEngine, `${binding.id}: CPU fallback engine required`).toBe(true);
+      expect(hasGpuEngine, `${binding.id}: GPU engine required`).toBe(true);
     }
     expect(() => getCatalogDefaultParameters(binding)).not.toThrow();
   }
@@ -509,8 +516,8 @@ test('catalog entries name the dispatched engine and keep honest reasons for the
   expect(byName.get('GPUPolygonOverlay')?.engine).toBe('gpu');
   expect(byName.get('GPUNetworkIsochrones')?.engine).toBe('gpu');
   expect(byName.get('GPUNetworkReachability')?.runnable).toBe('catalog-binding');
-  // Mirrored on the CPU only: the GPU path dispatches the reachability contributor instead.
-  expect(byName.get('GPUNetworkServiceAreas')?.engine).toBe('cpu-reference');
+  // Curated drive-time bands now dispatch service areas directly on the GPU.
+  expect(byName.get('GPUNetworkServiceAreas')?.engine).toBe('gpu');
   const unbound = entries.filter(entry => entry.runnable === 'no');
   expect(unbound.length).toBeGreaterThan(0);
   for (const entry of unbound) {

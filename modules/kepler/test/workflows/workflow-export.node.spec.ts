@@ -24,6 +24,7 @@ import {
   type WorkflowHistoryRecord
 } from '../../src/workflows/workflow-export';
 import {getWorkflowOperationRegistry} from '../../src/workflows/workflow-operations';
+import {planWorkflow} from '../../src/workflows/workflow-plan';
 import {WorkflowRunner} from '../../src/workflows/workflow-runner';
 import {
   WORKFLOW_LIMITS,
@@ -570,9 +571,23 @@ describe('catalog history promotion', () => {
       parameters: {text: {from: 'static', value: POINT_TEXT}},
       position: {x: 0, y: 0}
     });
-    expect(findStep(document, 'buffer').parameters).toEqual({radius: {from: 'static', value: 25}});
+    expect(findStep(document, 'buffer').parameters).toEqual(
+      Object.fromEntries(
+        Object.entries(JSON.parse(records[0].invocation).parameters).map(([name, value]) => [
+          name,
+          {from: 'static', value}
+        ])
+      )
+    );
     expect(findStep(document, 'buffer').engine).toBe('cpu');
-    expect(findStep(document, 'measures').parameters).toEqual({});
+    expect(findStep(document, 'measures').parameters).toEqual(
+      Object.fromEntries(
+        Object.entries(JSON.parse(records[1].invocation).parameters).map(([name, value]) => [
+          name,
+          {from: 'static', value}
+        ])
+      )
+    );
     expect(findStep(document, 'measures').engine).toBeUndefined();
     expect(findStep(document, 'buffer').inputs).toEqual({
       points: {stepId: source.id, output: 'data'}
@@ -726,4 +741,38 @@ describe('catalog history promotion', () => {
     );
     expect(document.steps.some(step => step.operationId === 'source-geojson')).toBe(false);
   });
+});
+
+test('history promotion preserves constants as explicit density settings through planning and execution', async () => {
+  const registry = getWorkflowOperationRegistry();
+  const record = makeHistoryRecord(
+    'density',
+    'kernel-density-grid',
+    {mode: 'text', text: POINT_TEXT},
+    {
+      cellSize: 100,
+      bandwidth: 500,
+      coordinateSystem: 'planar'
+    }
+  );
+  const document = makeWorkflowFromCatalogHistory([record], {registry});
+  const parameters = JSON.parse(record.invocation).parameters;
+  expect(findStep(document, 'density').parameters).toEqual(
+    Object.fromEntries(
+      Object.entries(parameters).map(([name, value]) => [name, {from: 'static', value}])
+    )
+  );
+  const host = makeFixtureHost();
+  const planned = planWorkflow(document, {registry, host}).steps['density'];
+  expect(planned.parameters).toMatchObject({cellSize: 100, bandwidth: 500});
+  const runner = new WorkflowRunner({registry, host});
+  runner.setDocument(document);
+  try {
+    await runner.run();
+    const state = runner.getState().steps['density'];
+    expect(state.status, JSON.stringify(state.issues)).toBe('done');
+    expect(state.result?.parameters).toMatchObject({cellSize: 100, bandwidth: 500});
+  } finally {
+    await runner.destroy();
+  }
 });

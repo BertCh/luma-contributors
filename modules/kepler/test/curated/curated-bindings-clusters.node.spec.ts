@@ -2,9 +2,31 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {describe, expect, it} from 'vitest';
-import type {CatalogFeatureCollection} from '../../src/analysis/catalog-geojson';
+import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import type {Buffer} from '@luma.gl/core';
+import {
+  addClusterAndOutlineRecipe,
+  GPUSpatialClustering
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {createNullWebGPUDevice} from '@luma-contributors/analysis/testing';
+import {describe, expect, it, vi} from 'vitest';
+import {runCatalogOperationAsync} from '../../src/analysis/catalog-bindings';
+import {CatalogGpuSession} from '../../src/analysis/catalog-gpu-session';
+import {CURATED_CLUSTERS_AND_FOOTPRINTS_BINDING} from '../../src/curated/bindings/curated-clusters-and-footprints-binding';
+import {prepareCuratedClustersGpu} from '../../src/curated/bindings/curated-clusters-and-footprints-gpu';
+import {
+  measurePathLength,
+  measureRingSignedArea,
+  type CatalogFeatureCollection,
+  type CatalogPosition
+} from '../../src/analysis/catalog-geojson';
+import {getConvexHull} from '../../src/analysis/catalog-platform3-a-shared';
+import {readClusterSamples} from '../../src/analysis/catalog-platform3-b-clusters';
 import {DBSCAN_GEOGRAPHIC, DBSCAN_PLANAR} from './curated-bindings-oracle-data';
+import {
+  expectCuratedClusterFootprintMeasures,
+  expectCuratedClusterRingAdjacency
+} from './curated-bindings-clusters-test-support';
 import {
   getNumbers,
   getResultTable,
@@ -20,6 +42,442 @@ import {
 // perimeter on a sphere of the library's radius (pyproj laea and Geod).
 
 const ID = 'curated-clusters-and-footprints';
+
+describe('curated clusters GPU preparation and execution contract (no GPU submission)', () => {
+  it('packs both coordinate systems in the existing local frame and reserves the complete worst case', () => {
+    for (const coordinateSystem of ['planar', 'EPSG:4326'] as const) {
+      const points =
+        coordinateSystem === 'planar'
+          ? makePoints([1e12, 1e12 + 8, 1e12 + 2], [1e12, 1e12, 1e12 + 4])
+          : makePoints(DBSCAN_GEOGRAPHIC.longitudes, DBSCAN_GEOGRAPHIC.latitudes);
+      const {sample} = readClusterSamples(points, coordinateSystem);
+      const prepared = prepareCuratedClustersGpu(sample, 200, 4);
+      expect(Array.from(prepared.positions)).toEqual(
+        Array.from({length: sample.count * 2}, (_, component) =>
+          Math.fround(
+            component % 2
+              ? sample.y[Math.floor(component / 2)]
+              : sample.x[Math.floor(component / 2)]
+          )
+        )
+      );
+      expect(prepared.maximumClusterCount).toBe(sample.count);
+      expect(prepared.hullCapacity).toBe(sample.count);
+      expect(prepared.maximumVerticesPerHull).toBe(Math.max(3, sample.count));
+      const [minimumX, minimumY, maximumX, maximumY, epsilon, minimumPoints] =
+        prepared.clusteringParameters;
+      expect([epsilon, minimumPoints]).toEqual([200, 4]);
+      for (let index = 0; index < sample.count; index++) {
+        expect(prepared.positions[2 * index]).toBeGreaterThanOrEqual(minimumX);
+        expect(prepared.positions[2 * index]).toBeLessThanOrEqual(maximumX);
+        expect(prepared.positions[2 * index + 1]).toBeGreaterThanOrEqual(minimumY);
+        expect(prepared.positions[2 * index + 1]).toBeLessThanOrEqual(maximumY);
+      }
+    }
+  });
+
+  it('accepts a single repeated location and rejects named limits before allocation', () => {
+    const {sample} = readClusterSamples(makePoints([5], [5]), 'planar');
+    const prepared = prepareCuratedClustersGpu(sample, 1e-9, 1000);
+    expect(Array.from(prepared.clusteringParameters.slice(0, 4))).toEqual([0, 0, 1, 1]);
+    expect(prepared.maximumVerticesPerHull).toBe(3);
+    for (const count of [0, 6001])
+      expect(() => prepareCuratedClustersGpu({...sample, count}, 1, 4)).toThrow(
+        /curated-clusters-and-footprints pointCount.*6000/
+      );
+    expect(() => prepareCuratedClustersGpu(sample, 0, 4)).toThrow(
+      /curated-clusters-and-footprints epsilon/
+    );
+    expect(() => prepareCuratedClustersGpu(sample, 1, 1001)).toThrow(
+      /curated-clusters-and-footprints minimumPoints.*1000/
+    );
+    expect(() =>
+      prepareCuratedClustersGpu({...sample, x: new Float64Array([1e100])}, 1, 4)
+    ).toThrow(/curated-clusters-and-footprints positions.*float32/);
+  });
+
+  it('forwards the optional core-flag view to the recipe clustering contributor', () => {
+    const device = createNullWebGPUDevice();
+    try {
+      const graph = new GPUCommandGraph(device);
+      const coreFlags = createTransientView(graph, 'core-flags', 'uint32', 3);
+      const recipe = addClusterAndOutlineRecipe(graph, {
+        points: {kind: 'points', positions: createTransientView(graph, 'points', 'float32x2', 3)},
+        clusteringParameters: createTransientView(graph, 'parameters', 'float32', 8),
+        geometryParameters: createTransientView(graph, 'geometry-parameters', 'float32', 8),
+        gridSize: [2, 2],
+        maximumClusterCount: 3,
+        maximumVerticesPerHull: 3,
+        hullCapacity: 3,
+        outputs: {coreFlags}
+      });
+      const clustering = recipe.contributors.find(
+        contributor => contributor instanceof GPUSpatialClustering
+      ) as GPUSpatialClustering;
+      expect(clustering.props.output.coreFlags).toBe(coreFlags);
+    } finally {
+      device.destroy();
+    }
+  });
+
+  for (const failure of [
+    'none',
+    'cluster-overflow',
+    'hull-overflow',
+    'invalid-count',
+    'readback',
+    'spherical-none',
+    'spherical-invalid-count',
+    'spherical-readback'
+  ] as const) {
+    it(`publishes GPU readbacks or reports ${failure} with resource cleanup`, async () => {
+      const device = createNullWebGPUDevice();
+      const buffers: Buffer[] = [];
+      const createBuffer = device.createBuffer.bind(device);
+      vi.spyOn(device, 'createBuffer').mockImplementation(properties => {
+        const buffer = createBuffer(properties);
+        buffers.push(buffer);
+        vi.spyOn(buffer, 'destroy');
+        return buffer;
+      });
+      vi.spyOn(CatalogGpuSession.prototype, 'run').mockImplementation(() => {});
+      vi.spyOn(CatalogGpuSession.prototype, 'readScalar').mockImplementation(async output => {
+        if (
+          failure === 'spherical-invalid-count' &&
+          output.buffer.id.endsWith('-spherical-measures-invalid-count')
+        )
+          return 1;
+        if (output.buffer.id.endsWith(`-${failure}`)) return 1;
+        return output.buffer.id.endsWith('-cluster-count') ? 1 : 0;
+      });
+      vi.spyOn(CatalogGpuSession.prototype, 'readUint32').mockImplementation(async output => {
+        if (failure === 'readback') throw new Error(`${ID}: simulated readback failure`);
+        const values = new Uint32Array(output.length);
+        if (output.buffer.id.endsWith('-core-flags')) values.fill(1);
+        if (output.buffer.id.endsWith('-counts')) values[0] = 3;
+        if (output.buffer.id.endsWith('-hull-counts')) values[0] = 3;
+        if (output.buffer.id.endsWith('-hull-offsets')) values.set([0, 3, 3, 3]);
+        if (output.buffer.id.endsWith('-hull-indices')) values.set([0, 1, 2]);
+        return values;
+      });
+      vi.spyOn(CatalogGpuSession.prototype, 'readFloat32').mockImplementation(async output => {
+        if (failure === 'spherical-readback' && output.buffer.id.includes('-spherical-measures-'))
+          throw new Error(`${ID}: simulated spherical readback failure`);
+        const values = new Float32Array(output.length * output.components);
+        if (output.buffer.id.endsWith('-mean-centers')) values.set([1 / 3, 1 / 3]);
+        if (output.buffer.id.endsWith('-areas')) values[0] = 0.5;
+        if (output.buffer.id.endsWith('-perimeters')) values[0] = 2 + Math.SQRT2;
+        if (output.buffer.id.endsWith('-spherical-measures-areas')) values[0] = 1234;
+        return values;
+      });
+      try {
+        const coordinateSystem = failure.startsWith('spherical') ? 'EPSG:4326' : 'planar';
+        const parameters = {
+          coordinateSystem,
+          epsilon: coordinateSystem === 'planar' ? 2 : 200000,
+          minimumPoints: 1
+        };
+        const points = makePoints([0, 1, 0], [0, 0, 1]);
+        const result = await runCatalogOperationAsync(
+          CURATED_CLUSTERS_AND_FOOTPRINTS_BINDING,
+          parameters,
+          {points},
+          {device}
+        );
+        if (failure === 'none' || failure === 'spherical-none') {
+          expect(result.engine).toBe('gpu');
+          expect(result.dispatchedContributors).toEqual(
+            CURATED_CLUSTERS_AND_FOOTPRINTS_BINDING.gpuContributorNames
+          );
+          expect(getResultTable(result, 'points').columns['is_core']).toEqual([true, true, true]);
+          expect(getResultTable(result, 'footprints').columns['area']).toEqual([
+            failure === 'spherical-none' ? 1234 : 0.5
+          ]);
+          expect(result.summary['footprintCount']).toBe(1);
+        } else {
+          expect(result.engine).toBe('cpu-reference');
+          expect(result.dispatchedContributors).toEqual([]);
+          expect(result.fallbackReason).toMatch(
+            failure.includes('readback')
+              ? /simulated .*readback failure/
+              : failure === 'spherical-invalid-count'
+                ? /spherical hull invalidCount must be 0/
+                : /recipe clusterOverflow, hullOverflow and invalidCount must be 0/
+          );
+          expect(result.diagnostics.some(diagnostic => diagnostic.code === 'gpu-fallback')).toBe(
+            true
+          );
+          const reference = runCuratedBinding(ID, parameters, {points});
+          expect(getResultTable(result, 'footprints')).toEqual(
+            getResultTable(reference, 'footprints')
+          );
+        }
+        expect(CatalogGpuSession.prototype.run).toHaveBeenCalledTimes(
+          failure.startsWith('spherical') ? 2 : 1
+        );
+        expect(buffers.length).toBeGreaterThan(0);
+        for (const buffer of buffers) expect(buffer.destroy).toHaveBeenCalledOnce();
+      } finally {
+        vi.restoreAllMocks();
+        device.destroy();
+      }
+    });
+  }
+});
+
+describe('GPU center overflow readback regression', () => {
+  const finiteCenter = Math.fround(1e38);
+  const fixtures = [
+    {
+      name: 'finite occupied center and NaN empty centers',
+      center: [finiteCenter, finiteCenter],
+      fallback: false
+    },
+    ...[Infinity, -Infinity, NaN].flatMap(value => [
+      {name: `non-finite x center (${value})`, center: [value, finiteCenter], fallback: true},
+      {name: `non-finite y center (${value})`, center: [finiteCenter, value], fallback: true}
+    ])
+  ];
+  for (const fixture of fixtures) {
+    it(`handles ${fixture.name} before publication and releases buffers`, async () => {
+      const points = makePoints([0, 1e38, 1e38, 1e38, 1e38], [0, 1e38, 1e38, 1e38, 1e38]);
+      const {sample} = readClusterSamples(points, 'planar');
+      // The reported counterexample is legal at upload; only its GPU sum overflows.
+      expect(
+        Array.from(prepareCuratedClustersGpu(sample, 1, 4).positions).every(Number.isFinite)
+      ).toBe(true);
+      expect(Math.fround(finiteCenter * 4)).toBe(Infinity);
+      const device = createNullWebGPUDevice();
+      const buffers: Buffer[] = [];
+      const createBuffer = device.createBuffer.bind(device);
+      vi.spyOn(device, 'createBuffer').mockImplementation(properties => {
+        const buffer = createBuffer(properties);
+        buffers.push(buffer);
+        vi.spyOn(buffer, 'destroy');
+        return buffer;
+      });
+      vi.spyOn(CatalogGpuSession.prototype, 'run').mockImplementation(() => {});
+      vi.spyOn(CatalogGpuSession.prototype, 'readScalar').mockImplementation(async output =>
+        output.buffer.id.endsWith('-cluster-count') ? 1 : 0
+      );
+      vi.spyOn(CatalogGpuSession.prototype, 'readUint32').mockImplementation(async output => {
+        const values = new Uint32Array(output.length);
+        if (output.buffer.id.endsWith('-labels')) values[0] = 0xffffffff;
+        if (output.buffer.id.endsWith('-core-flags')) values.set([0, 1, 1, 1, 1]);
+        if (output.buffer.id.endsWith('-counts')) values[0] = 4;
+        if (output.buffer.id.endsWith('-hull-counts')) values[0] = 1;
+        if (output.buffer.id.endsWith('-hull-offsets')) values.set([0, 1, 1, 1, 1, 1]);
+        if (output.buffer.id.endsWith('-hull-indices')) values[0] = 1;
+        return values;
+      });
+      vi.spyOn(CatalogGpuSession.prototype, 'readFloat32').mockImplementation(async output => {
+        const values = new Float32Array(output.length * output.components);
+        if (output.buffer.id.endsWith('-mean-centers')) {
+          values.fill(NaN);
+          values.set(fixture.center);
+        }
+        return values;
+      });
+      try {
+        const result = await runCatalogOperationAsync(
+          CURATED_CLUSTERS_AND_FOOTPRINTS_BINDING,
+          {coordinateSystem: 'planar', epsilon: 1, minimumPoints: 4},
+          {points},
+          {device}
+        );
+        expect(result.engine).toBe(fixture.fallback ? 'cpu-reference' : 'gpu');
+        const footprints = getResultTable(result, 'footprints');
+        expect(footprints.rowCount).toBe(1);
+        expect(footprints.columns['point_count']).toEqual([4]);
+        expect(footprints.columns['centroid_x']).toEqual([fixture.fallback ? 1e38 : finiteCenter]);
+        expect(footprints.columns['centroid_y']).toEqual([fixture.fallback ? 1e38 : finiteCenter]);
+        if (fixture.fallback) {
+          expect(result.fallbackReason).toMatch(
+            /curated-clusters-and-footprints meanCenters\[0\] must be finite for an occupied cluster/
+          );
+          expect(result.dispatchedContributors).toEqual([]);
+          expect(result.diagnostics.some(diagnostic => diagnostic.code === 'gpu-fallback')).toBe(
+            true
+          );
+        } else expect(result.fallbackReason).toBeUndefined();
+        expect(buffers.length).toBeGreaterThan(0);
+        for (const buffer of buffers) expect(buffer.destroy).toHaveBeenCalledOnce();
+      } finally {
+        vi.restoreAllMocks();
+        device.destroy();
+      }
+    });
+  }
+});
+
+describe('headless footprint parity assertion regressions', () => {
+  const square: CatalogPosition[] = [
+    [0, 0],
+    [1, 0],
+    [1, 1],
+    [0, 1],
+    [0, 0]
+  ];
+
+  it('accepts every cyclic rotation and reversed winding with unchanged measurements', () => {
+    for (const vertices of [square.slice(0, -1), square.slice(0, -1).reverse()]) {
+      for (let offset = 0; offset < vertices.length; offset++) {
+        const rotated = [...vertices.slice(offset), ...vertices.slice(0, offset)];
+        const ring = [...rotated, rotated[0]];
+        expectCuratedClusterRingAdjacency(ring, square, 'square permutation');
+        expectCuratedClusterFootprintMeasures(
+          ring,
+          {area: 1, perimeter: 4},
+          'planar',
+          'square permutation'
+        );
+      }
+    }
+  });
+
+  it('rejects a closed bow-tie with exactly the same vertices as the square', () => {
+    const bowTie: CatalogPosition[] = [
+      [0, 0],
+      [1, 1],
+      [1, 0],
+      [0, 1],
+      [0, 0]
+    ];
+    const sortVertices = (ring: CatalogPosition[]) =>
+      ring
+        .slice(0, -1)
+        .map(position => JSON.stringify(position))
+        .sort();
+    expect(sortVertices(bowTie)).toEqual(sortVertices(square));
+    expect(measureRingSignedArea(square, 'planar')).toBe(1);
+    expect(measureRingSignedArea(bowTie, 'planar')).toBe(0);
+    expect(() => expectCuratedClusterRingAdjacency(bowTie, square, 'corrupted hull')).toThrow(
+      /hull ring adjacency/
+    );
+    expect(() =>
+      expectCuratedClusterFootprintMeasures(
+        bowTie,
+        {area: 1, perimeter: 4},
+        'planar',
+        'stale measurement buffers'
+      )
+    ).toThrow(/published geometry area/);
+  });
+
+  for (const measurements of [
+    {area: 0, perimeter: 4},
+    {area: 1, perimeter: 3}
+  ]) {
+    it(`rejects stale measurement buffers ${JSON.stringify(measurements)} for a valid square`, () => {
+      expect(() =>
+        expectCuratedClusterFootprintMeasures(square, measurements, 'planar', 'mismatched buffers')
+      ).toThrow(/published geometry/);
+    });
+  }
+});
+
+describe('AX-87: differential hull measurement before removing the extra translation', () => {
+  it('matches the previous measurements on every scikit-learn fixture cluster', () => {
+    const points = getPoints();
+    const {sample, frame} = readClusterSamples(points, 'planar');
+    const result = runPlanar(points, DBSCAN_PLANAR.epsilon, DBSCAN_PLANAR.minimumPoints);
+    const members = getMembers(getNumbers(getResultTable(result, 'points'), 'cluster'));
+    let maximumAreaDelta = 0;
+    let maximumPerimeterDelta = 0;
+    let maximumInverseAreaDelta = 0;
+    for (const indices of members.values()) {
+      const hull = getConvexHull(indices.map(index => [sample.x[index], sample.y[index]]));
+      const frameRing = [...hull, hull[0]];
+      const previousRing: CatalogPosition[] = hull.map(([horizontal, vertical]) => [
+        horizontal - hull[0][0],
+        vertical - hull[0][1]
+      ]);
+      previousRing.push(previousRing[0]);
+      const area = measureRingSignedArea(frameRing, 'planar');
+      const perimeter = measurePathLength(frameRing, 'planar');
+      const areaDelta = Math.abs(area - measureRingSignedArea(previousRing, 'planar'));
+      const perimeterDelta = Math.abs(perimeter - measurePathLength(previousRing, 'planar'));
+      maximumAreaDelta = Math.max(maximumAreaDelta, areaDelta);
+      maximumPerimeterDelta = Math.max(maximumPerimeterDelta, perimeterDelta);
+      maximumInverseAreaDelta = Math.max(
+        maximumInverseAreaDelta,
+        Math.abs(
+          area -
+            measureRingSignedArea(
+              frameRing.map(([horizontal, vertical]) => frame.inverse(horizontal, vertical)),
+              'planar'
+            )
+        )
+      );
+      expect(areaDelta).toBe(0);
+      expect(perimeterDelta / perimeter).toBeLessThan(1e-14);
+    }
+    recordBindingMargin('AX-87 fixture hull maximum area delta', maximumAreaDelta);
+    recordBindingMargin('AX-87 fixture hull maximum perimeter delta', maximumPerimeterDelta);
+    recordBindingMargin('AX-87 fixture inverse-ring maximum area delta', maximumInverseAreaDelta);
+    expect(maximumInverseAreaDelta).toBeGreaterThan(0);
+  });
+
+  for (const offset of [0, 1e9, 1e12]) {
+    it(`preserves area and perimeter at offset ${offset}, including a remote frame origin`, () => {
+      // Shapely: Polygon([(0,0),(8,0),(10,4),(2,4)]).area == 32.
+      const points = makePoints(
+        [offset, offset + 8, offset + 10, offset + 2, 0],
+        [offset, offset, offset + 4, offset + 4, -100]
+      );
+      const {sample} = readClusterSamples(points, 'planar');
+      const hull = getConvexHull(
+        Array.from({length: 4}, (_, index) => [sample.x[index], sample.y[index]])
+      );
+      const previousRing: CatalogPosition[] = hull.map(([horizontal, vertical]) => [
+        horizontal - hull[0][0],
+        vertical - hull[0][1]
+      ]);
+      previousRing.push(previousRing[0]);
+      const candidateRing = [...hull, hull[0]];
+      const area = Math.abs(measureRingSignedArea(candidateRing, 'planar'));
+      const perimeter = measurePathLength(candidateRing, 'planar');
+      const areaDelta = area - Math.abs(measureRingSignedArea(previousRing, 'planar'));
+      const perimeterDelta = perimeter - measurePathLength(previousRing, 'planar');
+      recordBindingMargin(`AX-87 hull offset ${offset} area delta`, areaDelta);
+      recordBindingMargin(`AX-87 hull offset ${offset} perimeter delta`, perimeterDelta);
+      expect(areaDelta).toBe(0);
+      expect(perimeterDelta).toBe(0);
+      expect(area).toBe(32);
+      const footprints = getResultTable(runPlanar(points, 12, 3), 'footprints');
+      expect(footprints.columns['area']).toEqual([area]);
+      expect(footprints.columns['perimeter']).toEqual([perimeter]);
+    });
+  }
+
+  it('preserves the dateline area while retaining short output geometry edges', () => {
+    const points = makePoints([179.9, -179.9, -179.9, 179.9], [40, 40, 40.1, 40.1]);
+    const footprints = getResultTable(
+      runCuratedBinding(
+        ID,
+        {coordinateSystem: 'EPSG:4326', epsilon: 30000, minimumPoints: 3},
+        {points}
+      ),
+      'footprints'
+    );
+    const ring = JSON.parse(String(footprints.columns['geometry'][0]))
+      .coordinates[0] as CatalogPosition[];
+    const wrappedRing = ring.map(
+      ([longitude, latitude]) =>
+        [longitude > 180 ? longitude - 360 : longitude, latitude] as CatalogPosition
+    );
+    const areaDelta =
+      measureRingSignedArea(ring, 'EPSG:4326') - measureRingSignedArea(wrappedRing, 'EPSG:4326');
+    recordBindingMargin('AX-87 dateline wrapped versus unwrapped area delta', areaDelta);
+    expect(areaDelta).toBe(0);
+    expect(footprints.columns['area'][0]).toBe(Math.abs(measureRingSignedArea(ring, 'EPSG:4326')));
+    expect(
+      Math.max(...ring.map(position => position[0])) -
+        Math.min(...ring.map(position => position[0]))
+    ).toBeLessThan(1);
+    expect(ring.some(position => Math.abs(position[0]) > 180)).toBe(true);
+  });
+});
 
 function getPoints(): CatalogFeatureCollection {
   return makePoints(

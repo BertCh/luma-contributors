@@ -13,6 +13,10 @@ import type {
   KeplerOperationRequirement
 } from './operation-descriptor-types';
 
+// Apply policy: significance, multipleTesting, rateScale only reclassify or rescale computed values in a
+// post-pass. Other settings change prepared inputs, allocation, graph construction or compiled
+// shader constants (including neighbourhood sizes and permutation loops), so require rebuilding.
+
 // Descriptors for the six curated bindings in `modules/kepler/src/curated/bindings`. Distances
 // (`epsilon`, `cellSize`, `range`, `searchRadius`, `maximumLag`) are in metres in the local frame
 // for EPSG:4326 data and in coordinate units for planar data, as for the catalog bindings.
@@ -28,7 +32,12 @@ function describeConstant(
   name: string,
   level: 'basic' | 'advanced'
 ): KeplerOperationParameterDescriptor {
-  return {name, defaultPolicy: {from: 'constant'}, level};
+  return {
+    name,
+    apply: ['significance', 'multipleTesting', 'rateScale'].includes(name) ? 'live' : 'rebuild',
+    defaultPolicy: {from: 'constant'},
+    level
+  };
 }
 
 function describeCapacity(
@@ -285,6 +294,7 @@ export const CURATED_OPERATION_DESCRIPTORS: readonly KeplerOperationDescriptor[]
         // nearest-neighbour distance is used instead of the binding's 200 m: the same rule, factor
         // and 1 percent margin as `density-clustering` (`descriptors-clustering.ts`), where the
         // factor was chosen by comparing 2, 2.5, 3 and 4 on eight kinds of data.
+        apply: 'rebuild',
         defaultPolicy: {
           from: 'data',
           input: 'points',
@@ -493,6 +503,7 @@ export const CURATED_OPERATION_DESCRIPTORS: readonly KeplerOperationDescriptor[]
       // Shorter side over 250 times 2: 15,625 cells for a square extent, within the 40,000 cap.
       {
         name: 'cellSize',
+        apply: 'rebuild',
         defaultPolicy: {
           from: 'data',
           input: 'points',

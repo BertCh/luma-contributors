@@ -2,9 +2,27 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {describe, expect, it} from 'vitest';
+import {describe, expect, it, vi} from 'vitest';
+import {GPUKriging} from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {createNullWebGPUDevice} from '../../../analysis/test/utils/gpu-contributor-test-utils';
+import {prepareCuratedKrigingGpuSamples} from '../../src/curated/bindings/curated-kriging-with-diagnostics-gpu';
+import {CatalogGpuSession} from '../../src/analysis/catalog-gpu-session';
+import {
+  getCatalogBinding,
+  normalizeCatalogParameters,
+  runCatalogOperationAsync
+} from '../../src/analysis/catalog-bindings';
+import {createKeplerCuratedAnalysisSample} from '../../src/curated/curated-analysis-samples';
+import {getKeplerCuratedAnalysis} from '../../src/curated/curated-analyses';
+import {
+  buildKeplerCuratedAnalysisRequest,
+  createKeplerCuratedAnalysisMapping,
+  updateKeplerCuratedAnalysisMapping
+} from '../../src/curated/curated-analysis-mapping';
+import {profileKeplerFeatureCollection} from '../../src/profile/dataset-profile';
 import type {CatalogFeatureCollection} from '../../src/analysis/catalog-geojson';
 import {
+  prepareCuratedKriging,
   computeFrameEmpiricalVariogram,
   computeLeaveOneOut
 } from '../../src/curated/bindings/curated-kriging-with-diagnostics-binding';
@@ -385,4 +403,339 @@ it('keeps squared measurement units with a stated variogram whose sill differs f
       )
     );
   }
+});
+
+it('AX-87: canonical sample order still stabilizes variogram accumulation after the tie fix', () => {
+  const indices = Array.from({length: KRIGING_POINTS.x.length}, (_, index) => index);
+  const evaluate = (order: number[]) =>
+    computeFrameEmpiricalVariogram(
+      order.map(index => KRIGING_POINTS.x[index]),
+      order.map(index => KRIGING_POINTS.y[index]),
+      order.map(index => KRIGING_POINTS.z[index]),
+      KRIGING_POINTS.binCount,
+      KRIGING_POINTS.maximumLag
+    );
+  const first = evaluate(indices);
+  const reversed = evaluate([...indices].reverse());
+  const distanceDelta = Math.max(
+    ...Array.from(first.distances, (value, bin) =>
+      Number.isFinite(value) ? Math.abs(value - reversed.distances[bin]) : 0
+    )
+  );
+  const semivarianceDelta = Math.max(
+    ...Array.from(first.semivariances, (value, bin) =>
+      Number.isFinite(value) ? Math.abs(value - reversed.semivariances[bin]) : 0
+    )
+  );
+  recordBindingMargin('AX-87 input-order variogram distance maximum absolute delta', distanceDelta);
+  recordBindingMargin(
+    'AX-87 input-order variogram semivariance maximum absolute delta',
+    semivarianceDelta
+  );
+  expect(Math.max(distanceDelta, semivarianceDelta)).toBeGreaterThan(0);
+  const canonicalize = (order: number[]) =>
+    [...order].sort(
+      (firstIndex, secondIndex) =>
+        KRIGING_POINTS.x[firstIndex] - KRIGING_POINTS.x[secondIndex] ||
+        KRIGING_POINTS.y[firstIndex] - KRIGING_POINTS.y[secondIndex]
+    );
+  expect(evaluate(canonicalize(indices))).toEqual(evaluate(canonicalize([...indices].reverse())));
+});
+
+describe('curated kriging GPU preparation and engine contract (no hardware execution)', () => {
+  const binding = getCatalogBinding(ID)!;
+
+  it('registers the real GPU runner while keeping the NumPy-qualified CPU reference', () => {
+    expect(binding.engine).toBe('gpu-or-cpu');
+    expect(binding.gpuContributorNames).toEqual(['GPUKriging']);
+    expect(binding.runGpu).toBeTypeOf('function');
+    expect(binding.run).toBeTypeOf('function');
+  });
+
+  it('maps the sample and an independently named and translated dataset into shared preparation', () => {
+    const analysis = getKeplerCuratedAnalysis('kriging-with-diagnostics')!;
+    const independent = getPoints();
+    independent.features = independent.features.map((feature, index) => ({
+      ...feature,
+      id: `sensor-${index}`,
+      geometry: {
+        type: 'Point',
+        coordinates: [KRIGING_POINTS.x[index] + 500000, KRIGING_POINTS.y[index] + 4000000]
+      },
+      properties: {temperature: KRIGING_POINTS.z[index]}
+    }));
+    const sample = createKeplerCuratedAnalysisSample('rain-gauges')[
+      'points'
+    ] as CatalogFeatureCollection;
+    for (const [datasetId, points, column, coordinateSystem] of [
+      ['gauges', sample, 'rainfall', 'EPSG:4326'],
+      ['survey', independent, 'temperature', 'planar']
+    ] as const) {
+      const profiles = [
+        profileKeplerFeatureCollection(points, {
+          datasetId,
+          label: datasetId,
+          coordinateSystem,
+          declarations: {rowSemantics: 'surface-samples', measurement: {[column]: 'amount'}}
+        })
+      ];
+      let mapping = createKeplerCuratedAnalysisMapping(analysis, profiles);
+      mapping = updateKeplerCuratedAnalysisMapping(
+        mapping,
+        {slot: 'points', datasetId},
+        analysis,
+        profiles
+      );
+      mapping = updateKeplerCuratedAnalysisMapping(
+        mapping,
+        {slot: 'points', role: 'value', columns: [column]},
+        analysis,
+        profiles
+      );
+      expect(mapping.ready).toBe(true);
+      const request = buildKeplerCuratedAnalysisRequest(analysis, mapping, {
+        parameterOverrides: {coordinateSystem, cellSize: 250}
+      });
+      expect(request.inputDatasetIds).toEqual({points: datasetId});
+      expect(request.parameters['valueProperty']).toBe(column);
+      const prepared = prepareCuratedKriging(
+        {points},
+        normalizeCatalogParameters(binding, request.parameters)
+      );
+      expect(prepared.sample.count).toBe(points.features.length);
+      expect(prepared.settings.neighborCount).toBe(16);
+      expect(prepared.fitCriterion).toBeTypeOf('number');
+      expect(prepared.context.grid.columns * prepared.context.grid.rows).toBeLessThanOrEqual(40000);
+    }
+  });
+
+  it('keeps the local 16-neighbour CPU oracle aligned with the independent NumPy fixture in the GPU spec', () => {
+    const result = runCuratedBinding(ID, {...STATED, neighborCount: 16}, {points: getPoints()});
+    const cells = getResultTable(result, 'kriging-cells');
+    const validation = getResultTable(result, 'cross-validation');
+    expect(Number(cells.columns['value'][0])).toBeCloseTo(12.384809982652644, 10);
+    expect(Number(cells.columns['variance'][0])).toBeCloseTo(1.3259431828349366, 10);
+    expect(Number(validation.columns['predicted'][0])).toBeCloseTo(11.072616026804125, 10);
+    expect(Number(validation.columns['kriging_variance'][0])).toBeCloseTo(1.299387091712623, 10);
+  });
+
+  it('rejects GPU neighbour requests above 16 before allocation and exposes the CPU fallback reason', async () => {
+    const device = createNullWebGPUDevice();
+    const allocation = vi.spyOn(device, 'createBuffer');
+    try {
+      const parameters = normalizeCatalogParameters(binding, STATED);
+      await expect(binding.runGpu!({device}, {points: getPoints()}, parameters)).rejects.toThrow(
+        /curated-kriging-with-diagnostics.*neighborCount.*16/
+      );
+      expect(allocation).not.toHaveBeenCalled();
+      const result = await runCatalogOperationAsync(
+        binding,
+        STATED,
+        {points: getPoints()},
+        {device}
+      );
+      expect(result.engine).toBe('cpu-reference');
+      expect(result.dispatchedContributors).toEqual([]);
+      expect(result.fallbackReason).toMatch(/neighborCount.*16/);
+      expect(result.diagnostics.some(diagnostic => diagnostic.code === 'gpu-fallback')).toBe(true);
+    } finally {
+      allocation.mockRestore();
+      device.destroy();
+    }
+  });
+
+  for (const failureStage of ['submission', 'readback'] as const) {
+    it(`constructs GPUKriging through the recipe and releases every buffer on ${failureStage} failure`, async () => {
+      const device = createNullWebGPUDevice();
+      const createBuffer = device.createBuffer.bind(device);
+      const destroyChecks: Array<() => void> = [];
+      const allocation = vi.spyOn(device, 'createBuffer').mockImplementation(properties => {
+        const buffer = createBuffer(properties);
+        const destroy = vi.spyOn(buffer, 'destroy');
+        destroyChecks.push(() => expect(destroy).toHaveBeenCalledOnce());
+        return buffer;
+      });
+      const dispatch = vi.spyOn(GPUKriging.prototype, 'getCommandNodes');
+      const submission = vi.spyOn(CatalogGpuSession.prototype, 'run').mockImplementation(() => {
+        if (failureStage === 'submission') throw new Error('injected submission failure');
+      });
+      const readback = vi
+        .spyOn(CatalogGpuSession.prototype, 'readFloat32')
+        .mockRejectedValue(new Error('injected readback failure'));
+      const scalar = vi.spyOn(CatalogGpuSession.prototype, 'readScalar').mockResolvedValue(0);
+      try {
+        const parameters = normalizeCatalogParameters(binding, {...STATED, neighborCount: 16});
+        await expect(binding.runGpu!({device}, {points: getPoints()}, parameters)).rejects.toThrow(
+          `injected ${failureStage} failure`
+        );
+        expect(dispatch).toHaveBeenCalledOnce();
+        expect(submission).toHaveBeenCalledOnce();
+        expect(destroyChecks.length).toBeGreaterThan(10);
+        for (const check of destroyChecks) check();
+      } finally {
+        scalar.mockRestore();
+        readback.mockRestore();
+        submission.mockRestore();
+        dispatch.mockRestore();
+        allocation.mockRestore();
+        device.destroy();
+      }
+    });
+  }
+});
+
+describe('review regressions: float32 kriging input conversion', () => {
+  const binding = getCatalogBinding(ID)!;
+  const locations = [
+    [0, 0],
+    [0.5, 0.5],
+    [1.5, 0.5],
+    [2.5, 0.5],
+    [0, 2],
+    [1, 3],
+    [3, 2],
+    [2, 3]
+  ];
+  const parameters = {
+    coordinateSystem: 'planar',
+    valueProperty: 'z',
+    variogram: 'stated',
+    model: 'spherical',
+    nugget: 0,
+    sill: 1,
+    range: 10,
+    neighborCount: 8,
+    cellSize: 1
+  };
+  const makeMeasurements = (values: number[], coordinates = locations) =>
+    makePoints(
+      coordinates.map(position => position[0]),
+      coordinates.map(position => position[1]),
+      index => ({z: values[index]})
+    );
+
+  it('finding 1: preserves small measurements beside a first measurement of 1e8', () => {
+    const points = makeMeasurements([1e8, 1, 2, 3, 4, 5, 6, 7]);
+    const prepared = prepareCuratedKriging(
+      {points},
+      normalizeCatalogParameters(binding, parameters)
+    );
+    const packed = prepareCuratedKrigingGpuSamples(prepared.sample, 1);
+    expect(packed.valueOrigin).toBe(0);
+    expect(Array.from(packed.sampleValues, value => value + packed.valueOrigin)).toEqual(
+      Array.from(prepared.sample.value)
+    );
+    // The same exact grid hits that previously reconstructed as zero remain the measurements.
+    const result = runCuratedBinding(ID, parameters, {points});
+    const cells = getResultTable(result, 'kriging-cells');
+    expect(Number(cells.columns['value'][0])).toBeCloseTo(1, 5);
+    expect(Number(cells.columns['variance'][0])).toBeLessThan(1e-12);
+  });
+
+  it('finding 1: retains small variation in a field with a common large measurement baseline', () => {
+    const points = makeMeasurements([
+      1e9 + 1,
+      1e9 + 2,
+      1e9 + 3,
+      1e9 + 4,
+      1e9 + 5,
+      1e9 + 6,
+      1e9 + 7,
+      1e9 + 8
+    ]);
+    const prepared = prepareCuratedKriging(
+      {points},
+      normalizeCatalogParameters(binding, parameters)
+    );
+    const packed = prepareCuratedKrigingGpuSamples(prepared.sample, 1);
+    expect(packed.valueOrigin).toBe(1e9 + 1);
+    expect(Array.from(packed.sampleValues, value => value + packed.valueOrigin)).toEqual(
+      Array.from(prepared.sample.value)
+    );
+  });
+
+  it('finding 1: falls back visibly before allocation when no measurement origin fits float32', async () => {
+    const points = makeMeasurements([1e40, 1, 2, 3, 4, 5, 6, 7]);
+    const device = createNullWebGPUDevice();
+    const allocation = vi.spyOn(device, 'createBuffer');
+    try {
+      await expect(
+        binding.runGpu!({device}, {points}, normalizeCatalogParameters(binding, parameters))
+      ).rejects.toThrow(
+        /curated-kriging-with-diagnostics: valueProperty.*round-trip.*float32.*0.000001/
+      );
+      const result = await runCatalogOperationAsync(binding, parameters, {points}, {device});
+      expect(result.engine).toBe('cpu-reference');
+      expect(result.dispatchedContributors).toEqual([]);
+      expect(result.fallbackReason).toMatch(/valueProperty.*round-trip.*float32/);
+      expect(
+        result.diagnostics.find(diagnostic => diagnostic.code === 'gpu-fallback')?.message
+      ).toMatch(/round-trip/);
+      expect(allocation).not.toHaveBeenCalled();
+    } finally {
+      allocation.mockRestore();
+      device.destroy();
+    }
+  });
+
+  it('finding 2: rejects newly coincident float32 locations and preserves the CPU exact hit and positive leave-one-out variance', async () => {
+    const coordinates = [
+      [0, 0],
+      [0.5, 0.5],
+      [0.50000001, 0.5],
+      [1.5, 0.5],
+      [2.5, 0.5],
+      [0, 2],
+      [1, 3],
+      [3, 2]
+    ];
+    const points = makeMeasurements([0, 1, 3, 2, 3, 4, 5, 6], coordinates);
+    const settings = {...parameters, nugget: 1};
+    const prepared = prepareCuratedKriging({points}, normalizeCatalogParameters(binding, settings));
+    expect(prepared.sample.count).toBe(8);
+    expect(
+      prepared.context.diagnostics.some(diagnostic => diagnostic.code === 'coincident-samples')
+    ).toBe(false);
+    const device = createNullWebGPUDevice();
+    const allocation = vi.spyOn(device, 'createBuffer');
+    try {
+      await expect(
+        binding.runGpu!({device}, {points}, normalizeCatalogParameters(binding, settings))
+      ).rejects.toThrow(/curated-kriging-with-diagnostics: points.*distinct.*collide in float32/);
+      const result = await runCatalogOperationAsync(binding, settings, {points}, {device});
+      expect(result.engine).toBe('cpu-reference');
+      expect(result.dispatchedContributors).toEqual([]);
+      expect(result.fallbackReason).toMatch(/distinct.*collide in float32/);
+      expect(
+        result.diagnostics.find(diagnostic => diagnostic.code === 'gpu-fallback')?.message
+      ).toMatch(/collide in float32/);
+      expect(Number(getResultTable(result, 'kriging-cells').columns['value'][0])).toBeCloseTo(1, 8);
+      expect(
+        Number(getResultTable(result, 'cross-validation').columns['kriging_variance'][1])
+      ).toBeGreaterThan(0);
+      expect(allocation).not.toHaveBeenCalled();
+    } finally {
+      allocation.mockRestore();
+      device.destroy();
+    }
+  });
+
+  it('finding 2: permits rounded x coordinates when y still distinguishes the locations', () => {
+    const coordinates = [
+      [0, 0],
+      [0.5, 0.5],
+      [0.50000001, 1],
+      [1.5, 0.5],
+      [2.5, 0.5],
+      [0, 2],
+      [1, 3],
+      [3, 2]
+    ];
+    const points = makeMeasurements([0, 1, 3, 2, 3, 4, 5, 6], coordinates);
+    const prepared = prepareCuratedKriging(
+      {points},
+      normalizeCatalogParameters(binding, parameters)
+    );
+    expect(() => prepareCuratedKrigingGpuSamples(prepared.sample, 1)).not.toThrow();
+  });
 });

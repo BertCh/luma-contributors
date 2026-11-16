@@ -4,6 +4,7 @@
 
 import {writeFileSync} from 'node:fs';
 import {profileKeplerFeatureCollection} from '../../src/profile/dataset-profile';
+import {profileKeplerDatasetNetwork} from '../../src/profile/dataset-network-profile';
 import {createKeplerCuratedAnalysisSample} from '../../src/curated/curated-analysis-samples';
 import {runCatalogOperationAsync} from '../../src/analysis/catalog-bindings';
 import type {GPUAnalysisColumnProfile} from '@luma-contributors/analysis/gpu-spatial-analysis';
@@ -48,6 +49,8 @@ import {
   withRowCount
 } from './engine-test-profiles';
 
+import {profileGallerySample} from './gallery-sample-profiles';
+
 function getKey(suggestion: KeplerAnalysisSuggestion): string {
   return suggestion.curatedAnalysisId ?? suggestion.bindingId;
 }
@@ -81,6 +84,7 @@ type Situation = {
   datasets: () => KeplerDatasetProfile[];
   topThree?: string[];
   topSix?: string[];
+  available?: string[];
   first?: string;
   notFirst?: string[];
   /** Judged separately by the tests below the table. */
@@ -96,13 +100,13 @@ const FIXTURES: Situation[] = [
     note: 'events with one severity column: where are they, are the hot spots real, which groups'
   },
   {
-    // Verdict after the fix round: the first table said Knox's test should be offered here. The
-    // binding reads numbers only, so ISO text timestamps cannot be used: the row is wrong, and
-    // the engine blocks it with the remedy to convert (see the tests below the table).
+    // Emerging hot spots now reads ISO times directly; it uses the event chronology,
+    // while Knox still needs numeric epochs. Static clustering remains available below.
     name: 'incident points with an ISO timestamp',
     datasets: () => [buildSampleProfile('incidents')],
-    topThree: ['hot-spot-map', 'density-surface', 'clusters-and-footprints'],
-    note: 'the same three; the time-aware test cannot read text timestamps and says so'
+    first: 'emerging-hot-spots',
+    topThree: ['emerging-hot-spots', 'density-surface', 'hot-spot-map'],
+    note: 'timestamped events support emerging hot spots as well as static density and significance'
   },
   {
     name: 'incident points with an epoch-seconds time column',
@@ -115,9 +119,12 @@ const FIXTURES: Situation[] = [
         )
       })
     ],
-    topThree: ['hot-spot-map', 'density-surface', 'clusters-and-footprints'],
-    topSix: ['knox-test'],
-    note: 'the same three, and the one analysis that uses the time column, within six'
+    // Numeric event times also support the curated temporal analysis.
+    topThree: ['emerging-hot-spots', 'density-surface', 'hot-spot-map'],
+    // The curated temporal analysis displaces the bare Knox test from the six-slot list;
+    // Knox must still be offered through Browse all for numeric event times.
+    available: ['knox-test'],
+    note: 'emerging hot spots uses chronology; numeric Knox remains available in Browse all'
   },
   {
     name: 'rain gauges with a measured value',
@@ -230,6 +237,60 @@ function writeFixtureReport(): void {
 }
 
 describe('suggestion fixtures', () => {
+  it('does not let a time column outweigh a contradictory guessed row meaning', () => {
+    const profile = profileGallerySample('points-time');
+    const result = suggestKeplerAnalyses(KEPLER_CATALOG_BINDINGS, [profile], {maximumCount: 12});
+    const candidates = [...result.suggestions, ...Object.values(result.more).flat()];
+    const temporal = candidates.find(entry => entry.curatedAnalysisId === 'emerging-hot-spots')!;
+    const interpolation = candidates.find(entry => entry.curatedAnalysisId === 'idw-surface')!;
+    expect(temporal.applicability.declaredContradiction).toBe(false);
+    expect(temporal.scoreTerms['rowSemanticsMismatch']).toBeLessThan(0);
+    expect(temporal.scoreTerms['timeColumn']).toBe(0);
+    expect(
+      temporal.score,
+      JSON.stringify({
+        meaning: profile.rowSemantics,
+        temporal: temporal.scoreTerms,
+        interpolation: interpolation.scoreTerms
+      })
+    ).toBeLessThan(interpolation.score);
+    const events = {
+      ...profile,
+      rowSemantics: {value: 'events' as const, source: 'declared' as const}
+    };
+    const eventSuggestions = suggestKeplerAnalyses(KEPLER_CATALOG_BINDINGS, [events], {
+      maximumCount: 12
+    });
+    const eventTemporal = [
+      ...eventSuggestions.suggestions,
+      ...Object.values(eventSuggestions.more).flat()
+    ].find(entry => entry.curatedAnalysisId === 'emerging-hot-spots')!;
+    expect(eventTemporal.scoreTerms['timeColumn']).toBeGreaterThan(0);
+  });
+
+  it('ranks a matching two-period comparison above separate time-aware analyses of either period', () => {
+    const result = suggestKeplerAnalyses(KEPLER_CATALOG_BINDINGS, [
+      buildSampleProfile('before'),
+      buildSampleProfile('after')
+    ]);
+    const candidates = [...result.suggestions, ...Object.values(result.more).flat()];
+    const relevant = candidates.filter(entry =>
+      ['period-comparison', 'emerging-hot-spots'].includes(entry.curatedAnalysisId ?? '')
+    );
+    expect(
+      result.suggestions[0]?.curatedAnalysisId,
+      JSON.stringify(
+        relevant.map(entry => ({id: entry.id, score: entry.score, terms: entry.scoreTerms}))
+      )
+    ).toBe('period-comparison');
+    expect(result.suggestions[0].datasetIds.slice().sort()).toEqual(['after', 'before']);
+    for (const candidate of relevant.filter(
+      entry => entry.curatedAnalysisId === 'emerging-hot-spots'
+    )) {
+      expect(result.suggestions[0].score).toBeGreaterThan(candidate.score);
+    }
+  });
+
   for (const fixture of FIXTURES) {
     it(`situation: ${fixture.name}`, () => {
       const result = suggestKeplerAnalyses(KEPLER_CATALOG_BINDINGS, fixture.datasets());
@@ -239,6 +300,9 @@ describe('suggestion fixtures', () => {
       }
       for (const key of fixture.topSix ?? []) {
         expect(keys.slice(0, 6), `${key} in the top six of ${keys.join(', ')}`).toContain(key);
+      }
+      for (const key of fixture.available ?? []) {
+        expect([...keys, ...Object.values(result.more).flat().map(getKey)]).toContain(key);
       }
       if (fixture.first) {
         expect(keys[0]).toBe(fixture.first);
@@ -260,7 +324,8 @@ describe('suggestion fixtures', () => {
     ];
     const applicability = evaluate('hotspot-gi-star', datasets);
     expect(applicability.measurementWarnings.join(' ')).toMatch(/count/);
-    expect(applicability.status).not.toBe('ready');
+    expect(applicability.status).toBe('ready');
+    expect(applicability.warnings.join(' ')).toMatch(/count/);
     const result = suggestKeplerAnalyses(KEPLER_CATALOG_BINDINGS, datasets, {maximumCount: 40});
     const keys = result.suggestions.map(getKey);
     expect(keys[0]).not.toBe('hotspot-gi-star');
@@ -308,24 +373,45 @@ describe('suggestion fixtures', () => {
     expect(result.total.needsInput).toBe(0);
     expect(result.blocked.length).toBeGreaterThan(0);
     for (const entry of result.blocked) {
-      expect(entry.applicability.missing).toHaveLength(1);
-      expect(entry.applicability.missing[0].remedy).toMatch(
-        /coordinate columns or a geometry column/
+      expect(entry.applicability.missing.length).toBeGreaterThan(0);
+      const typedInput = getCatalogBinding(entry.bindingId)!.inputs.some(
+        input => input.dataKind === 'raster' || input.dataKind === 'table'
+      );
+      const remedies = entry.applicability.missing.map(missing => missing.remedy).join(' ');
+      expect(remedies, entry.bindingId).toMatch(
+        typedInput
+          ? /raster|text or category column|polygon|zone/i
+          : /coordinate columns or a geometry column/
       );
     }
   });
 
-  it('lists service-area analyses as one dataset away for a street network alone', () => {
-    const result = suggestKeplerAnalyses(KEPLER_CATALOG_BINDINGS, [buildSampleProfile('streets')]);
-    // Analyses that already use the loaded streets come first among the greyed-out rows.
-    const blockedIds = result.blocked.map(entry => entry.bindingId);
-    expect(blockedIds.slice(0, 2).sort()).toEqual([
-      'network-isochrone-polygons',
-      'network-service-area'
-    ]);
-    for (const entry of result.blocked.slice(0, 2)) {
+  it('lists service-area analyses as one dataset away once street topology is profiled', () => {
+    const source = buildSampleProfile('streets');
+    const initial = evaluate('network-service-area', [source]);
+    expect(
+      initial.requirements.find(requirement => requirement.id === 'maximum-network-edges')?.state
+    ).toBe('unknown');
+    const refined = {
+      ...source,
+      network: profileKeplerDatasetNetwork(
+        source,
+        createKeplerCuratedAnalysisSample('street-grid-facilities')['network'],
+        initial.parameters
+      )
+    };
+    const result = suggestKeplerAnalyses(KEPLER_CATALOG_BINDINGS, [refined]);
+    for (const bindingId of ['network-isochrone-polygons', 'network-service-area']) {
+      expect(result.blocked.map(entry => entry.bindingId)).toContain(bindingId);
+      const entry = {applicability: evaluate(bindingId, [refined])};
+      expect(entry.applicability.status).toBe('blocked');
       expect(entry.applicability.missing[0].what).toMatch(/dataset of points/);
       expect(entry.applicability.missing[0].remedy).toMatch(/Load a layer of points/);
+      expect(
+        entry.applicability.requirements.find(
+          requirement => requirement.id === 'maximum-network-edges'
+        )?.state
+      ).toBe('passed');
     }
   });
 });
@@ -341,38 +427,18 @@ describe('suggestion properties', () => {
     }
   });
 
-  it('gives no question more than a third of the slots, rounded up, at every count', () => {
+  it('strictly caps each question at a third of the requested budget', () => {
     for (const {fixture, datasets} of situations) {
-      for (const maximumCount of [1, 3, 6, 8, 12]) {
+      for (const maximumCount of [1, 3, 5, 6, 7, 8, 12]) {
         const result = suggestKeplerAnalyses(KEPLER_CATALOG_BINDINGS, datasets, {maximumCount});
         expect(result.suggestions.length, fixture.name).toBeLessThanOrEqual(maximumCount);
         const counts = new Map<string, number>();
-        for (const suggestion of result.suggestions) {
-          counts.set(suggestion.question, (counts.get(suggestion.question) ?? 0) + 1);
-        }
-        // A third of the slots, rounded up, with one stated exception: a candidate beyond its
-        // question's share is taken only when it outscores everything held back for other
-        // questions (the `more` lists).
-        const limit = Math.ceil(maximumCount / 3);
-        for (const [question, count] of counts) {
-          if (count <= limit) {
-            continue;
-          }
-          const extras = result.suggestions
-            .filter(entry => entry.question === question)
-            .slice(limit);
-          const bestHeldBack = Math.max(
-            -Infinity,
-            ...Object.entries(result.more)
-              .filter(([other]) => other !== question)
-              .flatMap(([, held]) => held.map(entry => entry.score))
+        for (const entry of result.suggestions)
+          counts.set(entry.question, (counts.get(entry.question) ?? 0) + 1);
+        for (const [question, count] of counts)
+          expect(count, `${fixture.name}: ${question}`).toBeLessThanOrEqual(
+            Math.max(1, Math.floor(maximumCount / 3))
           );
-          for (const extra of extras) {
-            expect(extra.score, `${fixture.name}: ${question} at ${maximumCount}`).toBeGreaterThan(
-              bestHeldBack
-            );
-          }
-        }
       }
     }
   });
@@ -465,7 +531,7 @@ describe('suggestion properties', () => {
     expect(result.total.ready + result.total.needsInput).toBe(0);
     expect(result.total.blocked).toBeGreaterThan(100);
     for (const entry of result.blocked) {
-      expect(entry.applicability.missing[0].remedy).toMatch(/Load a dataset/);
+      expect(entry.applicability.missing[0].remedy).toMatch(/^Load /);
     }
   });
 
@@ -576,7 +642,7 @@ describe('evaluateKeplerOperationApplicability', () => {
     expect(result.inputAssignments).toEqual({points: 'incidents', polygons: 'districts'});
   });
 
-  it('yields needs-confirmation, not blocked, when a guessed coordinate model fails a coordinate requirement', () => {
+  it('warns when a guessed coordinate model contradicts a coordinate requirement', () => {
     const entry = KEPLER_OPERATION_DESCRIPTORS_WITH_GEOGRAPHIC_BLOCK();
     const binding = getCatalogBinding(entry.bindingId)!;
     const input = entry.requirements.find(
@@ -600,7 +666,7 @@ describe('evaluateKeplerOperationApplicability', () => {
     expect(confirmation.evidence).toBe('guess');
     expect(confirmation.remedy).toMatch(/^Confirm the coordinate system/);
     expect(
-      guessed.missing.some(item => item.remedy?.startsWith('Confirm the coordinate system'))
+      guessed.warnings.some(item => /Confirm the coordinate system|confirm them/.test(item))
     ).toBe(true);
   });
 
@@ -613,13 +679,13 @@ describe('evaluateKeplerOperationApplicability', () => {
     expect(result.missing.length).toBeGreaterThan(0);
   });
 
-  it('yields needs-mapping when a required column fits only by type', () => {
+  it('warns when a proposed required column fits only by type', () => {
     const counts = buildSampleProfile('districts', {keepColumns: ['district', 'cases']});
     const result = evaluate('local-moran-statistics', [counts]);
-    expect(result.status).toBe('needs-mapping');
+    expect(result.status).toBe('ready');
     expect(result.fieldBindings['valueProperty']).toBe('cases');
     expect(result.measurementWarnings.join(' ')).toMatch(/cases is a count/);
-    expect(result.missing[0].what).toMatch(/Choose the column for/);
+    expect(result.warnings.join(' ')).toMatch(/Check the guessed column/);
   });
 
   it('fills a time role only from a column with name or type evidence for it', () => {
@@ -667,7 +733,7 @@ describe('evaluateKeplerOperationApplicability', () => {
     const counts = evaluate('local-moran-statistics', [
       buildSampleProfile('districts', {keepColumns: ['district', 'cases', 'population']})
     ]);
-    expect(counts.missing[0].remedy).toMatch(/divide cases by population/);
+    expect(counts.warnings.join(' ')).toMatch(/divide cases by population/);
   });
 
   it('yields needs-mapping when several columns fit equally well, and lets a person settle it', () => {
@@ -931,7 +997,7 @@ describe('measurementByGeometry', () => {
       revenue(buildSampleProfile('districts'))
     ]);
     // An amount per polygon mostly measures the size of the polygon: not a preferred column.
-    expect(polygons.status).toBe('needs-mapping');
+    expect(polygons.status).toBe('ready');
     expect(polygons.measurementWarnings.join(' ')).toMatch(
       /revenue is an amount; this method is meant for rates/
     );
@@ -1079,6 +1145,11 @@ describe('circular fills, coordinate and identifier columns', () => {
     expect(carriers.length).toBeGreaterThanOrEqual(4);
     for (const descriptor of carriers) {
       const roles = descriptor.inputs.flatMap(input => input.fields.map(field => field.role));
+      // Predictor support compares training and query features without reading a response.
+      if (descriptor.bindingId === 'validation-area-of-applicability') {
+        expect(roles).toEqual(['predictors', 'predictors']);
+        continue;
+      }
       expect(roles, descriptor.bindingId).toContain('response');
       expect(roles, descriptor.bindingId).toContain('predictors');
       expect(descriptor.bindingId).toMatch(/regression/);
@@ -1155,7 +1226,7 @@ describe('circular fills, coordinate and identifier columns', () => {
     const only = evaluateKeplerOperationApplicability(binding, descriptor, [
       withColumns(profile, [id])
     ]);
-    expect(only.status).toBe('needs-mapping');
+    expect(only.status).toBe('ready');
     expect(only.measurementWarnings.join(' ')).toMatch(/identifier/);
   });
 });
@@ -1285,7 +1356,7 @@ describe('columns that are not filled unasked', () => {
     ).toBe('depth');
   });
 
-  it('asks when a required column is only a low-confidence guess', () => {
+  it('warns without blocking when a required column is only a low-confidence guess', () => {
     const base = buildSampleProfile('gauges');
     const withLevel = (confidence: 'low' | 'high', source: 'guess' | 'declared') =>
       withColumns(base, [
@@ -1296,8 +1367,10 @@ describe('columns that are not filled unasked', () => {
         })
       ]);
     const low = evaluate('idw-grid', [withLevel('low', 'guess')]);
-    expect(low.status).toBe('needs-mapping');
-    expect(low.missing[0].what).toMatch(/reading (looks like an amount \(a guess|is only a guess)/);
+    expect(low.status).toBe('ready');
+    expect(low.warnings.join(' ')).toMatch(
+      /reading (looks like an amount \(a guess|is only a guess)/
+    );
     expect(
       low.guessedFacts.some(fact => fact.kind === 'measurement' && fact.column === 'reading')
     ).toBe(true);
@@ -1361,6 +1434,31 @@ describe('columns that are not filled unasked', () => {
 });
 
 describe('row semantics, ties and questions', () => {
+  it('warns for unknown mandatory row meaning but blocks a failed declared meaning', () => {
+    const binding = getCatalogBinding('kernel-density-grid')!;
+    const descriptor = getKeplerOperationDescriptor(binding.id)!;
+    const mandatory: KeplerOperationDescriptor = {
+      ...descriptor,
+      requirements: [
+        ...descriptor.requirements.filter(requirement => requirement.id !== 'row-semantics'),
+        {id: 'row-semantics', input: 'points', severity: 'block', expects: ['events']}
+      ]
+    };
+    const profile = {...buildSampleProfile('incidents'), rowSemantics: undefined};
+    const unknown = evaluateKeplerOperationApplicability(binding, mandatory, [profile]);
+    expect(unknown.status).toBe('ready');
+    expect(
+      unknown.requirements.find(requirement => requirement.id === 'row-semantics')
+    ).toMatchObject({state: 'unknown', severity: 'block'});
+    expect(unknown.warnings.join(' ')).toMatch(/rows.*not known/);
+    const failed = evaluateKeplerOperationApplicability(binding, mandatory, [
+      {...profile, rowSemantics: {value: 'surface-samples', source: 'declared'}}
+    ]);
+    expect(failed.status).toBe('blocked');
+    expect(failed.requirements.find(requirement => requirement.id === 'row-semantics')?.state).toBe(
+      'failed'
+    );
+  });
   const guessedSemantics = (
     profile: KeplerDatasetProfile,
     value: 'events' | 'objects' | 'surface-samples',
@@ -1370,18 +1468,16 @@ describe('row semantics, ties and questions', () => {
     rowSemantics: {value, source, ...(source === 'guess' ? {confidence: 'low' as const} : {})}
   });
 
-  it('turns a contradiction of guessed row semantics into a question, not a plain ready', () => {
+  it('keeps guessed row meaning answerable without blocking the analysis', () => {
     const profile = guessedSemantics(buildSampleProfile('gauges'), 'surface-samples', 'guess');
     const result = suggestKeplerAnalyses(KEPLER_CATALOG_BINDINGS, [profile], {maximumCount: 12});
     const density = result.suggestions.find(
       entry => entry.curatedAnalysisId === 'density-surface'
     )!;
-    expect(density.status).toBe('needs-confirmation');
+    expect(density.status).toBe('ready');
     expect(density.applicability.declaredContradiction).toBe(false);
-    expect(density.scoreTerms['rowSemanticsMismatch']).toBe(-25);
-    expect(density.applicability.missing.map(item => item.remedy)).toContain(
-      'Confirm what the rows stand for'
-    );
+    expect(density.scoreTerms['rowSemanticsMismatch']).toBe(-35);
+    expect(density.applicability.warnings.join(' ')).toMatch(/rows|surface-samples/);
     const interpolation = result.suggestions.find(
       entry => entry.curatedAnalysisId === 'idw-surface'
     )!;
@@ -1435,6 +1531,30 @@ describe('row semantics, ties and questions', () => {
     expect(JSON.stringify(backward)).toBe(JSON.stringify(forward));
   });
 
+  it('offers paired change before a repeat temporal analysis, retaining repeats in Browse all', () => {
+    const profiles = [buildSampleProfile('before'), buildSampleProfile('after')];
+    for (const maximumCount of [6, 7, 8]) {
+      const result = suggestKeplerAnalyses(KEPLER_CATALOG_BINDINGS, profiles, {maximumCount});
+      expect(result.suggestions.slice(0, 3).map(getKey)).toContain('period-comparison');
+      expect(
+        result.suggestions.filter(entry => getKey(entry) === 'emerging-hot-spots')
+      ).toHaveLength(1);
+      const all = [...result.suggestions, ...Object.values(result.more).flat()];
+      expect(all.filter(entry => getKey(entry) === 'emerging-hot-spots')).toHaveLength(2);
+      expect(new Set(all.map(entry => entry.id)).size).toBe(all.length);
+      expect(
+        suggestKeplerAnalyses([...KEPLER_CATALOG_BINDINGS], [...profiles].reverse(), {maximumCount})
+      ).toEqual(result);
+    }
+    // Repeats can fill spare slots when no distinct analysis is available; the family cap holds.
+    const result = suggestKeplerAnalyses(
+      KEPLER_CATALOG_BINDINGS.filter(binding => binding.id === 'kernel-density-grid'),
+      profiles
+    );
+    expect(result.suggestions).toHaveLength(2);
+    expect(result.suggestions.every(entry => getKey(entry) === 'density-surface')).toBe(true);
+  });
+
   it('offers each dataset id even when size, extent and schema match', () => {
     const first = buildSampleProfile('incidents');
     const second = {
@@ -1445,7 +1565,8 @@ describe('row semantics, ties and questions', () => {
     const result = suggestKeplerAnalyses(KEPLER_CATALOG_BINDINGS, [first, second], {
       maximumCount: 40
     });
-    const density = result.suggestions.filter(
+    // Distinct analyses lead; the per-layer alternatives remain offered through Browse all.
+    const density = [...result.suggestions, ...Object.values(result.more).flat()].filter(
       entry => entry.curatedAnalysisId === 'density-surface'
     );
     expect(density.map(entry => entry.datasetIds[0]).sort()).toEqual(['incidents', 'second-layer']);
@@ -1456,7 +1577,9 @@ describe('row semantics, ties and questions', () => {
     const twin = {...first, datasetId: 'incidents-copy', label: 'copy'};
     const twins = suggestKeplerAnalyses(KEPLER_CATALOG_BINDINGS, [first, twin], {maximumCount: 40});
     expect(
-      twins.suggestions.filter(entry => entry.curatedAnalysisId === 'density-surface')
+      [...twins.suggestions, ...Object.values(twins.more).flat()].filter(
+        entry => entry.curatedAnalysisId === 'density-surface'
+      )
     ).toHaveLength(2);
     expect(twins.dropped.join(' ')).not.toMatch(/holds the same rows as/);
   });
@@ -1591,7 +1714,7 @@ describe('coordinates, engine and cost', () => {
     }
   });
 
-  it('asks to confirm a low-confidence coordinate guess before any metric analysis', () => {
+  it('warns about a low-confidence coordinate guess without blocking metric analysis', () => {
     // Keep the guessed model and the spacing calculation consistent; a model change needs
     // re-profiling and is covered separately below.
     const profile = lowGuess(
@@ -1600,8 +1723,8 @@ describe('coordinates, engine and cost', () => {
       })
     );
     const metric = evaluate('kernel-density-grid', [profile]);
-    expect(metric.status).toBe('needs-confirmation');
-    expect(metric.missing.map(item => item.remedy)).toContain('Confirm the coordinate system');
+    expect(metric.status).toBe('ready');
+    expect(metric.warnings.join(' ')).toMatch(/coordinate.*guess|guess.*coordinate/);
     expect(metric.resolutions.find(entry => entry.parameter === 'coordinateSystem')?.guessed).toBe(
       true
     );
@@ -1805,7 +1928,7 @@ describe('second review engine regressions', () => {
       origins: 'facilities',
       opportunities: 'demand'
     });
-    expect(correct.status).toBe('ready');
+    expect(correct.status).toBe('needs-confirmation');
     const output = await runCatalogOperationAsync(
       getCatalogBinding('network-accessibility')!,
       correct.parameters,
@@ -1827,7 +1950,7 @@ describe('second review engine regressions', () => {
       executionEngine: 'cpu',
       fieldBindings: {weightProperty: 'residents'}
     });
-    expect(weighted.status).toBe('ready');
+    expect(weighted.status).toBe('needs-confirmation');
     expect(weighted.inputAssignments['opportunities']).toBe('beta');
   });
 
@@ -1953,12 +2076,12 @@ describe('second review engine regressions', () => {
     const length = evaluateKeplerOperationApplicability(binding, gated, [profile], {
       overrides: {costMode: 'length'}
     });
-    expect(length.status).toBe('ready');
+    expect(length.status).toBe('needs-confirmation');
     expect(length.requirements.some(requirement => requirement.role?.includes('cost'))).toBe(false);
     const property = evaluateKeplerOperationApplicability(binding, gated, [profile], {
       overrides: {costMode: 'property'}
     });
-    expect(property.status).toBe('ready');
+    expect(property.status).toBe('needs-confirmation');
     expect(
       property.requirements.some(
         requirement =>
@@ -2015,7 +2138,7 @@ describe('second review engine regressions', () => {
     });
     const result = evaluateKeplerOperationApplicability(binding, measured, [profile]);
     expect(result.parameters['costMode']).toBe('property');
-    expect(result.status).toBe('needs-mapping');
+    expect(result.status).toBe('needs-confirmation');
     expect(
       result.requirements.some(
         requirement => requirement.id === 'no-missing-values' && requirement.state === 'failed'
@@ -2322,7 +2445,7 @@ describe('third review engine regressions', () => {
     expect(result.reasons.join(' ')).toContain('not used with the current settings');
   });
 
-  it('asks for confirmation of guessed spatial models instead of treating them as conflicting declarations', () => {
+  it('warns about guessed spatial models without treating them as conflicting declarations', () => {
     const after = period('after', 'EPSG:4326');
     const result = evaluate(
       'cell-compare',
@@ -2335,10 +2458,8 @@ describe('third review engine regressions', () => {
       ],
       {inputAssignments: {before: 'before', after: 'after'}, overrides: {cellSize: 1}}
     );
-    expect(result.status).toBe('needs-confirmation');
-    expect(result.missing.some(entry => entry.remedy === 'Confirm the coordinate system')).toBe(
-      true
-    );
+    expect(result.status).toBe('ready');
+    expect(result.warnings.join(' ')).toMatch(/coordinates.*guess|coordinate system.*guess/);
     expect(result.guessedFacts).toContainEqual({
       kind: 'coordinate-model',
       datasetId: 'after',
@@ -2374,7 +2495,7 @@ describe('third review engine regressions', () => {
         overrides: {costMode: 'length'},
         fieldBindings: {forwardCostProperty: chosen}
       });
-      expect(result.status).toBe('ready');
+      expect(result.status).toBe('needs-confirmation');
       expect(result.fieldBindings['forwardCostProperty']).toBeUndefined();
       expect(result.filledRoles.some(entry => entry.role === 'forward-cost')).toBe(false);
       expect(result.requirements.some(entry => entry.role === 'forward-cost')).toBe(false);
@@ -2385,7 +2506,7 @@ describe('third review engine regressions', () => {
       const overridden = evaluate('network-build-graph', [profile], {
         overrides: {costMode: 'length', forwardCostProperty: chosen}
       });
-      expect(overridden.status).toBe('ready');
+      expect(overridden.status).toBe('needs-confirmation');
       expect(overridden.parameters['forwardCostProperty']).toBe('');
     }
     expect(
@@ -2433,4 +2554,48 @@ describe('third review engine regressions', () => {
       );
     }
   });
+});
+
+it('uses cross-parameter OR for role requirements and preflight requirements', () => {
+  const binding = getCatalogBinding('point-density-grid')!;
+  const base = getKeplerOperationDescriptor(binding.id)!;
+  const condition = {
+    anyOf: [
+      {parameter: 'statistic', equals: ['sum']},
+      {parameter: 'includeEmptyCells', equals: [false]}
+    ]
+  };
+  const descriptor: KeplerOperationDescriptor = {
+    ...base,
+    inputs: base.inputs.map(input => ({
+      ...input,
+      fields: input.fields.map(field => ({...field, required: condition}))
+    })),
+    requirements: [
+      ...base.requirements,
+      {
+        id: 'minimum-rows',
+        input: 'points',
+        severity: 'block',
+        limit: 1000000000,
+        activeWhen: condition
+      }
+    ]
+  };
+  const profile = {...buildSampleProfile('incidents'), columns: []};
+  for (const [statistic, includeEmptyCells, required] of [
+    ['count', true, false],
+    ['sum', true, true],
+    ['count', false, true]
+  ] as const) {
+    const assessment = evaluateKeplerOperationApplicability(binding, descriptor, [profile], {
+      overrides: {statistic, includeEmptyCells}
+    });
+    expect(
+      assessment.requirements.some(
+        requirement => requirement.id === 'minimum-rows' && requirement.state === 'failed'
+      )
+    ).toBe(required);
+    expect(assessment.missing.some(missing => missing.what.includes('column'))).toBe(required);
+  }
 });

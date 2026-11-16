@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {profileKeplerWorkbenchData} from '../descriptors/workbench-adapters';
+import {applyKeplerDatasetProfileDeclarations} from '../profile/dataset-profile';
+import type {KeplerDatasetProfileDeclarations} from '../profile/dataset-profile-types';
 import type {CatalogParameterValue} from '../analysis/catalog-binding-types';
 import type {
   CatalogColumnType,
@@ -26,6 +29,7 @@ const ALL_KINDS: readonly WorkflowPortKind[] = ['point', 'line', 'polygon', 'fea
 type ColumnValue = string | number | boolean | null;
 type Parameters = Readonly<Record<string, CatalogParameterValue>>;
 type TableResult = {
+  declarations?: KeplerDatasetProfileDeclarations;
   table: CatalogOutputTable;
   identityColumn?: string;
   diagnostics?: CatalogDiagnostic[];
@@ -155,6 +159,67 @@ function evaluateRows(expression: WorkflowExpression, data: WorkflowData): Colum
   );
 }
 
+type TableDeclarationSource = {
+  data: WorkflowData;
+  /** Output name to original name; absent means unchanged names. Only listed columns survive. */
+  columns?: ReadonlyMap<string, string>;
+};
+
+/** Carry confirmed meanings through value-preserving copies, never old statistics or guesses. */
+function getTableProfileDeclarations(
+  table: CatalogOutputTable,
+  sources: readonly TableDeclarationSource[],
+  rowSources = sources.map(source => source.data)
+): KeplerDatasetProfileDeclarations {
+  const measurement: NonNullable<KeplerDatasetProfileDeclarations['measurement']> =
+    Object.fromEntries(
+      Object.keys(table.columns).flatMap(name => {
+        const contributors = sources.flatMap(source => {
+          const original = source.columns ? source.columns.get(name) : name;
+          if (original === undefined || !Object.hasOwn(source.data.table.columns, original))
+            return [];
+          const column = source.data.analysisProfile?.columns.find(
+            entry => entry.name === original
+          );
+          return [
+            {
+              compatible: source.data.table.columnTypes[original] === table.columnTypes[name],
+              declared: column?.measurementSource === 'declared' ? column.measurement : undefined
+            }
+          ];
+        });
+        const declared = contributors[0]?.declared;
+        return declared &&
+          contributors.every(entry => entry.compatible && entry.declared === declared)
+          ? [[name, declared]]
+          : [];
+      })
+    );
+  const rowSemantics = rowSources[0]?.analysisProfile?.rowSemantics;
+  const geometrySources = rowSources.filter(source => source.table.geometryColumn !== undefined);
+  const coordinates = geometrySources[0]?.analysisProfile?.coordinates;
+  return {
+    measurement,
+    ...(rowSemantics?.source === 'declared' &&
+    rowSources.every(
+      source =>
+        source.analysisProfile?.rowSemantics?.source === 'declared' &&
+        source.analysisProfile.rowSemantics.value === rowSemantics.value
+    )
+      ? {rowSemantics: rowSemantics.value}
+      : {}),
+    ...(table.geometryColumn !== undefined &&
+    coordinates?.source === 'declared' &&
+    geometrySources.every(
+      source =>
+        source.analysisProfile?.coordinates?.source === 'declared' &&
+        source.analysisProfile.coordinates.model === coordinates.model
+    )
+      ? {coordinateModel: coordinates.model}
+      : {})
+  };
+}
+
 function makeOperation(definition: TableOperationDefinition): WorkflowOperation {
   const parameters = definition.parameters ?? [];
   const inputNames = definition.inputNames ?? ['rows'];
@@ -164,7 +229,7 @@ function makeOperation(definition: TableOperationDefinition): WorkflowOperation 
     category: 'table',
     summary: `${definition.title} on workflow tables.`,
     origin: 'builtin',
-    version: '1',
+    version: '2',
     engine: 'cpu-reference',
     inputs: inputNames.map(name => ({
       name,
@@ -246,6 +311,19 @@ function makeOperation(definition: TableOperationDefinition): WorkflowOperation 
           ? {identityColumn}
           : {}
       );
+      // Reprofile the actual output, then restore only declarations justified by its lineage.
+      const declarations = result.declarations;
+      if (
+        Object.values(inputs).some(input => input.analysisProfile) ||
+        declarations?.coordinateModel ||
+        declarations?.rowSemantics ||
+        Object.keys(declarations?.measurement ?? {}).length > 0
+      ) {
+        data.analysisProfile = applyKeplerDatasetProfileDeclarations(
+          profileKeplerWorkbenchData(data),
+          declarations ?? {}
+        );
+      }
       return {
         outputs: {[definition.output]: data},
         diagnostics: result.diagnostics ?? [],
@@ -351,6 +429,17 @@ function joinAttributes(
   }
   return {
     table,
+    declarations: getTableProfileDeclarations(
+      table,
+      [
+        {data: target},
+        {
+          data: attributes,
+          columns: new Map(names.map(name => [`${parameters['prefix']}${name}`, name]))
+        }
+      ],
+      [target]
+    ),
     identityColumn: target.identityColumn,
     diagnostics: [
       ...makeDiagnostic(
@@ -378,8 +467,10 @@ function filterRows(
   );
   const indices = values.flatMap((value, index) => (value ? [index] : []));
   const nullCount = values.filter(value => value === null).length;
+  const table = copyTable(rows, indices);
   return {
-    table: copyTable(rows, indices),
+    table,
+    declarations: getTableProfileDeclarations(table, [{data: rows}]),
     identityColumn: rows.identityColumn,
     diagnostics: makeDiagnostic(
       'null-condition',
@@ -420,6 +511,16 @@ function calculateColumn(
   table.columnTypes[name] = type;
   return {
     table,
+    declarations: getTableProfileDeclarations(table, [
+      {
+        data: rows,
+        columns: new Map(
+          Object.keys(rows.table.columns)
+            .filter(column => column !== name)
+            .map(column => [column, column])
+        )
+      }
+    ]),
     identityColumn: rows.identityColumn,
     diagnostics: Object.hasOwn(rows.table.columns, name)
       ? makeDiagnostic(
@@ -463,6 +564,9 @@ function selectColumns(
   );
   return {
     table,
+    declarations: getTableProfileDeclarations(table, [
+      {data: rows, columns: new Map(names.map((name, index) => [resulting[index], name]))}
+    ]),
     identityColumn:
       rows.identityColumn === undefined || !names.includes(rows.identityColumn)
         ? undefined
@@ -495,11 +599,13 @@ function sortRows(
       firstComparable < secondComparable ? -1 : firstComparable > secondComparable ? 1 : 0;
     return comparison * direction || first - second;
   });
+  const table = copyTable(
+    rows,
+    parameters['limit'] ? indices.slice(0, parameters['limit'] as number) : indices
+  );
   return {
-    table: copyTable(
-      rows,
-      parameters['limit'] ? indices.slice(0, parameters['limit'] as number) : indices
-    ),
+    table,
+    declarations: getTableProfileDeclarations(table, [{data: rows}]),
     identityColumn: rows.identityColumn
   };
 }
@@ -637,6 +743,11 @@ function summarizeRows(
   }
   return {
     table,
+    declarations: getTableProfileDeclarations(
+      table,
+      [{data: rows, columns: new Map(groupBy.map(name => [name, name]))}],
+      []
+    ),
     identityColumn:
       rows.identityColumn && groupBy.includes(rows.identityColumn) ? rows.identityColumn : undefined
   };
@@ -746,15 +857,28 @@ function concatenateRows(inputs: Readonly<Record<string, WorkflowData>>): TableR
     );
     columnTypes[identityColumn] = 'string';
   }
+  const table: CatalogOutputTable = {
+    id: 'combined',
+    label: 'Concatenate',
+    rowCount,
+    columns,
+    columnTypes,
+    ...(geometryColumn === undefined ? {} : {geometryColumn})
+  };
   return {
-    table: {
-      id: 'combined',
-      label: 'Concatenate',
-      rowCount,
-      columns,
-      columnTypes,
-      ...(geometryColumn === undefined ? {} : {geometryColumn})
-    },
+    table,
+    declarations: getTableProfileDeclarations(
+      table,
+      [first, second].map(data => ({
+        data,
+        columns: new Map(
+          Object.keys(data.table.columns).map(name => [
+            name === data.table.geometryColumn ? geometryColumn! : name,
+            name
+          ])
+        )
+      }))
+    ),
     identityColumn
   };
 }
@@ -813,6 +937,19 @@ function pointsFromColumns(
   const invalid = rows.table.rowCount - indices.length;
   return {
     table,
+    declarations: {
+      ...getTableProfileDeclarations(table, [
+        {
+          data: rows,
+          columns: new Map(
+            Object.keys(rows.table.columns)
+              .filter(name => name !== 'geometry')
+              .map(name => [name, name])
+          )
+        }
+      ]),
+      coordinateModel: 'geographic'
+    },
     identityColumn: rows.identityColumn,
     diagnostics: makeDiagnostic(
       'invalid-coordinate',
@@ -925,14 +1062,18 @@ export function getWorkflowTableOperations(): readonly WorkflowOperation[] {
       title: 'Drop geometry',
       output: 'table',
       kind: 'table',
-      execute: ({rows}) => ({
-        table: copyTable(
+      execute: ({rows}) => {
+        const table = copyTable(
           rows,
           undefined,
           Object.keys(rows.table.columns).filter(name => name !== rows.table.geometryColumn)
-        ),
-        identityColumn: rows.identityColumn
-      })
+        );
+        return {
+          table,
+          declarations: getTableProfileDeclarations(table, [{data: rows}]),
+          identityColumn: rows.identityColumn
+        };
+      }
     })
   ];
 }

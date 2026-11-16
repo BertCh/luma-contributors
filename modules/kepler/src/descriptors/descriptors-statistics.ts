@@ -13,6 +13,10 @@ import type {
   KeplerOperationRequirement
 } from './operation-descriptor-types';
 
+// Apply policy: significance, multipleTesting, method, alpha and resultCount only reclassify computed values in a
+// post-pass. Other settings change prepared inputs, allocation, graph construction or compiled
+// shader constants (including neighbourhood sizes and permutation loops), so require rebuilding.
+
 // Descriptors for the 20 statistical bindings of the `analysis` catalog domain: spatial weights,
 // global and local autocorrelation, hot spots, rate smoothing, multiple testing, the Knox test,
 // regressions and the two optimisation and similarity bindings. The measurement levels below are
@@ -30,12 +34,12 @@ import type {
 
 /**
  * Margin on the outlier-resistant nearest-neighbor distance. The rule returns the distance at
- * which the farthest feature (outliers apart) just reaches its neighbor, and the binding compares
- * with a strict `distance > band`. Rounding in the polygon centroid arithmetic, and (for
- * longitude and latitude data) the difference between the profile's great-circle distance on a
- * sphere and the binding's local equidistant frame, put the exact value on the wrong side: with a
- * factor of 1 the spec found islands on both the planar and the geographic fixture. One percent
- * covers both.
+ * which the farthest feature (outliers apart) just reaches its neighbor. The binding includes
+ * equality; fixed planar DBSCAN also compensates frame translation errors. Neither change makes
+ * the profile's geographic great-circle metric equal to the binding's local equidistant metric.
+ * AX-87's four-point geographic probe still has two islands at the spherical band and none with
+ * this margin. Polygon anchor arithmetic can also differ, so retain this safeguard and the
+ * resolver's independent upward rounding.
  */
 const DISTANCE_BAND_MARGIN = 1.01;
 
@@ -74,11 +78,24 @@ function describeConstant(
   level: 'basic' | 'advanced',
   activeWhen?: KeplerOperationParameterDescriptor['activeWhen']
 ): KeplerOperationParameterDescriptor {
-  return {name, defaultPolicy: {from: 'constant'}, level, ...(activeWhen ? {activeWhen} : {})};
+  return {
+    name,
+    apply: ['significance', 'multipleTesting', 'method', 'alpha', 'resultCount'].includes(name)
+      ? 'live'
+      : 'rebuild',
+    defaultPolicy: {from: 'constant'},
+    level,
+    ...(activeWhen ? {activeWhen} : {})
+  };
 }
 
 function describePermutations(): KeplerOperationParameterDescriptor {
-  return {name: 'permutations', defaultPolicy: PERMUTATION_PRESET, level: 'advanced'};
+  return {
+    apply: 'rebuild',
+    name: 'permutations',
+    defaultPolicy: PERMUTATION_PRESET,
+    level: 'advanced'
+  };
 }
 
 /** The neighborhood types and where each parameter of the weights rule is used. */
@@ -95,6 +112,7 @@ const DISTANCE_BAND_ONLY = {parameter: 'neighborhood', equals: ['distance-band']
 function describeNeighborhood(input: string, extraReason = ''): KeplerOperationParameterDescriptor {
   return {
     name: 'neighborhood',
+    apply: 'rebuild',
     defaultPolicy: {
       from: 'preset',
       value: 'queen',
@@ -131,6 +149,7 @@ function describeWeightsParameters(
     describeConstant('neighborCount', options.neighborCount ?? 'basic', KNN_ONLY),
     {
       name: 'distanceBand',
+      apply: 'rebuild',
       defaultPolicy: {
         from: 'data',
         input,
@@ -737,6 +756,7 @@ export const STATISTICS_OPERATION_DESCRIPTORS: readonly KeplerOperationDescripto
       // pairs for three tight clusters of 20), a modest share of pairs, as a Knox test wants.
       {
         name: 'spatialThreshold',
+        apply: 'rebuild',
         defaultPolicy: {
           from: 'data',
           input: 'points',
@@ -750,6 +770,7 @@ export const STATISTICS_OPERATION_DESCRIPTORS: readonly KeplerOperationDescripto
       // With the spatial factor above the null runs (random times) gave p between 0.08 and 0.98.
       {
         name: 'temporalThreshold',
+        apply: 'rebuild',
         defaultPolicy: {
           from: 'data',
           input: 'points',
@@ -759,7 +780,12 @@ export const STATISTICS_OPERATION_DESCRIPTORS: readonly KeplerOperationDescripto
         },
         level: 'basic'
       },
-      {name: 'permutations', defaultPolicy: PERMUTATION_PRESET, level: 'advanced'},
+      {
+        apply: 'rebuild',
+        name: 'permutations',
+        defaultPolicy: PERMUTATION_PRESET,
+        level: 'advanced'
+      },
       describeConstant('seed', 'advanced'),
       describeConstant('coordinateSystem', 'advanced')
     ],
@@ -945,6 +971,7 @@ export const STATISTICS_OPERATION_DESCRIPTORS: readonly KeplerOperationDescripto
       // The right operand is a distance band with decay 1 / (1 + d / band).
       {
         name: 'distanceBand',
+        apply: 'rebuild',
         defaultPolicy: {
           from: 'data',
           input: 'points',
@@ -1261,6 +1288,7 @@ export const STATISTICS_OPERATION_DESCRIPTORS: readonly KeplerOperationDescripto
       // above weighs both null discoveries and planted-cluster detection, not flagged-cell counts.
       {
         name: 'cellSize',
+        apply: 'rebuild',
         defaultPolicy: {
           from: 'data',
           input: 'points',
@@ -1348,6 +1376,7 @@ export const STATISTICS_OPERATION_DESCRIPTORS: readonly KeplerOperationDescripto
       // search over bandwidths (AICc) is what the binding lacks.
       {
         name: 'bandwidth',
+        apply: 'rebuild',
         defaultPolicy: {
           from: 'data',
           input: 'points',

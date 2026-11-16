@@ -25,6 +25,8 @@ import {
 import {VALIDATION_BINDINGS} from '../src/analysis/catalog-validation-bindings';
 import {makeValidationSpaceTimeCovariance} from '../src/analysis/catalog-validation-vecchia';
 import {getCatalogSampleInputs} from '../../../examples/deck/kepler-compute/src/analysis-catalog-input';
+import {getKeplerOperationDescriptor} from '../src/descriptors/operation-descriptors';
+import {planKeplerResultPresentation} from '../src/presentation/result-presentation';
 import {fitKeplerVecchiaVariogram} from '../src/analysis/kriging-variogram-fit';
 
 async function runOperation(
@@ -65,6 +67,33 @@ for (const binding of VALIDATION_BINDINGS)
     ).toBe(true);
     expect(result.tables[0].rowCount).toBe(inputs[binding.inputs.at(-1)!.name].features.length);
     expect(result.tables.at(-1)!.columns['metric'].length).toBeGreaterThan(0);
+    // AX-80: verify presentation metadata against real contributor output, not synthetic tables.
+    const descriptor = getKeplerOperationDescriptor(binding.id)!;
+    for (const output of descriptor.outputs) {
+      const table = result.tables.find(candidate => candidate.id === output.tableId);
+      if (!table)
+        throw new Error(`${binding.id}: descriptor table ${output.tableId} was not published`);
+      if (output.kind === 'summary') {
+        if (!table.columns['metric'] || !table.columns['value'])
+          throw new Error(`${binding.id}: ${output.tableId} must publish metric/value diagnostics`);
+        continue;
+      }
+      const presentation = planKeplerResultPresentation(table, output);
+      if (!presentation || presentation.column !== output.presentation?.column)
+        throw new Error(
+          `${binding.id}: ${output.tableId} has no usable ${output.presentation?.column} presentation; published columns: ${Object.keys(table.columns).join(', ')}`
+        );
+      const source = inputs[output.kindFrom!];
+      if (table.rowCount !== source.features.length)
+        throw new Error(
+          `${binding.id}: ${output.tableId} rows must preserve the ${output.kindFrom} input`
+        );
+      if (
+        output.tableId === 'validation-fdr' &&
+        (presentation.classScheme !== 'significance-flag' || (presentation.unrecognized ?? 0) !== 0)
+      )
+        throw new Error(`${binding.id}: significant must use recognized significance-flag classes`);
+    }
   });
 
 test.each([
@@ -259,6 +288,17 @@ test('FDR wrapper adjusts exactly the valid testing family with Benjamini-Hochbe
   expect(table.columns['significant']).toEqual([1, 0, 0, 0, 0, 0]);
   expect(table.columns['adjusted_pvalue'].slice(4)).toEqual([null, null]);
   expect(readMetric(result.tables[1], 'tested_count')).toBe(4);
+  const presentation = planKeplerResultPresentation(
+    table,
+    getKeplerOperationDescriptor('validation-fdr')!.outputs[0]
+  );
+  const nonsignificant = presentation?.legend.find(entry => entry.value === 0)?.count;
+  const untested = presentation?.legend.find(entry => entry.label === 'Untested')?.count;
+  if (nonsignificant !== 3 || untested !== 2 || presentation?.excludedRows?.join(',') !== '4,5') {
+    throw new Error(
+      `validation-fdr: expected 3 tested nonsignificant rows and 2 untested rows at indices 4,5; presentation: ${JSON.stringify(presentation)}`
+    );
+  }
 });
 
 test.each([

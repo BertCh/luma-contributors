@@ -451,7 +451,8 @@ export function runCanonicalMoranPermutationTest(
 
 /**
  * Whether any area could be flagged by a correction, given the permutation count. With `R`
- * permutations the smallest pseudo p-value is `pMin = 1 / (R + 1)`. Bonferroni and Holm flag the
+ * permutations the smallest pseudo p-value is `pMin = pValueMultiplier / (R + 1)`
+ * (multiplier 1 for absolute-statistic inference, 2 for doubled-tail inference). Bonferroni and Holm flag the
  * smallest p-value when `m pMin <= alpha`, Sidak when `1 - (1 - pMin)^m <= alpha`, and
  * Benjamini-Hochberg when `pMin <= alpha`, but it then needs at least `m pMin / alpha` areas
  * tied at the minimum (`requiredTiedMinimumCount`). `permutationsNeeded` is the smallest count
@@ -461,9 +462,10 @@ export function getSignificanceAttainability(
   method: string,
   alpha: number,
   testedCount: number,
-  permutations: number
+  permutations: number,
+  pValueMultiplier = 1
 ): {attainable: boolean; permutationsNeeded: number; requiredTiedMinimumCount: number | null} {
-  const pMin = 1 / (permutations + 1);
+  const pMin = pValueMultiplier / (permutations + 1);
   const pNeeded =
     method === 'bonferroni' || method === 'holm'
       ? alpha / testedCount
@@ -471,7 +473,7 @@ export function getSignificanceAttainability(
         ? -Math.expm1(Math.log1p(-alpha) / testedCount)
         : alpha;
   const attainable = pMin <= pNeeded * (1 + 1e-12);
-  const reciprocal = 1 / pNeeded;
+  const reciprocal = pValueMultiplier / pNeeded;
   const nearestInteger = Math.round(reciprocal);
   // Snap only within the floating-point evaluation error; a fixed absolute slack loses meaning
   // when a small significance level requires trillions of permutations.

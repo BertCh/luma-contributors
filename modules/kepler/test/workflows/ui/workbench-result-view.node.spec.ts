@@ -159,6 +159,8 @@ function makeStore(
     paste: () => false,
     serialize: () => undefined,
     restore: value => record('restore', value),
+    getReviewedAssistantIssues: () => [],
+    recordAssistantReview: () => {},
     clear: async () => {
       record('clear');
     }
@@ -1145,7 +1147,8 @@ describe('result tab layout revisions', () => {
     expect(details.map(match => match[2])).toEqual([
       'Summary (3)',
       'Diagnostics (0)',
-      'Parameters used (2)'
+      'Parameters used (2)',
+      'Preflight and materialisation'
     ]);
     for (const match of details) {
       expect(match[1]).not.toMatch(/\bopen(?:=|\s|$)/);

@@ -903,7 +903,9 @@ describe('policies stated by the descriptors', () => {
         equals: ['distance-band']
       });
     }
-    expect(parameterOf('weights-algebra', 'weightRule').activeWhen?.parameter).toBe('operation');
+    expect(parameterOf('weights-algebra', 'weightRule').activeWhen).toMatchObject({
+      parameter: 'operation'
+    });
   });
 
   it('derives the distance bands with the outlier-resistant rule and the radii with the knee', () => {

@@ -2,8 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {parseCatalogFeatureCollection} from '../analysis/catalog-geojson';
+import {parseKeplerDatasetProfileDeclarations} from '../profile/dataset-profile-cache';
+import type {KeplerDatasetProfile} from '../profile/dataset-profile-types';
+import {evaluateKeplerWorkbenchInputs} from '../descriptors/workbench-adapters';
 import {hashWorkflowValue} from './workflow-data';
 import {getWorkflowPortCompatibility} from './workflow-operations';
+import {makeWorkflowSourceGeoJSONData} from './workflow-source-operations';
 import {WORKFLOW_LIMITS, WorkflowError} from './workflow-types';
 import type {
   WorkflowDocument,
@@ -140,7 +145,7 @@ export function resolveWorkflowParameters(
 ): Record<string, unknown> {
   const inputs = new Map(document.inputs.map(input => [input.id, input.value]));
   return Object.fromEntries(
-    operation.parameters.map(parameter => {
+    operation.parameters.flatMap(parameter => {
       const binding = Object.hasOwn(step.parameters, parameter.name)
         ? step.parameters[parameter.name]
         : undefined;
@@ -150,7 +155,106 @@ export function resolveWorkflowParameters(
           : binding?.from === 'input' && inputs.has(binding.inputId)
             ? inputs.get(binding.inputId)
             : parameter.defaultValue;
-      return [parameter.name, Array.isArray(value) ? [...value] : value];
+      return value === undefined
+        ? []
+        : [[parameter.name, Array.isArray(value) ? [...value] : value]];
+    })
+  );
+}
+
+/** Explicit values only: filling operation constants here would erase AX default provenance. */
+export function resolveWorkflowParameterOverrides(
+  document: WorkflowDocument,
+  step: WorkflowStep,
+  operation: WorkflowOperation
+): Record<string, import('../analysis/catalog-binding-types').CatalogParameterValue> {
+  const values = resolveWorkflowParameters(document, step, operation);
+  return Object.fromEntries(
+    Object.keys(step.parameters)
+      .filter(name => name in values)
+      .map(name => [
+        name,
+        values[name] as import('../analysis/catalog-binding-types').CatalogParameterValue
+      ])
+  );
+}
+
+const SOURCE_PROFILE_CACHE = new Map<string, KeplerDatasetProfile>();
+
+/** Profiles for direct sources; intermediate requirements are checked when their actual data arrives. */
+export function getWorkflowAnalysisProfiles(
+  document: WorkflowDocument,
+  step: WorkflowStep,
+  registry: WorkflowOperationRegistry,
+  host?: WorkflowHost
+): Record<string, KeplerDatasetProfile | undefined> {
+  return Object.fromEntries(
+    Object.entries(step.inputs).map(([name, connection]) => {
+      const source = document.steps.find(candidate => candidate.id === connection.stepId);
+      const operation = source && registry.get(source.operationId);
+      if (!source || !operation || connection.output !== 'data') return [name, undefined];
+      const values = resolveWorkflowParameters(document, source, operation);
+      if (source.operationId === 'source-dataset' && values['population'] !== 'selected') {
+        const dataset =
+          host?.listDatasets().find(candidate => candidate.id === values['dataset']) ??
+          host
+            ?.listDatasets()
+            .filter(candidate => candidate.label === values['datasetLabel'])
+            .find((_, index, matches) => matches.length === 1 && index === 0);
+        const profile = dataset ? host?.getAnalysisProfile?.(dataset.id) : undefined;
+        if (!profile) return [name, undefined];
+        if (values['geometryMode'] === 'none' && profile.kind === 'surface') return [name, profile];
+        if (values['geometryMode'] === 'none')
+          return [
+            name,
+            {
+              ...profile,
+              kind: 'attributes',
+              catalogGeometry: undefined,
+              geometryColumns: [],
+              pointColumns: undefined,
+              coordinates: undefined,
+              spacing: undefined
+            }
+          ];
+        const mappingMatches =
+          values['geometryMode'] === 'point-columns'
+            ? profile.pointColumns?.longitude === values['longitudeField'] &&
+              profile.pointColumns?.latitude === values['latitudeField']
+            : profile.geometryColumns.includes(String(values['geometryField']));
+        return [name, mappingMatches ? profile : undefined];
+      }
+      if (source.operationId === 'source-geojson' && typeof values['text'] === 'string') {
+        const text = values['text'];
+        try {
+          const profileKey = JSON.stringify([
+            source.id,
+            source.label,
+            values['name'],
+            text,
+            values['coordinateSystem'],
+            values['profileDeclarations']
+          ]);
+          let profile = SOURCE_PROFILE_CACHE.get(profileKey);
+          if (!profile) {
+            profile = makeWorkflowSourceGeoJSONData(parseCatalogFeatureCollection(text), {
+              id: source.id,
+              label: String(values['name'] || 'GeoJSON'),
+              coordinateSystem: values['coordinateSystem'] as string,
+              declarations: values['profileDeclarations']
+                ? parseKeplerDatasetProfileDeclarations(values['profileDeclarations'] as string)
+                : {}
+            }).analysisProfile!;
+            if (SOURCE_PROFILE_CACHE.size >= WORKFLOW_LIMITS.maximumSteps)
+              SOURCE_PROFILE_CACHE.clear();
+            SOURCE_PROFILE_CACHE.set(profileKey, profile);
+          }
+          return [name, profile];
+        } catch {
+          return [name, undefined];
+        }
+      }
+      return [name, undefined];
     })
   );
 }
@@ -394,7 +498,7 @@ export function planWorkflow(
       } else if (compatibility === 'maybe') {
         addIssue('unverified-port', 'info', connectionMessage, {port: name});
       }
-      if (output.maximumRows > input.maximumRows) {
+      if (kind !== 'raster' && output.maximumRows > input.maximumRows) {
         addIssue(
           'capacity-may-exceed',
           'info',
@@ -436,8 +540,31 @@ export function planWorkflow(
         const input = workflowInputs.get(binding.inputId);
         if (input) validateWorkflowInputBinding(input, parameter);
       }
+      const profiles = operation.analysisDescriptor
+        ? getWorkflowAnalysisProfiles(document, step, options.registry, options.host)
+        : {};
+      const hasProfiles =
+        operation.analysisDescriptor && operation.inputs.every(input => profiles[input.name]);
+      if (hasProfiles) {
+        planned.analysis = evaluateKeplerWorkbenchInputs(
+          operation.analysisBinding ?? operation.id,
+          profiles,
+          {
+            overrides: resolveWorkflowParameterOverrides(document, step, operation),
+            executionEngine:
+              planned.engine === 'cpu' || (options.host && !options.host.getDevice())
+                ? 'cpu'
+                : 'gpu'
+          }
+        );
+        for (const missing of planned.analysis.missing) {
+          addIssue('analysis-requirement', 'error', `${missing.what}. ${missing.remedy}`);
+        }
+        for (const warning of planned.analysis.warnings)
+          addIssue('analysis-requirement', 'warning', warning);
+      }
       planned.parameters = operation.normalizeParameters(
-        resolveWorkflowParameters(document, step, operation)
+        planned.analysis?.parameters ?? resolveWorkflowParameters(document, step, operation)
       );
     } catch (error) {
       const {message, code, parameter: explicitParameter} = readParameterError(error);
@@ -516,6 +643,13 @@ export function planWorkflow(
       operation.version,
       planned.parameters,
       planned.engine,
+      ...(planned.analysis ? [planned.analysis] : []),
+      // Runtime AX can derive defaults only after intermediate inputs arrive. Explicit choices
+      // must remain distinct even when static normalization fills the same catalog constant.
+      ...(operation.analysisDescriptor
+        ? [resolveWorkflowParameterOverrides(document, step, operation)]
+        : []),
+      ...(step.curatedAnalysisId ? [{curatedAnalysisId: step.curatedAnalysisId}] : []),
       externalRevision,
       Object.keys(step.inputs)
         .sort(compareIds)

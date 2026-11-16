@@ -4,6 +4,7 @@
 
 import {KeplerAllocationError} from '../runtime/dataset-registry';
 import type {Device} from '@luma.gl/core';
+import {planGpuPointBufferPreview} from './catalog-gpu-point-buffer';
 import {
   GPU_SPATIAL_ANALYSIS_CAPABILITIES,
   GPU_SPATIAL_ANALYSIS_OPERATORS
@@ -58,6 +59,14 @@ import {PLATFORM5_STATISTICS_GPU_RUNNERS} from './catalog-platform5-statistics-g
 import {PLATFORM4_STATISTICS_GPU_RUNNERS} from './catalog-platform4-statistics-gpu';
 import {SNAP_POINTS_CPU_BINDING} from './catalog-snap-binding';
 import {CATALOG_GPU_ONLY_BINDINGS, CATALOG_GPU_RUNNERS} from './catalog-gpu-bindings';
+import {
+  getCatalogFeatureInputs,
+  isCatalogFeatureInput,
+  validateCatalogTableInput,
+  type CatalogDataInput
+} from './catalog-data-input';
+import {validateCatalogRasterInput} from './catalog-raster-input';
+import {validateRequirement} from '@luma-contributors/analysis/analysis-core';
 import {listCatalogLensScenarios, type CatalogLensScenario} from './catalog-lens';
 
 export type {
@@ -69,6 +78,8 @@ export type {
   CatalogOutputSpec,
   CatalogParameterSpec,
   CatalogParameterValue,
+  CatalogPreviewExecutor,
+  CatalogPreviewPlan,
   CatalogRunOutput,
   CatalogRunResult
 } from './catalog-binding-types';
@@ -512,6 +523,9 @@ const BINDINGS: readonly CatalogOperationBinding[] = [
             engine: 'gpu-or-cpu',
             cleanup: GPU_OR_CPU_CLEANUP,
             gpuContributorNames: runner.contributorNames,
+            ...(binding.id === 'geometry-point-buffer'
+              ? {planPreview: planGpuPointBufferPreview}
+              : {}),
             runGpu: runner.run
           }
         : {...binding, gpuContributorNames: []};
@@ -629,15 +643,43 @@ function describeGeometryKind(type: string | undefined): 'point' | 'line' | 'pol
   return null;
 }
 
-/** Enforces declared geometry kinds and capacities before any work starts. */
+/** Enforces feature, table and raster shapes and declared capacities before dispatch. */
 export function validateCatalogInputs(
   binding: CatalogOperationBinding,
-  inputs: Readonly<Record<string, CatalogFeatureCollection | undefined>>
+  inputs: Readonly<Record<string, CatalogDataInput | undefined>>
 ): void {
+  const hasDataPorts = binding.inputs.some(
+    spec => spec.dataKind === 'table' || spec.dataKind === 'raster'
+  );
+  validateRequirement(
+    binding.id,
+    !hasDataPorts || Boolean(binding.runData || binding.runDataGpu),
+    'table and raster inputs require a typed runData or runDataGpu engine'
+  );
+  validateRequirement(
+    binding.id,
+    !hasDataPorts || (!binding.run && !binding.runGpu),
+    'table and raster inputs must use typed engines exclusively'
+  );
   for (const spec of binding.inputs) {
-    const collection = inputs[spec.name];
+    const input = inputs[spec.name];
+    if (!input) throw new Error('Input required');
+    const inputId = `${binding.id}: ${spec.name}`;
+    if (spec.dataKind === 'raster') {
+      validateRequirement(inputId, input.type === 'raster', 'input must be a raster band/grid');
+      validateCatalogRasterInput(inputId, input, spec.maximumCells ?? 0);
+      continue;
+    }
+    if (spec.dataKind === 'table') {
+      validateRequirement(inputId, input.type === 'table', 'input must be a geometry-free table');
+      validateCatalogTableInput(inputId, input, spec.maximumFeatures);
+      if (!input.table.rowCount) throw new Error('Input required');
+      continue;
+    }
+    validateRequirement(inputId, isCatalogFeatureInput(input), 'input must be a FeatureCollection');
+    const collection = input;
     // Required input missing, empty, over capacity or of an unaccepted geometry kind.
-    if (!collection || !collection.features.length) throw new Error('Input required');
+    if (!collection.features.length) throw new Error('Input required');
     if (collection.features.length > spec.maximumFeatures)
       throw new KeplerAllocationError('capacity', {message: 'Input feature capacity exceeded'});
     if (countCollectionVertices(collection) > spec.maximumVertices)
@@ -653,12 +695,14 @@ export function validateCatalogInputs(
 
 function runCpuEngine(
   binding: CatalogOperationBinding,
-  inputs: Readonly<Record<string, CatalogFeatureCollection | undefined>>,
+  inputs: Readonly<Record<string, CatalogDataInput | undefined>>,
   parameters: Record<string, CatalogParameterValue>
 ) {
   // Operations without a CPU reference engine need a GPU device.
-  if (!binding.run) throw new Error('GPU device required');
-  const result = binding.run(inputs as Record<string, CatalogFeatureCollection>, parameters);
+  if (!binding.runData && !binding.run) throw new Error('GPU device required');
+  const result = binding.runData
+    ? binding.runData(inputs as Record<string, CatalogDataInput>, parameters)
+    : binding.run!(getCatalogFeatureInputs(inputs), parameters);
   if (parameters['crossings'] === 'noded')
     addCatalogDiagnostic(
       result.diagnostics,
@@ -685,20 +729,16 @@ function checkOutputCapacity(
 export function runCatalogOperation(
   binding: CatalogOperationBinding,
   rawParameters: Readonly<Record<string, unknown>>,
-  inputs: Readonly<Record<string, CatalogFeatureCollection | undefined>>
+  inputs: Readonly<Record<string, CatalogDataInput | undefined>>
 ): CatalogRunResult {
   const parameters = normalizeCatalogParameters(binding, rawParameters);
   validateCatalogInputs(binding, inputs);
   validateCatalogCoordinateSystem(
     binding.id,
     parameters['coordinateSystem'],
-    inputs as Record<string, CatalogFeatureCollection>
+    getCatalogFeatureInputs(inputs)
   );
-  validateGeometryOutputCapacity(
-    binding.id,
-    inputs as Record<string, CatalogFeatureCollection>,
-    parameters
-  );
+  validateGeometryOutputCapacity(binding.id, getCatalogFeatureInputs(inputs), parameters);
   const result = runCpuEngine(binding, inputs, parameters);
   checkOutputCapacity(binding, result.tables);
   return {
@@ -711,6 +751,8 @@ export function runCatalogOperation(
 }
 
 export type CatalogRunOptions = {
+  /** Stops scheduling and rejects obsolete results; submitted work still completes before cleanup. */
+  signal?: AbortSignal;
   /** GPU device. Without one, operations with a CPU engine run there and GPU-only operations throw. */
   device?: Device;
   /** `cpu` forces the reference engine (the test oracle); `auto` prefers the GPU. */
@@ -726,47 +768,59 @@ export type CatalogRunOptions = {
 export async function runCatalogOperationAsync(
   binding: CatalogOperationBinding,
   rawParameters: Readonly<Record<string, unknown>>,
-  inputs: Readonly<Record<string, CatalogFeatureCollection | undefined>>,
+  inputs: Readonly<Record<string, CatalogDataInput | undefined>>,
   options: CatalogRunOptions = {}
 ): Promise<CatalogRunResult> {
+  options.signal?.throwIfAborted();
   const parameters = normalizeCatalogParameters(binding, rawParameters);
   validateCatalogInputs(binding, inputs);
   validateCatalogCoordinateSystem(
     binding.id,
     parameters['coordinateSystem'],
-    inputs as Record<string, CatalogFeatureCollection>
+    getCatalogFeatureInputs(inputs)
   );
-  validateGeometryOutputCapacity(
-    binding.id,
-    inputs as Record<string, CatalogFeatureCollection>,
-    parameters
-  );
+  validateGeometryOutputCapacity(binding.id, getCatalogFeatureInputs(inputs), parameters);
   let output: ReturnType<typeof runCpuEngine> | undefined;
   let engine: CatalogEngine = 'cpu-reference';
   let dispatchedContributors: readonly string[] = [];
   let fallbackReason: string | undefined;
   if (options.engine === 'cpu') fallbackReason = 'CPU engine requested';
-  else if (!binding.runGpu) fallbackReason = 'This operation has no GPU path';
+  else if (!binding.runDataGpu && !binding.runGpu)
+    fallbackReason = 'This operation has no GPU path';
   else if (!options.device) fallbackReason = 'No GPU device supplied';
   else {
     try {
-      const gpu = await binding.runGpu(
-        {device: options.device},
-        inputs as Record<string, CatalogFeatureCollection>,
-        parameters
-      );
+      const gpu = binding.runDataGpu
+        ? await binding.runDataGpu(
+            {device: options.device, signal: options.signal},
+            inputs as Record<string, CatalogDataInput>,
+            parameters
+          )
+        : await binding.runGpu!(
+            {device: options.device, signal: options.signal},
+            getCatalogFeatureInputs(inputs),
+            parameters
+          );
       output = gpu;
       engine = 'gpu';
       dispatchedContributors = gpu.dispatchedContributors ?? binding.gpuContributorNames;
     } catch (failure) {
+      options.signal?.throwIfAborted();
+      if (failure instanceof KeplerAllocationError) throw failure;
       fallbackReason = failure instanceof Error ? failure.message : String(failure);
       // Operations without a CPU engine have nothing to fall back to.
-      if (!binding.run) throw failure;
+      if (!binding.runData && !binding.run) throw failure;
     }
   }
   if (!output) {
+    options.signal?.throwIfAborted();
     output = runCpuEngine(binding, inputs, parameters);
-    if (fallbackReason && options.device && options.engine !== 'cpu' && binding.runGpu)
+    if (
+      fallbackReason &&
+      options.device &&
+      options.engine !== 'cpu' &&
+      (binding.runDataGpu || binding.runGpu)
+    )
       addCatalogDiagnostic(
         output.diagnostics,
         'gpu-fallback',
@@ -775,6 +829,7 @@ export async function runCatalogOperationAsync(
       );
   }
   checkOutputCapacity(binding, output.tables);
+  options.signal?.throwIfAborted();
   return {
     operationId: binding.id,
     engine,
@@ -792,31 +847,66 @@ export type CatalogInvocation = {
   operationId: string;
   parameters: Record<string, CatalogParameterValue>;
   /** Inputs are referenced by content hash, never embedded. */
-  inputs: Record<string, {featureCount: number; vertexCount: number; contentHash: string}>;
+  inputs: Record<
+    string,
+    {
+      featureCount: number;
+      vertexCount: number;
+      contentHash: string;
+      dataKind?: 'table' | 'raster';
+      rowCount?: number;
+      cellCount?: number;
+    }
+  >;
 };
 
 export function hashCatalogCollection(collection: CatalogFeatureCollection): string {
   return hashCatalogText(JSON.stringify(collection));
 }
 
+/** Content hash including decoded raster samples, validity and georeference, or exact table keys. */
+export function hashCatalogDataInput(input: CatalogDataInput): string {
+  if (isCatalogFeatureInput(input)) return hashCatalogCollection(input);
+  // JSON alone collapses NaN, infinities and negative zero. Preserve them for decoded bands
+  // and scalar tables, where a caller may change a value without changing its validity mask.
+  return hashCatalogText(
+    JSON.stringify(input, (_name, value: unknown) => {
+      if (typeof value !== 'number') return value;
+      if (!Number.isFinite(value)) return {catalogNumber: String(value)};
+      return Object.is(value, -0) ? {catalogNumber: '-0'} : value;
+    })
+  );
+}
+
 export function serializeCatalogInvocation(
   binding: CatalogOperationBinding,
   rawParameters: Readonly<Record<string, unknown>>,
-  inputs: Readonly<Record<string, CatalogFeatureCollection>>
+  inputs: Readonly<Record<string, CatalogDataInput>>
 ): string {
   const invocation: CatalogInvocation = {
     schemaVersion: 1,
     operationId: binding.id,
     parameters: normalizeCatalogParameters(binding, rawParameters),
     inputs: Object.fromEntries(
-      binding.inputs.map(spec => [
-        spec.name,
-        {
-          featureCount: inputs[spec.name].features.length,
-          vertexCount: countCollectionVertices(inputs[spec.name]),
-          contentHash: hashCatalogCollection(inputs[spec.name])
-        }
-      ])
+      binding.inputs.map(spec => {
+        const input = inputs[spec.name];
+        const counts = isCatalogFeatureInput(input)
+          ? {featureCount: input.features.length, vertexCount: countCollectionVertices(input)}
+          : input.type === 'table'
+            ? {
+                featureCount: 0,
+                vertexCount: 0,
+                dataKind: 'table' as const,
+                rowCount: input.table.rowCount
+              }
+            : {
+                featureCount: 0,
+                vertexCount: 0,
+                dataKind: 'raster' as const,
+                cellCount: input.grid.width * input.grid.height
+              };
+        return [spec.name, {...counts, contentHash: hashCatalogDataInput(input)}];
+      })
     )
   };
   return JSON.stringify(invocation);
@@ -842,11 +932,11 @@ export function parseCatalogInvocation(text: string): {
 /** Whether supplied inputs are the exact data a serialized invocation was created from. */
 export function matchCatalogInvocationInputs(
   invocation: CatalogInvocation,
-  inputs: Readonly<Record<string, CatalogFeatureCollection>>
+  inputs: Readonly<Record<string, CatalogDataInput>>
 ): boolean {
   return Object.entries(invocation.inputs).every(
     ([name, reference]) =>
-      inputs[name] && hashCatalogCollection(inputs[name]) === reference.contentHash
+      inputs[name] && hashCatalogDataInput(inputs[name]) === reference.contentHash
   );
 }
 

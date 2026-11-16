@@ -74,11 +74,11 @@ describe('workflow native dataset profiles', () => {
         [JSON.stringify(POINT), {type: 'Feature', geometry: POINT}, 'bad']
       ]
     );
-    expect(profileNativeDataset(dataset, true)).toEqual({
+    expect(profileNativeDataset(dataset, false)).toEqual({
       id: 'native',
       label: 'Taxi trips',
       rowCount: 2,
-      resident: true,
+      resident: false,
       fields: dataset.fields,
       geometryFields: ['shape', 'wrapped']
     });

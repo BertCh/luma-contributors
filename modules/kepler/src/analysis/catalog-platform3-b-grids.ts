@@ -29,7 +29,11 @@ import {
   type CatalogFeatureCollection,
   type CatalogPosition
 } from './catalog-geojson';
-import {CatalogGpuUnsupportedError, withCatalogGpuSession} from './catalog-gpu-session';
+import {
+  CatalogGpuSession,
+  CatalogGpuUnsupportedError,
+  withCatalogGpuSession
+} from './catalog-gpu-session';
 import {
   addDroppedDiagnostic,
   collectAllPositions,
@@ -330,6 +334,49 @@ export function computeKernelDensityField(
   return {values};
 }
 
+/** Shared exact KDE graph layout; a retained caller fixes the index topology across bandwidth edits. */
+export function createKernelDensityResources(
+  session: CatalogGpuSession,
+  sample: Sample,
+  grid: GridSpec,
+  settings: KernelDensitySettings,
+  weighted: boolean,
+  side: number
+) {
+  const cells = grid.columns * grid.rows;
+  const raster = makeRasterMetadata(grid);
+  const weights = new Float32Array(sample.count);
+  sample.value.forEach((value, index) => (weights[index] = value));
+  const values = session.output('values', 'float32', cells);
+  const bounds = getGridBounds(grid);
+  const parameterView = session.input(
+    'parameters',
+    getGPUKernelDensityParameterValues({bandwidth: settings.bandwidth}, raster),
+    'float32'
+  );
+  session.graph.add(
+    new GPUKernelDensity({
+      id: 'catalog-kernel-density',
+      positions: session.input('positions', toFloat32Positions(sample), 'float32x2'),
+      ...(weighted ? {weights: session.input('weights', weights, 'float32')} : {}),
+      parameters: parameterView,
+      grid: raster,
+      indexGridSize: [side, side],
+      indexBounds: bounds,
+      kernel: settings.kernel,
+      edgeCorrection: 'none',
+      normalization: 'intensity',
+      method: 'exact',
+      output: {values: values.view}
+    })
+  );
+  return {
+    output: values,
+    updateBandwidth: (bandwidth: number) =>
+      session.writeInput(parameterView, getGPUKernelDensityParameterValues({bandwidth}, raster))
+  };
+}
+
 export async function computeKernelDensityFieldGpu(
   context: CatalogGpuContext,
   sample: Sample,
@@ -337,34 +384,17 @@ export async function computeKernelDensityFieldGpu(
   settings: KernelDensitySettings,
   weighted: boolean
 ): Promise<GridField> {
-  const cells = grid.columns * grid.rows;
-  const raster = makeRasterMetadata(grid);
   return withCatalogGpuSession(context.device, 'catalog-kernel-density', async session => {
-    const weights = new Float32Array(sample.count);
-    sample.value.forEach((value, index) => (weights[index] = value));
-    const values = session.output('values', 'float32', cells);
     const bounds = getGridBounds(grid);
     const extent = Math.max(bounds[2] - bounds[0], bounds[3] - bounds[1]);
     const side = Math.max(1, Math.min(128, Math.ceil(extent / settings.bandwidth)));
-    session.graph.add(
-      new GPUKernelDensity({
-        id: 'catalog-kernel-density',
-        positions: session.input('positions', toFloat32Positions(sample), 'float32x2'),
-        ...(weighted ? {weights: session.input('weights', weights, 'float32')} : {}),
-        parameters: session.input(
-          'parameters',
-          getGPUKernelDensityParameterValues({bandwidth: settings.bandwidth}, raster),
-          'float32'
-        ),
-        grid: raster,
-        indexGridSize: [side, side],
-        indexBounds: bounds,
-        kernel: settings.kernel,
-        edgeCorrection: 'none',
-        normalization: 'intensity',
-        method: 'exact',
-        output: {values: values.view}
-      })
+    const {output: values} = createKernelDensityResources(
+      session,
+      sample,
+      grid,
+      settings,
+      weighted,
+      side
     );
     session.run();
     return {values: await session.readFloat32(values)};

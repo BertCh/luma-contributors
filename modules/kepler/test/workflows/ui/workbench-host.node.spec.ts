@@ -5,11 +5,14 @@
 import {afterAll, beforeEach, describe, expect, test, vi} from 'vitest';
 import {createRequire} from 'node:module';
 import * as arrow from 'apache-arrow';
+import type {Device} from '@luma.gl/core';
 import {fitBounds, wrapTo} from '@kepler.gl/actions';
 import {createConnection} from '../../../../../examples/deck/kepler-compute/src/duckdb-browser';
+import {analysisDatasetContext} from '../../../../../examples/deck/kepler-compute/src/analysis-dataset-context';
+import type {CatalogResidentDataset} from '../../../../../examples/deck/kepler-compute/src/analysis-catalog-resident-input';
 import type {DatasetOperationQueue} from '../../../../../examples/deck/kepler-compute/src/binding2-dataset-operations';
 import {
-  createWorkbenchHost,
+  createWorkbenchHost as createStagedWorkbenchHost,
   runWorkflowSqlOnConnection
 } from '../../../../../examples/deck/kepler-compute/src/workflow/workbench-host';
 import {
@@ -17,8 +20,27 @@ import {
   type PrepareArrowTableForGPUAnalyticsOptions
 } from '@luma-contributors/analysis/analysis-core';
 import {publishSource} from '../../../../../examples/deck/kepler-compute/src/publication';
-import type {WorkflowDatasetRequest} from '../../../src/workflows/workflow-types';
+import type {WorkflowDatasetRequest, WorkflowHost} from '../../../src/workflows/workflow-types';
+import {
+  getAnalysisResultReportView,
+  dismissAnalysisResultReport
+} from '../../../../../examples/deck/kepler-compute/src/analysis-result-publication';
+import {getWorkflowOperationRegistry} from '../../../src/workflows/workflow-operations';
+import {
+  getKeplerBindingResultPresentations,
+  encodeKeplerResultPresentation
+} from '../../../src/presentation/result-presentation';
 import {makeFixturePoints} from '../workflow-fixtures';
+import {readWorkbenchRasterInput} from '../../../../../examples/deck/kepler-compute/src/workflow/workbench-raster-input';
+import {
+  createNumericRasterSource,
+  createNumericRasterTile
+} from '../../../../../examples/deck/kepler-compute/src/raster-tile-ingest';
+import {getWorkbenchAnalysisProfiles} from '../../../../../examples/deck/kepler-compute/src/workflow/workbench-analysis-launch';
+import {createWorkbenchStore} from '../../../../../examples/deck/kepler-compute/src/workflow/workbench-store';
+import {makeFixtureDocument, makeFixtureRegistry} from '../workflow-fixtures';
+import {WorkflowRunner} from '../../../src/workflows/workflow-runner';
+import {getWorkflowSourceOperations} from '../../../src/workflows/workflow-source-operations';
 import {
   readNativeDatasetData,
   type NativeWorkflowDataset,
@@ -37,7 +59,8 @@ type ProbeDataset = NativeWorkflowDataset & {
 type ProbePublication = {dataset: {id: string; revision: number; deviceEpoch: number}};
 type ProbeRuntime = {
   publications: Map<string, ProbePublication>;
-  session: {deviceLost: boolean};
+  device: Device;
+  session: {deviceLost: boolean; device: Device};
   removePublication: ReturnType<typeof vi.fn<(datasetId: string) => Promise<void>>>;
 };
 // Host modules must bind to this suite's doubles even when a neighbour imported them first.
@@ -355,11 +378,12 @@ describe('workflow SQL connection exchange', () => {
   });
 });
 
-function makeProbeRuntime(): ProbeRuntime {
+function makeProbeRuntime(device = {} as Device): ProbeRuntime {
   const publications = new Map<string, ProbePublication>();
   return {
     publications,
-    session: {deviceLost: false},
+    device,
+    session: {deviceLost: false, device},
     removePublication: vi.fn(async datasetId => {
       publications.delete(datasetId);
     })
@@ -374,6 +398,20 @@ function makeProbeDataset(id: string, label = 'Trips'): ProbeDataset {
   };
 }
 const PUBLICATION_ID = 'workflow-review-points-data';
+// Direct host clients, like the runner, acknowledge a ready successor before awaiting retirement.
+function createWorkbenchHost() {
+  const host = createStagedWorkbenchHost();
+  return {
+    ...host,
+    publishOutput: async (
+      ...arguments_: Parameters<NonNullable<WorkflowHost['publishOutput']>>
+    ) => {
+      const output = await host.publishOutput!(...arguments_);
+      await output.commit?.();
+      return output;
+    }
+  };
+}
 function makePublishRequest() {
   return {
     workflowId: 'review',
@@ -394,7 +432,7 @@ function makeGate() {
 function attachProbePublication(
   runtime: ProbeRuntime,
   revision = 1,
-  datasetId = PUBLICATION_ID
+  datasetId = hostState.requestedPublicationId ?? PUBLICATION_ID
 ): ProbePublication {
   const publication = {dataset: {id: datasetId, revision, deviceEpoch: 1}};
   runtime.publications.set(datasetId, publication);
@@ -419,6 +457,689 @@ describe('workbench host ownership and replay regressions', () => {
     vi.mocked(publishSource).mockClear();
     vi.mocked(createConnection).mockReset();
     hostState.requestedPublicationId = undefined;
+  });
+
+  test('review-fix-host discovers decoded tiles/bands, profiles and reads them with revision invalidation', async () => {
+    const makeRaster = (offset: number) =>
+      createNumericRasterSource({
+        id: 'loaded-elevation',
+        kind: 'xyz-tiles',
+        crs: 'EPSG:3857',
+        tiles: ['west', 'east'].map((id, index) =>
+          createNumericRasterTile({
+            id,
+            width: 2,
+            height: 2,
+            extent: [index * 2, 0, index * 2 + 2, 2],
+            bands: [1, 2].map(band => ({
+              index: band,
+              name: `Elevation ${band}`,
+              values: Float32Array.from([offset + band, 2, -999, 4]),
+              noDataValue: -999
+            }))
+          })
+        )
+      });
+    let sources = [{source: makeRaster(10), label: 'Loaded elevation'}];
+    const host = createStagedWorkbenchHost({getRasterSources: () => sources});
+    const store = createWorkbenchStore({host});
+    const datasets = host.listDatasets();
+    expect(datasets).toHaveLength(4);
+    expect(new Set(datasets.map(dataset => dataset.id)).size).toBe(4);
+    expect(datasets.map(dataset => dataset.label)).toEqual(
+      expect.arrayContaining([
+        'Loaded elevation · tile west · band 1 (Elevation 1)',
+        'Loaded elevation · tile east · band 2 (Elevation 2)'
+      ])
+    );
+    expect(getWorkbenchAnalysisProfiles(store).map(profile => profile.kind)).toEqual([
+      'surface',
+      'surface',
+      'surface',
+      'surface'
+    ]);
+    const request: WorkflowDatasetRequest = {
+      datasetId: datasets[3].id,
+      geometry: {mode: 'none'},
+      population: 'all',
+      maximumRows: 4
+    };
+    const revision = host.getDatasetRevisionKey(request);
+    const data = await host.readDataset(request, new AbortController().signal);
+    expect(data.kind).toBe('raster');
+    expect(data.raster?.band).toBe(sources[0].source.tiles[1].bands[1]);
+    expect(Array.from(data.raster!.band.values)).toEqual([12, 2, -999, 4]);
+    expect(Array.from(data.raster!.band.validity)).toEqual([1, 1, 0, 1]);
+    expect(data.analysisProfile?.datasetId).toBe(request.datasetId);
+    expect(data.analysisProfile?.rowCount).toBe(4);
+    expect(data.raster?.grid.affine).toEqual([1, 0, 2, 0, -1, 2]);
+    await expect(
+      host.readDataset({...request, maximumRows: 3}, new AbortController().signal)
+    ).rejects.toThrow(/cell count/);
+    await expect(
+      host.readDataset({...request, population: 'selected'}, new AbortController().signal)
+    ).rejects.toThrow(/population must be all/);
+    sources = [{source: makeRaster(20), label: 'Loaded elevation'}];
+    expect(host.getDatasetRevisionKey(request)).not.toBe(revision);
+    expect(
+      (await host.readDataset(request, new AbortController().signal)).raster?.band.values[0]
+    ).toBe(22);
+    sources = [];
+    expect(host.listDatasets()).toEqual([]);
+    expect(getWorkbenchAnalysisProfiles(store)).toEqual([]);
+    expect(host.getDatasetRevisionKey(request)).toBe('missing');
+    await expect(host.readDataset(request, new AbortController().signal)).rejects.toMatchObject({
+      code: 'dataset-not-found'
+    });
+    await store.clear();
+  });
+
+  test.each([
+    false,
+    true
+  ])('runtime replacement on the same device cancels a drawing run (notify: %s)', async notify => {
+    const original = hostState.runtime!;
+    hostState.features = DRAWING_FEATURES;
+    const host = createStagedWorkbenchHost();
+    const entered = makeGate();
+    const release = makeGate();
+    const readDrawings = host.readDrawings!;
+    let readSignal: AbortSignal | undefined;
+    host.readDrawings = async (...arguments_) => {
+      const result = await readDrawings(...arguments_);
+      readSignal = arguments_[1];
+      entered.resolve();
+      await release.promise;
+      return result;
+    };
+    const operations = getWorkflowSourceOperations();
+    const runner = new WorkflowRunner({
+      host,
+      registry: {
+        list: () => operations,
+        get: id => operations.find(operation => operation.id === id)
+      }
+    });
+    const document = makeFixtureDocument();
+    document.steps = [
+      {
+        id: 'drawing',
+        operationId: 'source-drawing',
+        inputs: {},
+        parameters: {},
+        display: ['data'],
+        position: {x: 0, y: 0}
+      }
+    ];
+    runner.setDocument(document);
+    hostState.publish = async () => {
+      attachProbePublication(hostState.runtime!);
+    };
+    const running = runner.run();
+    await entered.promise;
+    const drawingRevision = host.getDrawingRevisionKey!();
+    hostState.runtime = makeProbeRuntime(original.device);
+    expect(host.getDevice()).toBe(original.device);
+    expect(host.getDrawingRevisionKey!()).toBe(drawingRevision);
+    if (notify) {
+      runner.refreshExternal();
+      expect(readSignal?.aborted).toBe(true);
+    }
+    release.resolve();
+    expect((await running).status).toBe('cancelled');
+    expect(publishSource).not.toHaveBeenCalled();
+    expect(runner.getState().steps['drawing'].result).toBeUndefined();
+    expect(hostState.runtime.publications.size).toBe(0);
+    expect((await runner.run()).status).toBe('done');
+    expect(hostState.runtime.publications.size).toBe(1);
+    await runner.destroy();
+  });
+
+  test.each([
+    ['native', 'destroy'],
+    ['gpu', 'destroy'],
+    ['native', 'retract'],
+    ['gpu', 'retract']
+  ] as const)('failed predecessor %s removal is retried on successor %s', async (failure, cleanup) => {
+    const owner = hostState.runtime!;
+    hostState.publish = async () => {
+      attachProbePublication(owner);
+    };
+    const host = createStagedWorkbenchHost();
+    const runner = new WorkflowRunner({host, registry: makeFixtureRegistry()});
+    const document = makeFixtureDocument();
+    runner.setDocument(document);
+    await runner.run();
+    const predecessorId = runner.getState().steps['scale'].published!['scaled'].datasetId;
+    let failed = false;
+    if (failure === 'native') {
+      hostState.onDispatch = action => {
+        if ((action as {dataId?: string}).dataId === predecessorId && !failed) {
+          failed = true;
+          throw new Error('Transient native removal failure');
+        }
+      };
+    } else {
+      owner.removePublication.mockImplementation(async datasetId => {
+        if (datasetId === predecessorId && !failed) {
+          failed = true;
+          throw new Error('Transient GPU removal failure before detachment');
+        }
+        owner.publications.delete(datasetId);
+      });
+    }
+    document.steps[1].parameters['factor'] = {from: 'static', value: 7};
+    runner.setDocument(document);
+    expect((await runner.run()).status).toBe('done');
+    expect(failed).toBe(true);
+    const successorId = runner.getState().steps['scale'].published!['scaled'].datasetId;
+    expect(successorId).not.toBe(predecessorId);
+    expect([...owner.publications.keys()]).toEqual([predecessorId, successorId]);
+    expect(hostState.datasets[successorId]).toBeDefined();
+    expect(
+      runner.getState().steps['scale'].issues.some(issue => issue.code === 'publish-failed')
+    ).toBe(true);
+    if (cleanup === 'retract') await host.retractOutput!(successorId);
+    else await runner.destroy();
+    expect(owner.publications.size).toBe(0);
+    expect(Object.keys(hostState.datasets)).toEqual([]);
+    await runner.destroy();
+  });
+
+  test('same-device runtime replacement during drawing publication cannot republish the unaccepted result', async () => {
+    const original = hostState.runtime!;
+    hostState.features = DRAWING_FEATURES;
+    const host = createStagedWorkbenchHost();
+    const entered = makeGate();
+    const release = makeGate();
+    const operations = getWorkflowSourceOperations();
+    const runner = new WorkflowRunner({
+      host,
+      registry: {
+        list: () => operations,
+        get: id => operations.find(operation => operation.id === id)
+      }
+    });
+    const document = makeFixtureDocument();
+    document.steps = [
+      {
+        id: 'drawing',
+        operationId: 'source-drawing',
+        inputs: {},
+        parameters: {},
+        display: ['data'],
+        position: {x: 0, y: 0}
+      }
+    ];
+    runner.setDocument(document);
+    let invocation = 0;
+    hostState.publish = async () => {
+      const owner = hostState.runtime!;
+      if (++invocation === 1) {
+        entered.resolve();
+        await release.promise;
+      }
+      attachProbePublication(owner);
+    };
+    const running = runner.run();
+    await entered.promise;
+    hostState.runtime = makeProbeRuntime(original.device);
+    runner.refreshExternal();
+    release.resolve();
+    expect((await running).status).toBe('cancelled');
+    for (let index = 0; index < 60; index++) await Promise.resolve();
+    expect(publishSource).toHaveBeenCalledTimes(1);
+    expect(runner.getState().steps['drawing'].status).toBe('stale');
+    expect(original.publications.size).toBe(0);
+    expect(hostState.runtime.publications.size).toBe(0);
+    await runner.destroy();
+  });
+
+  test('pending predecessor cleanup follows successive accepted replacements until destruction', async () => {
+    const owner = hostState.runtime!;
+    const host = createStagedWorkbenchHost();
+    const runner = new WorkflowRunner({host, registry: makeFixtureRegistry()});
+    hostState.publish = async () => {
+      attachProbePublication(owner);
+    };
+    const document = makeFixtureDocument();
+    runner.setDocument(document);
+    await runner.run();
+    const firstId = runner.getState().steps['scale'].published!['scaled'].datasetId;
+    let failures = 0;
+    hostState.onDispatch = action => {
+      if ((action as {dataId?: string}).dataId === firstId && failures < 2) {
+        failures++;
+        throw new Error('Transient predecessor removal failure');
+      }
+    };
+    document.steps[1].parameters['factor'] = {from: 'static', value: 7};
+    runner.setDocument(document);
+    await runner.run();
+    const secondId = runner.getState().steps['scale'].published!['scaled'].datasetId;
+    document.steps[1].parameters['factor'] = {from: 'static', value: 8};
+    runner.setDocument(document);
+    await runner.run();
+    const thirdId = runner.getState().steps['scale'].published!['scaled'].datasetId;
+    expect(failures).toBe(2);
+    expect([...owner.publications.keys()]).toEqual([firstId, thirdId]);
+    expect(owner.publications.has(secondId)).toBe(false);
+    expect(hostState.datasets[thirdId]).toBeDefined();
+    await runner.destroy();
+    expect(owner.publications.size).toBe(0);
+    expect(Object.keys(hostState.datasets)).toEqual([]);
+  });
+
+  test('recovery preserves pending cleanup ownership across the next accepted replacement', async () => {
+    const original = hostState.runtime!;
+    hostState.publish = async () => {
+      attachProbePublication(hostState.runtime!);
+    };
+    const host = createStagedWorkbenchHost();
+    const first = await host.publishOutput!(makePublishRequest(), new AbortController().signal);
+    let failed = false;
+    hostState.onDispatch = action => {
+      if ((action as {dataId?: string}).dataId === first.datasetId && !failed) {
+        failed = true;
+        throw new Error('Transient native removal failure');
+      }
+    };
+    const second = await host.publishOutput!(
+      {
+        ...makePublishRequest(),
+        previousDatasetId: first.datasetId
+      },
+      new AbortController().signal
+    );
+    await expect(second.commit!()).rejects.toThrow('Predecessor retirement failed');
+    const restored = makeProbeRuntime(original.device);
+    hostState.runtime = restored;
+    attachProbePublication(restored, 2, first.datasetId);
+    attachProbePublication(restored, 2, second.datasetId);
+    const third = await host.publishOutput!(
+      {
+        ...makePublishRequest(),
+        previousDatasetId: second.datasetId
+      },
+      new AbortController().signal
+    );
+    await third.commit?.();
+    expect([...restored.publications.keys()]).toEqual([third.datasetId]);
+    expect(Object.keys(hostState.datasets)).toEqual([third.datasetId]);
+    expect(restored.removePublication.mock.calls).toEqual([[first.datasetId], [second.datasetId]]);
+    await host.retractOutput!(third.datasetId);
+    expect(restored.publications.size).toBe(0);
+    expect(Object.keys(hostState.datasets)).toEqual([]);
+  });
+
+  test.each([
+    'cancel',
+    'cleanup-failure'
+  ] as const)('F1: %s during predecessor GPU retirement keeps the accepted successor displayed', async change => {
+    const owner = hostState.runtime!;
+    hostState.publish = async () => {
+      attachProbePublication(owner);
+    };
+    const host = createStagedWorkbenchHost();
+    const runner = new WorkflowRunner({
+      host: {...host, getDevice: () => null},
+      registry: makeFixtureRegistry()
+    });
+    const document = makeFixtureDocument();
+    runner.setDocument(document);
+    await runner.run();
+    const previousDatasetId = runner.getState().steps['scale'].published!['scaled'].datasetId;
+    const entered = makeGate();
+    const release = makeGate();
+    owner.removePublication.mockImplementation(async datasetId => {
+      owner.publications.delete(datasetId);
+      if (datasetId === previousDatasetId) {
+        entered.resolve();
+        await release.promise;
+        if (change === 'cleanup-failure') throw new Error('GPU cleanup failed');
+      }
+    });
+    document.steps[1].parameters['factor'] = {from: 'static', value: 7};
+    runner.setDocument(document);
+    const running = runner.run();
+    await entered.promise;
+    if (change === 'cancel') runner.cancel();
+    release.resolve();
+    expect((await running).status).toBe(change === 'cancel' ? 'cancelled' : 'done');
+    const accepted = runner.getState().steps['scale'].published!['scaled'].datasetId;
+    expect(accepted).not.toBe(previousDatasetId);
+    expect([...owner.publications.keys()]).toEqual([accepted]);
+    expect(Object.keys(hostState.datasets)).toEqual([accepted]);
+    expect(owner.removePublication.mock.calls).toEqual([[previousDatasetId]]);
+    expect(
+      runner.getState().steps['scale'].issues.some(issue => issue.code === 'publish-failed')
+    ).toBe(change === 'cleanup-failure');
+    await runner.destroy();
+    expect(owner.publications.size).toBe(0);
+    expect(Object.keys(hostState.datasets)).toEqual([]);
+  });
+
+  test.each([
+    'replacement runtime',
+    'new device epoch'
+  ] as const)('F2: replacement after recovery retires the trusted current predecessor: %s', async recovery => {
+    const originalRuntime = hostState.runtime!;
+    hostState.publish = async () => {
+      attachProbePublication(hostState.runtime!);
+    };
+    const host = createStagedWorkbenchHost();
+    const first = await host.publishOutput!(makePublishRequest(), new AbortController().signal);
+    const restored = recovery === 'replacement runtime' ? makeProbeRuntime() : originalRuntime;
+    hostState.runtime = restored;
+    const restoredPublication = attachProbePublication(restored, 2, first.datasetId);
+    if (recovery === 'new device epoch') restoredPublication.dataset.deviceEpoch++;
+    const successor = await host.publishOutput!(
+      {
+        ...makePublishRequest(),
+        previousDatasetId: first.datasetId
+      },
+      new AbortController().signal
+    );
+    // The real runner accepts the prepared successor before retiring the predecessor.
+    await successor.commit?.();
+    expect([...restored.publications.keys()]).toEqual([successor.datasetId]);
+    expect(Object.keys(hostState.datasets)).toEqual([successor.datasetId]);
+    expect(restored.removePublication).toHaveBeenCalledExactlyOnceWith(first.datasetId);
+    if (restored !== originalRuntime)
+      expect(originalRuntime.removePublication).not.toHaveBeenCalled();
+    await host.retractOutput!(successor.datasetId);
+    await host.retractOutput!(first.datasetId);
+    expect(restored.publications.size).toBe(0);
+    expect(Object.keys(hostState.datasets)).toEqual([]);
+  });
+
+  test('F1: rejecting the successor before acceptance preserves the predecessor', async () => {
+    const owner = hostState.runtime!;
+    hostState.publish = async () => {
+      attachProbePublication(owner);
+    };
+    const host = createStagedWorkbenchHost();
+    const first = await host.publishOutput!(makePublishRequest(), new AbortController().signal);
+    const controller = new AbortController();
+    const successor = await host.publishOutput!(
+      {
+        ...makePublishRequest(),
+        previousDatasetId: first.datasetId
+      },
+      controller.signal
+    );
+    controller.abort();
+    expect(() => successor.commit?.()).toThrow('Analysis changed before display handoff');
+    expect(owner.removePublication).not.toHaveBeenCalled();
+    await host.retractOutput!(successor.datasetId);
+    expect([...owner.publications.keys()]).toEqual([first.datasetId]);
+    expect(Object.keys(hostState.datasets)).toEqual([first.datasetId]);
+    await host.retractOutput!(first.datasetId);
+    expect(owner.publications.size).toBe(0);
+  });
+
+  test('F2: failed replacement leaves the recovered predecessor owned and retractable', async () => {
+    hostState.publish = async () => {
+      attachProbePublication(hostState.runtime!);
+    };
+    const host = createWorkbenchHost();
+    const first = await host.publishOutput!(makePublishRequest(), new AbortController().signal);
+    const restored = makeProbeRuntime();
+    hostState.runtime = restored;
+    const restoredPublication = attachProbePublication(restored, 2, first.datasetId);
+    hostState.publish = async () => {
+      attachProbePublication(restored);
+      throw new Error('Successor preparation failed');
+    };
+    await expect(
+      host.publishOutput!(
+        {
+          ...makePublishRequest(),
+          previousDatasetId: first.datasetId
+        },
+        new AbortController().signal
+      )
+    ).rejects.toMatchObject({code: 'publish-failed'});
+    expect([...restored.publications.values()]).toEqual([restoredPublication]);
+    expect(Object.keys(hostState.datasets)).toEqual([first.datasetId]);
+    await host.retractOutput!(first.datasetId);
+    expect(restored.publications.size).toBe(0);
+    expect(Object.keys(hostState.datasets)).toEqual([]);
+  });
+
+  test.each([
+    'failure',
+    'cancel',
+    'revision',
+    'runtime',
+    'device-loss'
+  ] as const)('retains the old display and cleans the partial successor on %s', async change => {
+    const owner = hostState.runtime!;
+    hostState.publish = async () => {
+      attachProbePublication(owner);
+    };
+    const host = createWorkbenchHost();
+    const original = await host.publishOutput!(makePublishRequest(), new AbortController().signal);
+    const oldPublication = owner.publications.get(original.datasetId);
+    const oldNative = hostState.datasets[original.datasetId];
+    const entered = makeGate();
+    const release = makeGate();
+    const controller = new AbortController();
+    let current = true;
+    let successorId = '';
+    let sourceCurrent: (() => boolean) | undefined;
+    hostState.publish = async (_table, _normalization, isCurrent) => {
+      successorId = hostState.requestedPublicationId!;
+      sourceCurrent = isCurrent;
+      attachProbePublication(owner);
+      expect(owner.publications.get(original.datasetId)).toBe(oldPublication);
+      expect(hostState.datasets[original.datasetId]).toBe(oldNative);
+      entered.resolve();
+      await release.promise;
+      if (change === 'failure') throw new Error('Import failed after registration');
+    };
+    const pending = host.publishOutput!(
+      {
+        ...makePublishRequest(),
+        previousDatasetId: original.datasetId,
+        isCurrent: () => current
+      },
+      controller.signal
+    );
+    const rejected = expect(pending).rejects.toMatchObject({
+      code: change === 'cancel' ? 'cancelled' : 'publish-failed'
+    });
+    await entered.promise;
+    if (change === 'cancel') controller.abort();
+    if (change === 'revision') current = false;
+    if (change === 'runtime') hostState.runtime = makeProbeRuntime();
+    if (change === 'device-loss') owner.session.deviceLost = true;
+    if (change !== 'failure') expect(sourceCurrent?.()).toBe(false);
+    release.resolve();
+    await rejected;
+    expect(successorId).not.toBe(original.datasetId);
+    expect(owner.publications.get(original.datasetId)).toBe(oldPublication);
+    expect(owner.publications.has(successorId)).toBe(false);
+    expect(owner.removePublication).toHaveBeenCalledExactlyOnceWith(successorId);
+    expect(hostState.removals).not.toContain(original.datasetId);
+    expect(hostState.requestedPublicationId).toBeUndefined();
+    if (change !== 'runtime') expect(hostState.datasets[successorId]).toBeUndefined();
+  });
+
+  test('retires the old display only after the styled successor is ready and supports a third generation', async () => {
+    const owner = hostState.runtime!;
+    hostState.publish = async () => {
+      attachProbePublication(owner);
+    };
+    const host = createWorkbenchHost();
+    const first = await host.publishOutput!(makePublishRequest(), new AbortController().signal);
+    const entered = makeGate();
+    const release = makeGate();
+    hostState.publish = async () => {
+      expect(owner.publications.has(first.datasetId)).toBe(true);
+      entered.resolve();
+      await release.promise;
+      attachProbePublication(owner);
+      hostState.datasets[hostState.requestedPublicationId!].fields = [
+        {name: 'value', type: 'real'}
+      ];
+      hostState.layers = [
+        {id: 'successor-layer', config: {dataId: hostState.requestedPublicationId!}}
+      ];
+    };
+    const pending = host.publishOutput!(
+      {
+        ...makePublishRequest(),
+        previousDatasetId: first.datasetId,
+        style: {colorColumn: 'value'}
+      },
+      new AbortController().signal
+    );
+    await entered.promise;
+    expect(owner.removePublication).not.toHaveBeenCalled();
+    hostState.onRemove = () => {
+      expect(owner.publications.size).toBe(2);
+      expect(
+        hostState.dispatchedActions.some(
+          action => (action as {type?: string}).type === '@@kepler.gl/LAYER_VISUAL_CHANNEL_CHANGE'
+        )
+      ).toBe(true);
+    };
+    release.resolve();
+    const second = await pending;
+    expect(second.datasetId).not.toBe(first.datasetId);
+    expect(owner.publications.has(first.datasetId)).toBe(false);
+    expect(owner.publications.has(second.datasetId)).toBe(true);
+    hostState.onRemove = null;
+    hostState.publish = async () => {
+      attachProbePublication(owner);
+    };
+    const third = await host.publishOutput!(
+      {
+        ...makePublishRequest(),
+        previousDatasetId: second.datasetId
+      },
+      new AbortController().signal
+    );
+    expect(third.datasetId).not.toBe(second.datasetId);
+    expect([...owner.publications.keys()]).toEqual([third.datasetId]);
+    await host.retractOutput!(third.datasetId);
+    expect(owner.publications.size).toBe(0);
+  });
+
+  test.each([
+    'revision',
+    'runtime',
+    'cancel'
+  ] as const)('captures identity before waiting for the host publication queue: %s', async change => {
+    const owner = hostState.runtime!;
+    const entered = makeGate();
+    const release = makeGate();
+    hostState.publish = async () => {
+      entered.resolve();
+      await release.promise;
+      attachProbePublication(owner);
+    };
+    const host = createWorkbenchHost();
+    const first = host.publishOutput!(makePublishRequest(), new AbortController().signal);
+    // Attach a rejection handler before changing the workspace under the first request.
+    const settledFirst = first.catch(() => undefined);
+    await entered.promise;
+    const controller = new AbortController();
+    let current = true;
+    const queued = host.publishOutput!(
+      {
+        ...makePublishRequest(),
+        stepId: 'queued',
+        isCurrent: () => current
+      },
+      controller.signal
+    );
+    const rejected = expect(queued).rejects.toMatchObject({
+      code: change === 'cancel' ? 'cancelled' : 'publish-failed'
+    });
+    if (change === 'revision') current = false;
+    if (change === 'runtime') hostState.runtime = makeProbeRuntime();
+    if (change === 'cancel') controller.abort();
+    release.resolve();
+    await settledFirst;
+    await rejected;
+    expect(publishSource).toHaveBeenCalledTimes(1);
+  });
+
+  test('source revision keys change for runtime replacement and device loss, including native inputs', () => {
+    hostState.datasets['native'] = makeProbeDataset('native');
+    const host = createWorkbenchHost();
+    const first = host.getDatasetRevisionKey(makeRequest());
+    expect(host.getDatasetRevisionKey(makeRequest())).toBe(first);
+    hostState.runtime = makeProbeRuntime();
+    const second = host.getDatasetRevisionKey(makeRequest());
+    expect(second).not.toBe(first);
+    hostState.runtime.session.deviceLost = true;
+    expect(host.getDatasetRevisionKey(makeRequest())).not.toBe(second);
+  });
+
+  test.each([
+    true,
+    false
+  ])('AX review 6 / round 2 finding 2: cached resident metadata stays live (registered first: %s)', async registeredFirst => {
+    const fields = [
+      {name: 'longitude1', type: 'real'},
+      {name: 'latitude1', type: 'real'}
+    ];
+    const rows = [
+      [-74, 40.7],
+      [-73.9, 40.8]
+    ];
+    const native = {...makeDataset(fields, rows), filterTableCPU: () => undefined};
+    hostState.datasets[native.id] = native;
+    hostState.residentIds.add(native.id);
+    const valueAt = vi.spyOn(native.dataContainer, 'valueAt');
+    const resident: CatalogResidentDataset = {
+      id: native.id,
+      label: native.label,
+      rowCount: 2,
+      revision: 1,
+      owner: {},
+      fieldTypes: {longitude1: 'real', latitude1: 'real'},
+      provider: {
+        fields: fields.map(field => ({name: field.name, sortable: true})),
+        maximumPageSize: 100,
+        getRevision: () => 'review-1',
+        readPage: vi.fn(async () => {
+          throw new Error('Unexpected page read');
+        }),
+        readColumnValues: vi.fn(async ({column}) => ({
+          fieldType: 'real',
+          values: rows.map(row => row[fields.findIndex(field => field.name === column)])
+        }))
+      },
+      isCurrent: () => true
+    };
+    analysisDatasetContext.synchronize(registeredFirst ? [resident] : []);
+    try {
+      const host = createWorkbenchHost();
+      const cached = host.listDatasets()[0];
+      expect(cached.pointColumns).toBeUndefined();
+      expect(valueAt).not.toHaveBeenCalled();
+      if (!registeredFirst) {
+        analysisDatasetContext.synchronize([resident]);
+        expect(host.listDatasets()[0]).toBe(cached);
+      }
+      await analysisDatasetContext.readStatistics(native.id);
+      const discovered = analysisDatasetContext.get(native.id)!.profile.pointColumns;
+      expect(discovered).toEqual({longitude: 'longitude1', latitude: 'latitude1'});
+      expect(host.listDatasets()[0]).toBe(cached);
+      expect(cached.pointColumns).toEqual(discovered);
+      expect(valueAt).not.toHaveBeenCalled();
+      // Consumers get copies of mappings, so a caller cannot corrupt the shared profile.
+      cached.pointColumns!.longitude = 'tampered';
+      expect(cached.pointColumns).toEqual(discovered);
+      analysisDatasetContext.synchronize([]);
+      expect(cached.pointColumns).toBeUndefined();
+    } finally {
+      analysisDatasetContext.synchronize([]);
+    }
   });
 
   test('wave 2 F1/F2 runs real DuckDB WASM without an app runtime and converts decimal aggregates', async () => {
@@ -797,13 +1518,335 @@ describe('workbench host ownership and replay regressions', () => {
     expect(createConnection).toHaveBeenCalledTimes(2);
   });
 
+  test('an explicit p_value choice replaces the descriptor cluster plan using the shared encoder', async () => {
+    const owner = hostState.runtime!;
+    const descriptor =
+      getWorkflowOperationRegistry().get('local-moran-statistics')!.analysisDescriptor!;
+    const request = {...makePublishRequest(), style: {colorColumn: 'p_value'}};
+    request.data = makeFixturePoints(6);
+    request.data.table.id = descriptor.outputs[0].tableId;
+    request.data.table.columns['cluster'] = [
+      'HH',
+      'HL',
+      'LH',
+      'LL',
+      'not-significant',
+      'not-tested'
+    ];
+    request.data.table.columnTypes['cluster'] = 'string';
+    request.data.table.columns['p_value'] = [0.01, 0.02, 0.03, 0.04, 0.5, null];
+    request.data.table.columnTypes['p_value'] = 'float64';
+    request.data.analysisPresentation = getKeplerBindingResultPresentations(
+      {
+        operationId: descriptor.bindingId,
+        engine: 'cpu-reference',
+        parameters: {},
+        diagnostics: [],
+        dispatchedContributors: [],
+        summary: {},
+        tables: [request.data.table]
+      },
+      descriptor
+    )[0];
+    const encoded = encodeKeplerResultPresentation(
+      request.data.table,
+      request.data.analysisPresentation,
+      'p_value'
+    )!;
+    hostState.publish = async table => {
+      expect(Array.from(table.getChild(encoded.classColumn)!)).toEqual(encoded.values);
+      attachProbePublication(owner);
+      hostState.datasets[hostState.requestedPublicationId!].fields = [
+        {name: encoded.classColumn, type: 'string'}
+      ];
+      hostState.layers = [
+        {id: 'output-layer', config: {dataId: hostState.requestedPublicationId!}}
+      ];
+    };
+    await createWorkbenchHost().publishOutput!(request, new AbortController().signal);
+    expect(
+      vi.mocked(publishSource).mock.calls[0][0].analysisResult?.encoding?.presentation.column
+    ).toBe('p_value');
+    expect(hostState.dispatchedActions).toContainEqual(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          newVisConfig: expect.objectContaining({
+            colorRange: expect.objectContaining({name: 'p_value'})
+          })
+        })
+      })
+    );
+  });
+
+  test('unreferenced planar workflow geometry opens an exact report without uploading a map layer', async () => {
+    hostState.runtime = null;
+    const request = makePublishRequest();
+    request.data.table.coordinateSystem = 'planar';
+    const original = structuredClone(request.data.table);
+    const host = createStagedWorkbenchHost();
+    const output = await host.publishOutput!(request, new AbortController().signal);
+    const report = getAnalysisResultReportView()!;
+    expect(report.id).toBe(output.datasetId);
+    expect(report.analysisResult.table).toEqual(original);
+    expect(report.analysisResult.mapMessage).toMatch(/no declared projection/);
+    expect(publishSource).not.toHaveBeenCalled();
+    expect(hostState.dispatchedActions).toEqual([]);
+    await host.retractOutput!(output.datasetId);
+  });
+
+  test('projected workflow map publication and focus bounds both use the geographic display copy', async () => {
+    const owner = hostState.runtime!;
+    const request = makePublishRequest();
+    request.data.table.coordinateSystem = 'planar';
+    request.data.table.columns['geometry'] = [
+      JSON.stringify({type: 'Point', coordinates: [1113194.9079327357, 2273030.926987689]})
+    ];
+    const source = createNumericRasterSource({
+      id: 'projected',
+      kind: 'single-raster',
+      crs: 'EPSG:3857',
+      tiles: [
+        createNumericRasterTile({
+          id: 'tile',
+          width: 1,
+          height: 1,
+          extent: [0, 0, 1, 1],
+          bands: [{values: new Float32Array([1])}]
+        })
+      ]
+    });
+    request.data.table.raster = readWorkbenchRasterInput(source, {bandIndex: 1, maximumCells: 1});
+    const original = structuredClone(request.data.table);
+    hostState.publish = async table => {
+      expect(Number(table.getChild('longitude')!.get(0))).toBeCloseTo(10, 10);
+      expect(Number(table.getChild('latitude')!.get(0))).toBeCloseTo(20, 10);
+      attachProbePublication(owner);
+    };
+    const host = createStagedWorkbenchHost();
+    const output = await host.publishOutput!(request, new AbortController().signal);
+    expect(publishSource).toHaveBeenCalledOnce();
+    expect(request.data.table).toEqual(original);
+    hostState.dispatchedActions = [];
+    host.focusOutput!(output.datasetId);
+    expect(hostState.dispatchedActions).toHaveLength(1);
+    const focus = hostState.dispatchedActions[0] as {bounds: number[]};
+    expect(focus.bounds).toHaveLength(4);
+    for (const [index, expected] of [10, 20, 10, 20].entries())
+      expect(focus.bounds[index]).toBeCloseTo(expected, 10);
+    await host.retractOutput!(output.datasetId);
+  });
+
+  test('table-only AX output opens a report without a device or dataset upload, and can focus and retract it', async () => {
+    hostState.runtime = null;
+    const request = makePublishRequest();
+    request.data = {
+      kind: 'table',
+      table: {
+        id: 'global-moran',
+        label: 'Global Moran',
+        rowCount: 1,
+        columns: {moran_i: [0.12345678912345]},
+        columnTypes: {moran_i: 'float64'}
+      },
+      analysisPresentation: {tableId: 'global-moran', display: {}, legend: []}
+    };
+    const host = createStagedWorkbenchHost();
+    const first = await host.publishOutput!(request, new AbortController().signal);
+    const firstView = getAnalysisResultReportView()!;
+    expect(firstView.analysisResult.table).toBe(request.data.table);
+    expect(publishSource).not.toHaveBeenCalled();
+    dismissAnalysisResultReport(firstView);
+    host.focusOutput!(first.datasetId);
+    expect(getAnalysisResultReportView()).toBe(firstView);
+    const second = await host.publishOutput!(
+      {...request, previousDatasetId: first.datasetId},
+      new AbortController().signal
+    );
+    await second.commit?.();
+    expect(getAnalysisResultReportView()?.id).toBe(second.datasetId);
+    await host.retractOutput!(first.datasetId);
+    expect(getAnalysisResultReportView()?.id).toBe(second.datasetId);
+    await host.retractOutput!(second.datasetId);
+    expect(getAnalysisResultReportView()).toBeNull();
+    expect(publishSource).not.toHaveBeenCalled();
+  });
+
+  test('failed report/map handoffs retain predecessor cleanup through a later map replacement', async () => {
+    const owner = hostState.runtime!;
+    hostState.publish = async () => {
+      attachProbePublication(owner);
+    };
+    const host = createStagedWorkbenchHost();
+    const signal = new AbortController().signal;
+    const first = await host.publishOutput!(makePublishRequest(), signal);
+    let failures = 0;
+    hostState.onDispatch = action => {
+      if ((action as {dataId?: string}).dataId === first.datasetId && failures < 2) {
+        failures++;
+        throw new Error('Transient predecessor removal failure');
+      }
+    };
+    const reportRequest = makePublishRequest();
+    reportRequest.data = {
+      kind: 'table',
+      table: {
+        id: 'global',
+        label: 'Global',
+        rowCount: 1,
+        columns: {moran_i: [0.4]},
+        columnTypes: {moran_i: 'float64'}
+      },
+      analysisPresentation: {tableId: 'global', display: {}, legend: []}
+    };
+    const second = await host.publishOutput!(
+      {...reportRequest, previousDatasetId: first.datasetId},
+      signal
+    );
+    expect(owner.publications.has(first.datasetId)).toBe(true);
+    await expect(second.commit!()).rejects.toThrow('Transient predecessor removal failure');
+    const third = await host.publishOutput!(
+      {...makePublishRequest(), previousDatasetId: second.datasetId},
+      signal
+    );
+    await expect(third.commit!()).rejects.toThrow('Transient predecessor removal failure');
+    const fourth = await host.publishOutput!(
+      {...makePublishRequest(), previousDatasetId: third.datasetId},
+      signal
+    );
+    await fourth.commit!();
+    expect(failures).toBe(2);
+    expect([...owner.publications.keys()]).toEqual([fourth.datasetId]);
+    expect(getAnalysisResultReportView()).toBeNull();
+    await host.retractOutput!(fourth.datasetId);
+    expect(owner.publications.size).toBe(0);
+  });
+
+  test.each([
+    'point',
+    'polygon'
+  ] as const)('publishes geographic AX %s classes before float conversion with exact plan colours and labels', async geometry => {
+    const owner = hostState.runtime!;
+    const request = makePublishRequest();
+    request.data = makeFixturePoints(6);
+    if (geometry === 'polygon') {
+      request.data.kind = 'polygon';
+      request.data.table = {
+        ...request.data.table,
+        geometryColumn: 'geometry',
+        columns: {
+          geometry: Array.from({length: 6}, (_, index) => {
+            const longitude = -87.6 + index * 0.001;
+            return JSON.stringify({
+              type: 'Polygon',
+              coordinates: [
+                [
+                  [longitude, 41.8],
+                  [longitude + 0.001, 41.8],
+                  [longitude + 0.001, 41.801],
+                  [longitude, 41.801],
+                  [longitude, 41.8]
+                ]
+              ]
+            });
+          })
+        },
+        columnTypes: {geometry: 'string'}
+      };
+    }
+    request.data.table.coordinateSystem = 'EPSG:4326';
+    request.data.table.id = 'density-cells';
+    request.data.table.columns['density'] = [0, 1, 1, 1.000000001, 3, 9];
+    request.data.table.columnTypes['density'] = 'float64';
+    const descriptor =
+      getWorkflowOperationRegistry().get('kernel-density-grid')!.analysisDescriptor!;
+    request.data.analysisPresentation = getKeplerBindingResultPresentations(
+      {
+        operationId: descriptor.bindingId,
+        engine: 'cpu-reference',
+        parameters: {},
+        diagnostics: [],
+        dispatchedContributors: [],
+        summary: {},
+        tables: [request.data.table]
+      },
+      descriptor
+    )[0];
+    const encoded = encodeKeplerResultPresentation(
+      request.data.table,
+      request.data.analysisPresentation
+    )!;
+    const original = structuredClone(request.data);
+    let mapClasses: unknown[] = [];
+    hostState.publish = async table => {
+      mapClasses = Array.from(table.getChild(encoded.classColumn)!);
+      attachProbePublication(owner);
+      hostState.datasets[hostState.requestedPublicationId!].fields = [
+        {name: encoded.classColumn, type: 'string'}
+      ];
+      hostState.layers = [
+        {id: 'output-layer', config: {dataId: hostState.requestedPublicationId!}}
+      ];
+    };
+    await createWorkbenchHost().publishOutput!(request, new AbortController().signal);
+    expect(mapClasses).toEqual(encoded.values);
+    expect(vi.mocked(publishSource).mock.calls[0][0].analysisResult).toMatchObject({
+      destination: 'map',
+      encoding: {classColumn: encoded.classColumn, values: encoded.values, legend: encoded.legend}
+    });
+    expect(
+      vi.mocked(publishSource).mock.calls[0][0].table.getChild(encoded.classColumn)
+    ).not.toBeNull();
+    const toHex = (color: readonly number[]) =>
+      `#${color.map(value => value.toString(16).padStart(2, '0')).join('')}`;
+    expect(hostState.dispatchedActions).toContainEqual(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          newConfig: {
+            colorField: {name: encoded.classColumn, type: 'string'},
+            colorScale: 'customOrdinal'
+          },
+          newVisConfig: expect.objectContaining({
+            colorRange: expect.objectContaining({
+              colorMap: encoded.legend.map((entry, index) => [
+                encoded.categories[index],
+                toHex(entry.color)
+              ])
+            })
+          })
+        })
+      })
+    );
+    expect(request.data).toEqual(original);
+  });
+
+  test('an AX output without a column plan retains a uniform style', async () => {
+    const owner = hostState.runtime!;
+    hostState.publish = async () => {
+      attachProbePublication(owner);
+      hostState.datasets[hostState.requestedPublicationId!].fields = [
+        {name: 'value', type: 'real'}
+      ];
+      hostState.layers = [
+        {id: 'output-layer', config: {dataId: hostState.requestedPublicationId!}}
+      ];
+    };
+    const request = makePublishRequest();
+    request.data.analysisPresentation = {tableId: request.data.table.id, display: {}, legend: []};
+    await createWorkbenchHost().publishOutput!(request, new AbortController().signal);
+    expect(hostState.dispatchedActions).not.toContainEqual(
+      expect.objectContaining({type: '@@kepler.gl/LAYER_VISUAL_CHANNEL_CHANGE'})
+    );
+  });
+
   test('styles the published layer and restyles its replacement using the requested field and palette', async () => {
     const owner = hostState.runtime!;
     hostState.publish = async () => {
       attachProbePublication(owner);
-      hostState.datasets[PUBLICATION_ID].fields = [{name: 'value', type: 'real'}];
+      hostState.datasets[hostState.requestedPublicationId!].fields = [
+        {name: 'value', type: 'real'}
+      ];
       hostState.layers = [
-        {id: 'output-layer', config: {dataId: PUBLICATION_ID}},
+        {id: 'output-layer', config: {dataId: hostState.requestedPublicationId!}},
         {id: 'other-layer', config: {dataId: 'other'}}
       ];
     };
@@ -852,7 +1895,9 @@ describe('workbench host ownership and replay regressions', () => {
     const owner = hostState.runtime!;
     hostState.publish = async () => {
       attachProbePublication(owner);
-      hostState.layers = [{id: 'output-layer', config: {dataId: PUBLICATION_ID}}];
+      hostState.layers = [
+        {id: 'output-layer', config: {dataId: hostState.requestedPublicationId!}}
+      ];
     };
     const host = createWorkbenchHost();
     await expect(
@@ -875,8 +1920,8 @@ describe('workbench host ownership and replay regressions', () => {
         {...makePublishRequest(), previousDatasetId: PUBLICATION_ID, style: {colorColumn: 'value'}},
         new AbortController().signal
       )
-    ).resolves.toMatchObject({datasetId: PUBLICATION_ID});
-    expect(owner.publications.has(PUBLICATION_ID)).toBe(true);
+    ).resolves.toMatchObject({datasetId: `${PUBLICATION_ID}-generation-1`});
+    expect(owner.publications.has(`${PUBLICATION_ID}-generation-1`)).toBe(true);
   });
 
   test('drawing host reads subsets without relabelling and keys geometry and name edits', async () => {
@@ -964,7 +2009,7 @@ describe('workbench host ownership and replay regressions', () => {
     host.focusOutput!('unknown');
     expect(hostState.dispatchedActions).toEqual([wrapTo('compute', fitBounds([1, 2, 1, 2]))]);
 
-    await host.publishOutput!(
+    const successor = await host.publishOutput!(
       {
         ...makePublishRequest(),
         previousDatasetId: PUBLICATION_ID,
@@ -976,12 +2021,12 @@ describe('workbench host ownership and replay regressions', () => {
       new AbortController().signal
     );
     hostState.dispatchedActions = [];
-    host.focusOutput!(PUBLICATION_ID);
+    host.focusOutput!(successor.datasetId);
     expect(hostState.dispatchedActions).toEqual([wrapTo('compute', fitBounds([-4, -5, 6, 7]))]);
 
-    await host.retractOutput!(PUBLICATION_ID);
+    await host.retractOutput!(successor.datasetId);
     hostState.dispatchedActions = [];
-    host.focusOutput!(PUBLICATION_ID);
+    host.focusOutput!(successor.datasetId);
     expect(hostState.dispatchedActions).toEqual([]);
   });
 
@@ -992,7 +2037,7 @@ describe('workbench host ownership and replay regressions', () => {
     };
     const host = createWorkbenchHost();
     await host.publishOutput!(makePublishRequest(), new AbortController().signal);
-    await host.publishOutput!(
+    const successor = await host.publishOutput!(
       {
         ...makePublishRequest(),
         previousDatasetId: PUBLICATION_ID,
@@ -1004,7 +2049,7 @@ describe('workbench host ownership and replay regressions', () => {
       new AbortController().signal
     );
     hostState.dispatchedActions = [];
-    host.focusOutput!(PUBLICATION_ID);
+    host.focusOutput!(successor.datasetId);
     expect(hostState.dispatchedActions).toEqual([]);
   });
 

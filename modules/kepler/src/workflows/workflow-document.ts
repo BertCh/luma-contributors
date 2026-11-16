@@ -2,6 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {parseAnalysisSensitivityProvenance} from '../analysis/analysis-sensitivity';
+import {
+  parseWorkflowAnalysisTemplate,
+  serializeWorkflowAnalysisTemplate
+} from './workflow-analysis-template-parser';
+import type {WorkflowAnalysisTemplate} from './workflow-analysis-template';
 import type {KeplerJSONValue} from '../recipes/sandbox-state';
 import {
   WORKFLOW_LIMITS,
@@ -151,7 +157,7 @@ function readParameterValue(value: unknown, path: string): WorkflowInput['value'
   if (typeof value === 'number') return readNumber(value, path);
   const numbers = readArray(value, path, {
     name: 'maximum parameter number-list length',
-    maximum: 64
+    maximum: WORKFLOW_LIMITS.maximumParameterNumbers
   });
   return numbers.map((number, index) => readNumber(number, `${path}[${index}]`));
 }
@@ -197,7 +203,10 @@ function readInput(value: unknown, path: string, omitUndefinedOptionals: boolean
       inputValue = readBoolean(fields['value'], `${path}.value`);
       break;
     case 'number-list': {
-      const numbers = readArray(fields['value'], `${path}.value`);
+      const numbers = readArray(fields['value'], `${path}.value`, {
+        name: 'maximum parameter number-list length',
+        maximum: WORKFLOW_LIMITS.maximumParameterNumbers
+      });
       if (numbers.length === 0) reject(`${path}.value`, 'must be a non-empty number-list');
       inputValue = numbers.map((number, index) => readNumber(number, `${path}.value[${index}]`));
       break;
@@ -288,6 +297,8 @@ function readStepFields(
     [
       'id',
       'operationId',
+      'curatedAnalysisId',
+      'sensitivity',
       'label',
       'inputs',
       'parameters',
@@ -300,7 +311,17 @@ function readStepFields(
       'note'
     ],
     omitUndefinedOptionals
-      ? ['label', 'disabled', 'display', 'displayStyle', 'engine', 'onFallback', 'note']
+      ? [
+          'curatedAnalysisId',
+          'sensitivity',
+          'label',
+          'disabled',
+          'display',
+          'displayStyle',
+          'engine',
+          'onFallback',
+          'note'
+        ]
       : []
   );
   const id = readId(fields['id'], `${path}.id`);
@@ -318,6 +339,37 @@ function readStepFields(
     parameters: {},
     position: {x: 0, y: 0}
   };
+  if (Object.hasOwn(fields, 'curatedAnalysisId'))
+    step.curatedAnalysisId = readId(fields['curatedAnalysisId'], `${path}.curatedAnalysisId`);
+  if (Object.hasOwn(fields, 'sensitivity')) {
+    try {
+      const sensitivity = readObject(fields['sensitivity'], `${path}.sensitivity`, [
+        'schemaVersion',
+        'operationId',
+        'parameter',
+        'values',
+        'chosenValue',
+        'revisionKey',
+        'population',
+        'invocation'
+      ]);
+      const population = readObject(sensitivity['population'], `${path}.sensitivity.population`, [
+        'scope',
+        'rowCount',
+        'sourceRowCount',
+        'selectionKey'
+      ]);
+      const values = readArray(sensitivity['values'], `${path}.sensitivity.values`, {
+        name: 'maximum sensitivity settings',
+        maximum: 6
+      });
+      step.sensitivity = parseAnalysisSensitivityProvenance({...sensitivity, values, population});
+    } catch {
+      reject(`${path}.sensitivity`, 'must contain valid sensitivity provenance');
+    }
+    if (step.sensitivity.operationId !== operationId)
+      reject(`${path}.sensitivity.operationId`, 'must match the step operation');
+  }
   const connections = readObject(fields['inputs'], `${path}.inputs`);
   for (const port of Object.keys(connections).sort()) {
     const connectionPath = `${path}.inputs.${port}`;
@@ -383,6 +435,8 @@ function readStepFields(
   return {
     id: step.id,
     operationId: step.operationId,
+    ...(step.curatedAnalysisId ? {curatedAnalysisId: step.curatedAnalysisId} : {}),
+    ...(step.sensitivity ? {sensitivity: step.sensitivity} : {}),
     ...(step.label ? {label: step.label} : {}),
     inputs: step.inputs,
     parameters: step.parameters,
@@ -576,8 +630,8 @@ function readCollection(value: unknown, omitUndefinedOptionals = false): Workflo
   const fields = readObject(
     value,
     'collection',
-    ['schemaVersion', 'workflows', 'activeWorkflowId', 'templates'],
-    omitUndefinedOptionals ? ['activeWorkflowId', 'templates'] : []
+    ['schemaVersion', 'workflows', 'activeWorkflowId', 'templates', 'analysisTemplates'],
+    omitUndefinedOptionals ? ['activeWorkflowId', 'templates', 'analysisTemplates'] : []
   );
   if (fields['schemaVersion'] !== WORKFLOW_SCHEMA_VERSION)
     reject('collection.schemaVersion', 'must be 1');
@@ -605,6 +659,25 @@ function readCollection(value: unknown, omitUndefinedOptionals = false): Workflo
     );
     if (templates.length) collection.templates = templates;
   }
+  if (Object.hasOwn(fields, 'analysisTemplates')) {
+    const templates = readDistinctItems(
+      fields['analysisTemplates'],
+      'collection.analysisTemplates',
+      WORKFLOW_LIMITS.maximumUserTemplates,
+      'maximumUserTemplates',
+      template =>
+        omitUndefinedOptionals
+          ? serializeWorkflowAnalysisTemplate(template as WorkflowAnalysisTemplate)
+          : parseWorkflowAnalysisTemplate(template)
+    );
+    if (templates.length) collection.analysisTemplates = templates;
+  }
+  checkLimit(
+    'collection.templates',
+    (collection.templates?.length ?? 0) + (collection.analysisTemplates?.length ?? 0),
+    'maximumUserTemplates',
+    WORKFLOW_LIMITS.maximumUserTemplates
+  );
   return collection;
 }
 
@@ -618,7 +691,9 @@ export function serializeWorkflowCollection(
   collection: WorkflowCollection
 ): KeplerJSONValue | undefined {
   const canonical = readCollection(collection, true);
-  return canonical.workflows.length || canonical.templates?.length
+  return canonical.workflows.length ||
+    canonical.templates?.length ||
+    canonical.analysisTemplates?.length
     ? (canonical as unknown as KeplerJSONValue)
     : undefined;
 }

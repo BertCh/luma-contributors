@@ -11,7 +11,12 @@ import {
   getGPUDistanceFieldParameterValues,
   makeGPURasterMetadata
 } from '@luma-contributors/analysis/raster-analysis';
-import type {CatalogOperationBinding, CatalogRunOutput} from './catalog-binding-types';
+import {validateFiniteNumber, validateRequirement} from '@luma-contributors/analysis/analysis-core';
+import type {
+  CatalogOperationBinding,
+  CatalogParameterValue,
+  CatalogRunOutput
+} from './catalog-binding-types';
 import {COORDINATE_SYSTEM_PARAMETER} from './catalog-binding-types';
 import {
   addCatalogDiagnostic,
@@ -685,6 +690,48 @@ function readCatchmentGrid(inputs: Inputs, values: Values): CatchmentGrid {
     seedRows,
     cellValues
   };
+}
+
+/** Exact seed-cell fact using the execution grid, including its float32 projection and clamping. */
+export function countCatalogCatchmentSeedCollisions(
+  inputs: Inputs,
+  parameters: Readonly<Record<string, CatalogParameterValue>>
+): number {
+  const contributorId = 'countCatalogCatchmentSeedCollisions';
+  validateRequirement(
+    contributorId,
+    typeof parameters['cellSize'] === 'number',
+    'cellSize must be a number'
+  );
+  validateFiniteNumber(
+    contributorId,
+    'cellSize',
+    parameters['cellSize'] as number,
+    Number.MIN_VALUE
+  );
+  validateRequirement(
+    contributorId,
+    parameters['coordinateSystem'] === 'planar' || parameters['coordinateSystem'] === 'EPSG:4326',
+    'coordinateSystem must be planar or EPSG:4326'
+  );
+  validateRequirement(
+    contributorId,
+    Boolean(inputs['facilities'] && inputs['observations']),
+    'inputs must contain facilities and observations'
+  );
+  validateRequirement(
+    contributorId,
+    parameters['valueProperty'] === undefined || typeof parameters['valueProperty'] === 'string',
+    'valueProperty must be a string'
+  );
+  const grid = readCatchmentGrid(inputs, {
+    ...parameters,
+    valueProperty: parameters['valueProperty'] ?? ''
+  });
+  const cells = new Set<string>();
+  for (let index = 0; index < grid.facilities.count; index++)
+    cells.add(`${grid.seedColumns[index]},${grid.seedRows[index]}`);
+  return grid.facilities.count - cells.size;
 }
 
 function computeCatchmentsCpu(grid: CatchmentGrid): CatchmentTotals {

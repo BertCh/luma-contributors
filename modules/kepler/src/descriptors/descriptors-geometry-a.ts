@@ -14,6 +14,15 @@ import type {
   KeplerOperationRequirement
 } from './operation-descriptor-types';
 
+// Apply policy: affine scale, rotation and translation only update GPUAffineTransform's packed
+// parameter buffer. Geodesic bearing/distance update fixed-length runtime input buffers. These
+// are live. Simplification tolerance changes only the selection parameter buffer and a post-pass
+// over fixed-capacity outputs; shell orientation changes only the orientation parameter buffer
+// and preserves the vertex/ring layout. Both are live. Affine pivot changes the CPU-prepared
+// shifted positions and therefore rebuilds.
+// Other settings change prepared geometry, row/vertex allocation, graph construction
+// or compiled shader constants. Rebuild keeps those resources consistent with the chosen value.
+
 // Descriptors for the first half of the `geometry` catalog domain. Only one binding here reads a
 // feature property by name (`group-convex-hull`, parameter `groupProperty`); every other string
 // is absent because these operations work on geometry alone. Capacity numbers repeat the
@@ -34,7 +43,13 @@ function describeConstant(
   level: 'basic' | 'advanced',
   activeWhen?: KeplerOperationParameterDescriptor['activeWhen']
 ): KeplerOperationParameterDescriptor {
-  return {name, defaultPolicy: {from: 'constant'}, level, ...(activeWhen ? {activeWhen} : {})};
+  return {
+    name,
+    apply: 'rebuild',
+    defaultPolicy: {from: 'constant'},
+    level,
+    ...(activeWhen ? {activeWhen} : {})
+  };
 }
 
 /** The coordinate system parameter, which every binding here that measures distance has. */
@@ -84,6 +99,22 @@ function describeCapacity(
   return requirements;
 }
 
+/** Geometry-only results: colour would suggest a measurement these tables do not provide. */
+const UNIFORM_OUTPUT_REASONS: Readonly<Record<string, string>> = {
+  measures:
+    'Area applies only to polygons and length only to lines or polygon boundaries; a mixed geometry result has no shared measure. Show geometry uniformly and read the measures in the table.',
+  'geodesic-destinations':
+    'Every point is displaced by the same bearing and distance; uniform points show the resulting locations without implying different magnitudes.',
+  'oriented-polygons':
+    'Ring orientation is a geometry convention, not a measured quantity; show the corrected polygons uniformly.',
+  'transformed-features':
+    'The same affine transform applies to every feature; use a uniform style to inspect the transformed geometry.',
+  'grid-cells':
+    'Cell row and column are grid addresses, not magnitudes; show the empty lattice uniformly until values are aggregated to it.',
+  'random-points':
+    'These are synthetic sample locations with no measured value; uniform points show the sampling pattern.'
+};
+
 /** One output table described by what its rows are and the column to colour by. */
 function describeOutput(
   tableId: string,
@@ -97,7 +128,14 @@ function describeOutput(
     tableId,
     kind,
     ...(kindFrom ? {kindFrom} : {}),
-    ...(presentation ? {presentation} : {}),
+    ...(presentation
+      ? {presentation}
+      : {
+          presentationException: {
+            type: 'uniform-style' as const,
+            reason: UNIFORM_OUTPUT_REASONS[tableId]
+          }
+        }),
     interpretation: {summary, cautions: []},
     ...(next.length ? {next} : {})
   };
@@ -131,7 +169,7 @@ const NEEDS_GPU_NOTE = 'This operation has no CPU engine: it needs a GPU device.
  * The two GPU buffer bindings share these. `mitreLimit` only matters for mitre joins. For
  * polygons the cap style is accepted but unused (polygons have no open ends), and the arc
  * segments only shape round joins; a line buffer also rounds its caps, so `quadSegments` there
- * is active for either style and is left without `activeWhen`.
+ * is active when either controller is round.
  */
 function describeBufferStyleParameters(
   geometry: 'line' | 'polygon'
@@ -140,7 +178,14 @@ function describeBufferStyleParameters(
     describeConstant(
       'quadSegments',
       'advanced',
-      geometry === 'polygon' ? {parameter: 'joinStyle', equals: ['round']} : undefined
+      geometry === 'polygon'
+        ? {parameter: 'joinStyle', equals: ['round']}
+        : {
+            anyOf: [
+              {parameter: 'joinStyle', equals: ['round']},
+              {parameter: 'capStyle', equals: ['round']}
+            ]
+          }
     ),
     describeConstant('joinStyle', 'advanced'),
     describeConstant('capStyle', 'advanced'),
@@ -175,7 +220,7 @@ function describeOverlay(
       ...describeCapacity('right', 5000, 50000),
       describeDeclaredCoordinates('left')
     ],
-    outputs: [describeOutput('overlay', 'polygons', undefined, 'row-count', next)],
+    outputs: [describeOutput('overlay', 'polygons', SEQUENTIAL('area'), 'row-count', next)],
     notes: [
       NEEDS_GPU_NOTE,
       'Each layer is dissolved into one shape first, so result rows do not say which source polygon they came from.'
@@ -232,6 +277,7 @@ export const GEOMETRY_A_OPERATION_DESCRIPTORS: readonly KeplerOperationDescripto
     parameters: [
       {
         name: 'radius',
+        apply: 'rebuild',
         defaultPolicy: {
           from: 'data',
           input: 'points',
@@ -244,7 +290,9 @@ export const GEOMETRY_A_OPERATION_DESCRIPTORS: readonly KeplerOperationDescripto
       describeConstant('coordinateSystem', 'basic')
     ],
     requirements: [...describeCapacity('points', 20000), describeDeclaredCoordinates('points')],
-    outputs: [describeOutput('buffers', 'polygons', undefined, 'row-count', ['how-much-per-area'])],
+    outputs: [
+      describeOutput('buffers', 'polygons', SEQUENTIAL('area'), 'row-count', ['how-much-per-area'])
+    ],
     notes: [
       'Overlapping buffers stay separate; nothing is merged.',
       'The buffer is an inscribed polygon, a little smaller than a true circle.'
@@ -289,7 +337,16 @@ export const GEOMETRY_A_OPERATION_DESCRIPTORS: readonly KeplerOperationDescripto
         'Edges are clipped as straight lines in coordinate space, which is not a great-circle path for geographic data over long distances'
       )
     ],
-    outputs: [describeOutput('clipped', 'polygons', undefined, 'row-count', [], 'features')],
+    outputs: [
+      describeOutput(
+        'clipped',
+        'polygons',
+        CATEGORICAL('geometry_type'),
+        'row-count',
+        [],
+        'features'
+      )
+    ],
     notes: [
       'The clip must be a single valid convex polygon; a concave or invalid clip fails.',
       'Features entirely outside the clip produce no row.'
@@ -304,6 +361,7 @@ export const GEOMETRY_A_OPERATION_DESCRIPTORS: readonly KeplerOperationDescripto
     parameters: [
       {
         name: 'tolerance',
+        apply: 'live',
         defaultPolicy: {from: 'data', input: 'lines', rule: 'extent-shorter-side-over-250'},
         level: 'basic'
       },
@@ -333,7 +391,16 @@ export const GEOMETRY_A_OPERATION_DESCRIPTORS: readonly KeplerOperationDescripto
     inputs: [{name: 'lines', kind: 'lines', fields: []}],
     parameters: [describeConstant('iterations', 'basic')],
     requirements: describeCapacity('lines', 20000),
-    outputs: [describeOutput('smoothed-lines', 'lines', undefined, 'row-count', [], 'lines')],
+    outputs: [
+      describeOutput(
+        'smoothed-lines',
+        'lines',
+        SEQUENTIAL('vertices_after'),
+        'row-count',
+        [],
+        'lines'
+      )
+    ],
     notes: ['Each iteration roughly doubles the number of vertices.']
   },
   {
@@ -344,7 +411,16 @@ export const GEOMETRY_A_OPERATION_DESCRIPTORS: readonly KeplerOperationDescripto
     inputs: [{name: 'lines', kind: 'lines', fields: []}],
     parameters: [describeConstant('decimals', 'basic')],
     requirements: describeCapacity('lines', 20000, 200000),
-    outputs: [describeOutput('reduced-lines', 'lines', undefined, 'row-count', [], 'lines')],
+    outputs: [
+      describeOutput(
+        'reduced-lines',
+        'lines',
+        SEQUENTIAL('vertices_after'),
+        'row-count',
+        [],
+        'lines'
+      )
+    ],
     notes: ['Decimals count coordinate units: decimal degrees for geographic data, not metres.']
   },
   {
@@ -394,6 +470,7 @@ export const GEOMETRY_A_OPERATION_DESCRIPTORS: readonly KeplerOperationDescripto
         // largest distance any point inside that extent can be from a line, so no nearby point
         // is dropped by the default; a tighter cut-off is the user's choice.
         name: 'maximumOffset',
+        apply: 'rebuild',
         defaultPolicy: {from: 'data', input: 'lines', rule: 'extent-diagonal'},
         level: 'basic'
       },
@@ -586,8 +663,8 @@ export const GEOMETRY_A_OPERATION_DESCRIPTORS: readonly KeplerOperationDescripto
     prominence: 3,
     inputs: [{name: 'points', kind: 'points', fields: []}],
     parameters: [
-      describeConstant('bearing', 'basic'),
-      describeConstant('distance', 'basic'),
+      {...describeConstant('bearing', 'basic'), apply: 'live'},
+      {...describeConstant('distance', 'basic'), apply: 'live'},
       describeCoordinateSystem()
     ],
     requirements: [
@@ -626,7 +703,7 @@ export const GEOMETRY_A_OPERATION_DESCRIPTORS: readonly KeplerOperationDescripto
     action: 'Set ring direction',
     prominence: 3,
     inputs: [{name: 'polygons', kind: 'polygons', fields: []}],
-    parameters: [describeConstant('shellOrientation', 'basic')],
+    parameters: [{...describeConstant('shellOrientation', 'basic'), apply: 'live'}],
     requirements: [
       ...describeCapacity('polygons', 20000, 200000),
       describePlanarCoordinates(
@@ -645,11 +722,11 @@ export const GEOMETRY_A_OPERATION_DESCRIPTORS: readonly KeplerOperationDescripto
     prominence: 3,
     inputs: [{name: 'features', kind: 'polygons', fields: []}],
     parameters: [
-      describeConstant('scaleX', 'basic'),
-      describeConstant('scaleY', 'basic'),
-      describeConstant('rotationDegrees', 'basic'),
-      describeConstant('translateX', 'advanced'),
-      describeConstant('translateY', 'advanced'),
+      {...describeConstant('scaleX', 'basic'), apply: 'live'},
+      {...describeConstant('scaleY', 'basic'), apply: 'live'},
+      {...describeConstant('rotationDegrees', 'basic'), apply: 'live'},
+      {...describeConstant('translateX', 'advanced'), apply: 'live'},
+      {...describeConstant('translateY', 'advanced'), apply: 'live'},
       describeConstant('pivot', 'advanced')
     ],
     requirements: [
@@ -702,6 +779,7 @@ export const GEOMETRY_A_OPERATION_DESCRIPTORS: readonly KeplerOperationDescripto
     parameters: [
       {
         name: 'cellWidth',
+        apply: 'rebuild',
         defaultPolicy: {
           from: 'data',
           input: 'extent',
@@ -712,6 +790,7 @@ export const GEOMETRY_A_OPERATION_DESCRIPTORS: readonly KeplerOperationDescripto
       },
       {
         name: 'cellHeight',
+        apply: 'rebuild',
         defaultPolicy: {
           from: 'data',
           input: 'extent',
@@ -819,7 +898,9 @@ export const GEOMETRY_A_OPERATION_DESCRIPTORS: readonly KeplerOperationDescripto
     // The distance stays constant: no rule says how wide a corridor should be.
     parameters: [describeConstant('distance', 'basic'), ...describeBufferStyleParameters('line')],
     requirements: [...describeCapacity('lines', 5000, 20000), describeDeclaredCoordinates('lines')],
-    outputs: [describeOutput('buffers', 'polygons', undefined, 'row-count', ['how-much-per-area'])],
+    outputs: [
+      describeOutput('buffers', 'polygons', SEQUENTIAL('area'), 'row-count', ['how-much-per-area'])
+    ],
     notes: [NEEDS_GPU_NOTE, 'Without dissolve, at most 256 features are buffered, each on its own.']
   },
   {
@@ -837,7 +918,9 @@ export const GEOMETRY_A_OPERATION_DESCRIPTORS: readonly KeplerOperationDescripto
       ...describeCapacity('polygons', 5000, 50000),
       describeDeclaredCoordinates('polygons')
     ],
-    outputs: [describeOutput('buffers', 'polygons', undefined, 'row-count', ['how-much-per-area'])],
+    outputs: [
+      describeOutput('buffers', 'polygons', SEQUENTIAL('area'), 'row-count', ['how-much-per-area'])
+    ],
     notes: [
       NEEDS_GPU_NOTE,
       'A negative distance shrinks the areas; thin parts disappear.',

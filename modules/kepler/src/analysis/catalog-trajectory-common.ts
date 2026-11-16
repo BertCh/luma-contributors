@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {validateCapacity} from '@luma-contributors/analysis/analysis-core';
+import {parseKeplerIsoTimestamp} from '../profile/iso-timestamp';
 import type {
   CatalogParameterSpec,
   CatalogParameterValue,
@@ -84,14 +85,24 @@ export const TRAJECTORY_PARAMETERS: readonly CatalogParameterSpec[] = [
 ];
 
 function readTimestamp(value: unknown, encoding: CatalogParameterValue): number {
+  // Missing zones mean UTC; impossible dates are rejected by the existing strict ISO parser.
+  // The parser keeps whole milliseconds, so reject nonzero lower digits before they are lost.
+  const submillisecondDigits =
+    encoding === 'iso8601' && typeof value === 'string'
+      ? value.match(/\.\d{3}(\d+)/)?.[1]
+      : undefined;
   const timestamp =
     encoding === 'iso8601' && typeof value === 'string'
-      ? Date.parse(value)
+      ? parseKeplerIsoTimestamp(value)
       : typeof value === 'number'
         ? value * (encoding === 'unix-second' ? 1000 : 1)
         : NaN;
   const milliseconds = Math.round(timestamp);
-  if (!Number.isSafeInteger(milliseconds) || Math.abs(timestamp - milliseconds) > 1e-6)
+  if (
+    !Number.isSafeInteger(milliseconds) ||
+    Math.abs(timestamp - milliseconds) > 1e-6 ||
+    (submillisecondDigits !== undefined && /[1-9]/.test(submillisecondDigits))
+  )
     throw new Error(
       'Trajectory timestamps must resolve to safe integer epoch milliseconds; sub-millisecond precision is not supported.'
     );

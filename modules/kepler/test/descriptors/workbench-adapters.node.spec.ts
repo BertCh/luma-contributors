@@ -11,6 +11,7 @@ import {
 import {parseCatalogFeatureCollection} from '../../src/analysis/catalog-geojson';
 import {KEPLER_CURATED_ANALYSES} from '../../src/curated/curated-analyses';
 import {
+  evaluateKeplerWorkbenchInputs,
   evaluateKeplerWorkbenchApplicability,
   getKeplerWorkbenchCuratedPresets,
   getKeplerWorkbenchParameterDefaults,
@@ -30,15 +31,26 @@ const POINT_SUBJECT: KeplerWorkbenchSubject = {
 };
 
 function isFormValue(value: unknown): boolean {
-  return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean';
+  return (
+    typeof value === 'string' ||
+    typeof value === 'number' ||
+    typeof value === 'boolean' ||
+    (Array.isArray(value) && value.every(entry => typeof entry === 'number'))
+  );
 }
 
 describe('evaluateKeplerWorkbenchApplicability', () => {
   it('returns exactly the specified shape for a passing operation', () => {
     const result = evaluateKeplerWorkbenchApplicability('kernel-density-grid', POINT_SUBJECT);
-    expect(Object.keys(result).sort()).toEqual(['outputKinds', 'parameters', 'reason', 'status']);
-    expect(result.status).toBe('passed');
-    expect(result.reason).toMatch(/500 rows/);
+    expect(Object.keys(result).sort()).toEqual([
+      'outputKinds',
+      'parameters',
+      'reason',
+      'remedy',
+      'status'
+    ]);
+    expect(result.status).toBe('unknown');
+    expect(result.remedy).toBeTruthy();
     expect(Object.values(result.parameters).every(isFormValue)).toBe(true);
     expect(result.parameters['cellSize']).toBe(100);
     expect(result.parameters['kernel']).toBe('gaussian');
@@ -73,7 +85,7 @@ describe('evaluateKeplerWorkbenchApplicability', () => {
       ...POINT_SUBJECT,
       kind: 'features'
     });
-    expect(points.status).toBe('passed');
+    expect(points.status).toBe('unknown');
     const lines = evaluateKeplerWorkbenchApplicability('network-centrality', {
       ...POINT_SUBJECT,
       kind: 'features'
@@ -99,37 +111,36 @@ describe('evaluateKeplerWorkbenchApplicability', () => {
   it('does not fail on counts when the row count is not known', () => {
     const {rowCount: _rowCount, ...unknownSize} = POINT_SUBJECT;
     const result = evaluateKeplerWorkbenchApplicability('recipe-hot-spot-lattice', unknownSize);
-    // A subject alone cannot know the count: passed, with the caveat stated.
-    expect(result.status).toBe('passed');
-    expect(result.reason).toMatch(
-      /not known from the subject alone: .*number of rows is not known/
-    );
+    // Mandatory unknown evidence is unresolved, even for a subject-only call.
+    expect(result.status).toBe('unknown');
+    expect(result.remedy).toBeTruthy();
   });
 
-  it('maps the four statuses: a subject alone passes with caveats, a profile asks', () => {
+  it('keeps mandatory unknowns unresolved for subjects and profiles', () => {
     const polygons: KeplerWorkbenchSubject = {
       kind: 'polygon',
       rowCount: 144,
       columns: [{name: 'cases', type: 'int32'}]
     };
-    // A count given to a rate method needs a choice, which a subject-only call cannot ask for.
+    // Metadata alone still lacks mandatory capacity evidence. A full profile settles it;
+    // the proposed count column is then a visible measurement warning, not a blocked run.
     const subjectOnly = evaluateKeplerWorkbenchApplicability('local-moran-statistics', polygons);
-    expect(subjectOnly.status).toBe('passed');
-    expect(subjectOnly.reason).toMatch(/not known from the subject alone/);
+    expect(subjectOnly.status).toBe('unknown');
+    expect(subjectOnly.remedy).toBeTruthy();
     const withProfile = evaluateKeplerWorkbenchApplicability(
       'local-moran-statistics',
       polygons,
       buildSampleProfile('districts', {keepColumns: ['district', 'cases']})
     );
-    expect(withProfile.status).toBe('unknown');
-    expect(withProfile.reason).toMatch(/Choose the column/);
-    // Facts a subject cannot know do not make polygon operations unknown forever.
+    expect(withProfile.status).toBe('passed');
+    expect(withProfile.parameters['valueProperty']).toBe('cases');
+    // An unknown vertex count remains unresolved until the host supplies it.
     const polygonOperation = evaluateKeplerWorkbenchApplicability('geometry-validity', {
       kind: 'polygon',
       rowCount: 50,
       columns: []
     });
-    expect(polygonOperation.status).toBe('passed');
+    expect(polygonOperation.status).toBe('unknown');
   });
 
   it('accepts a vertex count and treats a table with coordinate columns as points', () => {
@@ -143,7 +154,7 @@ describe('evaluateKeplerWorkbenchApplicability', () => {
       ]
     };
     expect(evaluateKeplerWorkbenchApplicability('kernel-density-grid', table).status).toBe(
-      'passed'
+      'unknown'
     );
     const bigPolygons: KeplerWorkbenchSubject = {
       kind: 'polygon',
@@ -186,7 +197,7 @@ describe('evaluateKeplerWorkbenchApplicability', () => {
     expect(withProfile.parameters['coordinateSystem']).toBe('EPSG:4326');
   });
 
-  it('omits parameters that are lists of numbers, for every binding that has one', () => {
+  it('preserves parameters that are lists of numbers, for every binding that has one', () => {
     const withLists = KEPLER_CATALOG_BINDINGS.filter(binding =>
       binding.parameters.some(parameter => parameter.kind === 'number-list')
     );
@@ -194,9 +205,12 @@ describe('evaluateKeplerWorkbenchApplicability', () => {
     for (const binding of withLists) {
       const defaults = getKeplerWorkbenchParameterDefaults(binding.id);
       for (const parameter of binding.parameters.filter(entry => entry.kind === 'number-list')) {
-        expect(parameter.name in defaults.values, `${binding.id}.${parameter.name}`).toBe(false);
-        expect(defaults.basic).not.toContain(parameter.name);
-        expect(defaults.advanced).not.toContain(parameter.name);
+        expect(defaults.values[parameter.name], `${binding.id}.${parameter.name}`).toEqual(
+          parameter.defaultValue
+        );
+        expect([...defaults.basic, ...defaults.advanced, ...defaults.inactive]).toContain(
+          parameter.name
+        );
       }
       expect(Object.values(defaults.values).every(isFormValue)).toBe(true);
     }
@@ -206,7 +220,14 @@ describe('evaluateKeplerWorkbenchApplicability', () => {
 describe('getKeplerWorkbenchParameterDefaults', () => {
   it('returns values, basic and advanced, which together name every parameter once', () => {
     const defaults = getKeplerWorkbenchParameterDefaults('kernel-density-grid');
-    expect(Object.keys(defaults).sort()).toEqual(['advanced', 'basic', 'inactive', 'values']);
+    expect(Object.keys(defaults).sort()).toEqual([
+      'advanced',
+      'basic',
+      'confirmations',
+      'inactive',
+      'resolutions',
+      'values'
+    ]);
     const binding = getCatalogBinding('kernel-density-grid')!;
     expect([...defaults.basic, ...defaults.advanced, ...defaults.inactive].sort()).toEqual(
       binding.parameters.map(parameter => parameter.name).sort()
@@ -245,7 +266,14 @@ describe('getKeplerWorkbenchCuratedPresets', () => {
     for (const preset of presets) {
       expect(
         Object.keys(preset).every(key =>
-          ['bindingId', 'title', 'parameters', 'sampleGeoJSONByInput'].includes(key)
+          [
+            'curatedAnalysisId',
+            'executionParameters',
+            'bindingId',
+            'title',
+            'parameters',
+            'sampleGeoJSONByInput'
+          ].includes(key)
         )
       ).toBe(true);
       expect(preset.title.length).toBeGreaterThan(0);
@@ -310,4 +338,26 @@ it('exposes resolved output kinds to workbench hosts', () => {
     columns: []
   });
   expect(result.outputKinds).toEqual({'density-cells': 'surface'});
+});
+
+it('retains dataset identity behind port aliases for same-layer comparison checks', () => {
+  const sample = buildSampleProfile('before');
+  const before = {
+    ...sample,
+    coordinates: {model: 'geographic' as const, source: 'declared' as const}
+  };
+  const options = {overrides: {cellSize: 100}};
+  const identical = evaluateKeplerWorkbenchInputs('cell-compare', {before, after: before}, options);
+  expect(identical.status).toBe('blocked');
+  expect(identical.missing.some(problem => problem.what.includes('same rows'))).toBe(true);
+  const independent = evaluateKeplerWorkbenchInputs(
+    'cell-compare',
+    {
+      before,
+      after: {...before, datasetId: 'independent', label: 'Independent observations'}
+    },
+    options
+  );
+  expect(independent.status, JSON.stringify(independent.missing)).toBe('ready');
+  expect(before.datasetId).toBe('before');
 });

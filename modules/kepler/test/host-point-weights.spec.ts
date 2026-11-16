@@ -139,7 +139,7 @@ test('point spatial rates preserve source nearest neighbors through filtering an
     const colors = analysis.colors.data[0].buffer;
     if (!(colors instanceof Buffer)) throw new Error('Expected owned color buffer');
     expect(Array.from(await colors.readAsync(0, 16))).toEqual([
-      44, 123, 182, 255, 44, 123, 182, 255, 253, 174, 97, 255, 215, 25, 28, 255
+      90, 150, 205, 255, 90, 150, 205, 255, 150, 60, 175, 255, 240, 125, 90, 255
     ]);
     expect(analysis.pointWeightsCacheStats).toMatchObject({buildCount: 1, encodeCount: 1});
     analysis.setMode('off');

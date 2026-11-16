@@ -2,13 +2,20 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {CURATED_CELL_FLOW_TOPOLOGY_ANALYSIS} from './bindings/curated-cell-flow-topology-binding';
+import {REGIONAL_RASTER_CHANGE_ANALYSIS_UPDATE} from './samples/regional-raster-change';
+import {CURATED_ZONAL_EXPOSURE_DESCRIPTOR} from '../descriptors/descriptors-curated-zonal-exposure';
+import {CURATED_DRIVE_TIME_BANDS_ANALYSIS} from './samples/drive-time-bands-data';
+import {CURATED_NETWORK_DISRUPTION_ANALYSIS} from './samples/network-disruption';
+import {CURATED_DRAINAGE_NETWORK_ANALYSIS} from './samples/drainage-network';
 import type {
   GPUAnalysisFieldRoleSpec,
   GPUAnalysisQuestion
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {KeplerCuratedAnalysis, KeplerCuratedAnalysisSlot} from './curated-analysis-types';
+import {CURATED_DASYMETRIC_REDISTRIBUTION_ANALYSIS} from './bindings/curated-dasymetric-redistribution-binding';
 
-// The 27 starting analyses of the analysis-experience design (section 4.6), in table order. Each is
+// The 27 starting analyses plus drive-time bands of the analysis-experience design (section 4.6), in table order. Each is
 // one step: a question, typed dataset slots with field roles, preset parameters and a few exposed
 // ones. `available` means one registered catalog binding delivers what the title promises, with the
 // presets given here. `needs-binding` names the analysis-package recipe that implements it and what
@@ -16,12 +23,11 @@ import type {KeplerCuratedAnalysis, KeplerCuratedAnalysisSlot} from './curated-a
 //
 // Where the nearest binding does only part of the README's analysis, the entry is `available` only
 // when its title, name and method describe exactly what that binding computes (facility reach
-// without bands, period comparison from two uploaded point sets). Six analyses run on the fused
+// without bands, period comparison from two uploaded point sets). Curated analyses run on the fused
 // bindings of `modules/kepler/src/curated/bindings`, which chain operations the catalog already
 // computes on feature collections.
 
 const NUMBER_COLUMN = ['number', 'integer'] as const;
-const TIME_COLUMN = ['time', 'number'] as const;
 
 function makeNumberRole(
   role: string,
@@ -56,13 +62,6 @@ function makeSurfaceSlot(
   fields: readonly GPUAnalysisFieldRoleSpec[]
 ): KeplerCuratedAnalysisSlot {
   return {name, label, kind: 'surface', fields};
-}
-
-function makeNeedsBinding(
-  implementation: string,
-  reason: string
-): KeplerCuratedAnalysis['execution'] {
-  return {status: 'needs-binding', implementation, reason};
 }
 
 export const KEPLER_CURATED_ANALYSES: readonly KeplerCuratedAnalysis[] = [
@@ -157,19 +156,22 @@ export const KEPLER_CURATED_ANALYSES: readonly KeplerCuratedAnalysis[] = [
           {
             role: 'time',
             label: 'Time',
-            accepts: TIME_COLUMN,
+            accepts: ['time', 'number', 'integer'],
             required: true
-          },
-          makeNumberRole('value', 'Value to sum (optional)', false, ['count', 'amount'])
+          }
         ],
         ['events']
       )
     ],
-    execution: makeNeedsBinding(
-      'addSpaceTimeHotSpotsRecipe',
-      'No Kepler catalog binding runs the space-time cube (calendar, period index, cell counts by period, emerging hot spot classes); the nearest, recipe-hot-spot-lattice, tests one lattice with no time axis.'
-    ),
-    exposedParameters: []
+    execution: {
+      status: 'available',
+      bindingId: 'curated-emerging-hot-spots',
+      inputs: {points: 'points'},
+      fieldParameters: {'points.time': 'timeProperty'},
+      parameters: {}
+    },
+    exposedParameters: ['cellSize', 'timeStep', 'sliceCount', 'radius', 'temporalWindow'],
+    sampleId: 'emerging-hot-spots'
   },
   {
     id: 'period-comparison',
@@ -546,48 +548,8 @@ export const KEPLER_CURATED_ANALYSES: readonly KeplerCuratedAnalysis[] = [
     exposedParameters: ['variableType'],
     sampleId: 'boundary-pair'
   },
-  {
-    id: 'dasymetric-redistribution',
-    question: 'prepare-data',
-    title: 'Where within each zone is the total likely to be?',
-    name: 'Dasymetric redistribution',
-    method:
-      'The fraction of each source zone covered by each ancillary cell class is computed, cells that cannot hold the total (water, say) are excluded, and each total is shared among the remaining cells by their weights. The shares are then added up in the target zones and a ledger checks that no mass was lost. The map shows the redistributed totals.',
-    wave: 2,
-    slots: [
-      makeAreasSlot('sources', 'Source zones with totals', [
-        makeNumberRole('total', 'Total', true, ['count', 'amount'])
-      ]),
-      makeAreasSlot('targets', 'Target zones', []),
-      makeSurfaceSlot('ancillary', 'Ancillary raster', [
-        {role: 'band', label: 'Ancillary band', accepts: NUMBER_COLUMN, required: true}
-      ])
-    ],
-    execution: makeNeedsBinding(
-      'addDasymetricRedistributionRecipe',
-      'The Kepler catalog interface carries no raster tiles, and no binding supplies the grid, target-zone ownership and ancillary band the recipe needs; areal-interpolation uses area weights only.'
-    ),
-    exposedParameters: []
-  },
-  {
-    id: 'drainage-network',
-    question: 'shape-of-the-surface',
-    title: 'Where does water go?',
-    name: 'Drainage network and catchments',
-    method:
-      'Each cell of the elevation raster drains to its steepest downhill neighbour (D8). Flow is accumulated along these directions, stream order is assigned, and the watershed of each outlet is traced. The map shows the stream network and the catchment of each stream.',
-    wave: 1,
-    slots: [
-      makeSurfaceSlot('elevation', 'Elevation raster', [
-        {role: 'band', label: 'Elevation', accepts: NUMBER_COLUMN, required: true}
-      ])
-    ],
-    execution: makeNeedsBinding(
-      'addDrainageNetworkRecipe',
-      'The Kepler catalog interface carries no raster tiles; the terrain panels run the contributors but no binding or panel runs the recipe.'
-    ),
-    exposedParameters: []
-  },
+  CURATED_DASYMETRIC_REDISTRIBUTION_ANALYSIS,
+  CURATED_DRAINAGE_NETWORK_ANALYSIS,
   {
     id: 'surface-preparation',
     question: 'prepare-data',
@@ -597,15 +559,17 @@ export const KEPLER_CURATED_ANALYSES: readonly KeplerCuratedAnalysis[] = [
       'Cells without data are filled from the cells around them, the filled cells are recorded so they can be told from measured ones, an optional rank filter removes isolated spikes, and the cells that could not be filled are counted. The map shows the prepared surface and the cells that remain empty.',
     wave: 2,
     slots: [
-      makeSurfaceSlot('surface', 'Raster with gaps', [
-        {role: 'band', label: 'Band', accepts: NUMBER_COLUMN, required: true}
-      ])
+      {name: 'surface', label: 'Selected raster band with gaps', kind: 'surface', fields: []}
     ],
-    execution: makeNeedsBinding(
-      'addSurfacePreparationRecipe',
-      'The Kepler catalog interface carries no raster tiles, and no binding runs the nodata fill and provenance stages.'
-    ),
-    exposedParameters: []
+    execution: {
+      status: 'available',
+      bindingId: 'curated-surface-preparation',
+      inputs: {surface: 'surface'},
+      fieldParameters: {},
+      parameters: {}
+    },
+    exposedParameters: ['maximumDistance', 'method', 'filter'],
+    sampleId: 'surface-preparation-gaps'
   },
   {
     id: 'zonal-exposure',
@@ -613,43 +577,36 @@ export const KEPLER_CURATED_ANALYSES: readonly KeplerCuratedAnalysis[] = [
     title: 'What is in each zone, and who is exposed?',
     name: 'Zonal distribution and exposure',
     method:
-      'The values of the raster cells in each zone are summarised by their distribution, and the exposure band (people per cell, say) is added up in each zone and divided by the zone total to give the share exposed. The map shows each zone with its distribution and exposed share.',
+      'Summarise a selected hazard band using explicit whole-cell zone ownership. Optionally sum population counts or densities above a threshold, using declared cell areas for densities. Report observed and total population, exposed share and coverage; missing hazard remains unknown.',
     wave: 2,
-    slots: [
-      makeSurfaceSlot('surface', 'Raster', [
-        {role: 'hazard', label: 'Hazard band', accepts: NUMBER_COLUMN, required: true},
-        makeNumberRole('exposure', 'Exposure band', false, ['count', 'amount'])
-      ]),
-      makeAreasSlot('zones', 'Zones', [])
-    ],
-    execution: makeNeedsBinding(
-      'addExposureByZoneRecipe',
-      'The Kepler catalog interface carries no raster tiles; the zonal panel computes zonal statistics of point values, not the raster distribution or exposure shares of addRasterZonalDistributionRecipe and addExposureByZoneRecipe.'
-    ),
-    exposedParameters: []
+    slots: CURATED_ZONAL_EXPOSURE_DESCRIPTOR.inputs.map(input => ({
+      name: input.name,
+      label: input.name,
+      kind: input.kind,
+      rowSemantics: input.rowSemantics,
+      fields: input.fields.map(({parameter, autoAssign, ...field}) => field)
+    })),
+    execution: {
+      status: 'available',
+      bindingId: 'curated-zonal-exposure',
+      inputs: {surface: 'surface', zones: 'zones', cells: 'cells'},
+      fieldParameters: Object.fromEntries(
+        CURATED_ZONAL_EXPOSURE_DESCRIPTOR.inputs.flatMap(input =>
+          input.fields.map(field => [`${input.name}.${field.role}`, field.parameter])
+        )
+      ),
+      parameters: {}
+    },
+    exposedParameters: ['probabilities', 'weightMeaning'],
+    sampleId: 'zonal-exposure-counts'
   },
   {
     id: 'regional-raster-change',
     question: 'what-changed',
     title: 'Where did it change?',
     name: 'Regional raster change',
-    method:
-      'The two rasters are subtracted on the cells that both observe, the zones are masked to those cells, and the difference is summarised per zone together with the share of the zone that was observed in both. The map shows the change of each zone and how much of it the figure is based on.',
     wave: 2,
-    slots: [
-      makeSurfaceSlot('before', 'Earlier raster', [
-        {role: 'band', label: 'Band', accepts: NUMBER_COLUMN, required: true}
-      ]),
-      makeSurfaceSlot('after', 'Later raster', [
-        {role: 'band', label: 'Band', accepts: NUMBER_COLUMN, required: true}
-      ]),
-      makeAreasSlot('zones', 'Zones', [])
-    ],
-    execution: makeNeedsBinding(
-      'addRegionalRasterChangeRecipe',
-      'The Kepler catalog interface carries no raster tiles, and no binding runs the difference, mask and zonal summary stages.'
-    ),
-    exposedParameters: []
+    ...REGIONAL_RASTER_CHANGE_ANALYSIS_UPDATE
   },
   {
     id: 'landscape-metrics',
@@ -659,16 +616,16 @@ export const KEPLER_CURATED_ANALYSES: readonly KeplerCuratedAnalysis[] = [
     method:
       'Neighbouring cells of the same class are joined into patches, and the patch areas, edges and adjacency between classes are measured. These are summarised for each class and for the whole landscape, and the distance of each patch to the nearest patch of its class gives its isolation. The tables show the metrics by class and by patch.',
     wave: 2,
-    slots: [
-      makeSurfaceSlot('landcover', 'Land-cover raster', [
-        {role: 'class', label: 'Class', accepts: ['integer', 'category'], required: true}
-      ])
-    ],
-    execution: makeNeedsBinding(
-      'addLandscapeMetricsRecipe',
-      'The Kepler catalog interface carries no raster tiles, and no binding runs the patch, adjacency and class metric stages or the patch proximity stage (addPatchProximityRecipe).'
-    ),
-    exposedParameters: []
+    slots: [makeSurfaceSlot('landcover', 'Selected land-cover raster band', [])],
+    execution: {
+      status: 'available',
+      bindingId: 'curated-landscape-metrics',
+      inputs: {landcover: 'landcover'},
+      fieldParameters: {},
+      parameters: {}
+    },
+    exposedParameters: ['connectivity', 'edgeDepth', 'searchRadius', 'excludeClass'],
+    sampleId: 'landscape-metrics'
   },
   {
     // The id is kept for stability. It was named for the design's drive-time catchments, but the
@@ -731,25 +688,7 @@ export const KEPLER_CURATED_ANALYSES: readonly KeplerCuratedAnalysis[] = [
     sampleId: 'street-grid-facilities'
   },
 
-  {
-    id: 'network-disruption',
-    question: 'what-is-near-or-reachable',
-    title: 'What does a closure cut off?',
-    name: 'Network disruption',
-    method:
-      'Routes and accessibility scores are computed on the full network, the closed streets are removed, and the scores are computed again. The map shows, for each demand point, the loss of access and whether it has been cut off from every facility.',
-    wave: 2,
-    slots: [
-      {name: 'network', label: 'Street network', kind: 'network', fields: []},
-      makePointsSlot('facilities', 'Facilities', [], ['objects']),
-      makePointsSlot('demand', 'Demand points', [], ['objects', 'events'])
-    ],
-    execution: makeNeedsBinding(
-      'addNetworkDisruptionRecipe',
-      'network-subgraph-filter keeps edges by a property and network-accessibility scores one network, but no binding fuses the two to remove the closed edges, rescore and difference the accessibility scores, so a fused binding is still needed.'
-    ),
-    exposedParameters: []
-  },
+  CURATED_NETWORK_DISRUPTION_ANALYSIS,
   {
     id: 'fleet-dwell',
     question: 'how-it-moves',
@@ -763,15 +702,50 @@ export const KEPLER_CURATED_ANALYSES: readonly KeplerCuratedAnalysis[] = [
         name: 'tracks',
         label: 'Tracks',
         kind: 'trajectories',
-        fields: [{role: 'time', label: 'Time', accepts: TIME_COLUMN, required: true}]
+        fields: [
+          {
+            role: 'track',
+            label: 'Track identifier (or feature ID)',
+            accepts: ['number', 'category', 'text'],
+            measurement: ['identifier', 'nominal'],
+            required: false
+          },
+          {
+            role: 'time',
+            label: 'Timestamp (or embedded vertex time)',
+            accepts: ['number', 'time', 'text'],
+            required: false
+          },
+          {
+            role: 'longitude',
+            label: 'Native point horizontal coordinate',
+            accepts: ['number'],
+            required: false
+          },
+          {
+            role: 'latitude',
+            label: 'Native point vertical coordinate',
+            accepts: ['number'],
+            required: false
+          }
+        ]
       },
       makeAreasSlot('zones', 'Zones', [])
     ],
-    execution: makeNeedsBinding(
-      'addFleetDwellRecipe',
-      'No Kepler catalog binding reads trajectories or computes stop metrics; the catalog takes points, lines and polygons only.'
-    ),
-    exposedParameters: []
+    execution: {
+      status: 'available',
+      bindingId: 'curated-fleet-dwell',
+      inputs: {tracks: 'tracks', zones: 'zones'},
+      fieldParameters: {
+        'tracks.track': 'trackProperty',
+        'tracks.time': 'timeProperty',
+        'tracks.longitude': 'longitudeProperty',
+        'tracks.latitude': 'latitudeProperty'
+      },
+      parameters: {}
+    },
+    exposedParameters: ['stopSpeedThreshold', 'stopMinimumDuration', 'timestampEncoding'],
+    sampleId: 'fleet-dwell'
   },
   {
     id: 'track-quality',
@@ -779,58 +753,54 @@ export const KEPLER_CURATED_ANALYSES: readonly KeplerCuratedAnalysis[] = [
     title: 'Which observations need checking?',
     name: 'Track quality',
     method:
-      'For each observation of a track the speed, turning angle and time gap are computed, and observations that exceed plausible limits are flagged and counted. The map shows the flagged observations.',
+      'For each observation, the speed of the arriving step and the elapsed time gap are checked against explicit limits. All raw observations remain on the map, colored by whether they need checking, with independent flag bits and per-track counts, lengths, durations and maximum speeds. Turning angles and acceleration are not computed.',
     wave: 2,
     slots: [
       {
         name: 'tracks',
         label: 'Tracks',
         kind: 'trajectories',
-        fields: [{role: 'time', label: 'Time', accepts: TIME_COLUMN, required: true}]
-      }
-    ],
-    execution: makeNeedsBinding(
-      'addTrackQualityRecipe',
-      'No Kepler catalog binding reads trajectories or computes track metrics and quality flags; network-map-matching matches a trace to a network but flags nothing.'
-    ),
-    exposedParameters: []
-  },
-  {
-    id: 'cell-flow-topology',
-    question: 'how-it-moves',
-    title: 'Which neighbouring cells exchange flow?',
-    name: 'Cell flow topology',
-    method:
-      'Flows between pairs of hexagonal cells are checked, flows between cells that touch are kept, the totals of each cell are computed, and the boundary shared by each pair is found. The map shows the shared boundaries as lines whose width is the flow across them.',
-    wave: 2,
-    slots: [
-      {
-        name: 'flows',
-        label: 'Flows between cells',
-        kind: 'cells',
         fields: [
           {
-            role: 'origin',
-            label: 'Origin cell',
-            accepts: ['text', 'category'],
+            role: 'track',
+            label: 'Track identifier',
+            accepts: ['number', 'category', 'text'],
+            measurement: ['identifier', 'nominal'],
             required: true
+          },
+          {role: 'time', label: 'Timestamp', accepts: ['number', 'time', 'text'], required: true},
+          {
+            role: 'longitude',
+            label: 'Native point horizontal coordinate',
+            accepts: ['number'],
+            required: false
           },
           {
-            role: 'destination',
-            label: 'Destination cell',
-            accepts: ['text', 'category'],
-            required: true
-          },
-          makeNumberRole('flow', 'Flow', true, ['count', 'amount'])
+            role: 'latitude',
+            label: 'Native point vertical coordinate',
+            accepts: ['number'],
+            required: false
+          }
         ]
       }
     ],
-    execution: makeNeedsBinding(
-      'addCellFlowTopologyRecipe',
-      'No Kepler catalog binding reads a table of cell pairs; cell-compare and the DGGS bindings aggregate points, not flows.'
-    ),
-    exposedParameters: []
-  }
+    execution: {
+      status: 'available',
+      bindingId: 'curated-track-quality',
+      inputs: {tracks: 'tracks'},
+      fieldParameters: {
+        'tracks.track': 'trackProperty',
+        'tracks.time': 'timeProperty',
+        'tracks.longitude': 'longitudeProperty',
+        'tracks.latitude': 'latitudeProperty'
+      },
+      parameters: {}
+    },
+    exposedParameters: ['maximumSpeed', 'maximumGap', 'speedOutlierMode', 'timestampEncoding'],
+    sampleId: 'track-quality'
+  },
+  CURATED_CELL_FLOW_TOPOLOGY_ANALYSIS,
+  CURATED_DRIVE_TIME_BANDS_ANALYSIS
 ];
 
 /** Returns one curated analysis by id, or undefined when no analysis has it. */

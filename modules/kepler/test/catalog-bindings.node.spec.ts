@@ -155,7 +155,7 @@ test('catalog entries report runnable bindings and a reason when not runnable', 
   const entries = listCatalogEntries();
   const serviceAreas = entries.find(entry => entry.contributorName === 'GPUNetworkServiceAreas');
   expect(serviceAreas?.runnable).toBe('catalog-binding');
-  expect(serviceAreas?.bindingIds).toEqual(['network-service-area']);
+  expect(serviceAreas?.bindingIds).toEqual(['network-service-area', 'curated-drive-time-bands']);
   const unbound = entries.filter(entry => entry.runnable === 'no');
   expect(unbound.length).toBeGreaterThan(0);
   expect(unbound.every(entry => Boolean(entry.reason))).toBe(true);

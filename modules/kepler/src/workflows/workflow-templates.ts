@@ -21,6 +21,11 @@ import {
 import {getWorkflowOperationRegistry} from './workflow-operations';
 import {planWorkflow} from './workflow-plan';
 import {WorkflowError, type WorkflowDocument, type WorkflowConnection} from './workflow-types';
+import {
+  createWorkflowAnalysisTemplateFromDocument,
+  listCuratedWorkflowAnalysisTemplates,
+  type WorkflowAnalysisTemplate
+} from './workflow-analysis-template';
 
 export type WorkflowTemplate = {
   id: string;
@@ -30,6 +35,8 @@ export type WorkflowTemplate = {
   category: 'points' | 'network' | 'polygons' | 'statistics' | 'glue';
   /** Self-contained: reads embedded GeoJSON, so it runs without any host dataset. */
   document: WorkflowDocument;
+  /** Reusable AX envelope over the same executable document. */
+  analysisTemplate: WorkflowAnalysisTemplate;
 };
 
 // Definitions and their generated geometry are built once, only when the gallery is used.
@@ -169,7 +176,7 @@ type TemplateStep = {
 };
 
 function buildTemplate(
-  metadata: Omit<WorkflowTemplate, 'document'>,
+  metadata: Omit<WorkflowTemplate, 'document' | 'analysisTemplate'>,
   steps: readonly TemplateStep[]
 ): WorkflowTemplate {
   const registry = getWorkflowOperationRegistry();
@@ -179,7 +186,13 @@ function buildTemplate(
     description: metadata.summary
   });
   for (const step of steps) {
-    document = addWorkflowStep(document, registry, step).document;
+    document = addWorkflowStep(
+      document,
+      registry,
+      step.operationId === 'source-geojson'
+        ? {...step, parameters: {coordinateSystem: 'EPSG:4326', ...step.parameters}}
+        : step
+    ).document;
     for (const [input, from] of Object.entries(step.inputs ?? {})) {
       document = connectWorkflowSteps(document, registry, {from, to: {stepId: step.id, input}});
     }
@@ -203,7 +216,11 @@ function buildTemplate(
   const issues = [...plan.issues, ...Object.values(plan.steps).flatMap(step => step.issues)];
   const error = issues.find(issue => issue.severity === 'error');
   if (error) throw new WorkflowError(error.code, `${metadata.title}: ${error.message}`);
-  return {...metadata, document};
+  return {
+    ...metadata,
+    document,
+    analysisTemplate: createWorkflowAnalysisTemplateFromDocument({...metadata, document})
+  };
 }
 
 function source(id: string, label: string, text: string): TemplateStep {
@@ -523,4 +540,12 @@ export function instantiateWorkflowTemplate(
     document.title = `${title} ${suffix}`;
   }
   return document;
+}
+
+/** Shared question gallery: the curated registry and the existing multi-step sample chains. */
+export function listWorkflowAnalysisTemplates(): readonly WorkflowAnalysisTemplate[] {
+  return [
+    ...listCuratedWorkflowAnalysisTemplates(),
+    ...listWorkflowTemplates().map(template => template.analysisTemplate)
+  ];
 }

@@ -4,3 +4,4 @@
 
 export * from './result-presentation';
 export * from './result-report';
+export * from './result-inference';

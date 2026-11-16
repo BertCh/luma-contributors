@@ -7,3 +7,4 @@ export * from './curated-analyses';
 export * from './curated-analysis-samples';
 export * from './curated-analysis-mapping';
 export * from './bindings/index';
+export * from './samples/index';

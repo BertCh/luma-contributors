@@ -2,6 +2,18 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {CURATED_DRIVE_TIME_BANDS_DESCRIPTOR} from './descriptors-curated-drive-time-bands';
+import {CURATED_CELL_FLOW_TOPOLOGY_DESCRIPTOR} from './descriptors-curated-cell-flow-topology';
+import {CURATED_NETWORK_DISRUPTION_DESCRIPTOR} from './descriptors-curated-network-disruption';
+import {CURATED_REGIONAL_RASTER_CHANGE_DESCRIPTOR} from './descriptors-curated-regional-raster-change';
+import {CURATED_ZONAL_EXPOSURE_DESCRIPTOR} from './descriptors-curated-zonal-exposure';
+import {CURATED_SURFACE_PREPARATION_DESCRIPTOR} from './descriptors-curated-surface-preparation';
+import {CURATED_DRAINAGE_NETWORK_DESCRIPTOR} from './descriptors-curated-drainage-network';
+import {CURATED_FLEET_DWELL_DESCRIPTOR} from './descriptors-curated-fleet-dwell';
+import {CURATED_LANDSCAPE_METRICS_DESCRIPTOR} from './descriptors-curated-landscape-metrics';
+import {CURATED_EMERGING_HOT_SPOTS_DESCRIPTOR} from './descriptors-curated-emerging-hot-spots';
+import {CURATED_TRACK_QUALITY_DESCRIPTOR} from './descriptors-curated-track-quality';
+import {CURATED_DASYMETRIC_REDISTRIBUTION_DESCRIPTOR} from './descriptors-curated-dasymetric-redistribution';
 import {
   getGPUAnalysisDataKindForCatalogGeometry,
   type GPUAnalysisQuestion
@@ -14,6 +26,8 @@ import {GEOMETRY_A_OPERATION_DESCRIPTORS} from './descriptors-geometry-a';
 import {GEOMETRY_B_OPERATION_DESCRIPTORS} from './descriptors-geometry-b';
 import {INTERPOLATION_DENSITY_OPERATION_DESCRIPTORS} from './descriptors-interpolation-density';
 import {NETWORK_OPERATION_DESCRIPTORS} from './descriptors-network';
+import {POINT_CLOUD_OPERATION_DESCRIPTORS} from './descriptors-pointcloud';
+import {NETWORK_CATEGORICAL_OPERATION_DESCRIPTORS} from './descriptors-network-categorical';
 import type {
   KeplerOperationDescriptor,
   KeplerOperationRequirement
@@ -23,7 +37,11 @@ import {
   validateKeplerOperationDescriptor
 } from './validate-operation-descriptor';
 import {RASTER_OPERATION_DESCRIPTORS} from './descriptors-raster';
+import {RASTER_EMBEDDING_OPERATION_DESCRIPTORS} from './descriptors-raster-embedding';
 import {STATISTICS_OPERATION_DESCRIPTORS} from './descriptors-statistics';
+import {VALIDATION_OPERATION_DESCRIPTORS} from './descriptors-validation';
+import {TRAJECTORY_OPERATION_DESCRIPTORS} from './descriptors-trajectory';
+import {SPACETIME_OPERATION_DESCRIPTORS} from './descriptors-spacetime';
 
 // The registry of hand-written descriptors, and a conservative descriptor for any binding that has
 // none. Another session adds bindings while descriptors are written, so every consumer asks
@@ -34,12 +52,30 @@ export const KEPLER_OPERATION_DESCRIPTORS: readonly KeplerOperationDescriptor[] 
   ...GEOMETRY_A_OPERATION_DESCRIPTORS,
   ...GEOMETRY_B_OPERATION_DESCRIPTORS,
   ...NETWORK_OPERATION_DESCRIPTORS,
+  ...NETWORK_CATEGORICAL_OPERATION_DESCRIPTORS,
   ...AGGREGATION_OPERATION_DESCRIPTORS,
   ...RASTER_OPERATION_DESCRIPTORS,
+  ...RASTER_EMBEDDING_OPERATION_DESCRIPTORS,
   ...STATISTICS_OPERATION_DESCRIPTORS,
   ...CLUSTERING_OPERATION_DESCRIPTORS,
   ...INTERPOLATION_DENSITY_OPERATION_DESCRIPTORS,
-  ...CURATED_OPERATION_DESCRIPTORS
+  ...CURATED_OPERATION_DESCRIPTORS,
+  CURATED_EMERGING_HOT_SPOTS_DESCRIPTOR,
+  CURATED_DASYMETRIC_REDISTRIBUTION_DESCRIPTOR,
+  CURATED_TRACK_QUALITY_DESCRIPTOR,
+  CURATED_LANDSCAPE_METRICS_DESCRIPTOR,
+  CURATED_DRAINAGE_NETWORK_DESCRIPTOR,
+  CURATED_SURFACE_PREPARATION_DESCRIPTOR,
+  CURATED_ZONAL_EXPOSURE_DESCRIPTOR,
+  CURATED_REGIONAL_RASTER_CHANGE_DESCRIPTOR,
+  CURATED_NETWORK_DISRUPTION_DESCRIPTOR,
+  CURATED_CELL_FLOW_TOPOLOGY_DESCRIPTOR,
+  CURATED_DRIVE_TIME_BANDS_DESCRIPTOR,
+  CURATED_FLEET_DWELL_DESCRIPTOR,
+  ...POINT_CLOUD_OPERATION_DESCRIPTORS,
+  ...VALIDATION_OPERATION_DESCRIPTORS,
+  ...TRAJECTORY_OPERATION_DESCRIPTORS,
+  ...SPACETIME_OPERATION_DESCRIPTORS
 ];
 
 const DESCRIPTORS_BY_BINDING_ID: ReadonlyMap<string, KeplerOperationDescriptor> = new Map(
@@ -91,27 +127,36 @@ function truncateAtWordBoundary(title: string, limit: number): string {
  * the question comes from the domain, the input kind from the first accepted geometry, every
  * parameter keeps its default (the first three are shown first), the only requirements are the
  * binding's own capacities, no column is mapped to a role (string parameters stay plain
- * parameters) and prominence is 3, so the operation is listed under "Browse all" and never leads
+ * parameters), every apply policy is conservatively rebuild until graph semantics are described,
+ * and prominence is 3, so the operation is listed under "Browse all" and never leads
  * a suggestion.
  */
 export function deriveKeplerOperationDescriptor(
   binding: CatalogOperationBinding
 ): KeplerOperationDescriptor {
   const requirements: KeplerOperationRequirement[] = binding.inputs.flatMap(input => [
-    {
-      input: input.name,
-      id: 'maximum-rows' as const,
-      severity: 'block' as const,
-      limit: input.maximumFeatures,
-      remedy: 'Filter the layer to the area of interest'
-    },
-    {
-      input: input.name,
-      id: 'maximum-vertices' as const,
-      severity: 'block' as const,
-      limit: input.maximumVertices,
-      remedy: 'Simplify the geometry or split the layer'
-    }
+    ...(input.dataKind === 'raster'
+      ? []
+      : [
+          {
+            input: input.name,
+            id: 'maximum-rows' as const,
+            severity: 'block' as const,
+            limit: input.maximumFeatures,
+            remedy: 'Filter the layer to the area of interest'
+          }
+        ]),
+    ...(input.dataKind === 'table' || input.dataKind === 'raster'
+      ? []
+      : [
+          {
+            input: input.name,
+            id: 'maximum-vertices' as const,
+            severity: 'block' as const,
+            limit: input.maximumVertices,
+            remedy: 'Simplify the geometry or split the layer'
+          }
+        ])
   ]);
   return {
     bindingId: binding.id,
@@ -120,11 +165,17 @@ export function deriveKeplerOperationDescriptor(
     prominence: DERIVED_PROMINENCE,
     inputs: binding.inputs.map(input => ({
       name: input.name,
-      kind: getGPUAnalysisDataKindForCatalogGeometry(input.accepts[0] ?? 'point'),
+      kind:
+        input.dataKind === 'raster'
+          ? 'surface'
+          : input.dataKind === 'table'
+            ? 'attributes'
+            : getGPUAnalysisDataKindForCatalogGeometry(input.accepts[0] ?? 'point'),
       fields: []
     })),
     parameters: binding.parameters.map((parameter, index) => ({
       name: parameter.name,
+      apply: 'rebuild' as const,
       defaultPolicy: {from: 'constant' as const},
       level: index < DERIVED_BASIC_PARAMETER_COUNT ? ('basic' as const) : ('advanced' as const)
     })),

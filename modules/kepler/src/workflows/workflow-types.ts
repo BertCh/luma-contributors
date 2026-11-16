@@ -2,8 +2,24 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {AnalysisSensitivityProvenance} from '../analysis/analysis-sensitivity';
+import type {WorkflowAnalysisTemplate} from './workflow-analysis-template';
+import type {KeplerDatasetProfile} from '../profile/dataset-profile-types';
+import type {
+  KeplerOperationDescriptor,
+  KeplerOperationFieldDescriptor
+} from '../descriptors/operation-descriptor-types';
+import type {KeplerWorkbenchCuratedPreset} from '../descriptors/workbench-adapters';
+import type {KeplerOperationApplicability} from '../descriptors/applicability';
+import type {KeplerBindingResultPresentation} from '../presentation/result-presentation';
+import type {KeplerResultReport, KeplerResultReportContext} from '../presentation/result-report';
+import type {CatalogRasterInput} from '../analysis/catalog-raster-input';
 import type {Device} from '@luma.gl/core';
-import type {CatalogParameterValue} from '../analysis/catalog-binding-types';
+import type {
+  CatalogOperationBinding,
+  CatalogParameterValue,
+  CatalogRunResult
+} from '../analysis/catalog-binding-types';
 import type {CatalogDiagnostic, CatalogOutputTable} from '../analysis/catalog-geojson';
 
 /**
@@ -29,6 +45,8 @@ export const WORKFLOW_LIMITS = {
   maximumNoteCharacters: 500,
   /** Characters of one `text` parameter value (embedded GeoJSON of a source step). */
   maximumTextCharacters: 262144,
+  /** Bounded raster ownership lists; parameter specs may impose a smaller limit. */
+  maximumParameterNumbers: 65536,
   /** Characters of one serialised document. */
   maximumDocumentCharacters: 1048576,
   /** Rows a source operation may hand to the graph. */
@@ -45,19 +63,31 @@ export type WorkflowGeometryKind = 'point' | 'line' | 'polygon';
 /**
  * Kind of data on a port. `features` is geometry of a kind not known until run time (a source,
  * or an operation whose output geometry follows its input). `table` has no geometry column.
+ * `raster` carries a bounded decoded band/grid independently of table rows.
  */
-export type WorkflowPortKind = WorkflowGeometryKind | 'features' | 'table';
+export type WorkflowPortKind = WorkflowGeometryKind | 'features' | 'table' | 'raster';
 
 /** Static answer to "may this output feed this input"; `maybe` is settled when the step runs. */
 export type WorkflowPortCompatibility = 'yes' | 'maybe' | 'no';
 
 /**
- * Data handed between steps. The table is canonical: plain column arrays, declared column types
- * and at most one GeoJSON-text geometry column. `kind` is what the rows actually hold.
+ * Data handed between steps. Scalar/feature data uses plain column arrays, declared column types
+ * and at most one GeoJSON-text geometry column. Raster data uses the separate band/grid payload
+ * with a table for its id, label and optional display/provenance rows. `kind` determines which
+ * representation to read; raster capacity is measured in cells independently of display rows.
  */
 export type WorkflowData = {
   table: CatalogOutputTable;
   kind: WorkflowPortKind;
+  /** Bounded decoded band/grid when kind=raster; table is an empty metadata shell. */
+  raster?: CatalogRasterInput;
+  /** AX plans from this exact output, reused by the result view and map publication. */
+  analysisPresentation?: KeplerBindingResultPresentation;
+  analysisReport?: KeplerResultReport;
+  /** Exact catalog run and its reporting evidence, retained independently of later step edits. */
+  analysisRun?: {result: CatalogRunResult; context: KeplerResultReportContext};
+  /** Source profile snapshot, valid only for these immutable rows. */
+  analysisProfile?: KeplerDatasetProfile;
   /**
    * Column whose value becomes the feature id when the table is read as features; row index when
    * absent. Downstream identity columns (`source_id`) then refer to this column.
@@ -98,7 +128,8 @@ export type WorkflowParameterSpec = {
   maximum?: number;
   options?: readonly string[];
   maximumLength?: number;
-  defaultValue: CatalogParameterValue;
+  /** Absent when the catalog derives the value from its input at execution. */
+  defaultValue?: CatalogParameterValue;
   /**
    * For `column`, `column-list` and `expression`: the input port whose columns are suggested, or
    * the name of a `dataset` parameter of the same operation. Absent: columns of every input.
@@ -106,13 +137,20 @@ export type WorkflowParameterSpec = {
   columnsFrom?: string;
   /** The form hides the parameter unless another parameter currently has one of these values. */
   visibleWhen?: {parameter: string; equals: readonly CatalogParameterValue[]};
+  fieldRole?: KeplerOperationFieldDescriptor;
+  level?: 'basic' | 'advanced';
+  apply?: 'live' | 'rebuild';
 };
 
 export type WorkflowInputPortSpec = {
   name: string;
   label: string;
   accepts: readonly WorkflowPortKind[];
+  /** Scalar catalog ports reject known geometry; generic table operations can retain it. */
+  geometryFree?: boolean;
   maximumRows: number;
+  /** Cell capacity for raster inputs, independent of tabular row capacity. */
+  maximumCells?: number;
   /** Vertex capacity of geometry inputs; absent for table inputs. */
   maximumVertices?: number;
   /** An optional input may stay unconnected. */
@@ -157,9 +195,14 @@ export type WorkflowRunContext = {
   signal: AbortSignal;
   workflowId: string;
   stepId: string;
+  /** Explicit document choices only; keeps derived defaults distinguishable from overrides. */
+  parameterOverrides?: Readonly<Record<string, CatalogParameterValue>>;
+  curatedAnalysisId?: string;
 };
 
 export type WorkflowOperationOutput = {
+  curatedAnalysisId?: string;
+  resolvedParameters?: Record<string, CatalogParameterValue>;
   /** One entry per declared output port, keyed by port name. */
   outputs: Record<string, WorkflowData>;
   diagnostics: CatalogDiagnostic[];
@@ -171,6 +214,10 @@ export type WorkflowOperationOutput = {
 };
 
 export type WorkflowOperation = {
+  /** Actual adapted definition, including bindings outside the global catalog. */
+  analysisBinding?: CatalogOperationBinding;
+  analysisDescriptor?: KeplerOperationDescriptor;
+  analysisPresets?: readonly KeplerWorkbenchCuratedPreset[];
   id: string;
   title: string;
   category: WorkflowOperationCategory;
@@ -248,6 +295,10 @@ export type WorkflowInput = {
 };
 
 export type WorkflowStep = {
+  /** Historical search evidence retained when a result is kept; never changes execution. */
+  sensitivity?: AnalysisSensitivityProvenance;
+  /** Curated registry identity of the preset used to configure this step. */
+  curatedAnalysisId?: string;
   /** Unique within the document; `[a-z0-9][a-z0-9-]*`. */
   id: string;
   /** Unknown ids load as placeholders that cannot run, so saved maps survive catalog changes. */
@@ -302,6 +353,7 @@ export type WorkflowCollection = {
    * never run in place. Ids are distinct from each other (they may equal a workflow id).
    */
   templates?: WorkflowDocument[];
+  analysisTemplates?: WorkflowAnalysisTemplate[];
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -324,6 +376,7 @@ export type WorkflowIssueCode =
   | 'input-required'
   | 'incompatible-port'
   | 'unverified-port'
+  | 'analysis-requirement'
   | 'parameter-out-of-range'
   | 'capacity-may-exceed'
   | 'upstream-disabled'
@@ -392,6 +445,8 @@ export type WorkflowStepStatus =
   | 'disabled';
 
 export type WorkflowStepResult = {
+  sensitivity?: AnalysisSensitivityProvenance;
+  curatedAnalysisId?: string;
   /** Content key the result was computed for. */
   key: string;
   outputs: Record<string, WorkflowData>;
@@ -434,6 +489,7 @@ export type WorkflowPlan = {
 };
 
 export type WorkflowPlannedStep = {
+  analysis?: KeplerOperationApplicability;
   stepId: string;
   operation?: WorkflowOperation;
   /** Normalised parameters with workflow inputs resolved; absent when normalisation failed. */
@@ -449,6 +505,7 @@ export type WorkflowPlannedStep = {
 };
 
 export type WorkflowRunRecordStep = {
+  sensitivity?: AnalysisSensitivityProvenance;
   stepId: string;
   operationId: string;
   key: string;
@@ -540,10 +597,12 @@ export type WorkflowPublishRequest = {
   output: string;
   label: string;
   data: WorkflowData;
-  /** Dataset published earlier for the same step output; the host replaces it. */
+  /** Earlier output; the host may return a new id and retires this one after the successor is ready. */
   previousDatasetId?: string;
   /** Requested colouring; a host that cannot apply it publishes with its default. */
   style?: WorkflowDisplayStyle;
+  /** Synchronous execution identity check; hosts must check before committing an async publication. */
+  isCurrent?: () => boolean;
 };
 
 /** A table offered to a SQL query under a fixed name (`input1`, `input2`, `input3`). */
@@ -564,7 +623,11 @@ export type WorkflowDrawing = {
 /** What a host application supplies. Everything else in the module is host-independent. */
 export type WorkflowHost = {
   getDevice(): Device | null;
+  /** Required for replaceable runtimes: changes on replacement/loss even if device/data are unchanged. */
+  getRuntimeRevisionKey?(): string;
   listDatasets(): readonly WorkflowDatasetProfile[];
+  /** Shared, revision-checked AX service; missing evidence is never silently certified. */
+  getAnalysisProfile?(datasetId: string): KeplerDatasetProfile | undefined;
   /** Synchronous; changes whenever a read of the same request would return different rows. */
   getDatasetRevisionKey(request: WorkflowDatasetRequest): string;
   readDataset(request: WorkflowDatasetRequest, signal: AbortSignal): Promise<WorkflowData>;
@@ -572,7 +635,17 @@ export type WorkflowHost = {
   publishOutput?(
     request: WorkflowPublishRequest,
     signal: AbortSignal
-  ): Promise<{datasetId: string; label: string}>;
+  ): Promise<{
+    datasetId: string;
+    label: string;
+    /**
+     * Optional two-phase handoff. The caller checks currentness, then calls commit without
+     * awaiting between that check and acceptance. A stale request throws synchronously;
+     * the caller retracts the unaccepted successor. The returned promise only retires the
+     * predecessor: cancellation or cleanup failure after acceptance must keep the successor.
+     */
+    commit?: () => Promise<void>;
+  }>;
   /** Removes a dataset published by `publishOutput`. */
   retractOutput?(datasetId: string): Promise<void>;
   /**

@@ -10,6 +10,9 @@ import type {
   KeplerOperationRequirement
 } from './operation-descriptor-types';
 
+// Apply policy: these settings change prepared geometry, row/vertex allocation, graph construction
+// or compiled shader constants. Rebuild keeps those resources consistent with the chosen value.
+
 // Descriptors of the network bindings (`catalog-bindings.ts`, `catalog-extra-bindings.ts`,
 // `catalog-gpu-bindings.ts`, `catalog-snap-binding.ts`, `catalog-platform3-a-bindings.ts`). A
 // descriptor says what a binding means to a user; the binding stays the source of how it runs.
@@ -96,6 +99,7 @@ function describeParameters(
 ): KeplerOperationParameterDescriptor[] {
   return names.map(name => ({
     name,
+    apply: 'rebuild',
     defaultPolicy: {from: 'constant'},
     level: basicNames.includes(name) ? 'basic' : 'advanced',
     ...overrides[name]
@@ -110,12 +114,7 @@ function makePointCapacity(input: string, maximumRows: number, remedy: string) {
   return requirements;
 }
 
-/**
- * Block only raw input limits declared by the binding. Parts, duplicate positions, snapping and
- * unsplit interior vertices make vertices minus features neither an edge nor a node lower bound.
- * From these profile counts the only universal graph-size lower bound is zero. Vertices bound
- * graph size from above, so crossing the edge cap is a reason to warn, not proof of an overrun.
- */
+/** Raw input allocation and exact physical-edge capacity are independent requirements. */
 function makeStreetCapacity(
   edgeLimit: number,
   rowLimit = STREET_ROW_LIMIT,
@@ -131,11 +130,12 @@ function makeStreetCapacity(
       remedy: STREET_REMEDY
     },
     {
-      id: 'maximum-vertices',
-      severity: 'warn',
+      id: 'maximum-network-edges',
+      severity: 'block',
       input: 'lines',
       limit: edgeLimit,
-      remedy: `The real cap is ${edgeLimit.toLocaleString('en-US')} graph edges, not input vertices; the profile cannot count edges after splitting and snapping. Use a smaller street network if the run exceeds that cap`
+      remedy:
+        'Profile the selected network topology; reduce lines or shared vertices, or disable splitAtSharedVertices if the physical edge count exceeds the limit'
     }
   ];
 }
@@ -176,9 +176,9 @@ const COST_NOTE =
 const COST_UNIT_NOTE =
   'Costs are metres (coordinate units for planar data) while the cost mode is length, and the unit of the cost column in property mode; every cost limit, budget and radius below is in that unit and must be set for it.';
 const ROUTING_GRAPH_NOTE =
-  'This binding builds its graph with at most 50,000 edges and honors splitAtSharedVertices. The profile cannot count the resulting edges; more than 50,000 input vertices warrant checking the edge cap, not blocking the input.';
+  'This binding builds its graph with at most 50,000 edges and honors splitAtSharedVertices. Capacity uses exact physical-edge counts for the selected topology; until those are computed the check remains unknown.';
 const NETWORK_GRAPH_NOTE =
-  'The graph holds at most 50,000 edges (catalog-binding-types.ts:204); input vertices do not count graph edges, so the profile can only warn when the graph might exceed that cap.';
+  'The graph holds at most 50,000 edges (catalog-binding-types.ts:204); input vertices do not count graph edges. Profile the selected topology to check the physical-edge capacity.';
 const TOPOLOGY_NOTE =
   'This geometry-only binding does not expose cost columns or one-way restrictions; obsolete saved parameters are ignored.';
 const NO_CROSSING_NOTE =
@@ -321,16 +321,12 @@ export const NETWORK_OPERATION_DESCRIPTORS: readonly KeplerOperationDescriptor[]
     requirements: [
       ...makeStreetCapacity(NETWORK_EDGE_CAP, 5000, CENTRALITY_VERTEX_LIMIT),
       {
-        // The run throws above 1,500 nodes (`MAXIMUM_CENTRALITY_NODES`,
-        // `catalog-extra-bindings.ts:107`, checked at `catalog-extra-network.ts:106`). Nodes are
-        // at most the vertices, and streets that share vertices have fewer nodes than vertices,
-        // so this is a warning, not a block.
-        id: 'maximum-vertices',
-        severity: 'warn',
+        id: 'maximum-network-nodes',
+        severity: 'block',
         input: 'lines',
         limit: CENTRALITY_NODE_CAP,
         remedy:
-          'The real cap is 1,500 network nodes, not vertices; shared junctions count once and the profile cannot count nodes after snapping. Use a smaller network if the run exceeds that cap'
+          'Profile the selected network topology; filter the streets or increase snapping to keep at most 1,500 network nodes'
       },
       makeDeclaredCoordinates('lines'),
       ...makeCostRequirements()
@@ -346,7 +342,7 @@ export const NETWORK_OPERATION_DESCRIPTORS: readonly KeplerOperationDescriptor[]
     ],
     notes: [
       COST_NOTE,
-      'The run stops above 1,500 network nodes because it searches from every node (catalog-extra-bindings.ts:107, catalog-extra-network.ts:106). The profile cannot determine that count, so it warns when the vertex count permits an overrun; raw input limits remain 5,000 rows and 50,000 vertices.',
+      'The run stops above 1,500 network nodes because it searches from every node (catalog-extra-bindings.ts:107, catalog-extra-network.ts:106). Exact topology-specific profile counts decide this capacity; without them the check remains unknown; raw input limits remain 5,000 rows and 50,000 vertices.',
       'Closeness is computed over the nodes a node can reach, so a node in a small component scores on that component alone.'
     ]
   },
@@ -459,7 +455,15 @@ export const NETWORK_OPERATION_DESCRIPTORS: readonly KeplerOperationDescriptor[]
       ['coordinateSystem', 'maximumSnapDistance']
     ),
     requirements: [
-      ...makeStreetCapacity(NETWORK_EDGE_CAP),
+      ...makeStreetCapacity(NETWORK_EDGE_CAP).map(requirement =>
+        requirement.id === 'maximum-network-edges'
+          ? {
+              ...requirement,
+              remedy:
+                'Profile the snapping topology; reduce lines or shared vertices if the physical edge count exceeds the limit. Snapping always splits at shared vertices'
+            }
+          : requirement
+      ),
       ...makePointCapacity('points', 5000, 'Snap a sample or split the points'),
       makeDeclaredCoordinates('lines')
     ],
@@ -473,7 +477,11 @@ export const NETWORK_OPERATION_DESCRIPTORS: readonly KeplerOperationDescriptor[]
         next: ['what-is-near-or-reachable', 'how-it-moves']
       }
     ],
-    notes: [TOPOLOGY_NOTE, NETWORK_GRAPH_NOTE]
+    notes: [
+      TOPOLOGY_NOTE,
+      NETWORK_GRAPH_NOTE,
+      'Snapping always splits at shared vertices and does not node crossings; the splitAtSharedVertices and crossings settings do not change its topology.'
+    ]
   },
   {
     // GPU only: verified by reading, not run.
@@ -888,6 +896,11 @@ export const NETWORK_OPERATION_DESCRIPTORS: readonly KeplerOperationDescriptor[]
         // One row per matched piece of the route; nothing numeric to colour by.
         tableId: 'matched-route',
         kind: 'lines',
+        presentationException: {
+          type: 'uniform-style',
+          reason:
+            'Route pieces encode the matched path and have no comparable numeric measure; show the route uniformly and colour the matched points by their distance from the street.'
+        },
         interpretation: {summary: 'row-count', cautions: []}
       }
     ],
@@ -903,20 +916,20 @@ export const NETWORK_OPERATION_DESCRIPTORS: readonly KeplerOperationDescriptor[]
     questions: ['where-concentrated'],
     action: 'Describe clustering along streets',
     prominence: 3,
-    // The contract has no activeWhen for field roles or requirement on parameter values. Keep
-    // catalog cost parameters as advanced constants, omit cost roles, and state the restriction.
+    // The binding ABI includes cost columns, although K rejects property-cost mode. Retain
+    // conditional roles for those columns and document that they have no effect in length mode.
     inputs: [
-      makeStreetInput(STREET_COLUMN_FIELDS.filter(field => field.role === 'one-way')),
+      makeStreetInput(
+        STREET_COLUMN_FIELDS.map(field =>
+          field.role === 'one-way'
+            ? field
+            : {...field, required: {whenParameter: 'costMode', equals: ['property']}}
+        )
+      ),
       {name: 'points', kind: 'points', rowSemantics: ['events'], fields: []}
     ],
     parameters: describeParameters(
-      [
-        ...NETWORK_PARAMETER_NAMES,
-        'forwardCostProperty',
-        'reverseCostProperty',
-        'maximumSnapDistance',
-        'radii'
-      ],
+      [...NETWORK_PARAMETER_NAMES, 'maximumSnapDistance', 'radii'],
       ['radii', 'coordinateSystem']
     ),
     requirements: [

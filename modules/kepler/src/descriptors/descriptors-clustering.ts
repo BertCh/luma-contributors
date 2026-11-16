@@ -9,6 +9,10 @@ import type {
   KeplerOperationRequirement
 } from './operation-descriptor-types';
 
+// Apply policy: threshold only reclassifies computed values in a
+// post-pass. Other settings change prepared inputs, allocation, graph construction or compiled
+// shader constants (including neighbourhood sizes and permutation loops), so require rebuilding.
+
 // Descriptors for the five bindings of the `clustering` catalog domain. Distances (`epsilon`,
 // `maximumDistance`, `extractionDistance`, `cutDistance`, `distanceBand`) are in metres in the
 // local frame for EPSG:4326 data and in coordinate units for planar data, the unit the
@@ -20,16 +24,16 @@ import type {
 // integer 0 to k-1 with no noise, so it is shown as categorical.
 
 /**
- * Margin on the outlier-resistant nearest-neighbor distance (see the statistics file): the exact
- * value sits on the strict `distance > band` boundary of the binding.
+ * Margin on the outlier-resistant nearest-neighbor distance (see the statistics file). The
+ * inclusive binding boundary does not remove the geographic profile/local-frame metric mismatch.
  */
 const DISTANCE_BAND_MARGIN = 1.01;
 
 /**
- * Margin on the knee of the k-distance curve. The knee is a point of the curve, so a radius equal
- * to it leaves the points whose k-th neighbor lies exactly there outside; one percent puts them
- * inside. (The resolver also rounds the knee up, because on a regular lattice the knee of 111 m
- * rounded to 110 m made every point noise.)
+ * Margin on the knee of the k-distance curve. Fixed planar DBSCAN includes exact-radius pairs,
+ * but geographic profile distances and local-frame distances still differ (AX-87 probes). Keep
+ * the margin for that mismatch and upward rounding independently: on a regular lattice a knee
+ * of 111 m rounded down to 110 m made every point noise.
  */
 const KNEE_MARGIN = 1.01;
 
@@ -44,7 +48,13 @@ function describeConstant(
   level: 'basic' | 'advanced',
   activeWhen?: KeplerOperationParameterDescriptor['activeWhen']
 ): KeplerOperationParameterDescriptor {
-  return {name, defaultPolicy: {from: 'constant'}, level, ...(activeWhen ? {activeWhen} : {})};
+  return {
+    name,
+    apply: ['threshold'].includes(name) ? 'live' : 'rebuild',
+    defaultPolicy: {from: 'constant'},
+    level,
+    ...(activeWhen ? {activeWhen} : {})
+  };
 }
 
 function describeCapacity(
@@ -111,6 +121,7 @@ function describeKneeDistance(
 ): KeplerOperationParameterDescriptor {
   return {
     name,
+    apply: 'rebuild',
     defaultPolicy: {
       from: 'data',
       input: 'points',
@@ -210,6 +221,7 @@ export const CLUSTERING_OPERATION_DESCRIPTORS: readonly KeplerOperationDescripto
       describeKneeDistance('maximumDistance', 3, 'basic', 3 * KNEE_FALLBACK_FACTOR),
       {
         name: 'minimumSamples',
+        apply: 'rebuild',
         defaultPolicy: {
           from: 'preset',
           value: KNEE_NEIGHBOR_RANK + 1,
@@ -299,6 +311,7 @@ export const CLUSTERING_OPERATION_DESCRIPTORS: readonly KeplerOperationDescripto
       describeConstant('minimumClusterSize', 'basic'),
       {
         name: 'minimumSamples',
+        apply: 'rebuild',
         defaultPolicy: {
           from: 'preset',
           value: KNEE_NEIGHBOR_RANK,
@@ -368,6 +381,7 @@ export const CLUSTERING_OPERATION_DESCRIPTORS: readonly KeplerOperationDescripto
       describeConstant('neighborCount', 'advanced', {parameter: 'neighborhood', equals: ['knn']}),
       {
         name: 'distanceBand',
+        apply: 'rebuild',
         defaultPolicy: {
           from: 'data',
           input: 'features',

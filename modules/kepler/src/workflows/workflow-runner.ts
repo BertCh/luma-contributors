@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {validateCatalogRasterInput} from '../analysis/catalog-raster-input';
 import {KeplerAllocationError} from '../runtime/dataset-registry';
 import {countWorkflowVertices, getWorkflowDataKind} from './workflow-data';
 import {getWorkflowPortCompatibility} from './workflow-operations';
-import {planWorkflow} from './workflow-plan';
+import {resolveWorkflowParameterOverrides, planWorkflow} from './workflow-plan';
 import {WorkflowError} from './workflow-types';
 import type {
   WorkflowData,
@@ -45,19 +46,36 @@ type StyledPublishedOutput = WorkflowPublishedOutput & {style?: WorkflowDisplayS
 type RunTask = {
   document: WorkflowDocument | null;
   plan: WorkflowPlan | null;
+  identityPlan: WorkflowPlan | null;
   options: WorkflowRunOptions;
   controller: AbortController;
   record: WorkflowRunRecord;
   selected: Set<string>;
   completed: Set<string>;
+  device: ReturnType<WorkflowHost['getDevice']>;
+  runtimeRevisionKey: string | undefined;
 };
 
 function freezeValue<Value>(value: Value): Value {
+  // Decoded raster views are immutable by contract; JavaScript cannot freeze nonempty views.
+  if (ArrayBuffer.isView(value)) return value;
   if (value && typeof value === 'object' && !Object.isFrozen(value)) {
     for (const child of Object.values(value)) freezeValue(child);
     Object.freeze(value);
   }
   return value;
+}
+
+/** Cached computations do not own the search history of their consuming steps. */
+function applyStepSensitivity(
+  result: WorkflowStepResult,
+  step: Pick<WorkflowStep, 'sensitivity'>
+): WorkflowStepResult {
+  if (JSON.stringify(result.sensitivity) === JSON.stringify(step.sensitivity)) return result;
+  const rebound = {...result};
+  delete rebound.sensitivity;
+  if (step.sensitivity) rebound.sensitivity = structuredClone(step.sensitivity);
+  return freezeValue(rebound);
 }
 
 function readMessage(error: unknown): string {
@@ -78,7 +96,8 @@ function getDisplayStyleKey(style: WorkflowDisplayStyle | undefined): string {
  * Step status is derived: the plan gives each step a content key, and a step is `done` when it
  * holds a result for that key, `stale` when it holds one for another key. Editing the document
  * or a change in the host's data therefore invalidates exactly the steps whose key changed and
- * everything downstream, with no dirty flags.
+ * everything downstream. Removal and runtime replacement also invalidate the old lineage,
+ * so affected dependents must recompute even if their content keys are unchanged.
  *
  * Steps run one at a time in topological order (the GPU device is shared). A failed step stops
  * its dependents; independent branches continue. Outputs are checked against the consumer's
@@ -121,9 +140,16 @@ export class WorkflowRunner {
   // Publishing is serialized independently of execution, including display changes during a run.
   private publishTail: Promise<void> = Promise.resolve();
   private readonly pendingPublications = new Set<string>();
+  private readonly publicationChecks = new Map<AbortController, () => boolean>();
+  // Removal/runtime replacement break lineage even when content keys are unchanged.
+  private readonly invalidatedSteps = new Set<string>();
+  private runtimeRevisionKey: string | undefined;
+  private publicationGeneration = 0;
+  private readonly publicationGenerations = new WeakMap<StyledPublishedOutput, number>();
 
   constructor(options: WorkflowRunnerOptions) {
     this.host = options.host;
+    this.runtimeRevisionKey = this.host.getRuntimeRevisionKey?.();
     this.registry = options.registry;
     this.now = options.now ?? Date.now;
     this.maximumCachedResults = Math.max(0, options.maximumCachedResults ?? 32);
@@ -142,6 +168,33 @@ export class WorkflowRunner {
     this.currentDocument = freezeValue(structuredClone(document));
     const retained = new Set(document.steps.map(step => step.id));
     const changedWorkflow = previous !== null && previous.id !== document.id;
+    if (changedWorkflow) this.invalidatedSteps.clear();
+    else if (previous) {
+      const removed = new Set(
+        previous.steps.filter(step => !retained.has(step.id)).map(step => step.id)
+      );
+      // Walk the old edges, since an edit may also have removed the dangling connections.
+      let expanded: boolean;
+      do {
+        expanded = false;
+        for (const step of previous.steps) {
+          if (
+            removed.has(step.id) ||
+            !Object.values(step.inputs).some(input => removed.has(input.stepId))
+          )
+            continue;
+          removed.add(step.id);
+          expanded = true;
+        }
+      } while (expanded);
+      for (const stepId of removed) {
+        if (retained.has(stepId)) this.invalidatedSteps.add(stepId);
+      }
+      for (const [key, entry] of this.cache) {
+        for (const stepId of removed) entry.owners.delete(stepId);
+        if (!entry.owners.size) this.cache.delete(key);
+      }
+    }
     for (const stepId of this.latest.keys()) {
       if (changedWorkflow || !retained.has(stepId)) this.dropStepResults(stepId);
     }
@@ -200,13 +253,19 @@ export class WorkflowRunner {
       );
     }
     this.clearAutoRunTimer();
-    this.cancel();
+    // Supersede executions, but keep independent display requests for still-current results.
+    for (const task of this.tasks) task.controller.abort();
+    this.cancelObsoleteWork();
+    this.updateState();
     const document = this.currentDocument;
     const plan = document ? this.createPlan(document) : null;
     if (document === this.currentDocument) this.plan = plan;
     const task: RunTask = {
       document,
       plan,
+      identityPlan: document
+        ? planWorkflow(document, {registry: this.registry, host: this.host})
+        : null,
       options: {...options},
       controller: new AbortController(),
       record: {
@@ -220,7 +279,9 @@ export class WorkflowRunner {
         steps: []
       },
       selected: new Set(),
-      completed: new Set()
+      completed: new Set(),
+      device: this.host.getDevice(),
+      runtimeRevisionKey: this.host.getRuntimeRevisionKey?.()
     };
     this.tasks.add(task);
     const previous = this.tail;
@@ -240,6 +301,7 @@ export class WorkflowRunner {
   cancel(): void {
     if (this.destroyed) return;
     for (const task of this.tasks) task.controller.abort();
+    for (const controller of this.publicationChecks.keys()) controller.abort();
     this.updateState();
   }
 
@@ -250,6 +312,7 @@ export class WorkflowRunner {
       this.latest.clear();
       this.cache.clear();
       this.runtimeIssues.clear();
+      this.invalidatedSteps.clear();
     } else {
       this.dropStepResults(stepId);
       this.runtimeIssues.delete(stepId);
@@ -263,6 +326,7 @@ export class WorkflowRunner {
     if (this.destroyed) return;
     this.destroyed = true;
     for (const task of this.tasks) task.controller.abort();
+    for (const controller of this.publicationChecks.keys()) controller.abort();
     this.clearAutoRunTimer();
     this.listeners.clear();
     this.notifications.length = 0;
@@ -287,6 +351,13 @@ export class WorkflowRunner {
 
   private replan(): void {
     if (!this.currentDocument) return;
+    const runtimeRevisionKey = this.host.getRuntimeRevisionKey?.();
+    if (runtimeRevisionKey !== this.runtimeRevisionKey) {
+      this.runtimeRevisionKey = runtimeRevisionKey;
+      this.publicationGeneration++;
+      this.cache.clear();
+      for (const stepId of this.latest.keys()) this.invalidatedSteps.add(stepId);
+    }
     let restored: boolean;
     do {
       restored = false;
@@ -294,11 +365,15 @@ export class WorkflowRunner {
       for (const stepId of this.plan.order) {
         const planned = this.plan.steps[stepId];
         const key = planned.key;
-        const latest = this.latest.get(stepId);
-        if (!key || !latest) continue;
+        const step = this.currentDocument.steps.find(candidate => candidate.id === stepId)!;
+        let latest = this.latest.get(stepId);
+        if (latest) {
+          latest = applyStepSensitivity(latest, step);
+          this.latest.set(stepId, latest);
+        }
+        if (!key || !latest || this.invalidatedSteps.has(stepId)) continue;
         const cached = latest.key === key ? latest : this.readCache(key, stepId);
         if (cached) {
-          const step = this.currentDocument.steps.find(candidate => candidate.id === stepId)!;
           const issue = this.getFallbackIssue(step, planned.operation!, planned.engine, cached);
           if (issue) this.addRuntimeIssue(stepId, key, issue);
           else
@@ -309,13 +384,47 @@ export class WorkflowRunner {
               )
             );
           if (issue?.severity === 'error' || latest.key === key) continue;
-          this.latest.set(stepId, freezeValue({...cached, cacheHit: true}));
+          this.latest.set(
+            stepId,
+            applyStepSensitivity(freezeValue({...cached, cacheHit: true}), step)
+          );
           restored = true;
         }
       }
       // Restoring a source can change an observed kind and unblock its consumers' cache keys.
     } while (restored);
     this.trimCache();
+    this.cancelObsoleteWork();
+  }
+
+  private cancelObsoleteWork(): void {
+    // Observed output kinds may legitimately change during a run. Execution identity uses
+    // document content and external revisions; normal input validation handles observed kinds.
+    const identityPlan =
+      this.tasks.size && this.currentDocument
+        ? planWorkflow(this.currentDocument, {registry: this.registry, host: this.host})
+        : null;
+    for (const task of this.tasks) {
+      if (
+        this.currentDocument?.id !== task.document?.id ||
+        this.host.getDevice() !== task.device ||
+        this.host.getRuntimeRevisionKey?.() !== task.runtimeRevisionKey ||
+        task.identityPlan?.order.some(
+          stepId =>
+            task.identityPlan!.steps[stepId].key !== null &&
+            task.identityPlan!.steps[stepId].key !== identityPlan?.steps[stepId]?.key
+        )
+      )
+        task.controller.abort();
+    }
+    for (const [controller, isCurrent] of this.publicationChecks) {
+      if (!isCurrent()) controller.abort();
+    }
+  }
+
+  private checkTaskCurrent(task: RunTask): boolean {
+    if (!this.destroyed) this.replan();
+    return !this.destroyed && !task.controller.signal.aborted;
   }
 
   private updateState(): void {
@@ -339,7 +448,9 @@ export class WorkflowRunner {
         ) {
           status = this.runningStepId === stepId ? 'running' : 'queued';
         } else if (error) status = 'error';
-        else if (result) status = result.key === planned.key ? 'done' : 'stale';
+        else if (result)
+          status =
+            result.key === planned.key && !this.invalidatedSteps.has(stepId) ? 'done' : 'stale';
       }
       const display = this.currentDocument?.steps.find(step => step.id === stepId)?.display;
       const published = Object.fromEntries(
@@ -402,6 +513,7 @@ export class WorkflowRunner {
   }
 
   private readCache(key: string, stepId: string): WorkflowStepResult | undefined {
+    if (this.invalidatedSteps.has(stepId)) return undefined;
     const entry = this.cache.get(key);
     if (!entry) return undefined;
     entry.owners.add(stepId);
@@ -411,12 +523,14 @@ export class WorkflowRunner {
   }
 
   private keepResult(stepId: string, result: WorkflowStepResult): void {
-    if (this.destroyed || !this.currentDocument?.steps.some(step => step.id === stepId)) return;
-    this.latest.set(stepId, result);
+    const step = this.currentDocument?.steps.find(candidate => candidate.id === stepId);
+    if (this.destroyed || !step) return;
+    this.latest.set(stepId, applyStepSensitivity(result, step));
+    this.invalidatedSteps.delete(stepId);
     const owners = this.cache.get(result.key)?.owners ?? new Set<string>();
     owners.add(stepId);
     this.cache.delete(result.key);
-    this.cache.set(result.key, {result, owners});
+    this.cache.set(result.key, {result: applyStepSensitivity(result, {}), owners});
     this.trimCache();
   }
 
@@ -443,6 +557,7 @@ export class WorkflowRunner {
 
   private dropStepResults(stepId: string): void {
     this.latest.delete(stepId);
+    this.invalidatedSteps.delete(stepId);
     for (const [key, entry] of this.cache) {
       entry.owners.delete(stepId);
       if (!entry.owners.size) this.cache.delete(key);
@@ -553,7 +668,7 @@ export class WorkflowRunner {
     this.lastRun = record;
     this.replan();
     this.updateState();
-    this.publishDoneSteps(true);
+    if (record.status !== 'cancelled') this.publishDoneSteps(true);
     this.scheduleAutoRun();
     return record;
   }
@@ -561,7 +676,7 @@ export class WorkflowRunner {
   private async executeTask(task: RunTask): Promise<void> {
     const {document, plan, controller, record, options} = task;
     const signal = controller.signal;
-    if (this.destroyed || signal.aborted) {
+    if (!this.checkTaskCurrent(task)) {
       record.status = 'cancelled';
       return;
     }
@@ -583,12 +698,14 @@ export class WorkflowRunner {
       for (const stepId of plan.order) {
         const planned = plan.steps[stepId];
         const latest = this.latest.get(stepId);
-        if (latest?.key === planned.key) results.set(stepId, latest);
+        if (latest?.key === planned.key && !this.invalidatedSteps.has(stepId))
+          results.set(stepId, latest);
         if (
           included.has(stepId) &&
           planned.status === 'ready' &&
           (options.force ||
             latest?.key !== planned.key ||
+            this.invalidatedSteps.has(stepId) ||
             this.state.steps[stepId]?.status === 'error')
         )
           task.selected.add(stepId);
@@ -602,6 +719,7 @@ export class WorkflowRunner {
         const operation = planned.operation!;
         const key = planned.key!;
         const entry: WorkflowRunRecordStep = {
+          ...(step.sensitivity ? {sensitivity: structuredClone(step.sensitivity)} : {}),
           stepId,
           operationId: step.operationId,
           key,
@@ -643,7 +761,7 @@ export class WorkflowRunner {
         this.updateState();
         const startedAt = this.now();
         try {
-          if (signal.aborted || this.destroyed) {
+          if (!this.checkTaskCurrent(task)) {
             entry.status = 'cancelled';
             failed.add(stepId);
             continue;
@@ -654,7 +772,7 @@ export class WorkflowRunner {
             result = freezeValue({...result, cacheHit: true});
           } else {
             this.validateInputs(document, step, operation, inputs);
-            if (signal.aborted || this.destroyed) {
+            if (!this.checkTaskCurrent(task)) {
               entry.status = 'cancelled';
               failed.add(stepId);
               continue;
@@ -666,12 +784,14 @@ export class WorkflowRunner {
                 host: this.host,
                 signal,
                 workflowId: document.id,
+                curatedAnalysisId: step.curatedAnalysisId,
+                parameterOverrides: resolveWorkflowParameterOverrides(document, step, operation),
                 stepId
               },
               inputs,
               planned.parameters!
             );
-            if (signal.aborted || this.destroyed) {
+            if (!this.checkTaskCurrent(task)) {
               entry.status = 'cancelled';
               failed.add(stepId);
               continue;
@@ -698,18 +818,30 @@ export class WorkflowRunner {
                   {port: port.name}
                 );
               }
+              if (data.analysisProfile && operation.category !== 'source') {
+                // Table ids name output ports (for example "filtered"), rather than datasets.
+                // Independent producers must retain distinct identities behind input aliases.
+                output.outputs[port.name] = {
+                  ...data,
+                  analysisProfile: {
+                    ...data.analysisProfile,
+                    sourceDatasetId: `workflow-result:${key}:${port.name}`
+                  }
+                };
+              }
             }
             if (this.currentDocument?.id === document.id)
               this.runtimeIssues.get(stepId)?.delete(key);
             result = freezeValue({
               ...structuredClone(output),
               key,
-              parameters: structuredClone(planned.parameters!),
+              parameters: structuredClone(output.resolvedParameters ?? planned.parameters!),
               durationMilliseconds: this.now() - startedAt,
               cacheHit: false,
               completedAt: this.now()
             });
           }
+          result = applyStepSensitivity(result, step);
           const fallbackIssue = this.getFallbackIssue(
             step,
             operation,
@@ -743,9 +875,10 @@ export class WorkflowRunner {
           task.completed.add(stepId);
           this.updateState();
           await this.publishStep(document, step, operation, result, signal);
+          if (!this.checkTaskCurrent(task)) entry.status = 'cancelled';
         } catch (error) {
           failed.add(stepId);
-          if (signal.aborted || this.destroyed) entry.status = 'cancelled';
+          if (!this.checkTaskCurrent(task)) entry.status = 'cancelled';
           else {
             entry.status = 'error';
             entry.error = this.issueFromError(error, step, operation);
@@ -776,7 +909,7 @@ export class WorkflowRunner {
   ): void {
     const label = step.label ?? operation.title;
     for (const port of operation.inputs) {
-      if (inputs[port.name]?.table.rowCount !== 0) continue;
+      if (inputs[port.name]?.kind === 'raster' || inputs[port.name]?.table.rowCount !== 0) continue;
       const producer = document.steps.find(
         candidate => candidate.id === step.inputs[port.name].stepId
       )!;
@@ -791,7 +924,7 @@ export class WorkflowRunner {
     for (const port of operation.inputs) {
       const data = inputs[port.name];
       if (!data) continue;
-      const kind = getWorkflowDataKind(data.table);
+      const kind = data.kind === 'raster' ? 'raster' : getWorkflowDataKind(data.table);
       if (kind === 'table' && !port.accepts.includes('table')) {
         throw new WorkflowError(
           'geometry-required',
@@ -810,6 +943,32 @@ export class WorkflowRunner {
           `${label}: ${port.label} accepts ${port.accepts.join(' or ')}; got ${kind}.`,
           {port: port.name}
         );
+      }
+      if (kind === 'raster') {
+        if (!data.raster) {
+          throw new WorkflowError(
+            'input-required',
+            `${label}: ${port.label} requires a raster band/grid payload.`,
+            {port: port.name}
+          );
+        }
+        try {
+          validateCatalogRasterInput(
+            `${operation.id}: ${port.name}`,
+            data.raster,
+            port.maximumCells ?? 0
+          );
+        } catch (cause) {
+          const cellCount = data.raster.grid.width * data.raster.grid.height;
+          const exceedsCapacity = port.maximumCells !== undefined && cellCount > port.maximumCells;
+          throw new WorkflowError(
+            exceedsCapacity ? 'capacity-exceeded' : 'operation-failed',
+            `${label}: ${port.label}: ${readMessage(cause)}`,
+            {port: port.name, cause}
+          );
+        }
+        // Retained display/provenance rows are independent of the bounded computational grid.
+        continue;
       }
       const suggestion = 'Add a filter or sort-with-limit step before it.';
       if (data.table.rowCount > port.maximumRows) {
@@ -892,8 +1051,7 @@ export class WorkflowRunner {
             : step,
           operation,
           state.result,
-          new AbortController().signal,
-          true
+          new AbortController().signal
         );
       }
     }
@@ -904,8 +1062,7 @@ export class WorkflowRunner {
     step: WorkflowStep,
     operation: WorkflowOperation,
     result: WorkflowStepResult,
-    signal: AbortSignal,
-    requireCurrentKey = false
+    signal: AbortSignal
   ): Promise<void> {
     if (!this.host.publishOutput || this.destroyed) return Promise.resolve();
     for (const name of step.display ?? []) {
@@ -913,30 +1070,49 @@ export class WorkflowRunner {
       const data = result.outputs[name];
       const style = step.displayStyle?.[name];
       const styleKey = getDisplayStyleKey(style);
-      const token = JSON.stringify([document.id, step.id, name, result.key, styleKey]);
+      const runtimeRevisionKey = this.host.getRuntimeRevisionKey?.();
+      const publicationGeneration = this.publicationGeneration;
+      const token = JSON.stringify([
+        document.id,
+        step.id,
+        name,
+        result.key,
+        styleKey,
+        runtimeRevisionKey,
+        publicationGeneration
+      ]);
       if (!port || !data || this.pendingPublications.has(token)) continue;
       this.pendingPublications.add(token);
+      const controller = new AbortController();
+      const device = this.host.getDevice();
+      const isCurrent = (): boolean => {
+        if (
+          this.destroyed ||
+          signal.aborted ||
+          controller.signal.aborted ||
+          this.currentDocument?.id !== document.id ||
+          this.host.getDevice() !== device ||
+          this.host.getRuntimeRevisionKey?.() !== runtimeRevisionKey ||
+          this.publicationGeneration !== publicationGeneration ||
+          this.latest.get(step.id)?.key !== result.key ||
+          this.invalidatedSteps.has(step.id)
+        )
+          return false;
+        return this.createPlan(this.currentDocument).steps[step.id]?.key === result.key;
+      };
+      this.publicationChecks.set(controller, isCurrent);
       this.publishTail = this.publishTail.then(async () => {
         try {
           const currentStep = this.currentDocument?.steps.find(
             candidate => candidate.id === step.id
           );
-          if (
-            this.destroyed ||
-            signal.aborted ||
-            this.currentDocument?.id !== document.id ||
-            !currentStep?.display?.includes(name)
-          )
-            return;
-          if (
-            requireCurrentKey &&
-            (this.plan?.steps[step.id]?.key !== result.key ||
-              this.latest.get(step.id)?.key !== result.key)
-          )
-            return;
+          if (!isCurrent() || !currentStep?.display?.includes(name)) return;
           if (getDisplayStyleKey(currentStep.displayStyle?.[name]) !== styleKey) return;
           const previous = this.published.get(step.id)?.[name];
-          if (previous?.key === result.key) {
+          if (
+            previous?.key === result.key &&
+            this.publicationGenerations.get(previous) === publicationGeneration
+          ) {
             if (this.plan?.steps[step.id]?.key !== result.key) return;
             if (getDisplayStyleKey(previous.style) === styleKey) {
               this.clearPublishIssue(step.id, result.key, name);
@@ -954,16 +1130,17 @@ export class WorkflowRunner {
               label,
               data,
               style,
+              isCurrent,
               previousDatasetId: previous?.datasetId
             },
-            signal
+            controller.signal
           );
           const retained =
             this.currentDocument?.id === document.id &&
             this.currentDocument.steps.some(
               candidate => candidate.id === step.id && candidate.display?.includes(name)
             );
-          if (this.destroyed || !retained) {
+          if (!isCurrent() || !retained) {
             const outputs = this.published.get(step.id);
             if (outputs?.[name]?.datasetId === output.datasetId) {
               delete outputs[name];
@@ -972,13 +1149,29 @@ export class WorkflowRunner {
             await this.retractOutput(output.datasetId);
             return;
           }
+          let retirement: Promise<void> | undefined;
+          try {
+            // Acceptance is synchronous with the currentness check. Once accepted, later
+            // cancellation cannot roll back this display while its predecessor is retiring.
+            retirement = output.commit?.();
+          } catch (error) {
+            await this.retractOutput(output.datasetId);
+            throw error;
+          }
           const outputs = this.published.get(step.id) ?? {};
-          outputs[name] = freezeValue({...output, key: result.key, ...(style ? {style} : {})});
+          outputs[name] = freezeValue({
+            datasetId: output.datasetId,
+            label: output.label,
+            key: result.key,
+            ...(style ? {style} : {})
+          });
+          this.publicationGenerations.set(outputs[name], publicationGeneration);
           this.published.set(step.id, outputs);
           this.clearPublishIssue(step.id, result.key, name);
           this.updateState();
+          await retirement;
         } catch (error) {
-          if (this.currentDocument?.id === document.id)
+          if (isCurrent())
             this.addRuntimeIssue(step.id, result.key, {
               severity: 'warning',
               code: 'publish-failed',
@@ -989,6 +1182,7 @@ export class WorkflowRunner {
           this.updateState();
         } finally {
           this.pendingPublications.delete(token);
+          this.publicationChecks.delete(controller);
         }
       });
     }

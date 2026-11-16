@@ -2,15 +2,58 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  createDriveTimeBandsSample,
+  createDriveTimeBandsSecondDataset,
+  DRIVE_TIME_BANDS_SAMPLE
+} from './samples/drive-time-bands-data';
+import {
+  createCellFlowTopologySample,
+  createSecondCellFlowTopologySample,
+  CELL_FLOW_TOPOLOGY_SAMPLE_LICENSE
+} from './samples/cell-flow-topology';
+import {
+  createNetworkDisruptionSample,
+  createNetworkDisruptionSecondDataset,
+  NETWORK_DISRUPTION_SAMPLE
+} from './samples/network-disruption';
+import {
+  createRegionalRasterChangeSample,
+  REGIONAL_RASTER_CHANGE_SAMPLE_LICENSE
+} from './samples/regional-raster-change';
+import {createZonalExposureSample, createMappedZonalExposureSample} from './samples/zonal-exposure';
+import {
+  makeSurfacePreparationSample,
+  makeSurfacePreparationSecondSample,
+  SURFACE_PREPARATION_SAMPLE_LICENSE
+} from './samples/surface-preparation';
+import {
+  createDrainageNetworkSample,
+  createDrainageNetworkSecondDataset,
+  DRAINAGE_NETWORK_SAMPLE
+} from './samples/drainage-network';
+import {
+  createEmergingHotSpotsSample,
+  EMERGING_HOT_SPOTS_SAMPLE_LICENSE,
+  createTrackQualitySample,
+  TRACK_QUALITY_SAMPLE_LICENSE,
+  createLandscapeMetricsSample,
+  LANDSCAPE_METRICS_SAMPLE_LICENSE,
+  createFleetDwellSample,
+  FLEET_DWELL_SAMPLE_LICENSE
+} from './samples/index';
+
 import type {CatalogFeature, CatalogFeatureCollection} from '../analysis/catalog-geojson';
 import type {CatalogParameterValue} from '../analysis/catalog-binding-types';
+import type {CatalogDataInput} from '../analysis/catalog-data-input';
+import {
+  createDasymetricRedistributionSample,
+  DASYMETRIC_SAMPLE_LICENSE
+} from './samples/dasymetric-redistribution';
 
-// Synthetic samples for the curated analyses. Every dataset is generated here from a seeded
-// pseudo-random sequence, so the repository's own licence covers it (no third-party data) and two
-// calls give identical features. Coordinates sit in a real place's longitude and latitude range
-// (central Chicago) so a map opens on a plausible view. Each sample plants a structure that the
-// analysis using it should recover; the structure is documented beside its generator and checked
-// by the specification of the curated analyses.
+// Repository-authored synthetic samples, with no third-party data. Seeded feature generators
+// use geographic city coordinates or a declared planar lattice. Typed raster fixtures carry
+// explicit grid units and fixed numerical expectations. Every factory is deterministic.
 
 /** Longitude and latitude of the sample city centre. */
 const CITY_CENTER_LONGITUDE = -87.65;
@@ -29,8 +72,11 @@ const DISTRICT_ORIGIN_LONGITUDE =
 const DISTRICT_ORIGIN_LATITUDE =
   CITY_CENTER_LATITUDE - (DISTRICT_ROWS / 2) * DISTRICT_LATITUDE_STEP;
 
-/** Ids of the synthetic samples. */
-export const KEPLER_CURATED_ANALYSIS_SAMPLE_IDS = [
+/** Seeded feature samples, retaining each stream's existing sample entry. */
+export const KEPLER_CURATED_FEATURE_ANALYSIS_SAMPLE_IDS = [
+  'fleet-dwell',
+  'emerging-hot-spots',
+  'track-quality',
   'city-incidents',
   'city-district-rates',
   'city-district-incidents',
@@ -44,7 +90,75 @@ export const KEPLER_CURATED_ANALYSIS_SAMPLE_IDS = [
   'district-smooth-surface'
 ] as const;
 
+export type KeplerCuratedFeatureAnalysisSampleId =
+  (typeof KEPLER_CURATED_FEATURE_ANALYSIS_SAMPLE_IDS)[number];
+
+/** All discoverable synthetic samples, including typed non-feature inputs. */
+export const KEPLER_CURATED_ANALYSIS_SAMPLE_IDS = [
+  ...KEPLER_CURATED_FEATURE_ANALYSIS_SAMPLE_IDS,
+  'dasymetric-fractional-support',
+  'landscape-metrics',
+  'drainage-network-slope',
+  'surface-preparation-gaps',
+  'zonal-exposure-counts',
+  'regional-raster-change',
+  'network-disruption-bridge',
+  'cell-flow-topology',
+  'drive-time-bands-streets'
+] as const;
+
 export type KeplerCuratedAnalysisSampleId = (typeof KEPLER_CURATED_ANALYSIS_SAMPLE_IDS)[number];
+
+/** Shared sample provenance used by template discovery. */
+export function getKeplerCuratedAnalysisSampleMetadata(sampleId: string) {
+  if (sampleId === 'drainage-network-slope') {
+    const {license, attribution, reference} = DRAINAGE_NETWORK_SAMPLE;
+    return {id: sampleId, license, attribution, reference};
+  }
+  if (sampleId === 'surface-preparation-gaps') {
+    const {license, attribution, reference} = SURFACE_PREPARATION_SAMPLE_LICENSE;
+    return {id: sampleId, license, attribution, reference};
+  }
+  if (sampleId === 'zonal-exposure-counts') {
+    const {license, attribution, reference} = createZonalExposureSample();
+    return {id: sampleId, license, attribution, reference};
+  }
+  if (sampleId === 'regional-raster-change') {
+    const {license, attribution, reference} = REGIONAL_RASTER_CHANGE_SAMPLE_LICENSE;
+    return {id: sampleId, license, attribution, reference};
+  }
+  if (sampleId === 'network-disruption-bridge') {
+    const {license, attribution, reference} = NETWORK_DISRUPTION_SAMPLE;
+    return {id: sampleId, license, attribution, reference};
+  }
+  if (sampleId === 'cell-flow-topology') {
+    const {license, attribution, reference} = CELL_FLOW_TOPOLOGY_SAMPLE_LICENSE;
+    return {id: sampleId, license, attribution, reference};
+  }
+  if (sampleId === 'drive-time-bands-streets') {
+    const {license, attribution, reference} = DRIVE_TIME_BANDS_SAMPLE;
+    return {id: sampleId, license, attribution, reference};
+  }
+  if (sampleId === 'emerging-hot-spots')
+    return {id: sampleId, ...EMERGING_HOT_SPOTS_SAMPLE_LICENSE};
+  if (sampleId === 'fleet-dwell') return FLEET_DWELL_SAMPLE_LICENSE;
+  if (sampleId === 'track-quality') return TRACK_QUALITY_SAMPLE_LICENSE;
+  if (sampleId === 'landscape-metrics') return LANDSCAPE_METRICS_SAMPLE_LICENSE;
+  if (sampleId === 'dasymetric-fractional-support') return DASYMETRIC_SAMPLE_LICENSE;
+  if (
+    KEPLER_CURATED_FEATURE_ANALYSIS_SAMPLE_IDS.includes(
+      sampleId as KeplerCuratedFeatureAnalysisSampleId
+    )
+  ) {
+    return {
+      id: sampleId,
+      license: 'MIT',
+      attribution: 'vis.gl contributors',
+      reference: 'modules/kepler/src/curated/curated-analysis-samples.ts'
+    };
+  }
+  throw new Error(`getKeplerCuratedAnalysisSampleMetadata: unknown sampleId "${sampleId}"`);
+}
 
 /**
  * Column of each sample that fills a field role, keyed by `<slot>.<role>`. A curated analysis maps
@@ -53,6 +167,9 @@ export type KeplerCuratedAnalysisSampleId = (typeof KEPLER_CURATED_ANALYSIS_SAMP
 export const KEPLER_CURATED_ANALYSIS_SAMPLE_COLUMNS: Readonly<
   Record<KeplerCuratedAnalysisSampleId, Readonly<Record<string, string>>>
 > = {
+  'fleet-dwell': {'tracks.track': 'track_id', 'tracks.time': 'timestamp'},
+  'emerging-hot-spots': {'points.time': 'observed'},
+  'track-quality': {'tracks.track': 'track_id', 'tracks.time': 'timestamp'},
   'city-incidents': {'points.value': 'severity', 'points.time': 'observed'},
   'city-district-rates': {
     'areas.value': 'rate',
@@ -70,7 +187,24 @@ export const KEPLER_CURATED_ANALYSIS_SAMPLE_COLUMNS: Readonly<
     'areas.response': 'outcome',
     'areas.predictors': 'income,density'
   },
-  'district-smooth-surface': {'areas.value': 'value'}
+  'district-smooth-surface': {'areas.value': 'value'},
+  'dasymetric-fractional-support': {'sources.total': 'residents'},
+  'landscape-metrics': {},
+  'drainage-network-slope': {},
+  'surface-preparation-gaps': {},
+  'regional-raster-change': {},
+  'zonal-exposure-counts': {
+    'cells.cell-index': 'cell',
+    'cells.zone': 'zone',
+    'cells.population': 'people'
+  },
+  'network-disruption-bridge': NETWORK_DISRUPTION_SAMPLE.columns,
+  'cell-flow-topology': {
+    'flows.origin': 'origin',
+    'flows.destination': 'destination',
+    'flows.flow': 'flow'
+  },
+  'drive-time-bands-streets': DRIVE_TIME_BANDS_SAMPLE.columns
 };
 
 /** The planted structure of a sample, for the specification and for anyone reading the sample. */
@@ -727,6 +861,25 @@ export function getKeplerCuratedAnalysisSampleParameters(
   analysisId: string
 ): Readonly<Record<string, CatalogParameterValue>> {
   switch (analysisId) {
+    case 'emerging-hot-spots':
+      return {coordinateSystem: 'planar', cellSize: 1};
+    case 'track-quality':
+      return {coordinateSystem: 'planar'};
+    case 'regional-raster-change':
+      return {confirmComparable: true, threshold: 1};
+    case 'surface-preparation':
+      return {maximumDistance: 1, method: 'nearest'};
+    case 'zonal-exposure':
+      return createZonalExposureSample().parameters;
+    case 'drive-time-bands':
+      return {
+        ...DRIVE_TIME_BANDS_SAMPLE.parameters,
+        costBreaks: [...DRIVE_TIME_BANDS_SAMPLE.parameters.costBreaks]
+      };
+    case 'network-disruption':
+      return {...NETWORK_DISRUPTION_SAMPLE.parameters};
+    case 'dasymetric-redistribution':
+      return createDasymetricRedistributionSample().parameters;
     default:
       return {};
   }
@@ -734,11 +887,51 @@ export function getKeplerCuratedAnalysisSampleParameters(
 
 /** Builds a sample's datasets, keyed by the slot name of the curated analyses that use it. */
 export function createKeplerCuratedAnalysisSample(
+  sampleId: KeplerCuratedFeatureAnalysisSampleId,
+  seedOffset?: number
+): Readonly<Record<string, CatalogFeatureCollection>>;
+export function createKeplerCuratedAnalysisSample(
   sampleId: string,
-  /** Added to every sample seed; network geometry stays fixed while demand counts vary. 0 is the bundled sample. */
+  seedOffset?: number
+): Readonly<Record<string, CatalogDataInput>>;
+export function createKeplerCuratedAnalysisSample(
+  sampleId: string,
+  /** Added to feature seeds; nonzero selects the independent fixture for typed samples. 0 is the bundled sample. */
   seedOffset = 0
-): Readonly<Record<string, CatalogFeatureCollection>> {
+): Readonly<Record<string, CatalogDataInput>> {
   switch (sampleId) {
+    case 'drainage-network-slope':
+      return seedOffset
+        ? {elevation: createDrainageNetworkSecondDataset().survey}
+        : createDrainageNetworkSample();
+    case 'surface-preparation-gaps':
+      return {
+        surface: seedOffset ? makeSurfacePreparationSecondSample() : makeSurfacePreparationSample()
+      };
+    case 'regional-raster-change':
+      return createRegionalRasterChangeSample(seedOffset !== 0);
+    case 'zonal-exposure-counts':
+      return seedOffset
+        ? createMappedZonalExposureSample().inputs
+        : createZonalExposureSample().inputs;
+    case 'network-disruption-bridge':
+      return seedOffset ? createNetworkDisruptionSecondDataset() : createNetworkDisruptionSample();
+    case 'cell-flow-topology':
+      return {
+        flows: seedOffset ? createSecondCellFlowTopologySample() : createCellFlowTopologySample()
+      };
+    case 'drive-time-bands-streets':
+      return seedOffset ? createDriveTimeBandsSecondDataset() : createDriveTimeBandsSample();
+    case 'fleet-dwell':
+      return createFleetDwellSample(seedOffset);
+    case 'landscape-metrics':
+      return createLandscapeMetricsSample(seedOffset ? 'second' : 'sample');
+    case 'dasymetric-fractional-support':
+      return createDasymetricRedistributionSample(seedOffset !== 0).inputs;
+    case 'emerging-hot-spots':
+      return {points: createEmergingHotSpotsSample(seedOffset)};
+    case 'track-quality':
+      return {tracks: createTrackQualitySample(seedOffset)};
     case 'city-incidents':
       return {points: createCityIncidents(seedOffset)};
     case 'city-district-rates':

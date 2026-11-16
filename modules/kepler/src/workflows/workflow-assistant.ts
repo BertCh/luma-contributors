@@ -4,6 +4,17 @@
 
 import type {KeplerJSONValue} from '../recipes/sandbox-state';
 import type {CatalogParameterValue} from '../analysis/catalog-binding-types';
+import {KEPLER_CURATED_ANALYSES, getKeplerCuratedAnalysis} from '../curated/curated-analyses';
+import {
+  createKeplerCuratedAnalysisMapping,
+  updateKeplerCuratedAnalysisMapping
+} from '../curated/curated-analysis-mapping';
+import type {KeplerDatasetProfile} from '../profile/dataset-profile-types';
+import {
+  createCuratedWorkflowAnalysisTemplate,
+  createWorkflowAnalysisTemplateFromDocument
+} from './workflow-analysis-template';
+import {validateWorkflowAnalysisTemplate} from './workflow-analysis-template-parser';
 import {
   makeUniqueWorkflowId,
   parseWorkflowDocument,
@@ -12,13 +23,14 @@ import {
 import {layoutWorkflow, updateWorkflowInput} from './workflow-edit';
 import {describeWorkflow} from './workflow-export';
 import {searchWorkflowOperations} from './workflow-operations';
-import {planWorkflow} from './workflow-plan';
+import {getWorkflowAnalysisProfiles, getWorkflowUpstreamSteps, planWorkflow} from './workflow-plan';
 import {
   WORKFLOW_LIMITS,
   WORKFLOW_SCHEMA_VERSION,
   WorkflowError,
   type WorkflowDocument,
   type WorkflowInput,
+  type WorkflowHost,
   type WorkflowIssue,
   type WorkflowOperationCategory,
   type WorkflowOperationRegistry,
@@ -198,7 +210,9 @@ export type WorkflowAssistantTool = {
     | 'listWorkflows'
     | 'describeWorkflow'
     | 'setWorkflowInputs'
-    | 'runWorkflow';
+    | 'runWorkflow'
+    | 'listAnalysisTemplates'
+    | 'describeAnalysisTemplate';
   description: string;
   parameters: KeplerJSONValue;
 };
@@ -235,12 +249,26 @@ export function getWorkflowAssistantTools(): readonly WorkflowAssistantTool[] {
     {
       name: 'defineWorkflow',
       description:
-        'Propose a whole workflow for user review. Returns a serialisable draft, validation issues and an outline. This tool only proposes: it never runs operations or publishes data. The host must show the draft and obtain the user’s approval before running it. Connect inputs with "stepId.output" or "stepId" when that producer has exactly one output. Use plain parameter values; display true selects the first output, or list output names.',
+        'Propose a whole workflow for user review. Returns a serialisable draft, validation issues and an outline. This tool only proposes: it never runs operations or publishes data. The host must show the draft and obtain the user’s approval before running it. Connect inputs with "stepId.output" or "stepId" when that producer has exactly one output. Use plain parameter values; display true selects the first output, or list output names. Prefer a curated template: supply templateId, datasets (slot to dataset id), columns (slot.role to column names) and optional parameters instead of title/steps. Describe the template first. Failed or unknown requirements must be resolved before approval; never invent units or measurements.',
       parameters: {
         type: 'object',
         properties: {
           title: {type: 'string', minLength: 1, maxLength: WORKFLOW_LIMITS.maximumTitleCharacters},
           description: {type: 'string', maxLength: WORKFLOW_LIMITS.maximumNoteCharacters},
+          templateId: {type: 'string'},
+          datasets: {type: 'object', additionalProperties: {type: 'string'}},
+          columns: {type: 'object', additionalProperties: {type: 'array', items: {type: 'string'}}},
+          parameters: {
+            type: 'object',
+            additionalProperties: {
+              anyOf: [
+                {type: 'string'},
+                {type: 'number'},
+                {type: 'boolean'},
+                {type: 'array', items: {type: 'number'}, maxItems: 64}
+              ]
+            }
+          },
           steps: {
             type: 'array',
             minItems: 1,
@@ -270,7 +298,7 @@ export function getWorkflowAssistantTools(): readonly WorkflowAssistantTool[] {
             }
           }
         },
-        required: ['title', 'steps'],
+        anyOf: [{required: ['title', 'steps']}, {required: ['templateId', 'datasets', 'columns']}],
         additionalProperties: false
       }
     },
@@ -323,6 +351,28 @@ export function getWorkflowAssistantTools(): readonly WorkflowAssistantTool[] {
         type: 'object',
         properties: {workflowId: {type: 'string'}, target: {type: 'string'}},
         required: ['workflowId'],
+        additionalProperties: false
+      }
+    },
+    {
+      name: 'listAnalysisTemplates',
+      description:
+        'Search the curated analysis templates by question, method, id or input kind. Unavailable methods remain visible with their requirement text. Never attempt an unavailable method.',
+      parameters: {
+        type: 'object',
+        properties: {query: {type: 'string'}},
+        required: [],
+        additionalProperties: false
+      }
+    },
+    {
+      name: 'describeAnalysisTemplate',
+      description:
+        'Read a curated template before proposing it: dataset slots, field roles, measurement levels, parameters, units, requirements and cautions. Returns metadata only, never dataset rows. Use defineWorkflow with this templateId and explicit dataset/column choices to propose it for whole-plan approval.',
+      parameters: {
+        type: 'object',
+        properties: {templateId: {type: 'string'}},
+        required: ['templateId'],
         additionalProperties: false
       }
     }
@@ -439,7 +489,10 @@ export function describeWorkflowOperationForAssistant(
     capabilityIds: [...operation.capabilityIds],
     contributorNames: [...operation.contributorNames],
     declaredBehavior: [...operation.declaredBehavior],
-    limitation: operation.limitation
+    limitation: operation.limitation,
+    ...(operation.analysisDescriptor
+      ? {analysis: JSON.parse(JSON.stringify(operation.analysisDescriptor)) as KeplerJSONValue}
+      : {})
   };
 }
 
@@ -498,7 +551,12 @@ function describeWorkflowDraft(
  */
 export function parseWorkflowDraft(
   args: unknown,
-  options: {registry: WorkflowOperationRegistry; takenIds?: Iterable<string>}
+  options: {
+    registry: WorkflowOperationRegistry;
+    takenIds?: Iterable<string>;
+    /** Retain explicit choices for AX default resolution, even when equal to catalog defaults. */
+    preserveExplicitParameters?: boolean;
+  }
 ): WorkflowDraft {
   const fields = readObject(args, 'arguments', ['title', 'description', 'steps']);
   const title = readLabel(
@@ -654,7 +712,12 @@ export function parseWorkflowDraft(
       for (const [name, rawValue] of Object.entries(parameters)) {
         const value = readParameterValue(rawValue, `${path}.parameters.${name}`);
         const parameter = operation?.parameters.find(specification => specification.name === name);
-        if (!parameter || JSON.stringify(value) !== JSON.stringify(parameter.defaultValue)) {
+        if (
+          options.preserveExplicitParameters ||
+          operation?.analysisDescriptor ||
+          !parameter ||
+          JSON.stringify(value) !== JSON.stringify(parameter.defaultValue)
+        ) {
           step.parameters[name] = {from: 'static', value};
         }
       }
@@ -904,4 +967,304 @@ export function parseWorkflowRunRequest(
     );
   }
   return {workflowId: document.id, target};
+}
+
+/** Curated metadata only; discovery does not read or transmit dataset rows. */
+export function listWorkflowTemplatesForAssistant(args: unknown): KeplerJSONValue {
+  const fields = readObject(args, 'arguments', ['query']);
+  const query = Object.hasOwn(fields, 'query')
+    ? readString(fields['query'], 'arguments.query').trim().toLowerCase()
+    : '';
+  const matches = KEPLER_CURATED_ANALYSES.filter(analysis =>
+    [
+      analysis.id,
+      analysis.title,
+      analysis.name,
+      analysis.question,
+      analysis.method,
+      ...analysis.slots.map(slot => slot.kind)
+    ]
+      .join(' ')
+      .toLowerCase()
+      .includes(query)
+  );
+  return {
+    total: matches.length,
+    templates: matches.map(analysis => ({
+      id: analysis.id,
+      title: analysis.title,
+      question: analysis.question,
+      kinds: analysis.slots.map(slot => slot.kind),
+      status: analysis.execution.status,
+      ...(analysis.execution.status === 'needs-binding'
+        ? {requirement: analysis.execution.reason}
+        : {})
+    }))
+  };
+}
+
+function requireAssistantTemplate(templateId: string) {
+  const analysis = getKeplerCuratedAnalysis(templateId);
+  if (!analysis)
+    throw new WorkflowError(
+      'unknown-operation',
+      `Analysis template "${templateId}" is not available. Use listAnalysisTemplates to choose a supported method.`
+    );
+  return analysis;
+}
+
+export function describeWorkflowTemplateForAssistant(
+  registry: WorkflowOperationRegistry,
+  args: unknown
+): KeplerJSONValue {
+  const fields = readObject(args, 'arguments', ['templateId']);
+  const analysis = requireAssistantTemplate(
+    readString(fields['templateId'], 'arguments.templateId')
+  );
+  const template = createCuratedWorkflowAnalysisTemplate(analysis);
+  return {
+    id: analysis.id,
+    title: analysis.title,
+    question: analysis.question,
+    method: analysis.method,
+    slots: JSON.parse(JSON.stringify(template.slots)) as KeplerJSONValue,
+    exposed: JSON.parse(JSON.stringify(template.exposed)) as KeplerJSONValue,
+    reads: JSON.parse(JSON.stringify(template.reads)) as KeplerJSONValue,
+    status: analysis.execution.status,
+    ...(analysis.execution.status === 'available'
+      ? {
+          operation: describeWorkflowOperationForAssistant(registry, {
+            operationId: analysis.execution.bindingId
+          })
+        }
+      : {requirement: analysis.execution.reason})
+  };
+}
+
+/** Uses the same mapper as the gallery, including explicit-choice type and measurement checks. */
+export function parseWorkflowTemplateForAssistant(
+  args: unknown,
+  profiles: readonly KeplerDatasetProfile[]
+) {
+  const fields = readObject(args, 'arguments', ['templateId', 'datasets', 'columns', 'parameters']);
+  const analysis = requireAssistantTemplate(
+    readString(fields['templateId'], 'arguments.templateId')
+  );
+  if (analysis.execution.status !== 'available')
+    throw new WorkflowError('unknown-operation', `${analysis.title}: ${analysis.execution.reason}`);
+  const datasets = readObject(
+    fields['datasets'],
+    'arguments.datasets',
+    analysis.slots.map(slot => slot.name)
+  );
+  const columns = readObject(
+    fields['columns'],
+    'arguments.columns',
+    analysis.slots.flatMap(slot => slot.fields.map(field => `${slot.name}.${field.role}`))
+  );
+  const parameters = Object.hasOwn(fields, 'parameters')
+    ? readObject(fields['parameters'], 'arguments.parameters')
+    : {};
+  const values = Object.fromEntries(
+    Object.entries(parameters).map(([name, value]) => [
+      name,
+      readParameterValue(value, `arguments.parameters.${name}`)
+    ])
+  );
+  let mapping = createKeplerCuratedAnalysisMapping(analysis, profiles, {parameters: values});
+  for (const slot of analysis.slots) {
+    const datasetId = readString(datasets[slot.name], `arguments.datasets.${slot.name}`);
+    mapping = updateKeplerCuratedAnalysisMapping(
+      mapping,
+      {slot: slot.name, datasetId},
+      analysis,
+      profiles
+    );
+    for (const field of slot.fields) {
+      const key = `${slot.name}.${field.role}`;
+      if (!Object.hasOwn(columns, key)) continue;
+      const names = readArray(
+        columns[key],
+        `arguments.columns.${key}`,
+        64,
+        'maximum mapped columns'
+      ).map((name, index) => readString(name, `arguments.columns.${key}[${index}]`));
+      mapping = updateKeplerCuratedAnalysisMapping(
+        mapping,
+        {slot: slot.name, role: field.role, columns: names},
+        analysis,
+        profiles
+      );
+    }
+  }
+  if (!mapping.ready)
+    throw new WorkflowError(
+      'malformed',
+      `${analysis.title}: ${mapping.problems
+        .filter(problem => problem.severity === 'blocks' || !problem.acknowledged)
+        .map(problem => problem.message)
+        .join(' ')}`
+    );
+  return {template: createCuratedWorkflowAnalysisTemplate(analysis), mapping};
+}
+
+/** Recheck the exact document: no remapping, default replacement or execution during validation. */
+export function validateWorkflowForAssistant(
+  document: WorkflowDocument,
+  options: {registry: WorkflowOperationRegistry; host?: WorkflowHost; target?: string}
+): WorkflowIssue[] {
+  const included = options.target
+    ? new Set([options.target, ...getWorkflowUpstreamSteps(document, options.target)])
+    : new Set(document.steps.map(step => step.id));
+  // Keep full-document graph/parameter checks, but do not evaluate unrelated AX applicability
+  // through this structural view of the same operations.
+  const structuralOperations = new Map(
+    options.registry
+      .list()
+      .map(operation => [operation.id, {...operation, analysisDescriptor: undefined}])
+  );
+  const structuralRegistry: WorkflowOperationRegistry = {
+    list: () => [...structuralOperations.values()],
+    get: operationId => structuralOperations.get(operationId)
+  };
+  const structure = planWorkflow(document, {registry: structuralRegistry});
+  const plan = planWorkflow(
+    {...document, steps: document.steps.filter(step => included.has(step.id))},
+    options
+  );
+  const issueKeys = new Set<string>();
+  const issues = [
+    ...structure.issues,
+    ...structure.order.flatMap(stepId => structure.steps[stepId].issues),
+    ...plan.issues,
+    ...plan.order.flatMap(stepId => plan.steps[stepId].issues)
+  ].filter(issue => {
+    const key = JSON.stringify(issue);
+    if (issueKeys.has(key)) return false;
+    issueKeys.add(key);
+    return true;
+  });
+  if (options.target && !document.steps.some(step => step.id === options.target))
+    issues.push({
+      code: 'unknown-step',
+      severity: 'error',
+      message: `${document.title}: target step "${options.target}" does not exist.`
+    });
+  try {
+    const template = createWorkflowAnalysisTemplateFromDocument({
+      id: document.id,
+      title: document.title,
+      summary: document.description || document.title,
+      document
+    });
+    const validation = validateWorkflowAnalysisTemplate(template, {registry: structuralRegistry});
+    for (const issue of validation.issues) {
+      if (
+        !issues.some(existing => existing.code === issue.code && existing.message === issue.message)
+      )
+        issues.push({code: 'malformed', severity: 'error', message: issue.message});
+    }
+  } catch (error) {
+    issues.push({
+      code: 'malformed',
+      severity: 'error',
+      message: error instanceof Error ? error.message : String(error)
+    });
+  }
+  for (const step of document.steps) {
+    if (!included.has(step.id)) continue;
+    const operation = options.registry.get(step.operationId);
+    if (!operation?.analysisDescriptor) continue;
+    // A coordinate warning cannot become a declaration just because resolved defaults are
+    // frozen. Reuse the checker's text and ask for the missing unit confirmation before review.
+    for (const requirement of plan.steps[step.id]?.analysis?.requirements ?? []) {
+      if (
+        ['declared-coordinates', 'planar-coordinates', 'geographic-coordinates'].includes(
+          requirement.id
+        ) &&
+        requirement.state === 'unknown'
+      )
+        issues.push({
+          code: 'analysis-requirement',
+          severity: 'error',
+          stepId: step.id,
+          message: `${step.label ?? operation.title}: ${requirement.message}. ${requirement.remedy ?? 'Confirm the coordinate system and units before approving this plan.'}`
+        });
+    }
+    const profiles = getWorkflowAnalysisProfiles(document, step, options.registry, options.host);
+    for (const input of operation.inputs) {
+      const connection = step.inputs[input.name];
+      const source =
+        connection && document.steps.find(candidate => candidate.id === connection.stepId);
+      // Graph kinds cannot establish an intermediate's measurement or statistical requirements.
+      // Refuse unknown applicability without running upstream work during proposal/review.
+      if (source && !profiles[input.name])
+        issues.push({
+          code: 'analysis-requirement',
+          severity: 'error',
+          stepId: step.id,
+          message: `${step.label ?? operation.title}: ${input.label} needs a current profile for the exact input geometry and population. Refresh the dataset profile before approving or running this plan; for an intermediate, inspect its result and use that profiled dataset as the source.`
+        });
+    }
+  }
+  return issues;
+}
+
+/** Freeze resolved settings into the review document so changed profiles cannot change defaults. */
+export function prepareWorkflowDraftForAssistant(
+  document: WorkflowDocument,
+  options: {registry: WorkflowOperationRegistry; host?: WorkflowHost}
+): WorkflowDraft {
+  const initialIssues = validateWorkflowForAssistant(document, options);
+  if (initialIssues.some(issue => issue.severity === 'error'))
+    throw new WorkflowError(
+      'malformed',
+      initialIssues
+        .filter(issue => issue.severity === 'error')
+        .map(issue => issue.message)
+        .join('\n')
+    );
+  const plan = planWorkflow(document, options);
+  const prepared = parseWorkflowDocument(
+    serializeWorkflowDocument({
+      ...document,
+      settings: {...document.settings, autoRun: false},
+      steps: document.steps.map(step => ({
+        ...step,
+        parameters: plan.steps[step.id]?.parameters
+          ? Object.fromEntries(
+              Object.entries(plan.steps[step.id].parameters!).map(([name, value]) => [
+                name,
+                {from: 'static' as const, value}
+              ])
+            )
+          : step.parameters
+      }))
+    })
+  );
+  const issues = validateWorkflowForAssistant(prepared, options);
+  if (issues.some(issue => issue.severity === 'error'))
+    throw new WorkflowError(
+      'malformed',
+      issues
+        .filter(issue => issue.severity === 'error')
+        .map(issue => issue.message)
+        .join('\n')
+    );
+  return {
+    document: prepared,
+    issues,
+    outline: describeWorkflowDraft(prepared, options.registry, plan.order)
+  };
+}
+
+/** Warnings shown after review need a new acknowledgement; unchanged warnings remain advisory. */
+export function getNewWorkflowAssistantWarnings(
+  current: readonly WorkflowIssue[],
+  reviewed: readonly WorkflowIssue[]
+): WorkflowIssue[] {
+  const getKey = (issue: WorkflowIssue) =>
+    JSON.stringify([issue.code, issue.stepId, issue.port, issue.parameter, issue.message]);
+  const known = new Set(reviewed.filter(issue => issue.severity === 'warning').map(getKey));
+  return current.filter(issue => issue.severity === 'warning' && !known.has(getKey(issue)));
 }

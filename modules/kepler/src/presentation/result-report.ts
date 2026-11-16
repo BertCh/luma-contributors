@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {evaluateGPUAnalysisParameterCondition} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
 import {
   deriveGPUAnalysisCautions,
   describeGPUAnalysisPermutationResolution,
@@ -14,6 +16,8 @@ import {
   summarizeGPUAnalysisResult
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {
+  GPUAnalysisColumnProfile,
+  GPUAnalysisDataProfile,
   GPUAnalysisCaution,
   GPUAnalysisCautionFacts,
   GPUAnalysisMeasurementLevel,
@@ -56,13 +60,19 @@ export type KeplerReportProfile = {
   kind?: GPUSpatialAnalysisDataKind;
   catalogGeometry?: 'point' | 'line' | 'polygon';
   pointColumns?: {longitude: string; latitude: string};
+  /** Retained declarations used when promoting a run to reusable sources. */
+  rowSemantics?: GPUAnalysisDataProfile['rowSemantics'];
   coordinates?: {
     model: string;
     source: 'guess' | 'declared';
     confidence?: 'high' | 'low';
     reason?: string;
   };
-  columns?: readonly {name: string; measurement?: GPUAnalysisMeasurementLevel}[];
+  columns?: readonly {
+    name: string;
+    measurement?: GPUAnalysisMeasurementLevel;
+    measurementSource?: GPUAnalysisColumnProfile['measurementSource'];
+  }[];
 };
 
 export type KeplerResultReportContext = {
@@ -384,6 +394,8 @@ export const KEPLER_RESULT_FACT_SOURCES: Readonly<Record<string, KeplerResultFac
 /** What one output's sentence is built from. */
 export type KeplerResultOutputSummary = {
   tableId: string;
+  /** Explicit inference semantics, independent of summary wording and palette. */
+  inference?: boolean;
   /** The template of the descriptor, or the fact table's replacement for it. */
   template: GPUAnalysisSummaryTemplate;
   /** The template the sentence actually uses; `row-count` when the numbers were not found. */
@@ -881,13 +893,7 @@ function isParameterActive(
   policy: KeplerOperationParameterDescriptor | undefined,
   parameters: CatalogRunResult['parameters']
 ): boolean {
-  const activeWhen = policy?.activeWhen;
-  if (!activeWhen) return true;
-  const value = parameters[activeWhen.parameter];
-  return (
-    (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') &&
-    activeWhen.equals.includes(value)
-  );
+  return evaluateGPUAnalysisParameterCondition(policy?.activeWhen, parameters);
 }
 
 function describeChosenParameters(
@@ -1161,8 +1167,9 @@ export function describeKeplerCatalogResult(
 
   for (const output of descriptor.outputs) {
     const table = result.tables.find(candidate => candidate.id === output.tableId);
-    if (!table || !output.interpretation) continue;
-    const template = source?.outputTemplates?.[output.tableId] ?? output.interpretation.summary;
+    if (!table || (!output.interpretation && !output.inference)) continue;
+    const template =
+      source?.outputTemplates?.[output.tableId] ?? output.interpretation?.summary ?? 'row-count';
     const plan = output.presentation ? planKeplerResultPresentation(table, output) : undefined;
     const isFirstStatistical = STATISTICAL_TEMPLATES.includes(template) && !hasStatisticalOutput;
     const outputDetails: RunDetails = isFirstStatistical ? details : {};
@@ -1173,10 +1180,11 @@ export function describeKeplerCatalogResult(
     outputs.push({
       tableId: output.tableId,
       template,
+      ...(output.inference !== undefined ? {inference: output.inference} : {}),
       usedTemplate: facts.template,
       sentence: facts.sentence
     });
-    for (const caution of output.interpretation.cautions) {
+    for (const caution of output.interpretation?.cautions ?? []) {
       if (!alwaysOn.includes(caution)) alwaysOn.push(caution);
     }
     if (isFirstStatistical) hasStatisticalOutput = true;
@@ -1324,7 +1332,14 @@ export function describeKeplerCatalogResult(
           rowCount: result.tables.reduce((sum, table) => sum + table.rowCount, 0)
         }),
     outputs,
-    notes: descriptor.notes ?? [],
+    notes: [
+      ...(descriptor.notes ?? []),
+      ...descriptor.outputs.flatMap(output =>
+        output.presentationException
+          ? [`${output.tableId}: ${output.presentationException.reason}`]
+          : []
+      )
+    ],
     chosen: describeChosenParameters(records, binding, descriptor, result.parameters, context),
     cautions,
     next,

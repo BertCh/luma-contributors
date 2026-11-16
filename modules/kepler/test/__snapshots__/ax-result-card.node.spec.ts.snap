@@ -1,0 +1,231 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`AX-41 twelve documented result cards > cluster-and-outlier-map renders its actual run sentence, choices, cautions and engine 1`] = `
+{
+  "cautions": [
+    "pseudo-p-values",
+    "multiple-testing-uncorrected",
+  ],
+  "chosen": [
+    "Value to map: rate",
+    "Neighborhood queen: set by this analysis: Polygons are neighbors when they touch (queen contiguity). A distance or k-nearest rule on centroids gave 2 to 213 neighbors on polygons of very unequal size, queen gave 3 to 8.",
+    "Coordinate system EPSG:4326: declared for the dataset",
+    "Conditional permutations (0 disables) 999: set by this analysis: 999 permutations (GeoDa’s default) let a pseudo p-value reach 0.001; fewer permutations can be too coarse for a corrected threshold",
+    "Random seed 1: set by this analysis",
+    "Significance level 0.05: set by this analysis",
+  ],
+  "engine": "Computed on the CPU with the reference engine.",
+  "fallback": "The CPU engine was requested, so the GPU was not used.",
+  "otherSentences": [],
+  "sentence": "12 of 144 features are significant at a pseudo p-value of 0.05 or less after false discovery rate correction: 12 high-high cores.",
+}
+`;
+
+exports[`AX-41 twelve documented result cards > clusters-and-footprints renders its actual run sentence, choices, cautions and engine 1`] = `
+{
+  "cautions": [],
+  "chosen": [
+    "Search distance 190 m: median nearest-neighbour distance (62.4 m) times 3, the typical spacing of the points",
+    "Coordinate system EPSG:4326: declared for the dataset",
+  ],
+  "engine": "Computed on the CPU with the reference engine.",
+  "fallback": "The CPU engine was requested, so the GPU was not used.",
+  "otherSentences": [
+    "The result has 3 rows.",
+  ],
+  "sentence": "Found 3 clusters; 142 of 860 points (16.5%) are noise and the largest cluster holds 35.6% of all points.",
+}
+`;
+
+exports[`AX-41 twelve documented result cards > contiguity-correlogram renders its actual run sentence, choices, cautions and engine 1`] = `
+{
+  "cautions": [
+    "pseudo-p-values",
+  ],
+  "chosen": [
+    "Value to test: value",
+    "Largest contiguity order 6: set by this analysis",
+    "Contiguity queen: set by this analysis",
+    "Permutations 999: set by this analysis",
+    "Random seed 1: set by this analysis",
+    "Significance level 0.05: set by this analysis",
+    "Coordinate system EPSG:4326: declared for the dataset",
+  ],
+  "engine": "Computed on the CPU with the reference engine.",
+  "fallback": "The CPU engine was requested, so the GPU was not used.",
+  "otherSentences": [],
+  "sentence": "Moran's I at neighbour order 1 is 0.898 (a positive value means similar values near each other), with pseudo p-value 0.001 from 999 permutations (the number of permutations with a value at least as extreme as the observed one in either direction, plus one, divided by 999 plus one); a result this extreme would be rare under a random pattern at the 0.05 level.",
+}
+`;
+
+exports[`AX-41 twelve documented result cards > count-by-area renders its actual run sentence, choices, cautions and engine 1`] = `
+{
+  "cautions": [
+    "counts-where-rates-expected",
+  ],
+  "chosen": [
+    "Statistic count: set by this analysis",
+    "Value to summarise: severity",
+    "Coordinate system EPSG:4326: declared for the dataset",
+  ],
+  "engine": "Computed on the CPU with the reference engine.",
+  "fallback": "The CPU engine was requested, so the GPU was not used.",
+  "otherSentences": [],
+  "sentence": "600 points across 144 areas: 4.17 per area on average, up to 216 in one area.",
+}
+`;
+
+exports[`AX-41 twelve documented result cards > density-surface renders its actual run sentence, choices, cautions and engine 1`] = `
+{
+  "cautions": [],
+  "chosen": [
+    "Cell size 30 m: shorter side of the extent over 250, Esri's default cell size for density and point-to-raster",
+    "Bandwidth 700 m: Silverman's rule bandwidth: the spread of the 860 points times n^(-1/6), as the kernel density operation computes it, which smooths clustered data too much",
+    "Kernel gaussian: set by this analysis",
+    "Publish zero-density cells false: set by this analysis",
+    "Coordinate system EPSG:4326: declared for the dataset",
+  ],
+  "engine": "Computed on the CPU with the reference engine.",
+  "fallback": "The CPU engine was requested, so the GPU was not used.",
+  "otherSentences": [],
+  "sentence": "Density ranges from 0.00000102 to 0.0000801 across 62,985 values.",
+}
+`;
+
+exports[`AX-41 twelve documented result cards > distribution-by-zone renders its actual run sentence, choices, cautions and engine 1`] = `
+{
+  "cautions": [],
+  "chosen": [
+    "Value to describe: severity",
+    "Quantile probabilities (0 to 1, at most 9): set by this analysis",
+    "Coordinate system EPSG:4326: declared for the dataset",
+  ],
+  "engine": "Computed on the CPU with the reference engine.",
+  "fallback": "The CPU engine was requested, so the GPU was not used.",
+  "otherSentences": [],
+  "sentence": "Median ranges from 1 to 8 across 97 values.",
+}
+`;
+
+exports[`AX-41 twelve documented result cards > excess-risk renders its actual run sentence, choices, cautions and engine 1`] = `
+{
+  "cautions": [
+    "small-denominators",
+  ],
+  "chosen": [
+    "Cases (numerator): cases",
+    "Population (denominator): population",
+    "Contiguity queen: set by this analysis",
+    "Areas with no neighbour undefined: set by this analysis",
+    "Coordinate system EPSG:4326: declared for the dataset",
+  ],
+  "engine": "Computed on the CPU with the reference engine.",
+  "fallback": "The CPU engine was requested, so the GPU was not used.",
+  "otherSentences": [],
+  "sentence": "Smoothed excess risk ranges from 0.268 to 2.21 across 144 values.",
+}
+`;
+
+exports[`AX-41 twelve documented result cards > hot-spot-map renders its actual run sentence, choices, cautions and engine 1`] = `
+{
+  "cautions": [],
+  "chosen": [
+    "Value to sum per cell (empty counts points): severity",
+    "Lattice cell size 380 m: mean point spacing (256 m) times 1.5, the side of the square that holds one point on average over the extent of 860 points, so a cell of this size holds about 2.25 points on average",
+    "Neighborhood queen: set by this analysis",
+    "Neighborhood radius (cells) 1: set by this analysis",
+    "Multiple testing benjamini-hochberg: set by this analysis",
+    "Coordinate system EPSG:4326: declared for the dataset",
+  ],
+  "engine": "Computed on the CPU with the reference engine.",
+  "fallback": "The CPU engine was requested, so the GPU was not used.",
+  "otherSentences": [],
+  "sentence": "43 of 420 cells are significant hot spots and 0 are significant cold spots at 90% confidence after false discovery rate correction.",
+}
+`;
+
+exports[`AX-41 twelve documented result cards > idw-surface renders its actual run sentence, choices, cautions and engine 1`] = `
+{
+  "cautions": [],
+  "chosen": [
+    "Measured value: rainfall",
+    "Cell size 40 m: shorter side of the extent over 250, Esri's default cell size for density and point-to-raster",
+    "Search radius 2,300 m: upper fence of the nearest-neighbour distances (763 m) times 3,290 m, the upper quartile plus three interquartile ranges, a band that isolated points do not inflate; no points lie beyond the unscaled spacing fence; this count describes the unscaled statistic, and actual isolation depends on the final distance band",
+    "Distance power 2: set by this analysis",
+    "Nearest-sample limit (0 = all) 12: set by this analysis",
+    "Minimum samples per cell 3: set by this analysis",
+    "Publish nodata cells false: set by this analysis",
+    "Coordinate system EPSG:4326: declared for the dataset",
+  ],
+  "engine": "Computed on the CPU with the reference engine.",
+  "fallback": "The CPU engine was requested, so the GPU was not used.",
+  "otherSentences": [],
+  "sentence": "Value ranges from 4.08 to 24.2 across 62,250 values.",
+}
+`;
+
+exports[`AX-41 twelve documented result cards > kriging-with-diagnostics renders its actual run sentence, choices, cautions and engine 1`] = `
+{
+  "cautions": [],
+  "chosen": [
+    "Measured value: rainfall",
+    "Cell size 79 m: shorter side of the extent over 250 (39.7 m) times 2, Esri's default cell size for density and point-to-raster",
+    "Variogram fit: set by this analysis",
+    "Variogram model (auto picks the best fit) auto: set by this analysis",
+    "Lag bins of the empirical variogram 15: set by this analysis",
+    "Nearest samples per prediction 16: set by this analysis",
+    "Coordinate system EPSG:4326: declared for the dataset",
+  ],
+  "engine": "Computed on the CPU with the reference engine.",
+  "fallback": "The CPU engine was requested, so the GPU was not used.",
+  "otherSentences": [
+    "The result has 420 rows.",
+    "The result has 15 rows.",
+  ],
+  "sentence": "Value ranges from 3.88 to 25 across 16,002 values.",
+}
+`;
+
+exports[`AX-41 twelve documented result cards > rate-cluster-map renders its actual run sentence, choices, cautions and engine 1`] = `
+{
+  "cautions": [
+    "pseudo-p-values",
+  ],
+  "chosen": [
+    "Cases (numerator): cases",
+    "Population (denominator): population",
+    "Contiguity queen: set by this analysis",
+    "Permutations 999: set by this analysis",
+    "Random seed 1: set by this analysis",
+    "Significance level 0.05: set by this analysis",
+    "Multiple-testing correction benjamini-hochberg: set by this analysis",
+    "Coordinate system EPSG:4326: declared for the dataset",
+  ],
+  "engine": "Computed on the CPU with the reference engine.",
+  "fallback": "The CPU engine was requested, so the GPU was not used.",
+  "otherSentences": [],
+  "sentence": "13 of 144 features are significant at a pseudo p-value of 0.05 or less after false discovery rate correction: 12 high-high cores and 1 high-low outlier.",
+}
+`;
+
+exports[`AX-41 twelve documented result cards > regression-with-diagnostics renders its actual run sentence, choices, cautions and engine 1`] = `
+{
+  "cautions": [
+    "pseudo-p-values",
+  ],
+  "chosen": [
+    "Response: outcome",
+    "Predictors: income,density",
+    "Neighbours for the residual test auto: set by this analysis",
+    "Permutations 999: set by this analysis",
+    "Coordinate system EPSG:4326: declared for the dataset",
+  ],
+  "engine": "Computed on the CPU with the reference engine.",
+  "fallback": "The CPU engine was requested, so the GPU was not used.",
+  "otherSentences": [
+    "The residual Moran's I is 0.0507 (a positive value means similar residuals near each other), with pseudo p-value 0.166 from 999 permutations (the number of permutations with a value at least as extreme as the observed one in either direction, plus one, divided by 999 plus one); this is consistent with a random pattern at the 0.05 level.",
+    "Residual ranges from -8.51 to 11.5 across 144 values.",
+  ],
+  "sentence": "R² is 0.90 on 144 observations (adjusted R² 0.90), a measure of how closely the model fits the data rather than of cause.",
+}
+`;

@@ -3,10 +3,17 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  evaluateGPUAnalysisParameterCondition,
+  getGPUAnalysisParameterComparisons
+} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+import {
   assignGPUAnalysisFieldRoles,
   evaluateGPUAnalysisRequirements,
   getGPUAnalysisCatalogGeometryForDataKind,
   getGPUAnalysisQuestion,
+  getGPUVecchiaLogLikelihoodParameterValues,
+  getGPUVecchiaSpaceTimeLogLikelihoodParameterValues,
   GPU_ANALYSIS_QUESTIONS,
   guessGPUAnalysisMeasurementLevel,
   matchGPUAnalysisFieldRole,
@@ -20,6 +27,10 @@ import {
   type GPUAnalysisRequirementSpec,
   type GPUSpatialAnalysisDataKind
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {
+  isValidationVecchiaCovarianceUsable,
+  makeValidationSpaceTimeCovariance
+} from '../analysis/catalog-validation-vecchia';
 import type {
   CatalogInputSpec,
   CatalogOperationBinding,
@@ -28,6 +39,7 @@ import type {
 import {KEPLER_CURATED_ANALYSES} from '../curated/curated-analyses';
 import type {KeplerCuratedAnalysis} from '../curated/curated-analysis-types';
 import type {KeplerDatasetProfile} from '../profile/dataset-profile-types';
+import {getKeplerDatasetNetworkProfile} from '../profile/dataset-network-profile';
 import {
   getKeplerEffectiveEngine,
   KEPLER_CPU_WORK_CAPS,
@@ -41,7 +53,8 @@ import {
 } from './operation-descriptors';
 import type {
   KeplerOperationDescriptor,
-  KeplerOperationInputDescriptor
+  KeplerOperationInputDescriptor,
+  KeplerOperationRequirement
 } from './operation-descriptor-types';
 
 // The suggestion engine: given the datasets a person has loaded, which analyses fit, why, with
@@ -68,8 +81,8 @@ import type {
  * - A `network` input accepts a line dataset (and a `network` dataset): the catalog builds the
  *   graph from lines.
  * - `trajectories` inputs accept point and line datasets, as the binding's geometry says.
- * - A table without geometry fills nothing: every catalog binding reads geometry.
- * - Surfaces, time series and the other derived kinds are not catalog inputs.
+ * This table governs feature ports only. Typed table and raster ports match geometry-free
+ * `attributes` and `surface` profiles directly in isKeplerDatasetCompatibleWithInput.
  */
 export const KEPLER_DATASET_KIND_INPUT_KINDS: Readonly<
   Partial<Record<GPUSpatialAnalysisDataKind, readonly GPUSpatialAnalysisDataKind[]>>
@@ -121,7 +134,9 @@ export function getKeplerDatasetGeometries(dataset: KeplerDatasetProfile): Catal
  * {@link KEPLER_DATASET_KIND_INPUT_KINDS} lists for the input's kind, and a geometry it holds is
  * one the input accepts (a layer that mixes families is judged later: the catalog rejects an input
  * whose features are not all of an accepted kind). `restrictedGeometry` narrows the accepted
- * geometry further (a curated analysis whose slot is `polygons` takes areas only).
+ * geometry further (a curated analysis whose slot is `polygons` takes areas only). Typed table
+ * ports instead read geometry-free attributes profiles; raster ports read surface profiles whose
+ * rowCount is the decoded cell count, not the workflow metadata table's zero rows.
  */
 export function isKeplerDatasetCompatibleWithInput(
   dataset: KeplerDatasetProfile,
@@ -129,6 +144,16 @@ export function isKeplerDatasetCompatibleWithInput(
   inputKind: GPUSpatialAnalysisDataKind,
   restrictedGeometry?: CatalogGeometry
 ): boolean {
+  if (input.dataKind === 'table' || input.dataKind === 'raster') {
+    const expectedKind = input.dataKind === 'table' ? 'attributes' : 'surface';
+    return (
+      restrictedGeometry === undefined &&
+      inputKind === expectedKind &&
+      dataset.kind === expectedKind &&
+      dataset.geometryColumns.length === 0 &&
+      getKeplerDatasetGeometries(dataset).length === 0
+    );
+  }
   const geometries = getKeplerDatasetGeometries(dataset).filter(
     geometry =>
       input.accepts.includes(geometry) &&
@@ -184,6 +209,9 @@ export type KeplerOperationApplicability = {
   outputKinds: Readonly<Record<string, GPUSpatialAnalysisDataKind>>;
   /** Binding string parameter to the column or columns written into it. */
   fieldBindings: Readonly<Record<string, string | readonly string[]>>;
+  /** Default-resolution details shared with executable workbench controls. */
+  inactive: readonly string[];
+  confirmations: readonly string[];
   /** Descriptor requirements and the binding's own capacities, for the inputs that have a dataset. */
   requirements: readonly KeplerApplicabilityRequirement[];
   /** Everything a person has to supply or settle; empty exactly when the status is `ready`. */
@@ -236,6 +264,8 @@ export type KeplerOperationApplicability = {
 export type KeplerApplicabilityOptions = {
   /** Columns a person chose, by the name of the binding string parameter that receives them. */
   fieldBindings?: Readonly<Record<string, string | readonly string[]>>;
+  /** Require the selected assignment to use this dataset in at least one input. */
+  requiredDatasetId?: string;
   /** Dataset choices made by the analyst, by binding input name. */
   inputAssignments?: Readonly<Record<string, string>>;
   /** Curated slot names whose whole words may identify a dataset for a binding input. */
@@ -314,12 +344,7 @@ function isRoleRequired(
   if (typeof role.required === 'boolean') {
     return role.required;
   }
-  const value = parameters[role.required.whenParameter];
-  return (
-    value !== undefined &&
-    !Array.isArray(value) &&
-    role.required.equals.includes(value as string | number | boolean)
-  );
+  return evaluateGPUAnalysisParameterCondition(role.required, parameters);
 }
 
 function hasNameAffinity(
@@ -398,7 +423,7 @@ const COST_WORDS: readonly string[] = [
   'weight'
 ];
 
-type SpecificRoleKind = 'time' | 'one-way' | 'cost' | 'filter';
+type SpecificRoleKind = 'time' | 'location' | 'one-way' | 'cost' | 'filter';
 
 /** The meaning of a role that only a column with evidence may fill; undefined for a general role. */
 function getSpecificRoleKind(field: GPUAnalysisFieldRoleSpec): SpecificRoleKind | undefined {
@@ -410,6 +435,7 @@ function getSpecificRoleKind(field: GPUAnalysisFieldRoleSpec): SpecificRoleKind 
   if (roleTokens.includes('oneway') || (roleTokens.includes('one') && roleTokens.includes('way'))) {
     return 'one-way';
   }
+  if (roleTokens.includes('location')) return 'location';
   if (roleTokens.includes('cost')) {
     return 'cost';
   }
@@ -424,6 +450,11 @@ function hasEvidenceFor(kind: SpecificRoleKind, column: GPUAnalysisColumnProfile
   switch (kind) {
     case 'time':
       return column.type === 'time' || tokens.some(token => TIME_WORDS.includes(token));
+    case 'location':
+      return (
+        column.measurement === 'identifier' ||
+        tokens.some(token => ['location', 'site', 'station', 'zone'].includes(token))
+      );
     case 'one-way':
       return (
         tokens.includes('oneway') ||
@@ -447,9 +478,9 @@ function getColumnConfidence(column: GPUAnalysisColumnProfile): 'declared' | 'hi
   return confidence === 'high' ? 'high' : 'low';
 }
 
-/** An optional role that changes what an analysis computes (a weight or a value) is never filled unasked. */
+/** Optional quantities that change the calculation must be selected explicitly. */
 function isComputingOptionalRole(field: GPUAnalysisFieldRoleSpec, required: boolean): boolean {
-  return !required && /^(weight|value|second-?value)$/i.test(field.role);
+  return !required && /^(weight|value|second-?value|scale|error-?variance)$/i.test(field.role);
 }
 
 /** Columns that hold a position: the profile's point columns and columns named like one. */
@@ -472,7 +503,7 @@ function getCoordinateColumnNames(
 }
 
 function toNames(value: string | readonly string[] | undefined): readonly string[] {
-  return value === undefined ? [] : typeof value === 'string' ? [value] : value;
+  return value === undefined || value === '' ? [] : typeof value === 'string' ? [value] : value;
 }
 
 /**
@@ -548,7 +579,13 @@ function assignRoles(
   const takenNames = new Set<string>();
   const userRoles = new Set<string>();
   for (const field of inputDescriptor.fields) {
-    const chosen = userColumns[field.parameter];
+    const pointCoordinate =
+      field.autoAssign === 'point-longitude'
+        ? dataset.pointColumns?.longitude
+        : field.autoAssign === 'point-latitude'
+          ? dataset.pointColumns?.latitude
+          : undefined;
+    const chosen = userColumns[field.parameter] ?? pointCoordinate;
     if (chosen !== undefined) {
       roleColumns[field.role] = chosen;
       userRoles.add(field.role);
@@ -619,10 +656,44 @@ function assignRoles(
       continue;
     }
     const required = isRoleRequired(field, parameters);
+    if (field.autoAssign === false) {
+      roleCandidates[field.role] = matchGPUAnalysisFieldRole(field, pool)
+        .map(candidate => candidate.name)
+        .slice(0, 5);
+      if (required) unfilled.push(field.role);
+      continue;
+    }
+    if (field.autoAssign !== undefined) {
+      roleCandidates[field.role] = matchGPUAnalysisFieldRole(field, columns)
+        .map(candidate => candidate.name)
+        .slice(0, 5);
+      if (
+        required ||
+        (field.autoAssign !== 'explicit' &&
+          (dataset.pointColumns ||
+            (dataset.geometryFeatureCounts === undefined &&
+              dataset.geometryColumns.length === 0 &&
+              dataset.catalogGeometry !== 'line')))
+      ) {
+        mappingReasons.push({
+          what: `Choose the ${field.autoAssign === 'explicit' ? 'explicit' : 'native point'} column for "${field.label}"`,
+          remedy: 'Declare both pointColumns or explicitly map the required fields',
+          emptyRole: true
+        });
+      }
+      continue;
+    }
     const specific = getSpecificRoleKind(field);
     if (specific !== undefined) {
       const evidence = pool.filter(column => hasEvidenceFor(specific, column));
-      const match = matchGPUAnalysisFieldRole(field, evidence)[0];
+      const matches = matchGPUAnalysisFieldRole(field, evidence);
+      // A named location identifier outranks an unrelated numeric category.
+      const match =
+        (specific === 'location'
+          ? matches.find(candidate =>
+              hasNameAffinity(field, evidence.find(column => column.name === candidate.name)!)
+            )
+          : undefined) ?? matches[0];
       if (match) {
         roleColumns[field.role] = match.name;
         pool = pool.filter(column => column.name !== match.name);
@@ -643,7 +714,7 @@ function assignRoles(
           unfilled.push(field.role);
         } else {
           mappingReasons.push({
-            what: `"${field.label}": no column is named or typed like ${specific === 'time' ? 'a time' : specific === 'one-way' ? 'a one-way flag' : 'a cost'}, so none was proposed`,
+            what: `"${field.label}": no column is named or typed like ${specific === 'time' ? 'a time' : specific === 'location' ? 'a location identifier' : specific === 'one-way' ? 'a one-way flag' : 'a cost'}, so none was proposed`,
             remedy: `Choose the column that holds this (${anyType.slice(0, 3).join(', ')} fit by type only)`,
             emptyRole: true
           });
@@ -822,7 +893,8 @@ const MAXIMUM_ASSIGNMENT_ALTERNATIVES = 8;
 
 function buildInputAssignments(
   pairings: readonly (readonly InputPairing[])[],
-  countProblems: (choice: readonly (InputPairing | undefined)[]) => number
+  countProblems: (choice: readonly (InputPairing | undefined)[]) => number,
+  requiredDatasetId?: string
 ): {
   choice: (InputPairing | undefined)[];
   alternatives: (InputPairing | undefined)[][];
@@ -837,6 +909,7 @@ function buildInputAssignments(
   const used = new Set<string>();
   const visit = (index: number, filled: number, fit: number): void => {
     if (index === pairings.length) {
+      if (requiredDatasetId !== undefined && !used.has(requiredDatasetId)) return;
       const problems = countProblems(choice);
       if (
         !best ||
@@ -1014,7 +1087,7 @@ function extentsOverlap(
 
 /** Only a dataset id establishes identity; equal metadata can describe independent observations. */
 function isSameLayer(left: KeplerDatasetProfile, right: KeplerDatasetProfile): boolean {
-  return left.datasetId === right.datasetId;
+  return (left.sourceDatasetId ?? left.datasetId) === (right.sourceDatasetId ?? right.datasetId);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1022,7 +1095,11 @@ function isSameLayer(left: KeplerDatasetProfile, right: KeplerDatasetProfile): b
 // ---------------------------------------------------------------------------------------------
 
 type MissingKind = 'hard' | 'mapping' | 'confirmation';
-type MissingEntry = KeplerApplicabilityMissing & {kind: MissingKind; emptyRole?: boolean};
+type MissingEntry = KeplerApplicabilityMissing & {
+  kind: MissingKind;
+  emptyRole?: boolean;
+  parameterConfirmation?: boolean;
+};
 
 /** Parameter units that are lengths in the coordinate frame of the data. */
 const LENGTH_UNITS: readonly string[] = ['crs', 'm', 'metre', 'meter', 'coordinate units'];
@@ -1105,12 +1182,12 @@ function getCacheNode(
  *   overlap, a `block` requirement
  *   failed on declared or measured facts, a coordinate declaration contradicts the extent, or the
  *   operation needs a GPU and the host has none.
- * - `needs-mapping`: it could run, but a required column was filled only by a poor or
- *   low-confidence column, several columns fit equally well, there is no plausible rate pair, a
+ * - `needs-mapping`: it could run, but several columns fit equally well, there is no plausible rate pair, a
  *   length default could not be derived from the data, or a required column has no proposal.
- * - `needs-confirmation`: a `block` requirement is unknown, a coordinate model that the analysis
- *   measures with is a low-confidence guess, or the row semantics (declared or guessed)
- *   contradict what the analysis is made for. A guess never blocks.
+ * - `needs-confirmation`: an operational `block` requirement is unknown (for example capacity),
+ *   or declared row semantics contradict the analysis. Unknown row meaning and guessed metadata
+ *   stay visible as warnings and questions, without preventing a run or a field correction,
+ *   unless an explicit blocking `declared-coordinates` requirement asks for a declaration.
  * - `ready`: none of the above. Warning-level requirements never change the status.
  * - Capacity comes from the binding itself even when the descriptor does not state it.
  */
@@ -1143,7 +1220,30 @@ function evaluateApplicability(
   datasets: readonly KeplerDatasetProfile[],
   options: KeplerApplicabilityOptions
 ): KeplerOperationApplicability {
-  const overrides = options.overrides ?? {};
+  // Reuse validated publication mappings, including embedded time units. Explicit user choices
+  // take precedence, and coordinate declarations may have changed since initial profiling.
+  const nativeProfiles = descriptor.inputs
+    .filter(
+      input =>
+        input.kind === 'trajectories' &&
+        binding.inputs.some(specification => specification.name === input.name)
+    )
+    .flatMap(input =>
+      datasets.filter(
+        dataset =>
+          dataset.trajectory &&
+          (!options.inputAssignments?.[input.name] ||
+            options.inputAssignments[input.name] === dataset.datasetId)
+      )
+    );
+  const nativeProfile = nativeProfiles.length === 1 ? nativeProfiles[0] : undefined;
+  const overrides = {
+    ...nativeProfile?.trajectory?.parameters,
+    ...(nativeProfile?.coordinates
+      ? {coordinateSystem: nativeProfile.coordinates.model === 'planar' ? 'planar' : 'EPSG:4326'}
+      : {}),
+    ...options.overrides
+  };
   const inputDescriptors = new Map(descriptor.inputs.map(input => [input.name, input]));
   // A column parameter set by an override is a column the person chose.
   const fieldParameters = new Set(
@@ -1151,7 +1251,7 @@ function evaluateApplicability(
   );
   const userColumns: Record<string, string | readonly string[]> = {};
   for (const [name, value] of Object.entries(overrides)) {
-    if (fieldParameters.has(name) && typeof value === 'string' && value !== '') {
+    if (fieldParameters.has(name) && typeof value === 'string') {
       userColumns[name] = value.includes(',') ? value.split(',').map(part => part.trim()) : value;
     }
   }
@@ -1174,7 +1274,7 @@ function evaluateApplicability(
     kind: MissingKind,
     what: string,
     remedy: string,
-    extra: {emptyRole?: boolean} = {}
+    extra: {emptyRole?: boolean; parameterConfirmation?: boolean} = {}
   ): void => {
     if (!entries.some(entry => entry.what === what)) {
       entries.push({kind, what, remedy, ...extra});
@@ -1266,51 +1366,58 @@ function evaluateApplicability(
     const kept = [...all]
       .sort(
         (left, right) =>
-          right.fit - left.fit || compareText(left.dataset.datasetId, right.dataset.datasetId)
+          Number(right.dataset.datasetId === options.requiredDatasetId) -
+            Number(left.dataset.datasetId === options.requiredDatasetId) ||
+          right.fit - left.fit ||
+          compareText(left.dataset.datasetId, right.dataset.datasetId)
       )
       .slice(0, KEPLER_MAXIMUM_DATASETS_PER_INPUT)
       .sort((left, right) => compareText(left.dataset.datasetId, right.dataset.datasetId));
     droppedNotes.push(
-      `${all.length - kept.length} more loaded layers fit "${input.label}" and were not tried (only the best ${KEPLER_MAXIMUM_DATASETS_PER_INPUT} by fit are)`
+      `${all.length - kept.length} more loaded layers fit "${input.label}" and were not tried (only the best ${KEPLER_MAXIMUM_DATASETS_PER_INPUT} by fit${options.requiredDatasetId === undefined ? '' : ', reserving a place for the required dataset,'} are)`
     );
     return kept;
   });
-  const assignment = buildInputAssignments(pairings, choice => {
-    const roleProblems = choice.reduce(
-      (total, pairing) =>
-        total +
-        (pairing
-          ? pairing.roles.unfilledRoles.length +
-            pairing.roles.hardReasons.length +
-            pairing.roles.mappingReasons.length
-          : 0),
-      0
-    );
-    const shared = getSharedFieldCandidates(binding, descriptor, choice);
-    return (
-      roleProblems +
-      [...shared].filter(([parameter, candidates]) => {
-        const needed =
-          (userColumns[parameter] !== undefined &&
+  const assignment = buildInputAssignments(
+    pairings,
+    choice => {
+      const roleProblems = choice.reduce(
+        (total, pairing) =>
+          total +
+          (pairing
+            ? pairing.roles.unfilledRoles.length +
+              pairing.roles.hardReasons.length +
+              pairing.roles.mappingReasons.length
+            : 0),
+        0
+      );
+      const shared = getSharedFieldCandidates(binding, descriptor, choice);
+      return (
+        roleProblems +
+        [...shared].filter(([parameter, candidates]) => {
+          const needed =
+            (toNames(userColumns[parameter]).length > 0 &&
+              descriptor.inputs.some(input =>
+                input.fields.some(
+                  field =>
+                    field.parameter === parameter &&
+                    (typeof field.required === 'boolean' || isRoleRequired(field, baseParameters))
+                )
+              )) ||
             descriptor.inputs.some(input =>
               input.fields.some(
-                field =>
-                  field.parameter === parameter &&
-                  (typeof field.required === 'boolean' || isRoleRequired(field, baseParameters))
+                field => field.parameter === parameter && isRoleRequired(field, baseParameters)
               )
-            )) ||
-          descriptor.inputs.some(input =>
-            input.fields.some(
-              field => field.parameter === parameter && isRoleRequired(field, baseParameters)
-            )
+            );
+          const selected = toNames(userColumns[parameter]);
+          return (
+            needed && (candidates.length === 0 || selected.some(name => !candidates.includes(name)))
           );
-        const selected = toNames(userColumns[parameter]);
-        return (
-          needed && (candidates.length === 0 || selected.some(name => !candidates.includes(name)))
-        );
-      }).length
-    );
-  });
+        }).length
+      );
+    },
+    options.requiredDatasetId
+  );
   const chosen = assignment.choice;
   const inputAssignmentAlternatives = assignment.alternatives.map(choice =>
     Object.fromEntries(
@@ -1337,7 +1444,7 @@ function evaluateApplicability(
     );
     const needed =
       members.some(field => isRoleRequired(field, baseParameters)) ||
-      (userColumns[parameter] !== undefined &&
+      (toNames(userColumns[parameter]).length > 0 &&
         members.some(
           field => typeof field.required === 'boolean' || isRoleRequired(field, baseParameters)
         ));
@@ -1407,17 +1514,26 @@ function evaluateApplicability(
       filledKinds.add(kind);
       continue;
     }
-    const phrase = describeKindPhrase(kind);
+    const phrase =
+      input.dataKind === 'table'
+        ? 'geometry-free table rows'
+        : input.dataKind === 'raster'
+          ? 'numeric raster cells'
+          : describeKindPhrase(kind);
     const second = filledKinds.has(kind) ? 'second ' : '';
     const hasTable = datasets.some(dataset => getKeplerDatasetGeometry(dataset) === undefined);
     add(
       'hard',
       `A ${second}dataset of ${phrase} for "${input.label}"`,
-      datasets.length === 0
-        ? `Load a dataset of ${phrase}`
-        : hasTable && !second
-          ? `Load a layer of ${phrase}, or give a table coordinate columns or a geometry column`
-          : `Load a layer of ${phrase}`
+      input.dataKind === 'table'
+        ? 'Load a geometry-free table with the required columns'
+        : input.dataKind === 'raster'
+          ? 'Load one bounded numeric raster band/grid'
+          : datasets.length === 0
+            ? `Load a dataset of ${phrase}`
+            : hasTable && !second
+              ? `Load a layer of ${phrase}, or give a table coordinate columns or a geometry column`
+              : `Load a layer of ${phrase}`
     );
     filledKinds.add(kind);
   }
@@ -1437,6 +1553,13 @@ function evaluateApplicability(
   const requirements: KeplerApplicabilityRequirement[] = [];
   const guessedFacts: KeplerGuessedFact[] = [];
   const roleCandidates: Record<string, readonly string[]> = {};
+  if (nativeProfiles.length > 1) {
+    add(
+      'mapping',
+      'Choose which validated trajectory dataset to analyze',
+      'Choose the tracks input dataset so its identity mappings and timestamp units can be applied'
+    );
+  }
   const unusedColumns: string[] = [];
   let declaredContradiction = false;
 
@@ -1456,17 +1579,23 @@ function evaluateApplicability(
               typeof field.required === 'boolean' || isRoleRequired(field, baseParameters);
             // A field can determine its own controller through a measurement default. Retain
             // that proposal for resolving the controller, then judge activity on its final value.
-            const controller =
-              typeof field.required === 'boolean' ? undefined : field.required.whenParameter;
-            const controllerPolicy = descriptor.parameters.find(
-              parameter => parameter.name === controller
-            )?.defaultPolicy;
-            const determinesController =
-              controller !== undefined &&
-              !(controller in parameterOverrides) &&
-              controllerPolicy?.from === 'field-measurement' &&
-              controllerPolicy.input === entry.inputName &&
-              controllerPolicy.role === field.role;
+            const controllers =
+              typeof field.required === 'boolean'
+                ? []
+                : getGPUAnalysisParameterComparisons(field.required).map(comparison =>
+                    'parameter' in comparison ? comparison.parameter : comparison.whenParameter
+                  );
+            const determinesController = controllers.some(controller => {
+              const controllerPolicy = descriptor.parameters.find(
+                parameter => parameter.name === controller
+              )?.defaultPolicy;
+              return (
+                !(controller in parameterOverrides) &&
+                controllerPolicy?.from === 'field-measurement' &&
+                controllerPolicy.input === entry.inputName &&
+                controllerPolicy.role === field.role
+              );
+            });
             return value === undefined || (!active && !determinesController)
               ? []
               : [[field.parameter, value]];
@@ -1547,6 +1676,8 @@ function evaluateApplicability(
       }
       const names = toNames(boundColumns);
       fieldBindings[field.parameter] = boundColumns;
+      // An explicit empty optional mapping selects fallback behavior, not a filled role.
+      if (names.length === 0) continue;
       const firstColumn = columns.find(column => column.name === names[0]);
       const confidence = firstColumn ? getColumnConfidence(firstColumn) : 'low';
       filledRoles.push({
@@ -1644,18 +1775,15 @@ function evaluateApplicability(
         const ratePair = field.measurement?.includes('rate')
           ? suggestGPUAnalysisRatePairs(columns)[0]
           : undefined;
-        add(
-          'mapping',
-          `Choose the column for "${field.label}": ${chosenMatch.warning ?? `${firstName} is not clearly meant for it`}`,
-          ratePair
-            ? `Make a rate first: divide ${ratePair.numerator} by ${ratePair.denominator}, then choose it`
-            : 'Choose the column that holds this quantity, or declare what a column measures'
+        warnings.push(
+          `Check the guessed column for "${field.label}": ${chosenMatch.warning ?? `${firstName} is not clearly meant for it`}. ` +
+            (ratePair
+              ? `Make a rate first: divide ${ratePair.numerator} by ${ratePair.denominator}, then choose it`
+              : 'Choose the column that holds this quantity, or declare what a column measures')
         );
       } else if (confidence === 'low' && field.measurement && firstColumn) {
-        add(
-          'mapping',
-          `Choose the column for "${field.label}": ${firstName} is only a guess (${firstColumn.measurementReason ?? 'from its name and values'})`,
-          'Declare what the column measures, or choose another column'
+        warnings.push(
+          `Check the guessed column for "${field.label}": ${firstName} is only a guess (${firstColumn.measurementReason ?? 'from its name and values'}). Declare what the column measures, or choose another column`
         );
       } else if (!field.multiple) {
         // `role.accepts` lists the preferred column types first, so only columns of the same
@@ -1721,27 +1849,56 @@ function evaluateApplicability(
     // Requirements: the descriptor's, plus the binding's own capacities where the descriptor is
     // silent or states a looser limit. A requirement about a column role that has no column cannot
     // be evaluated: the role is optional and unused, or it is missing and already listed.
-    const own: GPUAnalysisRequirementSpec[] = descriptor.requirements.filter(
-      requirement =>
-        requirement.input === inputName &&
-        (!requirement.activeWhen ||
-          requirement.activeWhen.equals.includes(
-            requirementParameters[requirement.activeWhen.parameter] as string | number | boolean
-          )) &&
-        (requirement.role === undefined || roles.roleColumns[requirement.role] !== undefined)
-    );
-    const capacities: {id: 'maximum-rows' | 'maximum-vertices'; limit: number; remedy: string}[] = [
-      {
-        id: 'maximum-rows',
-        limit: input.maximumFeatures,
-        remedy: 'Filter the layer to the area of interest or aggregate it first'
-      },
-      {
-        id: 'maximum-vertices',
-        limit: input.maximumVertices,
-        remedy: 'Simplify the geometry or split the layer into tiles'
-      }
-    ];
+    const own: (GPUAnalysisRequirementSpec &
+      Pick<KeplerOperationRequirement, 'statisticsScope'>)[] = descriptor.requirements
+      .filter(
+        requirement =>
+          requirement.input === inputName &&
+          evaluateGPUAnalysisParameterCondition(requirement.activeWhen, requirementParameters) &&
+          (requirement.role === undefined ||
+            toNames(roles.roleColumns[requirement.role]).length > 0)
+      )
+      .map(requirement => {
+        const policy = requirement.limitFromParameter;
+        if (!policy) return requirement;
+        const value = requirementParameters[policy.parameter];
+        if (typeof value !== 'number' || !Number.isFinite(value))
+          throw new Error(
+            `evaluateKeplerOperationApplicability: limitFromParameter.${policy.parameter} must be a finite numeric parameter`
+          );
+        return {
+          ...requirement,
+          limit: (policy.absolute ? Math.abs(value) : value) + (policy.offset ?? 0)
+        };
+      });
+    // Surface profile rows count decoded cells, independently of a workflow's empty metadata
+    // table. Non-feature ports have no geometry vertex capacity.
+    const capacities: {id: 'maximum-rows' | 'maximum-vertices'; limit: number; remedy: string}[] =
+      input.dataKind === 'raster'
+        ? [
+            {
+              id: 'maximum-rows',
+              limit: input.maximumCells ?? 0,
+              remedy:
+                'Select a raster tile within maximumCells or use a binding with a larger cell capacity'
+            }
+          ]
+        : [
+            {
+              id: 'maximum-rows',
+              limit: input.maximumFeatures,
+              remedy: 'Filter the layer to the area of interest or aggregate it first'
+            },
+            ...(input.dataKind === 'table'
+              ? []
+              : [
+                  {
+                    id: 'maximum-vertices' as const,
+                    limit: input.maximumVertices,
+                    remedy: 'Simplify the geometry or split the layer into tiles'
+                  }
+                ])
+          ];
     for (const capacity of capacities) {
       const stated = own.filter(requirement => requirement.id === capacity.id);
       if (!stated.some(requirement => (requirement.limit ?? Infinity) <= capacity.limit)) {
@@ -1753,8 +1910,44 @@ function evaluateApplicability(
         });
       }
     }
-    const results = evaluateGPUAnalysisRequirements(own, dataset, roles.roleColumns);
-    for (const result of results) {
+    const results = evaluateGPUAnalysisRequirements(
+      own,
+      {
+        ...dataset,
+        network: getKeplerDatasetNetworkProfile(
+          dataset,
+          requirementParameters,
+          getKeplerEffectiveEngine(binding, executionEngine),
+          binding.id
+        )
+      },
+      roles.roleColumns,
+      requirementParameters
+    );
+    for (const requirementResult of results) {
+      const retainedGeometryUnknown =
+        requirementResult.state === 'failed' &&
+        !dataset.pointColumns &&
+        dataset.geometryFeatureCounts?.withoutGeometry !== 0 &&
+        own.some(
+          requirement =>
+            requirement.id === requirementResult.id &&
+            requirement.role === requirementResult.role &&
+            requirement.statisticsScope === 'retained-geometry'
+        );
+      const result = retainedGeometryUnknown
+        ? {
+            ...requirementResult,
+            state: 'unknown' as const,
+            evidence: 'not-checkable' as const,
+            message: `${requirementResult.message}; aggregate statistics cannot identify missing values on retained geometry rows`
+          }
+        : input.dataKind === 'raster' && requirementResult.id === 'maximum-rows'
+          ? {
+              ...requirementResult,
+              message: requirementResult.message.replace(/\brow(s?)\b/g, 'cell$1')
+            }
+          : requirementResult;
       const adjusted = softenGuessedFailure(
         options.unknownRowCount ? overrideRowCountResult(result) : result
       );
@@ -1780,7 +1973,7 @@ function evaluateApplicability(
               'Choose an analysis made for what the rows are, or change what the rows are declared to stand for'
             );
           } else {
-            add('confirmation', adjusted.message, 'Confirm what the rows stand for');
+            warnings.push(`${adjusted.message}. Confirm what the rows stand for`);
           }
         }
         if (stated?.source !== 'declared') {
@@ -1795,6 +1988,16 @@ function evaluateApplicability(
                   : 'unknown'
           });
         }
+      }
+      // Meaning guessed from metadata is guidance, not evidence of a failed precondition.
+      // Keep the unknown result and its evidence visible, and offer a declaration in the host.
+      // An explicit coordinate-declaration requirement still asks for confirmation before running.
+      if (
+        adjusted.state === 'unknown' &&
+        (adjusted.id === 'row-semantics' || adjusted.evidence === 'guess')
+      ) {
+        warnings.push(`${adjusted.message}${adjusted.remedy ? `. ${adjusted.remedy}` : ''}`);
+        if (adjusted.id !== 'declared-coordinates') continue;
       }
       if (adjusted.severity === 'block' && !roleIsUnfilled) {
         if (repeatsRowLimit) {
@@ -1888,8 +2091,84 @@ function evaluateApplicability(
       )
     )
   });
+  // Validate scalar and list dependencies against the same public packers and dimensions as
+  // the adapters. These checks inspect selected parameters, never individual observation rows.
+  if (binding.id.startsWith('validation-vecchia-')) {
+    const covariance = {
+      model: resolved.parameters['model'] as 'exponential' | 'matern-3/2',
+      sill: resolved.parameters['sill'] as number,
+      nugget: resolved.parameters['nugget'] as number,
+      range: resolved.parameters['range'] as number
+    };
+    try {
+      if (!isValidationVecchiaCovarianceUsable(covariance)) {
+        throw new Error(
+          'covariance requires a finite positive range and total sill at Float32 precision'
+        );
+      }
+      if (binding.id === 'validation-vecchia-space-time') {
+        getGPUVecchiaSpaceTimeLogLikelihoodParameterValues(
+          makeValidationSpaceTimeCovariance(covariance, resolved.parameters['anisotropy'] as number)
+        );
+      } else {
+        getGPUVecchiaLogLikelihoodParameterValues(covariance);
+      }
+    } catch (error) {
+      add(
+        'hard',
+        `${binding.id}: ${error instanceof Error ? error.message : String(error)}`,
+        'Choose an admissible covariance; raise nugget to the model-specific floor for the selected sill, or use the exponential model'
+      );
+    }
+  }
+  if (binding.id === 'regression-mgtwr') {
+    const predictorCount = String(resolved.parameters['predictorProperties']).split(',').length;
+    for (const name of ['componentBandwidths', 'componentTimeScales']) {
+      const components = resolved.parameters[name] as readonly number[];
+      if (components.length !== predictorCount + 1) {
+        add(
+          'hard',
+          `${binding.id}: ${name} has ${components.length} entries; ${predictorCount + 1} coefficients require one entry each, intercept first`,
+          `Supply ${predictorCount + 1} values for ${name}, or clear its override to generate defaults from the predictor list`
+        );
+      }
+    }
+  }
+  if (binding.id === 'validation-ensemble-scores' && resolved.parameters['fair'] === true) {
+    const memberCount = String(resolved.parameters['memberProperties'])
+      .split(',')
+      .filter(name => name.trim()).length;
+    if (memberCount < 2) {
+      add(
+        'hard',
+        `${binding.id}: fair scoring requires at least 2 members; ${memberCount} selected`,
+        'Select at least 2 ensemble member columns or turn fair scoring off'
+      );
+    }
+  }
   for (const confirmation of resolved.confirmations) {
-    add('confirmation', confirmation, 'Adjust the resolution or confirm the stated approximation');
+    const requiresChoice = resolved.resolutions.some(
+      resolution => resolution.requiresChoice && resolution.reason === confirmation
+    );
+    add(
+      'confirmation',
+      confirmation,
+      requiresChoice
+        ? 'Choose the timestamp encoding explicitly'
+        : 'Adjust the resolution or confirm the stated approximation',
+      {parameterConfirmation: requiresChoice}
+    );
+  }
+  for (const parameter of descriptor.parameters) {
+    if (
+      parameter.confirmation &&
+      evaluateGPUAnalysisParameterCondition(parameter.activeWhen, resolved.parameters) &&
+      resolved.parameters[parameter.name] !== true
+    ) {
+      add('confirmation', parameter.confirmation.message, parameter.confirmation.remedy, {
+        parameterConfirmation: true
+      });
+    }
   }
   let lengthDefaultFromData = false;
   for (const resolution of resolved.resolutions) {
@@ -2025,10 +2304,8 @@ function evaluateApplicability(
         });
       }
       if (sharesSpatialFrame || (coordinates.confidence === 'low' && metric)) {
-        add(
-          'confirmation',
-          `The coordinate system of "${dataset.label}" is a ${coordinates.confidence === 'low' ? 'low-confidence ' : ''}guess (${coordinates.model}${coordinates.reason ? `: ${coordinates.reason}` : ''}), and this analysis relates positions in it`,
-          'Confirm the coordinate system'
+        warnings.push(
+          `The coordinate system of "${dataset.label}" is a ${coordinates.confidence === 'low' ? 'low-confidence ' : ''}guess (${coordinates.model}${coordinates.reason ? `: ${coordinates.reason}` : ''}), and this analysis relates positions in it`
         );
       }
     }
@@ -2076,7 +2353,7 @@ function evaluateApplicability(
   ) {
     const except = cpuCap.exceptWhen;
     const excepted =
-      except !== undefined && except.equals.includes(String(resolved.parameters[except.parameter]));
+      except !== undefined && evaluateGPUAnalysisParameterCondition(except, resolved.parameters);
     const firstInput = assigned[0];
     if (!excepted && firstInput && firstInput.dataset.rowCount ** 2 > cpuCap.limit) {
       const limit = Math.floor(Math.sqrt(cpuCap.limit));
@@ -2116,7 +2393,7 @@ function evaluateApplicability(
   const caveats: string[] = [];
   const effectiveEntries = options.subjectOnly
     ? entries.filter(entry => {
-        if (entry.kind === 'hard') {
+        if (entry.kind === 'hard' || entry.parameterConfirmation) {
           return true;
         }
         caveats.push(entry.what);
@@ -2158,6 +2435,8 @@ function evaluateApplicability(
     declaredContradiction,
     hasEmptyRole: effectiveEntries.some(entry => entry.emptyRole === true),
     caveats,
+    inactive: resolved.inactive,
+    confirmations: resolved.confirmations,
     parameters: resolved.parameters,
     resolutions: resolved.resolutions,
     basic: resolved.basic,
@@ -2296,8 +2575,10 @@ export const KEPLER_LIKE_STATES_OVERLAP = 0.5;
  * Bonus for a comparison of two states whose layers do share at least half of their column names
  * and are not the same layer: the strongest evidence a change analysis can have that the two
  * layers are two observations of one thing. The mirror of the penalty above.
+ * Together with the extra-dataset bonus, this keeps a matching two-state comparison ahead of
+ * separate time-aware analyses of either state, which cannot answer the between-state question.
  */
-export const KEPLER_LIKE_STATES_BONUS = 10;
+export const KEPLER_LIKE_STATES_BONUS = 15;
 
 /**
  * Extra penalty when a layer has fewer than half the rows an analysis needs for its results to
@@ -2312,10 +2593,10 @@ export const KEPLER_DEFAULT_SUGGESTION_COUNT = 6;
 /** Number of greyed-out "one step away" analyses shown beside the suggestions. */
 export const KEPLER_BLOCKED_SUGGESTION_COUNT = 4;
 
-/** Share of the slots one primary question may take: a third, rounded up. */
+/** Share of the requested budget one primary question may take, rounded down. */
 export const KEPLER_QUESTION_SLOT_SHARE = 1 / 3;
 
-/** Operations of this prominence are never suggested; they live under "Browse all". */
+/** Specialist candidates live under "Browse all" unless validated native evidence promotes them. */
 export const KEPLER_HIDDEN_PROMINENCE = 3;
 
 /**
@@ -2326,11 +2607,13 @@ export const KEPLER_HIDDEN_PROMINENCE = 3;
 export const KEPLER_GUESSED_SEMANTICS_MATCH_BONUS = 4;
 
 /**
- * Penalty when guessed row semantics contradict what an analysis is made for. Half of a
- * declared contradiction (-50): the guess may be wrong, and the analysis is offered with a
+ * Penalty when guessed row semantics contradict what an analysis is made for. Weaker than a
+ * declared contradiction (-50), but stronger than mapping an uncertain measurement (-30).
+ * Counting sensor locations must not lead interpolation solely because a reading needs confirmation.
+ * The guess may be wrong, and the analysis is offered with a
  * question (status `needs-confirmation`) instead of being removed.
  */
-export const KEPLER_GUESSED_SEMANTICS_MISMATCH_PENALTY = -25;
+export const KEPLER_GUESSED_SEMANTICS_MISMATCH_PENALTY = -35;
 
 /**
  * Most candidates one single-input analysis is offered for: one per compatible loaded dataset, the
@@ -2394,6 +2677,8 @@ export type KeplerAnalysisSuggestion = {
 };
 
 export type KeplerSuggestionOptions = {
+  /** Anchor candidates to this loaded dataset before ranking, diversity and count limits. */
+  requiredDatasetId?: string;
   /** Number of suggestions, at least 1. Default {@link KEPLER_DEFAULT_SUGGESTION_COUNT}. */
   maximumCount?: number;
   /** Curated analyses to offer. Default: all of them. */
@@ -2500,10 +2785,24 @@ function computeScoreTerms(
   const guessedMismatches = scoredSemantics.filter(
     result => result.state === 'failed' && result.evidence !== 'declaration'
   ).length;
-  const declaredMatches = scoredSemantics.filter(
+  // Conditional count-only guards are negative evidence for surface samples, not extra
+  // information used by a row counter when they pass.
+  const matchingSemantics = scoredSemantics.filter(
+    result =>
+      !descriptor.requirements.some(
+        requirement =>
+          requirement.input === result.input &&
+          requirement.id === 'row-semantics' &&
+          requirement.activeWhen &&
+          'parameter' in requirement.activeWhen &&
+          requirement.activeWhen.parameter === 'valueProperty' &&
+          requirement.activeWhen.equals.includes('')
+      )
+  );
+  const declaredMatches = matchingSemantics.filter(
     result => result.state === 'passed' && result.evidence === 'declaration'
   ).length;
-  const guessedMatches = scoredSemantics.filter(
+  const guessedMatches = matchingSemantics.filter(
     result => result.state === 'passed' && result.evidence !== 'declaration'
   ).length;
   const failedWarnings = applicability.requirements.filter(
@@ -2549,11 +2848,25 @@ function computeScoreTerms(
   }
   return {
     curated: isCurated ? KEPLER_CURATED_BONUS : 0,
-    prominence: (3 - descriptor.prominence) * KEPLER_PROMINENCE_WEIGHT,
-    // A time role is filled only from a column with name or type evidence for it.
-    timeColumn: applicability.filledRoles.some(entry => entry.role === 'time')
-      ? KEPLER_TIME_COLUMN_BONUS
+    // Exact native track/time evidence is more specific than point/line geometry alone.
+    nativeKind: descriptor.inputs.some(
+      input =>
+        input.kind === 'trajectories' &&
+        datasets.some(
+          dataset =>
+            dataset.datasetId === applicability.inputAssignments[input.name] && dataset.trajectory
+        )
+    )
+      ? KEPLER_CURATED_BONUS + KEPLER_PROMINENCE_WEIGHT
       : 0,
+    prominence: (3 - descriptor.prominence) * KEPLER_PROMINENCE_WEIGHT,
+    // A timestamp is useful only when the method fits what the rows represent. Counting
+    // sensor locations through time does not become a surface-value analysis.
+    timeColumn:
+      declaredMismatches + guessedMismatches === 0 &&
+      applicability.filledRoles.some(entry => entry.role === 'time')
+        ? KEPLER_TIME_COLUMN_BONUS
+        : 0,
     optionalColumns:
       Math.min(confidentOptionalCount, KEPLER_OPTIONAL_ROLE_LIMIT) * KEPLER_OPTIONAL_ROLE_BONUS,
     extraDatasets: Math.max(0, assignedIds.length - 1) * KEPLER_EXTRA_DATASET_BONUS,
@@ -2608,9 +2921,16 @@ function evaluateCandidate(
   datasets: readonly KeplerDatasetProfile[],
   curated: KeplerCuratedAnalysis | undefined,
   executionEngine: 'gpu' | 'cpu',
-  idSuffix: string
+  idSuffix: string,
+  requiredDatasetId?: string
 ): Candidate {
-  let options: KeplerApplicabilityOptions = {executionEngine};
+  // Preserve D5's full specialist metadata. Exact native track/time validation unlocks only
+  // the existing bounded thinning operation; geometry alone never promotes the family.
+  const prominence =
+    binding.id === 'trajectory-thinning' && datasets.length === 1 && datasets[0].trajectory
+      ? 1
+      : descriptor.prominence;
+  let options: KeplerApplicabilityOptions = {executionEngine, requiredDatasetId};
   if (curated && curated.execution.status === 'available') {
     const execution = curated.execution;
     const inputGeometries: Record<string, CatalogGeometry> = {};
@@ -2632,7 +2952,13 @@ function evaluateCandidate(
           .map(slot => slot.name)
       ])
     );
-    options = {executionEngine, overrides: execution.parameters, inputGeometries, inputNames};
+    options = {
+      executionEngine,
+      requiredDatasetId,
+      overrides: execution.parameters,
+      inputGeometries,
+      inputNames
+    };
   }
   const applicability = evaluateKeplerOperationApplicability(
     binding,
@@ -2643,7 +2969,7 @@ function evaluateCandidate(
   const scoreTerms = computeScoreTerms(
     binding,
     applicability,
-    descriptor,
+    {...descriptor, prominence},
     curated !== undefined,
     datasets
   );
@@ -2663,7 +2989,7 @@ function evaluateCandidate(
     applicability,
     score: sumTerms(scoreTerms),
     scoreTerms,
-    prominence: descriptor.prominence,
+    prominence,
     isCurated: curated !== undefined,
     assignedCount: datasetIds.length,
     order: curated
@@ -2683,13 +3009,7 @@ function toSuggestion(candidate: Candidate): KeplerAnalysisSuggestion {
   return suggestion;
 }
 
-/**
- * Takes candidates best first. A primary question takes at most a third of the slots, rounded up,
- * with one exception: a candidate beyond its question's share is still taken when its score
- * exceeds the best score of every remaining candidate of other questions (nothing else would have
- * used the slot better). The candidates that did not fit are returned in `more` by question,
- * best first, instead of being dropped.
- */
+/** Strictly cap each question at a third of the requested budget; retain all others in Browse all. */
 function selectDiverse(
   sorted: readonly Candidate[],
   maximumCount: number
@@ -2697,30 +3017,40 @@ function selectDiverse(
   selected: KeplerAnalysisSuggestion[];
   more: Partial<Record<GPUAnalysisQuestion, KeplerAnalysisSuggestion[]>>;
 } {
-  const perQuestionLimit = Math.ceil(maximumCount * KEPLER_QUESTION_SLOT_SHARE);
+  const perQuestionLimit = Math.max(1, Math.floor(maximumCount * KEPLER_QUESTION_SLOT_SHARE));
   const counts = new Map<GPUAnalysisQuestion, number>();
-  const selected: KeplerAnalysisSuggestion[] = [];
-  const more: Partial<Record<GPUAnalysisQuestion, KeplerAnalysisSuggestion[]>> = {};
-  for (let index = 0; index < sorted.length; index++) {
-    if (selected.length >= maximumCount) {
-      break;
-    }
-    const candidate = sorted[index];
-    const used = counts.get(candidate.question) ?? 0;
-    if (used >= perQuestionLimit) {
-      const bestOther = sorted
-        .slice(index + 1)
-        .filter(other => other.question !== candidate.question)
-        .reduce((best, other) => Math.max(best, other.score), -Infinity);
-      if (candidate.score <= bestOther) {
-        const hidden = more[candidate.question] ?? [];
-        hidden.push(toSuggestion(candidate));
-        more[candidate.question] = hidden;
+  const selectedIds = new Set<string>();
+  const targets = new Set<string>();
+  // Offer different analyses before repeating one for another layer. Otherwise two highly
+  // ranked single-layer answers can exhaust a question's share and hide a paired analysis.
+  for (const allowRepeatedTarget of [false, true]) {
+    for (const candidate of sorted) {
+      const target = candidate.curatedAnalysisId ?? candidate.bindingId;
+      const used = counts.get(candidate.question) ?? 0;
+      if (
+        selectedIds.has(candidate.id) ||
+        selectedIds.size >= maximumCount ||
+        used >= perQuestionLimit ||
+        (!allowRepeatedTarget && targets.has(target))
+      ) {
         continue;
       }
+      selectedIds.add(candidate.id);
+      targets.add(target);
+      counts.set(candidate.question, used + 1);
     }
-    counts.set(candidate.question, used + 1);
-    selected.push(toSuggestion(candidate));
+  }
+  const selected: KeplerAnalysisSuggestion[] = [];
+  const more: Partial<Record<GPUAnalysisQuestion, KeplerAnalysisSuggestion[]>> = {};
+  // Keep both lists in score order, including repeats deferred by the first pass.
+  for (const candidate of sorted) {
+    if (selectedIds.has(candidate.id)) {
+      selected.push(toSuggestion(candidate));
+    } else {
+      const hidden = more[candidate.question] ?? [];
+      hidden.push(toSuggestion(candidate));
+      more[candidate.question] = hidden;
+    }
   }
   return {selected, more};
 }
@@ -2730,7 +3060,8 @@ function evaluateCandidates(
   datasets: readonly KeplerDatasetProfile[],
   curatedAnalyses: readonly KeplerCuratedAnalysis[],
   executionEngine: 'gpu' | 'cpu',
-  dropped: string[]
+  dropped: string[],
+  requiredDatasetId?: string
 ): Candidate[] {
   const candidates: Candidate[] = [];
   for (const binding of bindings) {
@@ -2743,6 +3074,21 @@ function evaluateCandidates(
     const variants: (KeplerCuratedAnalysis | undefined)[] =
       curatedForBinding.length === 0 ? [undefined] : curatedForBinding;
     for (const curated of variants) {
+      if (requiredDatasetId !== undefined && binding.inputs.length === 1) {
+        // A focused card gets its own layer even when it is a twin or beyond the global cap.
+        candidates.push(
+          evaluateCandidate(
+            binding,
+            descriptor,
+            datasets.filter(dataset => dataset.datasetId === requiredDatasetId),
+            curated,
+            executionEngine,
+            `@${requiredDatasetId}`,
+            requiredDatasetId
+          )
+        );
+        continue;
+      }
       // An analysis of one layer is offered for every compatible loaded layer, not only the
       // first: with two point layers each gets its own suggestion.
       if (binding.inputs.length === 1 && datasets.length > 1) {
@@ -2801,11 +3147,21 @@ function evaluateCandidates(
         }
       }
       candidates.push(
-        evaluateCandidate(binding, descriptor, datasets, curated, executionEngine, '')
+        evaluateCandidate(
+          binding,
+          descriptor,
+          datasets,
+          curated,
+          executionEngine,
+          '',
+          requiredDatasetId
+        )
       );
     }
   }
-  return candidates;
+  return requiredDatasetId === undefined
+    ? candidates
+    : candidates.filter(candidate => candidate.datasetIds.includes(requiredDatasetId));
 }
 
 /** Counterfactual copies share cached applicability across repeated ranking calls. */
@@ -2932,16 +3288,17 @@ const SUGGESTION_CACHE = new WeakMap<
  * every compatible loaded layer (up to {@link KEPLER_MAXIMUM_CANDIDATES_PER_BINDING}), so the
  * result does not depend on the order the layers were loaded in; an analysis of several layers
  * gets the best assignment ({@link KEPLER_MAXIMUM_DATASETS_PER_INPUT} tried per input). What the
- * limits left out is named in `dropped`.
+ * limits left out is named in `dropped`. With `requiredDatasetId`, every assignment must contain
+ * that dataset before ranking or diversity limits apply; other loaded layers remain partners.
  *
  * Candidates that can run are scored by the soft rules above (`scoreTerms` shows each one's
  * contribution) and taken best first; ties are broken by prominence, then the documented order of
  * analyses ({@link KEPLER_CURATED_ANALYSIS_ORDER}), then dataset ids, never by an analysis id.
  * Left out of `suggestions` (they stay under "Browse all"): blocked candidates, operations of
  * prominence 3, analyses whose declared row meaning they contradict, and analyses that lack a
- * required column altogether. No primary question takes more than a third of the slots, rounded
- * up, unless its next candidate scores above everything left in other questions; the candidates
- * that did not fit are in `more`.
+ * required column altogether. Each question takes at most a third of the requested slots, rounded
+ * down (at least one for budgets below three). Too few families produce a shorter list. Every
+ * omitted runnable candidate stays in `more`.
  *
  * `blocked` lists up to four curated or prominence-1 analyses that lack exactly one thing (a
  * dataset, a column, a capacity) with how to supply it, ordered by how many loaded datasets they
@@ -2981,7 +3338,8 @@ export function suggestKeplerAnalyses(
     datasets,
     curatedAnalyses,
     options.executionEngine ?? 'gpu',
-    dropped
+    dropped,
+    options.requiredDatasetId
   )
     // An operation that reads no layer has nothing to be suggested for.
     .filter(
@@ -3012,10 +3370,12 @@ export function suggestKeplerAnalyses(
       (left, right) => right.assignedCount - left.assignedCount || compareCandidates(left, right)
     );
   const chosen = selectDiverse(runnable, maximumCount);
-  const greyed = selectDiverse(oneStepAway, KEPLER_BLOCKED_SUGGESTION_COUNT);
+  // The separate four-row remedy list prioritizes loaded inputs, rather than filling the
+  // recommendation row's diversity budget with unrelated missing layers.
+  const greyed = oneStepAway.slice(0, KEPLER_BLOCKED_SUGGESTION_COUNT).map(toSuggestion);
   const result: KeplerSuggestionResult = {
     suggestions: chosen.selected,
-    blocked: greyed.selected,
+    blocked: greyed,
     more: chosen.more,
     questions: buildQuestions(candidates, datasets, (fact, alternatives) => {
       const current = chosen.selected
@@ -3034,7 +3394,8 @@ export function suggestKeplerAnalyses(
           changed,
           curatedAnalyses,
           options.executionEngine ?? 'gpu',
-          []
+          [],
+          options.requiredDatasetId
         )
           .filter(
             candidate =>
@@ -3089,16 +3450,27 @@ export type KeplerApplicableBindingGroup = {
  * Every binding that is not blocked for the loaded datasets, grouped by primary question in the
  * ontology's question order and, inside a group, by prominence and then id. This is the list
  * behind "Browse all that fit": nothing is hidden by rank or by the diversity limits.
+ * `requiredDatasetId` anchors assignment search to a dataset card without excluding its partners.
  */
 export function listKeplerApplicableBindings(
   bindings: readonly CatalogOperationBinding[],
-  datasets: readonly KeplerDatasetProfile[]
+  datasets: readonly KeplerDatasetProfile[],
+  options: Pick<KeplerApplicabilityOptions, 'requiredDatasetId'> = {}
 ): readonly KeplerApplicableBindingGroup[] {
   const groups = new Map<GPUAnalysisQuestion, KeplerApplicableBinding[]>();
   for (const binding of bindings) {
     const {descriptor, source} = resolveKeplerOperationDescriptor(binding);
-    const applicability = evaluateKeplerOperationApplicability(binding, descriptor, datasets);
-    if (applicability.status === 'blocked') {
+    const applicability = evaluateKeplerOperationApplicability(
+      binding,
+      descriptor,
+      datasets,
+      options
+    );
+    if (
+      applicability.status === 'blocked' ||
+      (options.requiredDatasetId !== undefined &&
+        !Object.values(applicability.inputAssignments).includes(options.requiredDatasetId))
+    ) {
       continue;
     }
     const question = getKeplerPrimaryQuestion(descriptor);

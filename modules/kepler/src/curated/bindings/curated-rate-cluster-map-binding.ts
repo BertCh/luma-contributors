@@ -17,7 +17,7 @@ import {
   type CatalogDiagnostic
 } from '../../analysis/catalog-geojson';
 import {
-  PLATFORM3_CPU_CLEANUP,
+  PLATFORM3_GPU_OR_CPU_CLEANUP,
   SEED_PARAMETER_SPEC,
   getFeatureGeometryText,
   makeInputSpec,
@@ -52,6 +52,12 @@ import {
   readRateRows,
   runConditionalLocalPermutationTest
 } from './curated-binding-utils';
+
+import {
+  runGpuRateClusterMap,
+  validateRateClusterRows,
+  type RateClusterComputation
+} from './curated-rate-cluster-map-gpu';
 
 const BINDING_ID = 'curated-rate-cluster-map';
 
@@ -118,6 +124,7 @@ function runRateClusterMap(inputs: Inputs, values: Values): CatalogRunOutput {
     populationProperty,
     diagnostics
   );
+  validateRateClusterRows(rows, casesProperty, populationProperty);
   if (rows.length < MINIMUM_AREAS)
     throw makeCuratedError(
       BINDING_ID,
@@ -256,6 +263,58 @@ function runRateClusterMap(inputs: Inputs, values: Values): CatalogRunOutput {
         : 'not-significant'
   );
 
+  return publishRateClusterMap(inputs, values, diagnostics, {
+    rows,
+    droppedCount,
+    statuses,
+    rawRates,
+    shrinkages,
+    smoothedRates,
+    localI,
+    spatialLag,
+    pValues,
+    adjustedPValues,
+    neighborCounts,
+    clusters,
+    tiedAnchorCount,
+    effectiveSignificance: significance,
+    globalRate: Number(smoothing.summary['globalRate']),
+    priorVariance: Number(smoothing.summary['priorVariance'])
+  });
+}
+
+/** One publication contract for CPU reference and recipe readback. */
+export function publishRateClusterMap(
+  inputs: Inputs,
+  values: Values,
+  diagnostics: CatalogDiagnostic[],
+  computation: RateClusterComputation,
+  gpu = false
+): CatalogRunOutput {
+  const areas = inputs['areas'];
+  const {
+    rows,
+    droppedCount,
+    statuses,
+    rawRates,
+    shrinkages,
+    smoothedRates,
+    localI,
+    spatialLag,
+    pValues,
+    adjustedPValues,
+    neighborCounts,
+    clusters,
+    tiedAnchorCount,
+    globalRate,
+    priorVariance
+  } = computation;
+  const casesProperty = String(values['casesProperty']);
+  const populationProperty = String(values['populationProperty']);
+  const permutations = Number(values['permutations']);
+  const significance = computation.effectiveSignificance;
+  const multipleTesting = String(values['multipleTesting']);
+  const testedRows = pValues.filter(value => value !== null);
   // Output: every input feature, in input order, with the reason when it was not analysed.
   const rowByInputIndex = new Map(rows.map((row, index) => [row.sourceIndex, index]));
   const table = makeCatalogTable('rate-clusters', 'Rate clusters', {...COLUMN_TYPES}, 'geometry');
@@ -284,19 +343,21 @@ function runRateClusterMap(inputs: Inputs, values: Values): CatalogRunOutput {
     diagnostics,
     'pseudo-p-values',
     'info',
-    `p-values are conditional-permutation pseudo p-values (${permutations} permutations, seeded, counting permuted statistics whose absolute value is at least the observed one; the absolute-value and doubled-smaller-tail definitions can differ materially on skewed data; either may give the smaller p-value); ${
+    `p-values are conditional-permutation pseudo p-values (${permutations} permutations, seeded, ${gpu ? 'doubling the smaller tail, using the public recipe and Philox stream' : 'counting permuted statistics whose absolute value is at least the observed one'}; the absolute-value and doubled-smaller-tail definitions can differ materially on skewed data; either may give the smaller p-value); ${
       multipleTesting === 'none'
         ? 'no correction was applied'
         : `${multipleTesting} correction over ${testedRows.length} tested areas`
     }. The cluster class is kept only when the corrected p-value is at most ${significance}.`
   );
   // Could any area be flagged at this permutation count? The smallest pseudo p-value is
-  // 1 / (permutations + 1), so a correction over many areas can be out of reach.
+  // 1 / (permutations + 1) on CPU and twice that on GPU, so correction can be out of reach.
+  const minimumPValue = (gpu ? 2 : 1) / (permutations + 1);
   const attainability = getSignificanceAttainability(
     multipleTesting,
     significance,
     testedRows.length,
-    permutations
+    permutations,
+    gpu ? 2 : 1
   );
   const isAttainable = testedRows.length === 0 || attainability.attainable;
   if (!isAttainable)
@@ -304,7 +365,7 @@ function runRateClusterMap(inputs: Inputs, values: Values): CatalogRunOutput {
       diagnostics,
       'significance-not-attainable',
       'warning',
-      `With ${permutations} permutations the smallest pseudo p-value is ${(1 / (permutations + 1)).toPrecision(3)}, so ${multipleTesting} over ${testedRows.length} tested areas at ${significance} can never flag an area; about ${attainability.permutationsNeeded} permutations are needed${attainability.permutationsNeeded > MAXIMUM_PERMUTATIONS ? ` (more than the ${MAXIMUM_PERMUTATIONS} this binding accepts: use a less strict correction or a higher significance level)` : ''}.`
+      `With ${permutations} permutations the smallest pseudo p-value is ${minimumPValue.toPrecision(3)}, so ${multipleTesting} over ${testedRows.length} tested areas at ${significance} can never flag an area; about ${attainability.permutationsNeeded} permutations are needed${attainability.permutationsNeeded > MAXIMUM_PERMUTATIONS ? ` (more than the ${MAXIMUM_PERMUTATIONS} this binding accepts: use a less strict correction or a higher significance level)` : ''}.`
     );
   else if (
     attainability.requiredTiedMinimumCount !== null &&
@@ -314,7 +375,7 @@ function runRateClusterMap(inputs: Inputs, values: Values): CatalogRunOutput {
       diagnostics,
       'significance-needs-ties',
       'info',
-      `With ${permutations} permutations Benjamini-Hochberg flags an area only if at least ${attainability.requiredTiedMinimumCount} of the ${testedRows.length} tested areas reach the smallest possible pseudo p-value ${(1 / (permutations + 1)).toPrecision(3)}, or the p-values of the strongest areas are otherwise small enough.`
+      `With ${permutations} permutations Benjamini-Hochberg flags an area only if at least ${attainability.requiredTiedMinimumCount} of the ${testedRows.length} tested areas reach the smallest possible pseudo p-value ${minimumPValue.toPrecision(3)}, or the p-values of the strongest areas are otherwise small enough.`
     );
   const countClass = (label: string) => clusters.filter(cluster => cluster === label).length;
   return {
@@ -330,10 +391,17 @@ function runRateClusterMap(inputs: Inputs, values: Values): CatalogRunOutput {
       lowLowCount: countClass('LL'),
       highLowCount: countClass('HL'),
       lowHighCount: countClass('LH'),
-      globalRate: smoothing.summary['globalRate'],
-      priorVariance: smoothing.summary['priorVariance'],
+      globalRate,
+      priorVariance,
       permutations,
       multipleTesting,
+      rateAnalysis: 'smoothed',
+      permutationAlternative: gpu ? 'two-sided-doubled-tail' : 'absolute-statistic',
+      localStatisticScaling: gpu ? 'sample-variance' : 'population-variance',
+      spatialLagScaling: gpu ? 'centered-rate' : 'standardized-rate',
+      minimumPseudoPValue: minimumPValue,
+      requestedSignificance: Number(values['significance']),
+      effectiveSignificance: significance,
       // Run-time caution `significance-not-attainable`: 1 when no area could be flagged.
       significanceNotAttainable: isAttainable ? 0 : 1,
       permutationsNeeded: testedRows.length ? attainability.permutationsNeeded : 0,
@@ -363,8 +431,15 @@ export const CURATED_RATE_CLUSTER_MAP_BINDING: CatalogOperationBinding = {
     'GPULocalPermutationTest',
     'GPUMultipleTestingAdjustment'
   ],
-  gpuContributorNames: [],
-  engine: 'cpu-reference',
+  gpuContributorNames: [
+    'GPUEmpiricalBayesRates',
+    'GPUContiguityWeights',
+    'GPUSpatialWeightsTransform',
+    'GPULocalMoran',
+    'GPULocalPermutationTest',
+    'GPUMultipleTestingAdjustment'
+  ],
+  engine: 'gpu-or-cpu',
   inputs: [
     makeInputSpec(
       'areas',
@@ -384,17 +459,31 @@ export const CURATED_RATE_CLUSTER_MAP_BINDING: CatalogOperationBinding = {
       MAXIMUM_CURATED_AREA_FEATURES
     )
   ],
-  cleanup: PLATFORM3_CPU_CLEANUP,
+  cleanup: PLATFORM3_GPU_OR_CPU_CLEANUP,
   declaredBehavior: [
     'Every input area is listed in the output in input order; an area that cannot be analysed has a status naming why and the cluster not-tested, and each reason is counted in a diagnostic: no geometry, a missing, non-numeric or non-finite value, a zero or negative population, or negative cases.',
     'The smoothed rate is the global empirical Bayes rate of Marshall (1991) with the estimated prior variance clamped at zero; when it is zero every area shrinks to the overall rate, the smoothed rates are equal, no area is tested and a diagnostic says so.',
     'Neighbours are areas sharing a vertex (queen) or an edge (rook) among the usable areas, with weights standardised by row; an area with no neighbour is an island: it is not tested, is left out of the corrected family and is counted in a diagnostic.',
-    'p-value definition: for each area the area keeps its own standardised rate and draws as many rates as it has neighbours from the other areas without replacement; the pseudo p-value is (m + 1) / (permutations + 1), with m the draws whose absolute statistic is at least the observed absolute statistic. This absolute-value form is not the contributor GPULocalPermutationTest, which doubles the smaller tail: The definitions can differ materially on skewed data; either may give the smaller p-value.',
+    'CPU reference p-value definition: for each area the area keeps its own standardised rate and draws as many rates as it has neighbours from the other areas without replacement; the pseudo p-value is (m + 1) / (permutations + 1), with m the draws whose absolute statistic is at least the observed absolute statistic. This absolute-value form is not the contributor GPULocalPermutationTest, which doubles the smaller tail: The definitions can differ materially on skewed data; either may give the smaller p-value.',
     'With distinct anchors the permutation stream does not depend on input row order: each area draws from a generator seeded by the seed and its rank when areas are sorted by anchor (centroid in the local frame) x, then y. Areas whose anchors coincide exactly keep their input order, which can affect inference throughout the dataset because their values enter other areas’ permutation pools; their count is in the summary key tiedAnchorCount and a diagnostic.',
-    'The correction runs over the tested areas only and the cluster class is kept when the corrected p-value is at most the significance level. With 999 permutations the smallest pseudo p-value is 0.001: Bonferroni and Holm over more than 50 tested areas, and Sidak over more than 51 tested areas, at 0.05 can never flag an area, and Benjamini-Hochberg needs enough areas at the minimum; a diagnostic and the summary keys significanceNotAttainable and permutationsNeeded say when no area could be flagged.',
+    'The correction runs over the tested areas only and the cluster class is kept when the corrected p-value is at most the significance level. On the CPU reference with 999 permutations the smallest pseudo p-value is 0.001: Bonferroni and Holm over more than 50 tested areas, and Sidak over more than 51 tested areas, at 0.05 can never flag an area, and Benjamini-Hochberg needs enough areas at the minimum; a diagnostic and the summary keys significanceNotAttainable and permutationsNeeded say when no area could be flagged.',
+    'The GPU path dispatches addRateClusterMapRecipe with analyze=smoothed, clamped prior variance, row-standardized weights and two-sided (doubled-smaller-tail) permutation inference. CPU reference inference retains its absolute-statistic definition; selecting an engine can change p-values and classes. GPU local I uses the recipe sample-variance convention and its spatial_lag is in centered rate units; the CPU statistic uses population variance and a standardized-rate spatial_lag. Both preserve the class names and input identities.',
+    'The GPU significance gate uses the requested significance rounded once to float32, exactly as packed into the recipe. The run summary records requestedSignificance and effectiveSignificance; diagnostics and published classes use effectiveSignificance. The CPU reference retains the requested binary64 threshold.',
+    'GPU contiguity uses exact float32 local-frame vertex or edge keys. CPU tolerance-based contiguity can differ on nearly coincident vertices. GPU topology or permutation overflow rejects publication and uses the catalog fallback, with a diagnostic.',
     'Fewer than four usable areas throw before any work. The permutation work bound (areas times permutations above 20 million throws a capacity error) can only bind above 2000 areas, because permutations are at most 9999; at the default 999 permutations it would need more than the 5000 areas the binding accepts.'
   ],
   limitation:
-    'CPU reference engine only; the GPU path (GPUEmpiricalBayesRates, GPULocalMoran and GPULocalPermutationTest) is future work. The smoothed rate is analysed, not the Assuncao-Reis standardised rate that the recipe analyses by default; the permutation p-value is the absolute-value form of the catalog local Moran, not the doubled smaller tail of the contributor, so p-values can differ materially from the GPU recipe on skewed data (see declaredBehavior).',
-  run: (inputs, values) => runRateClusterMap(inputs, values)
+    'Both engines analyse the smoothed rate, rather than the recipe default Assuncao-Reis rate. GPU inference uses doubled-smaller-tail p-values, sample-variance local I and a centered-rate spatial lag; CPU reference inference uses absolute-statistic p-values and a population-variance local I. Sidak correction runs on the CPU reference engine only. GPU compilation bounds are 64 neighbours per area and 16 directed slots per area on average; overflow falls back visibly to the CPU reference.',
+  run: (inputs, values) => runRateClusterMap(inputs, values),
+  async runGpu(context, inputs, values) {
+    const {computation, diagnostics, dispatchedContributors} = await runGpuRateClusterMap(
+      context,
+      inputs,
+      values
+    );
+    return {
+      ...publishRateClusterMap(inputs, values, diagnostics, computation, true),
+      dispatchedContributors
+    };
+  }
 };

@@ -11,6 +11,7 @@ import {describe, expect, it} from 'vitest';
 import type {CatalogParameterValue} from '../../src/analysis/catalog-binding-types';
 import type {CatalogRunResult} from '../../src/analysis/catalog-binding-types';
 import {getCatalogBinding, runCatalogOperationAsync} from '../../src/analysis/catalog-bindings';
+import {getCatalogFeatureInputs} from '../../src/analysis/catalog-data-input';
 import type {
   CatalogFeatureCollection,
   CatalogOutputTable
@@ -128,7 +129,7 @@ async function runCuratedAnalysis(
     throw new Error(`runCuratedAnalysis: ${analysisId} is not an available analysis with a sample`);
   }
   const execution = analysis.execution;
-  const sample = createKeplerCuratedAnalysisSample(analysis.sampleId);
+  const sample = getCatalogFeatureInputs(createKeplerCuratedAnalysisSample(analysis.sampleId));
   const columns =
     KEPLER_CURATED_ANALYSIS_SAMPLE_COLUMNS[
       analysis.sampleId as keyof typeof KEPLER_CURATED_ANALYSIS_SAMPLE_COLUMNS

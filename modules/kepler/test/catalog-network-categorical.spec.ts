@@ -11,6 +11,8 @@ import {getCatalogBinding, runCatalogOperationAsync} from '../src/analysis/catal
 import type {CatalogFeatureCollection} from '../src/analysis/catalog-geojson';
 import {requireTestDevice} from '../../analysis/test/utils/require-test-device';
 import {NETWORK_CATEGORICAL_BINDINGS} from '../src/analysis/catalog-network-categorical-bindings';
+import {getKeplerOperationDescriptor} from '../src/descriptors/operation-descriptors';
+import {planKeplerResultPresentation} from '../src/presentation/result-presentation';
 import {getNetworkCategoricalSampleInputs} from '../../../examples/deck/kepler-compute/src/analysis-catalog-network-categorical-samples';
 
 type Inputs = Record<string, CatalogFeatureCollection>;
@@ -49,6 +51,26 @@ for (const binding of NETWORK_CATEGORICAL_BINDINGS) {
       Object.fromEntries(Object.entries(samples).map(([name, text]) => [name, JSON.parse(text)]))
     );
     expect(result.tables[0].rowCount).toBeGreaterThan(0);
+    const descriptor = getKeplerOperationDescriptor(binding.id)!;
+    for (const output of descriptor.outputs) {
+      const table = result.tables.find(candidate => candidate.id === output.tableId);
+      if (!table) throw new Error(`${binding.id}: missing descriptor output ${output.tableId}`);
+      if (output.presentation) {
+        const column = output.presentation.column;
+        if (!(column in table.columns)) {
+          throw new Error(
+            `${binding.id}.${table.id}: presentation column ${column} absent; columns=${Object.keys(table.columns).join(', ')}`
+          );
+        }
+        const plan = planKeplerResultPresentation(table, output);
+        if (!plan || plan.column !== column || plan.missingCount === table.rowCount) {
+          throw new Error(
+            `${binding.id}.${table.id}: unusable presentation ${JSON.stringify({output, plan, values: table.columns[column]})}`
+          );
+        }
+      }
+    }
+
     expect(
       result.tables.every(table =>
         Object.values(table.columns).every(column => column.length === table.rowCount)

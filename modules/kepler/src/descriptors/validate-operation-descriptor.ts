@@ -15,7 +15,8 @@ export const MAXIMUM_OPERATION_ACTION_LENGTH = 40;
  */
 export function validateKeplerOperationDescriptor(
   descriptor: KeplerOperationDescriptor,
-  binding: CatalogOperationBinding
+  binding: CatalogOperationBinding,
+  options: {allowUnmappedColumnParameters?: boolean} = {}
 ): string[] {
   const issues: string[] = [];
   const report = (message: string) => issues.push(`${descriptor.bindingId}: ${message}`);
@@ -50,9 +51,16 @@ export function validateKeplerOperationDescriptor(
     condition: KeplerOperationDescriptor['parameters'][number]['activeWhen']
   ) => {
     if (!condition) return;
-    const controller = parametersByName.get(condition.parameter);
+    if ('anyOf' in condition) {
+      if (condition.anyOf.length === 0)
+        report(`${owner} activeWhen anyOf must contain at least one condition`);
+      for (const branch of condition.anyOf) validateActiveWhen(owner, branch);
+      return;
+    }
+    const parameterName = 'parameter' in condition ? condition.parameter : condition.whenParameter;
+    const controller = parametersByName.get(parameterName);
     if (!controller) {
-      report(`${owner} activeWhen names unknown parameter ${condition.parameter}`);
+      report(`${owner} activeWhen names unknown parameter ${parameterName}`);
       return;
     }
     if (condition.equals.length === 0) {
@@ -87,7 +95,7 @@ export function validateKeplerOperationDescriptor(
       }
       if (!possible) {
         report(
-          `${owner} activeWhen value ${String(value)} is outside the allowed values of parameter ${condition.parameter} (${controller.kind})`
+          `${owner} activeWhen value ${String(value)} is outside the allowed values of parameter ${parameterName} (${controller.kind})`
         );
       }
     }
@@ -114,11 +122,8 @@ export function validateKeplerOperationDescriptor(
       roleByFieldParameter.set(field.parameter, field.role);
       fieldParameterNames.add(field.parameter);
       if (field.accepts.length === 0) report(`role ${field.role} accepts no column type`);
-      if (
-        typeof field.required === 'object' &&
-        !parametersByName.has(field.required.whenParameter)
-      ) {
-        report(`role ${field.role} depends on unknown parameter ${field.required.whenParameter}`);
+      if (typeof field.required === 'object') {
+        validateActiveWhen(`role ${field.role}`, field.required);
       }
       if (field.multiple && field.multiple.minimum > field.multiple.maximum) {
         report(`role ${field.role} has minimum above maximum`);
@@ -129,6 +134,24 @@ export function validateKeplerOperationDescriptor(
   const describedParameterNames = new Set<string>();
   for (const parameter of descriptor.parameters) {
     validateActiveWhen(`parameter ${parameter.name}`, parameter.activeWhen);
+    if (parameter.confirmation) {
+      const specification = parametersByName.get(parameter.name);
+      if (
+        specification?.kind !== 'boolean' ||
+        specification.defaultValue !== false ||
+        parameter.defaultPolicy.from !== 'constant'
+      ) {
+        report(
+          `parameter ${parameter.name} confirmation requires a false-by-default boolean with a constant policy`
+        );
+      }
+      if (!parameter.confirmation.message.trim() || !parameter.confirmation.remedy.trim()) {
+        report(`parameter ${parameter.name} confirmation needs a message and remedy`);
+      }
+    }
+    if (parameter.apply !== 'live' && parameter.apply !== 'rebuild') {
+      report(`parameter ${parameter.name} must declare apply as live or rebuild`);
+    }
     if (!parametersByName.has(parameter.name)) {
       report(`parameter ${parameter.name} is not a binding parameter`);
     }
@@ -155,6 +178,40 @@ export function validateKeplerOperationDescriptor(
       }
     }
   }
+  for (const parameter of descriptor.parameters) {
+    if (parameter.defaultPolicy.from === 'time-encoding') {
+      const policy = parameter.defaultPolicy;
+      const input = descriptor.inputs.find(candidate => candidate.name === policy.input);
+      if (!input?.fields.some(field => field.role === policy.role)) {
+        report(
+          `parameter ${parameter.name} derives time encoding from unknown input/role ${policy.input}/${policy.role}`
+        );
+      }
+      const specification = parametersByName.get(parameter.name);
+      if (
+        specification?.kind !== 'enum' ||
+        !['iso8601', 'unix-millisecond', 'unix-second'].every(value =>
+          specification.options?.includes(value)
+        )
+      ) {
+        report(
+          `parameter ${parameter.name} time-encoding policy requires the ISO and Unix timestamp options`
+        );
+      }
+    }
+  }
+  if (!options.allowUnmappedColumnParameters) {
+    for (const parameter of binding.parameters) {
+      // Catalog strings are column references when the name or UI label declares one. Free
+      // strings (labels, expressions, separators) remain legal ordinary settings.
+      const namesColumn =
+        /(?:propert(?:y|ies)|columns?)$/i.test(parameter.name) ||
+        /\bcolumn(?:s| name)?\b/i.test(parameter.label);
+      if (parameter.kind === 'string' && namesColumn && !fieldParameterNames.has(parameter.name)) {
+        report(`column-naming string parameter ${parameter.name} must be mapped to a field role`);
+      }
+    }
+  }
   for (const name of parametersByName.keys()) {
     if (!describedParameterNames.has(name) && !fieldParameterNames.has(name)) {
       report(`parameter ${name} is neither a field role nor described`);
@@ -165,6 +222,46 @@ export function validateKeplerOperationDescriptor(
     validateActiveWhen(`requirement ${requirement.id}`, requirement.activeWhen);
     if (!bindingInputNames.includes(requirement.input)) {
       report(`requirement ${requirement.id} names unknown input ${requirement.input}`);
+    }
+    for (const parameterName of [
+      requirement.parameter,
+      requirement.limitFromParameter?.parameter
+    ]) {
+      if (parameterName === undefined) continue;
+      const parameter = parametersByName.get(parameterName);
+      if (!parameter || (parameter.kind !== 'number' && parameter.kind !== 'integer'))
+        report(
+          `requirement ${requirement.id} names unknown or non-numeric parameter ${parameterName}`
+        );
+    }
+    if (
+      requirement.limitFromParameter &&
+      (![
+        'minimum-rows',
+        'maximum-rows',
+        'maximum-vertices',
+        'minimum-distinct-values',
+        'maximum-distinct-values'
+      ].includes(requirement.id) ||
+        !Number.isFinite(requirement.limitFromParameter.offset ?? 0))
+    )
+      report(
+        `requirement ${requirement.id} limitFromParameter requires a count requirement and finite offset`
+      );
+    if (requirement.id === 'numeric-range') {
+      if ((requirement.role === undefined) === (requirement.parameter === undefined))
+        report('requirement numeric-range must name exactly one role or parameter');
+      if (
+        (requirement.minimum === undefined &&
+          requirement.maximum === undefined &&
+          requirement.integer !== true) ||
+        (requirement.minimum !== undefined && !Number.isFinite(requirement.minimum)) ||
+        (requirement.maximum !== undefined && !Number.isFinite(requirement.maximum)) ||
+        (requirement.minimum !== undefined &&
+          requirement.maximum !== undefined &&
+          requirement.minimum > requirement.maximum)
+      )
+        report('requirement numeric-range requires finite ordered bounds or integer: true');
     }
     if (requirement.role !== undefined) {
       const input = descriptor.inputs.find(candidate => candidate.name === requirement.input);
@@ -193,6 +290,14 @@ export function validateKeplerOperationDescriptor(
     }
     if (!bindingTableIds.includes(output.tableId)) {
       report(`output ${output.tableId} is not a binding output`);
+    }
+    if (output.presentationException) {
+      if (output.presentation)
+        report(
+          `output ${output.tableId} declares both a presentation and a uniform-style exception`
+        );
+      if (!output.presentationException.reason?.trim())
+        report(`output ${output.tableId} uniform-style exception needs a reason`);
     }
     if (output.presentation?.scale === 'class-scheme' && !output.presentation.classScheme) {
       report(`output ${output.tableId} uses a class scheme without naming it`);

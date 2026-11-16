@@ -2,8 +2,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {EMERGING_HOT_SPOTS_LIMITS} from '../curated/bindings/curated-emerging-hot-spots-binding';
+import {evaluateGPUAnalysisParameterCondition} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
 import {
   guessGPUAnalysisMeasurementLevel,
+  getVecchiaNuggetFloor,
+  VECCHIA_NUGGET_FLOOR_FRACTION,
   resolveGPUAnalysisDefault,
   type GPUAnalysisColumnProfile,
   type GPUAnalysisCoordinateModel,
@@ -120,6 +125,8 @@ export type KeplerParameterResolution = {
    * level a column-dependent value was chosen for.
    */
   reason?: string;
+  /** A placeholder default until the analyst selects the parameter explicitly. */
+  requiresChoice?: boolean;
   /**
    * True when the value rests on a guess about the data (a coordinate model guessed from the
    * extent): it is shown as a guess and can be wrong. Absent otherwise.
@@ -215,6 +222,10 @@ function mapCoordinateModelToParameter(
 export const KEPLER_GRID_CELL_CAPS: Readonly<
   Record<string, {maximumCellCount: number; source: string}>
 > = {
+  'curated-emerging-hot-spots': {
+    maximumCellCount: EMERGING_HOT_SPOTS_LIMITS.cells,
+    source: 'curated-emerging-hot-spots-binding.ts:43'
+  },
   // catalog-extra-bindings.ts:745-789 passes MAXIMUM_FEATURES to runGridGenerator.
   'grid-generator': {maximumCellCount: 20000, source: 'catalog-extra-bindings.ts:745-789'},
   // catalog-platform5-recipes-hot-spot.ts:42 (MAXIMUM_HOT_SPOT_CELLS) checked at :81.
@@ -417,9 +428,15 @@ export function getKeplerGridFrameExtent(
  * Cells of the grid the bindings build over an extent: `makeGridSpec` in
  * catalog-platform3-b-common.ts:203 gives `floor((extent + 2 * padding) / cellSize) + 1` per side.
  */
-function countGridCells(width: number, height: number, padding: number, cellSize: number): number {
-  const columns = Math.max(1, Math.floor((width + 2 * padding) / cellSize) + 1);
-  const rows = Math.max(1, Math.floor((height + 2 * padding) / cellSize) + 1);
+function countGridCells(
+  width: number,
+  height: number,
+  padding: number,
+  cellSize: number,
+  extraCellsPerAxis = 0
+): number {
+  const columns = Math.max(1, Math.floor((width + 2 * padding) / cellSize) + 1 + extraCellsPerAxis);
+  const rows = Math.max(1, Math.floor((height + 2 * padding) / cellSize) + 1 + extraCellsPerAxis);
   return columns * rows;
 }
 
@@ -432,7 +449,8 @@ function raiseCellSizeToFit(
   width: number,
   height: number,
   padding: number,
-  maximumCellCount: number
+  maximumCellCount: number,
+  extraCellsPerAxis = 0
 ): number {
   // Start from the continuous solution of (w / c) * (h / c) = cap, then step up until it fits.
   let candidate = Math.max(
@@ -443,7 +461,7 @@ function raiseCellSizeToFit(
   // Step one unit of the last kept digit at a time, so the result is the smallest value at that
   // precision. The start is close to the answer, so only a few steps are taken.
   for (let step = 0; step < 10000; step++) {
-    if (countGridCells(width, height, padding, candidate) <= maximumCellCount) {
+    if (countGridCells(width, height, padding, candidate, extraCellsPerAxis) <= maximumCellCount) {
       return candidate;
     }
     const unit = 10 ** (Math.floor(Math.log10(candidate)) - DATA_DEFAULT_SIGNIFICANT_DIGITS + 1);
@@ -530,9 +548,9 @@ export function resolveKeplerOperationParameters(
 ): KeplerResolvedParameters {
   const functionName = 'resolveKeplerOperationParameters';
   const confirmations: string[] = [];
-  const maximumCellCount =
+  let maximumCellCount =
     options.maximumCellCount ??
-    (binding.id === 'grid-generator'
+    (['grid-generator', 'curated-emerging-hot-spots'].includes(binding.id)
       ? KEPLER_GRID_CELL_CAPS[binding.id]?.maximumCellCount
       : undefined);
   const fieldBindings = options.fieldBindings ?? {};
@@ -662,7 +680,48 @@ export function resolveKeplerOperationParameters(
       set(text, {source: 'field'});
       return;
     }
+    const explicitField = descriptor.inputs
+      .flatMap(input => input.fields)
+      .find(field => field.parameter === name && field.autoAssign === false);
+    if (explicitField) {
+      set('', {source: 'constant', reason: 'This column must be selected explicitly'});
+      return;
+    }
+    for (const input of descriptor.inputs) {
+      const field = input.fields.find(candidate => candidate.parameter === name);
+      const coordinates = profilesByInput[input.name]?.pointColumns;
+      const coordinate =
+        field?.autoAssign === 'point-longitude'
+          ? coordinates?.longitude
+          : field?.autoAssign === 'point-latitude'
+            ? coordinates?.latitude
+            : undefined;
+      if (coordinate !== undefined) {
+        set(coordinate, {source: 'data', reason: `Declared pointColumns of ${input.name}`});
+        return;
+      }
+    }
     const defaultPolicy = policy?.defaultPolicy;
+    if (defaultPolicy?.from === 'time-encoding') {
+      const column = findBoundColumn(defaultPolicy.input, defaultPolicy.role);
+      if (
+        column?.type === 'time' &&
+        'timestampEncoding' in column &&
+        column.timestampEncoding === 'iso8601'
+      ) {
+        set('iso8601', {source: 'data', reason: `${column.name} contains ISO timestamp text`});
+      } else {
+        const reason = column
+          ? `Choose ${name} explicitly for ${column.name}: the profile cannot certify its timestamp encoding`
+          : undefined;
+        set(specification.defaultValue, {
+          source: 'constant',
+          ...(reason ? {reason, requiresChoice: true} : {})
+        });
+        if (reason) confirmations.push(reason);
+      }
+      return;
+    }
     if (defaultPolicy?.from === 'preset') {
       const inputName = defaultPolicy.input ?? binding.inputs[0]?.name;
       const profile = inputName === undefined ? undefined : profilesByInput[inputName];
@@ -866,6 +925,60 @@ export function resolveKeplerOperationParameters(
   for (const name of order) {
     resolveOne(specificationsByName.get(name) as CatalogParameterSpec);
   }
+  // The public Vecchia packers enforce a model-specific numerical floor. Adjust only the
+  // generated nugget, after the selected model and sill resolve; explicit settings stay intact
+  // and applicability reports any incompatibility before execution.
+  if (binding.id.startsWith('validation-vecchia-') && !('nugget' in overrides)) {
+    const spatialFloor = getVecchiaNuggetFloor({
+      model: parameters['model'] as 'exponential' | 'matern-3/2',
+      sill: parameters['sill'] as number
+    });
+    // Spatial floor is f*sill. Space-time uses total variance: n >= f*(sill+n).
+    const floor =
+      binding.id === 'validation-vecchia-space-time'
+        ? spatialFloor / (1 - VECCHIA_NUGGET_FLOOR_FRACTION)
+        : spatialFloor;
+    const previous = parameters['nugget'] as number;
+    if (floor > previous) {
+      parameters['nugget'] = floor;
+      const reason = `Model-specific nugget floor for ${parameters['model']} at the resolved sill ${parameters['sill']}${binding.id === 'validation-vecchia-space-time' ? ', using total variance' : ''}`;
+      resolutionsByName.set('nugget', {
+        parameter: 'nugget',
+        active: true,
+        source: 'preset',
+        reason,
+        clamped: {from: previous, to: floor, reason}
+      });
+    }
+  }
+  // Each MGTWR component corresponds to one coefficient, including the intercept. Generate
+  // unedited lists from the resolved scalar scales and mapped predictors, not the binding's
+  // two-entry fixture arrays. Explicit lists are preserved for applicability to validate.
+  if (binding.id === 'regression-mgtwr') {
+    const predictorNames = String(parameters['predictorProperties'])
+      .split(',')
+      .map(name => name.trim());
+    if (
+      predictorNames.length >= 1 &&
+      predictorNames.length <= 11 &&
+      predictorNames.every(Boolean)
+    ) {
+      for (const [name, scalar] of [
+        ['componentBandwidths', 'bandwidth'],
+        ['componentTimeScales', 'timeScale']
+      ] as const) {
+        if (name in overrides) continue;
+        const value = parameters[scalar] as number;
+        parameters[name] = Array(predictorNames.length + 1).fill(value);
+        resolutionsByName.set(name, {
+          parameter: name,
+          active: true,
+          source: 'preset',
+          reason: `One ${scalar} value (${value}) per coefficient: intercept plus ${predictorNames.length} selected predictors`
+        });
+      }
+    }
+  }
   // A caller may lower the dot allocation cap; keep a complete non-negative sum within it.
   // For rejected signed totals, an exact maximum bounds the positive allocation conservatively;
   // this remains a fallback requiring mapping, rather than a usable default from the signed sum.
@@ -930,14 +1043,27 @@ export function resolveKeplerOperationParameters(
   for (const resolution of resolutions) {
     const activeWhen = policiesByName.get(resolution.parameter)?.activeWhen;
     if (activeWhen) {
-      const controlling = parameters[activeWhen.parameter];
-      resolution.active = (activeWhen.equals as readonly unknown[]).includes(controlling);
+      resolution.active = evaluateGPUAnalysisParameterCondition(activeWhen, parameters);
       if (!resolution.active) {
         inactive.push(resolution.parameter);
       }
     }
   }
 
+  const emergingHotSpots = binding.id === 'curated-emerging-hot-spots';
+  // With automatic temporal coverage, reserve the largest supported slice count. This is a
+  // conservative bound until the recipe maps the exact calendar range during preparation.
+  if (emergingHotSpots) {
+    const sliceCount = Number(parameters['sliceCount']) || EMERGING_HOT_SPOTS_LIMITS.slices;
+    maximumCellCount = Math.min(
+      maximumCellCount ?? Infinity,
+      EMERGING_HOT_SPOTS_LIMITS.cells,
+      Math.floor(EMERGING_HOT_SPOTS_LIMITS.bins / sliceCount)
+    );
+  }
+  // Alignment of the emerging grid to cell-size multiples can add a cell on each axis, unlike
+  // the other bindings' grids that start at the data minimum. Bound that extra cell explicitly.
+  const extraCellsPerAxis = emergingHotSpots ? 1 : 0;
   // Grid size limits: the binding's cell cap and, on the CPU engine, its work cap.
   const cpuCap =
     getKeplerEffectiveEngine(binding, options.executionEngine) === 'cpu'
@@ -973,7 +1099,7 @@ export function resolveKeplerOperationParameters(
       if (maximumCellCount !== undefined) {
         limits.push({
           count: maximumCellCount,
-          label: `${binding.id} allows at most ${maximumCellCount.toLocaleString('en-US')} cells`
+          label: `${binding.id} allows at most ${maximumCellCount.toLocaleString('en-US')} cells${emergingHotSpots ? ' within its cell and cube-bin limits' : ''}`
         });
       }
       if (cpuCap?.kind === 'cells-times-rows' && profile.rowCount > 0) {
@@ -993,7 +1119,8 @@ export function resolveKeplerOperationParameters(
         size.width,
         size.height,
         padding,
-        tightest.count
+        tightest.count,
+        extraCellsPerAxis
       );
       const raised = Math.min(
         requiredSize,
@@ -1005,7 +1132,13 @@ export function resolveKeplerOperationParameters(
         );
       }
       if (raised !== current) {
-        const impliedCount = countGridCells(size.width, size.height, padding, current);
+        const impliedCount = countGridCells(
+          size.width,
+          size.height,
+          padding,
+          current,
+          extraCellsPerAxis
+        );
         parameters[resolution.parameter] = raised;
         resolution.clamped = {
           from: resolution.clamped?.from ?? current,
@@ -1013,6 +1146,29 @@ export function resolveKeplerOperationParameters(
           reason: `A cell size of ${current} would make a grid of ${impliedCount.toLocaleString('en-US')} cells over this extent in the operation's own local frame; ${tightest.label}`
         };
       }
+    }
+  }
+  if (emergingHotSpots && maximumCellCount !== undefined) {
+    const profile = profilesByInput['points'];
+    const extent = profile
+      ? getKeplerGridFrameExtent(profile, String(parameters['coordinateSystem']))
+      : undefined;
+    if (!extent) {
+      confirmations.push(
+        `${binding.id} needs a complete extent to check cellSize against its cell and cube-bin limits`
+      );
+    } else if (
+      countGridCells(
+        extent.width,
+        extent.height,
+        0,
+        Number(parameters['cellSize']),
+        extraCellsPerAxis
+      ) > maximumCellCount
+    ) {
+      confirmations.push(
+        `${binding.id} cellSize may exceed the ${maximumCellCount} cells allowed by its cell and cube-bin limits; increase cellSize or reduce sliceCount`
+      );
     }
   }
   if (binding.id === 'grid-generator' && maximumCellCount !== undefined) {
@@ -1075,7 +1231,23 @@ export function resolveKeplerOperationParameters(
     const spacing = facilities?.spacing;
     const minimumDistance = spacing?.nearestNeighbor?.minimum;
     const resolution = resolutions.find(entry => entry.parameter === 'cellSize');
-    if (facilities && union && typeof cellSize === 'number' && facilities.rowCount > 1) {
+    const seeds = facilities?.catchmentSeeds;
+    const observations = profilesByInput['observations'];
+    const exactZeroCollisions =
+      seeds !== undefined &&
+      seeds.facilityRevision === facilities?.revision &&
+      seeds.observationsDatasetId === observations?.datasetId &&
+      seeds.observationsRevision === observations?.revision &&
+      seeds.coordinateSystem === parameters['coordinateSystem'] &&
+      seeds.cellSize === cellSize &&
+      seeds.collisionCount === 0;
+    if (
+      facilities &&
+      union &&
+      typeof cellSize === 'number' &&
+      facilities.rowCount > 1 &&
+      !exactZeroCollisions
+    ) {
       const duplicateCount = spacing?.duplicateLocationCount ?? 0;
       const safeSize =
         minimumDistance && minimumDistance > 0

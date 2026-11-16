@@ -175,6 +175,102 @@ test('time encoding converts seconds and ISO input without epoch Float32 truncat
   }
 });
 
+// Both accepted layouts share timestamp reading: Point properties and timed-line arrays.
+function isoObservations(
+  timestamps: readonly string[],
+  representation: 'Point' | 'LineString'
+): CatalogFeatureCollection {
+  const coordinates = timestamps.map((_, index) => [index, 0]);
+  if (representation === 'LineString')
+    return {
+      type: 'FeatureCollection',
+      features: [
+        {
+          geometry: {type: 'LineString', coordinates},
+          properties: {track_id: 'one', timestamp: timestamps}
+        }
+      ]
+    };
+  return {
+    type: 'FeatureCollection',
+    features: coordinates.map((position, index) => ({
+      geometry: {type: 'Point', coordinates: position},
+      properties: {track_id: 'one', timestamp: timestamps[index]}
+    }))
+  };
+}
+
+for (const representation of ['Point', 'LineString'] as const) {
+  test(`${representation} ISO timestamps use UTC for missing zones and retain explicit offsets`, () => {
+    // Also run with TZ=America/New_York: Date.parse would move the unzoned fix by five hours.
+    const tracks = isoObservations(
+      ['2026-01-01T00:00:01Z', '2026-01-01T00:00:00', '2025-12-31T19:00:02-05:00'],
+      representation
+    );
+    const prepared = prepareCatalogTrajectory(tracks, {
+      ...getCatalogDefaultParameters(getCatalogBinding('trajectory-thinning')!),
+      coordinateSystem: 'planar',
+      timestampEncoding: 'iso8601'
+    });
+    expect(prepared.fixes.map(fix => fix.timestamp)).toEqual([
+      ORIGIN,
+      ORIGIN + 1000,
+      ORIGIN + 2000
+    ]);
+    expect(
+      prepared.fixes.map(fix => (representation === 'Point' ? fix.sourceIndex : fix.vertexIndex))
+    ).toEqual([1, 0, 2]);
+    const published = run('trajectory-thinning', tracks, {
+      timestampEncoding: 'iso8601',
+      mode: 'minimum-time',
+      tolerance: 0
+    }).tables[1];
+    expect(published.columns['timestamp']).toEqual([ORIGIN, ORIGIN + 1000, ORIGIN + 2000]);
+  });
+
+  test(`${representation} ISO timestamps reject impossible dates and times before output`, () => {
+    for (const timestamp of [
+      '2026-02-30T00:00:00Z',
+      '2026-02-29T00:00:00Z',
+      '2026-01-01T24:00:00Z',
+      '2026-02-30T00:00:00',
+      '2026-02-30T00:00:00+05:30'
+    ])
+      expect(
+        () =>
+          run('trajectory-thinning', isoObservations([timestamp], representation), {
+            timestampEncoding: 'iso8601'
+          }),
+        timestamp
+      ).toThrow(/timestamps/);
+    expect(
+      run('trajectory-thinning', isoObservations(['2024-02-29T01:30:00+01:30'], representation), {
+        timestampEncoding: 'iso8601'
+      }).tables[1].columns['timestamp']
+    ).toEqual([Date.UTC(2024, 1, 29)]);
+  });
+
+  test(`${representation} ISO timestamps reject nonzero sub-millisecond digits without losing exact milliseconds`, () => {
+    for (const origin of ['1970-01-01T00:00:00', '2026-01-01T00:00:00']) {
+      for (const fraction of ['0001', '1234', '1230000001', '000000000000000001'])
+        expect(
+          () =>
+            run(
+              'trajectory-thinning',
+              isoObservations([`${origin}.${fraction}Z`], representation),
+              {timestampEncoding: 'iso8601'}
+            ),
+          fraction
+        ).toThrow(/sub-millisecond/);
+      expect(
+        run('trajectory-thinning', isoObservations([`${origin}.1230000000Z`], representation), {
+          timestampEncoding: 'iso8601'
+        }).tables[1].columns['timestamp']
+      ).toEqual([origin.startsWith('1970') ? 123 : ORIGIN + 123]);
+    }
+  });
+}
+
 test('gap and value-change splitting obey strict gaps and repeat only value boundaries', () => {
   const tracks = observations(
     [

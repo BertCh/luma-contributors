@@ -2,16 +2,20 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {evaluateGPUAnalysisParameterCondition} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
 import {
   assignGPUAnalysisFieldRoles,
   matchGPUAnalysisFieldRole,
-  tokenizeGPUAnalysisColumnName
+  tokenizeGPUAnalysisColumnName,
+  getGPUAnalysisCatalogGeometryForDataKind
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {
   GPUAnalysisColumnProfile,
   GPUAnalysisFieldRoleSpec,
   GPUSpatialAnalysisDataKind
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import {isKeplerDatasetCompatibleWithInput} from '../descriptors/applicability';
 import type {CatalogParameterValue} from '../analysis/catalog-binding-types';
 import {getCatalogBinding} from '../analysis/catalog-bindings';
 import type {KeplerOperationGeometry} from '../descriptors/operation-descriptor-types';
@@ -32,8 +36,8 @@ import type {KeplerCuratedAnalysis, KeplerCuratedAnalysisSlot} from './curated-a
 // datasets with different columns.
 //
 // Rules for the automatic choice (the report of this stream repeats them):
-// - A dataset fits a slot when its kind is the slot's kind (a `lines` dataset also fits a `network`
-//   slot, because the catalog reads a network as line geometry) and every role that is required now
+// - A dataset fits a slot through shared binding kind/geometry compatibility, narrowed to the
+//   slot's geometry (polygon-backed cells also fit polygon slots), and every role required now
 //   can be given its own column of an accepted type. Row semantics outside the slot's list are a
 //   warning on the candidate, not a block, as for measurement levels.
 // - Slots are filled jointly: no dataset fills two slots unless it is the only one that fits the
@@ -272,11 +276,7 @@ function isRoleRequired(
   if (typeof role.required === 'boolean') {
     return role.required;
   }
-  const value = parameterValues[role.required.whenParameter];
-  return (
-    (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') &&
-    role.required.equals.includes(value)
-  );
+  return evaluateGPUAnalysisParameterCondition(role.required, parameterValues);
 }
 
 /** The analysis package compares scalar parameter values only; lists cannot decide a role. */
@@ -380,10 +380,33 @@ type DatasetEvaluation = {
 };
 
 function isKindCompatible(
-  slotKind: GPUSpatialAnalysisDataKind,
-  datasetKind: GPUSpatialAnalysisDataKind
+  analysis: KeplerCuratedAnalysis,
+  slot: KeplerCuratedAnalysisSlot,
+  profile: KeplerDatasetProfile
 ): boolean {
-  return slotKind === datasetKind || (slotKind === 'network' && datasetKind === 'lines');
+  const execution = analysis.execution;
+  const input =
+    execution.status === 'available'
+      ? getCatalogBinding(execution.bindingId)?.inputs.find(
+          candidate => candidate.name === execution.inputs[slot.name]
+        )
+      : undefined;
+  const geometry = getGPUAnalysisCatalogGeometryForDataKind(slot.kind, 'input');
+  const restrictedGeometry =
+    geometry === 'point' || geometry === 'line' || geometry === 'polygon' ? geometry : undefined;
+  return isKeplerDatasetCompatibleWithInput(
+    profile,
+    input ?? {
+      name: slot.name,
+      label: slot.label,
+      ...(slot.kind === 'surface' ? {dataKind: 'raster' as const} : {}),
+      accepts: restrictedGeometry ? [restrictedGeometry] : ['point', 'line', 'polygon'],
+      maximumFeatures: 0,
+      maximumVertices: 0
+    },
+    slot.kind,
+    restrictedGeometry
+  );
 }
 
 function hasSlotNameInDataset(slotName: string, profile: KeplerDatasetProfile): boolean {
@@ -402,7 +425,7 @@ function evaluateDataset(
   parameterValues: Readonly<Record<string, CatalogParameterValue>>
 ): DatasetEvaluation {
   const base = {datasetId: profile.datasetId, label: profile.label};
-  if (!isKindCompatible(slot.kind, profile.kind)) {
+  if (!isKindCompatible(analysis, slot, profile)) {
     return {
       profile,
       score: 0,
@@ -2279,16 +2302,9 @@ export function validateKeplerCuratedAnalysis(analysis: KeplerCuratedAnalysis): 
     ...bindingDefaults,
     ...execution.parameters
   };
-  const isActive = (parameter: (typeof descriptor.parameters)[number]): boolean => {
-    if (parameter.activeWhen === undefined) {
-      return true;
-    }
-    const value = effectiveValues[parameter.activeWhen.parameter];
-    return (
-      (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') &&
-      parameter.activeWhen.equals.includes(value)
-    );
-  };
+  const isActive = (parameter: (typeof descriptor.parameters)[number]): boolean =>
+    evaluateGPUAnalysisParameterCondition(parameter.activeWhen, effectiveValues);
+
   for (const name of analysis.exposedParameters) {
     const parameter = descriptor.parameters.find(entry => entry.name === name);
     if (parameter === undefined) {
@@ -2297,7 +2313,7 @@ export function validateKeplerCuratedAnalysis(analysis: KeplerCuratedAnalysis): 
       sentences.push(`${id}: exposed parameter "${name}" is ${parameter.level} in the descriptor.`);
     } else if (!isActive(parameter)) {
       sentences.push(
-        `${id}: exposed parameter "${name}" is inactive under the presets (it only applies when ${parameter.activeWhen?.parameter} is ${parameter.activeWhen?.equals.join(' or ')}).`
+        `${id}: exposed parameter "${name}" is inactive under the presets (it only applies when ${JSON.stringify(parameter.activeWhen)}).`
       );
     }
   }

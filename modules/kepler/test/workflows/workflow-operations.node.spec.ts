@@ -13,6 +13,8 @@ import {
   normalizeCatalogParameters
 } from '../../src/analysis/catalog-bindings';
 import {KeplerAllocationError} from '../../src/runtime/dataset-registry';
+import {applyKeplerDatasetProfileDeclarations} from '../../src/profile/dataset-profile';
+import {profileKeplerWorkbenchData} from '../../src/descriptors/workbench-adapters';
 import {makeWorkflowDataFromFeatures} from '../../src/workflows/workflow-data';
 import {
   createWorkflowOperationRegistry,
@@ -99,7 +101,19 @@ async function runOperation(
   parameters: Record<string, unknown> = {}
 ) {
   const operation = getOperation(id);
-  return operation.run(makeContext(), inputs, operation.normalizeParameters(parameters));
+  // These numerical fixtures declare the coordinate convention assumed by their oracles.
+  const declaredInputs = Object.fromEntries(
+    Object.entries(inputs).map(([name, data]) => [
+      name,
+      {
+        ...data,
+        analysisProfile: applyKeplerDatasetProfileDeclarations(profileKeplerWorkbenchData(data), {
+          coordinateModel: parameters['coordinateSystem'] === 'planar' ? 'planar' : 'geographic'
+        })
+      }
+    ])
+  );
+  return operation.run(makeContext(), declaredInputs, operation.normalizeParameters(parameters));
 }
 
 function createDeferred<Value>() {
@@ -122,7 +136,7 @@ describe('catalog operation adapter and registry', () => {
         summary: binding.summary,
         category: binding.domain,
         origin: 'catalog',
-        version: 'catalog-1',
+        version: 'catalog-ax-3',
         engine: binding.engine,
         capabilityIds: binding.capabilityIds,
         declaredBehavior: binding.declaredBehavior,
@@ -135,9 +149,14 @@ describe('catalog operation adapter and registry', () => {
         binding.inputs.map(input => ({
           name: input.name,
           label: input.label,
-          accepts: input.accepts,
-          maximumRows: input.maximumFeatures,
-          maximumVertices: input.maximumVertices
+          accepts:
+            input.dataKind === 'table' || input.dataKind === 'raster'
+              ? [input.dataKind]
+              : input.accepts,
+          ...(input.dataKind === 'table' ? {geometryFree: true} : {}),
+          maximumRows: input.dataKind === 'raster' ? 0 : input.maximumFeatures,
+          maximumVertices: input.maximumVertices,
+          ...(input.dataKind === 'raster' ? {maximumCells: input.maximumCells} : {})
         }))
       );
       expect(operation.outputs).toEqual(
@@ -145,11 +164,13 @@ describe('catalog operation adapter and registry', () => {
           name: output.tableId,
           label: output.label,
           kind:
-            output.geometry === 'none'
-              ? 'table'
-              : output.geometry === 'mixed'
-                ? 'features'
-                : output.geometry,
+            output.dataKind === 'raster'
+              ? 'raster'
+              : output.geometry === 'none'
+                ? 'table'
+                : output.geometry === 'mixed'
+                  ? 'features'
+                  : output.geometry,
           identityColumns: output.identityColumns,
           maximumRows: output.maximumRows
         }))
@@ -228,7 +249,7 @@ describe('catalog operation adapter and registry', () => {
     );
   });
 
-  test('upgrades property pickers and preserves catalog string limits', () => {
+  test('uses descriptor roles, leaves undescribed strings alone and preserves catalog limits', () => {
     expect(
       getOperation('kernel-density-grid').parameters.find(
         parameter => parameter.name === 'weightProperty'
@@ -256,14 +277,12 @@ describe('catalog operation adapter and registry', () => {
         parameter.columnsFrom
       ])
     ).toEqual([
-      ['column', undefined, 'points'],
-      ['column-list', 64, 'points'],
-      ['column-list', 512, 'points'],
+      ['string', undefined, undefined],
+      ['string', undefined, undefined],
+      ['string', 512, undefined],
       ['string', undefined, undefined]
     ]);
-    expect(operation.normalizeParameters({valueProperties: ' a,b '})['valueProperties']).toBe(
-      'a, b'
-    );
+    expect(operation.normalizeParameters({valueProperties: 'a,b'})['valueProperties']).toBe('a,b');
     expect(
       operation.normalizeParameters({valueProperties: 'x'.repeat(64)})['valueProperties']
     ).toHaveLength(64);
@@ -1046,4 +1065,26 @@ describe('palette search and compatibility', () => {
       ).toEqual(expected);
     }
   });
+});
+
+test('raster ports accept only raster payloads and cannot feed table or geometry operations', () => {
+  for (const kind of ['point', 'line', 'polygon', 'features', 'table'] as const) {
+    expect(getWorkflowPortCompatibility('raster', {accepts: [kind]})).toBe('no');
+    expect(getWorkflowPortCompatibility(kind, {accepts: ['raster']})).toBe(
+      kind === 'features' ? 'maybe' : 'no'
+    );
+  }
+  expect(getWorkflowPortCompatibility('raster', {accepts: ['raster']})).toBe('yes');
+  expect(getWorkflowPortCompatibility('table', {accepts: ['table', 'raster']})).toBe('yes');
+});
+
+test('geometry-free catalog ports reject known geometry without changing generic table ports', () => {
+  const scalarInput = {accepts: ['table'] as const, geometryFree: true};
+  for (const kind of ['point', 'line', 'polygon', 'raster'] as const) {
+    expect(getWorkflowPortCompatibility(kind, scalarInput)).toBe('no');
+  }
+  expect(getWorkflowPortCompatibility('table', scalarInput)).toBe('yes');
+  // Source ports declare features until the host has read their actual representation.
+  expect(getWorkflowPortCompatibility('features', scalarInput)).toBe('maybe');
+  expect(getWorkflowPortCompatibility('point', {accepts: ['table']})).toBe('yes');
 });

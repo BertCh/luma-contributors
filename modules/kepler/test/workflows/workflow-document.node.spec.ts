@@ -488,7 +488,7 @@ describe('named limits', () => {
     [
       'maximum parameter number-list length',
       'parameters.list.value',
-      64,
+      WORKFLOW_LIMITS.maximumParameterNumbers,
       size =>
         replaceStepField('parameters', {
           list: {from: 'static', value: Array.from({length: size}, () => 1)}
@@ -847,7 +847,7 @@ describe('review regressions', () => {
     [
       'parameters.values.value',
       'maximum parameter number-list length',
-      64,
+      WORKFLOW_LIMITS.maximumParameterNumbers,
       values =>
         parseWorkflowDocument(
           replaceStepField('parameters', {values: {from: 'static', value: values}})

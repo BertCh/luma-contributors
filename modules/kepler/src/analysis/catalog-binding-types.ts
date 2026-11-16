@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {AnalysisSensitivityProvenance} from './analysis-sensitivity';
 import type {Device} from '@luma.gl/core';
 import type {
   CatalogCoordinateSystem,
@@ -9,6 +10,7 @@ import type {
   CatalogFeatureCollection,
   CatalogOutputTable
 } from './catalog-geojson';
+import type {CatalogDataInput} from './catalog-data-input';
 import type {CatalogNetworkParameters} from './catalog-network';
 
 /** Engine that produced a result. */
@@ -18,7 +20,32 @@ export type CatalogEngine = 'cpu-reference' | 'gpu';
 export type CatalogEngineSupport = 'cpu-reference' | 'gpu-or-cpu' | 'gpu';
 
 /** Device handed to GPU runners; the caller owns it. */
-export type CatalogGpuContext = {device: Device};
+export type CatalogGpuContext = {device: Device; signal?: AbortSignal};
+
+/** A binding-owned compiled executor. Execute calls are serialized by the preview session. */
+export type CatalogPreviewExecutor = {
+  /** Fallible allocation/compilation, called once after ownership and admission are retained. */
+  initialize?: (signal: AbortSignal) => Promise<void>;
+  execute: (
+    parameters: Readonly<Record<string, CatalogParameterValue>>,
+    signal: AbortSignal
+  ) => Promise<CatalogRunOutput>;
+  /** Must release every resource after GPU completion, including failed initialization/cancellation. */
+  destroy: () => Promise<void>;
+};
+
+/** Explicit peak, including compiled scratch, readback and two CPU result copies for replacement. */
+export type CatalogPreviewPlan = {
+  /** Compile-time settings only; the session additionally keys on the caller's input revision. */
+  key: string;
+  gpuByteLength: number;
+  cpuByteLength: number;
+  /**
+   * Return the cleanup owner before fallible resource allocation; perform that work in initialize.
+   * A rejection here must leave no resources, because no cleanup owner has been returned yet.
+   */
+  create: (context: CatalogGpuContext & {signal: AbortSignal}) => Promise<CatalogPreviewExecutor>;
+};
 
 /** Tables, diagnostics and summary of one run. */
 export type CatalogRunOutput = {
@@ -48,12 +75,19 @@ export type CatalogParameterSpec = {
 export type CatalogInputSpec = {
   name: string;
   label: string;
+  /** Absent means features, preserving existing bindings. Non-feature ports use accepts: []. */
+  dataKind?: 'features' | 'table' | 'raster';
   accepts: readonly ('point' | 'line' | 'polygon')[];
+  /** Feature cap; for dataKind=table this is the row cap. */
   maximumFeatures: number;
+  /** Required positive bound for dataKind=raster; cells are never counted as features. */
+  maximumCells?: number;
   maximumVertices: number;
 };
 
 export type CatalogOutputSpec = {
+  /** Computational representation, independent of the display table's geometry. */
+  dataKind?: 'raster';
   tableId: string;
   label: string;
   geometry: 'point' | 'line' | 'polygon' | 'mixed' | 'none';
@@ -95,6 +129,21 @@ export type CatalogOperationBinding = {
   /** Behavior for invalid, degenerate or capacity-exceeding input. */
   declaredBehavior: readonly string[];
   limitation: string;
+  /** Opt in only when the binding can retain one compilation and declare its entire byte peak. */
+  planPreview?(
+    inputs: Readonly<Record<string, CatalogDataInput>>,
+    parameters: Readonly<Record<string, CatalogParameterValue>>
+  ): CatalogPreviewPlan;
+  /** Typed engine for bindings with table or raster ports (including mixed feature inputs). */
+  runData?(
+    inputs: Readonly<Record<string, CatalogDataInput>>,
+    parameters: Readonly<Record<string, CatalogParameterValue>>
+  ): CatalogRunOutput;
+  runDataGpu?(
+    context: CatalogGpuContext,
+    inputs: Readonly<Record<string, CatalogDataInput>>,
+    parameters: Readonly<Record<string, CatalogParameterValue>>
+  ): Promise<CatalogRunOutput>;
   /** CPU reference engine; absent for 'gpu' operations. */
   run?(
     inputs: Readonly<Record<string, CatalogFeatureCollection>>,
@@ -109,6 +158,7 @@ export type CatalogOperationBinding = {
 };
 
 export type CatalogRunResult = {
+  sensitivity?: AnalysisSensitivityProvenance;
   operationId: string;
   /** Engine that actually produced the tables. */
   engine: CatalogEngine;

@@ -61,5 +61,7 @@ test('catalog lists GPUNetworkSnapping as runnable', () => {
     candidate => candidate.contributorName === 'GPUNetworkSnapping'
   );
   expect(entry?.runnable).toBe('catalog-binding');
-  expect(entry?.engine).toBe('gpu-or-cpu');
+  // The curated drive-time bands binding dispatches snapping on its GPU-only path.
+  expect(entry?.bindingIds).toContain('curated-drive-time-bands');
+  expect(entry?.engine).toBe('gpu');
 });

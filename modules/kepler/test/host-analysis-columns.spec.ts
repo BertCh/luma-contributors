@@ -143,10 +143,10 @@ test('published standardization methods retain exact recipes and derive resident
       const bytes = await buffer.readAsync(0, 16);
       if (method === 'z-score') {
         // Switching back must retain the fixed z-score domain, not the prior output range.
-        expect(Array.from(bytes.slice(0, 3))).not.toEqual([49, 54, 149]);
+        expect(Array.from(bytes.slice(0, 3))).not.toEqual([166, 214, 198]);
       } else {
-        expect(Array.from(bytes.slice(0, 4))).toEqual([49, 54, 149, 255]);
-        expect(Array.from(bytes.slice(12, 16))).toEqual([165, 0, 38, 255]);
+        expect(Array.from(bytes.slice(0, 4))).toEqual([166, 214, 198, 255]);
+        expect(Array.from(bytes.slice(12, 16))).toEqual([0, 112, 106, 255]);
       }
     }
   } finally {

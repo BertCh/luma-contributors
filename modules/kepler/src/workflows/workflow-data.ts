@@ -9,6 +9,11 @@ import {
   type CatalogGeometry,
   type CatalogOutputTable
 } from '../analysis/catalog-geojson';
+import {makeCatalogTableInput, type CatalogDataInput} from '../analysis/catalog-data-input';
+import {
+  validateCatalogRasterInput,
+  type CatalogRasterInput
+} from '../analysis/catalog-raster-input';
 import {WorkflowError, type WorkflowData, type WorkflowPortKind} from './workflow-types';
 
 export type WorkflowColumnSummary = {
@@ -93,6 +98,7 @@ function readGeometryType(value: string | number | boolean): unknown {
  * `table`.
  */
 export function getWorkflowDataKind(table: CatalogOutputTable): WorkflowPortKind {
+  if (table.raster) return 'raster';
   if (table.geometryColumn !== undefined && table.rowCount === 0) return 'features';
   const values =
     table.geometryColumn !== undefined && Object.hasOwn(table.columns, table.geometryColumn)
@@ -117,12 +123,50 @@ export function getWorkflowDataKind(table: CatalogOutputTable): WorkflowPortKind
   return kind;
 }
 
-/** Wraps a table; the kind is read from its geometry column. */
+/** Retains a computational raster when present; otherwise infers the display geometry kind. */
 export function makeWorkflowData(
   table: CatalogOutputTable,
   options: {identityColumn?: string} = {}
 ): WorkflowData {
-  return {table, kind: getWorkflowDataKind(table), ...options};
+  return {
+    table,
+    kind: getWorkflowDataKind(table),
+    ...(table.raster ? {raster: table.raster} : {}),
+    ...options
+  };
+}
+
+/** Raster data retains native samples, validity and grid; cells never become feature rows. */
+export function makeWorkflowRasterData(
+  raster: CatalogRasterInput,
+  maximumCells: number
+): WorkflowData {
+  validateCatalogRasterInput(raster.id, raster, maximumCells);
+  return {
+    kind: 'raster',
+    raster,
+    table: {
+      id: raster.id,
+      label: raster.band.name ?? raster.id,
+      rowCount: 0,
+      columns: {},
+      columnTypes: {}
+    }
+  };
+}
+
+/** The typed catalog boundary, shared by every non-feature workflow binding. */
+export function getWorkflowCatalogInput(data: WorkflowData, maximumRows: number): CatalogDataInput {
+  if (data.kind === 'raster') {
+    if (!data.raster)
+      throw new WorkflowError(
+        'input-required',
+        `${data.table.label}: raster band/grid is required.`
+      );
+    return data.raster;
+  }
+  if (data.table.geometryColumn !== undefined) return getWorkflowFeatures(data);
+  return makeCatalogTableInput(data.table, {maximumRows, identityColumn: data.identityColumn});
 }
 
 type ColumnValue = string | number | boolean | null;
@@ -152,29 +196,36 @@ function makeColumnValue(value: unknown, type: CatalogColumnType): ColumnValue {
   return String(value);
 }
 
-/**
- * Table form of a feature collection: one row per feature, a `geometry` GeoJSON-text column, a
- * `feature_id` string column when any feature has an id, and one column per scalar property
- * (declared type from the first non-null value; mixed columns become strings).
- */
-export function makeWorkflowDataFromFeatures(
-  collection: CatalogFeatureCollection,
-  options: {id: string; label: string}
-): WorkflowData {
+/** Property-to-column names in first-seen order, with reserved table names disambiguated. */
+export function getWorkflowFeaturePropertyColumns(
+  collection: CatalogFeatureCollection
+): ReadonlyMap<string, string> {
   const propertyNames = new Set<string>();
   for (const feature of collection.features) {
     for (const name of Object.keys(feature.properties ?? {})) propertyNames.add(name);
   }
-  const columns: CatalogOutputTable['columns'] = Object.create(null);
-  const columnTypes: CatalogOutputTable['columnTypes'] = Object.create(null);
-  const columnNames: string[] = [];
+  const propertyColumns = new Map<string, string>();
   for (const propertyName of propertyNames) {
     let columnName = propertyName;
     if (columnName === 'geometry' || columnName === 'feature_id') {
       do {
         columnName += '_property';
-      } while (propertyNames.has(columnName) || Object.hasOwn(columns, columnName));
+      } while (propertyNames.has(columnName) || [...propertyColumns.values()].includes(columnName));
     }
+    propertyColumns.set(propertyName, columnName);
+  }
+  return propertyColumns;
+}
+
+/** Convert GeoJSON properties using the canonical reserved-name mapping. */
+export function makeWorkflowDataFromFeatures(
+  collection: CatalogFeatureCollection,
+  options: {id: string; label: string}
+): WorkflowData {
+  const columns: CatalogOutputTable['columns'] = Object.create(null);
+  const columnTypes: CatalogOutputTable['columnTypes'] = Object.create(null);
+  const columnNames: string[] = [];
+  for (const [propertyName, columnName] of getWorkflowFeaturePropertyColumns(collection)) {
     const values = collection.features.map(feature =>
       feature.properties && Object.hasOwn(feature.properties, propertyName)
         ? (feature.properties[propertyName] ?? null)
@@ -218,6 +269,11 @@ export function makeWorkflowDataFromFeatures(
  * `WorkflowError('geometry-required')` when the table has no geometry column.
  */
 export function getWorkflowFeatures(data: WorkflowData): CatalogFeatureCollection {
+  if (data.kind === 'raster')
+    throw new WorkflowError(
+      'geometry-required',
+      `${data.table.label}: raster cells cannot be read as features.`
+    );
   const cached = FEATURE_CACHE.get(data);
   if (cached) return cached;
   const {table} = data;
@@ -472,6 +528,9 @@ export function hashWorkflowValue(value: unknown): string {
 /** Content hash of a data object (column names, types and values, geometry column, kind). */
 export function hashWorkflowData(data: WorkflowData): string {
   const hasher = new WorkflowHasher();
+  if (data.kind === 'raster') hashCanonicalValue(hasher, data.raster);
+  if (data.table.coordinateSystem !== undefined)
+    hashCanonicalValue(hasher, {coordinateSystem: data.table.coordinateSystem});
   hashCanonicalValue(hasher, [
     data.kind,
     data.identityColumn,

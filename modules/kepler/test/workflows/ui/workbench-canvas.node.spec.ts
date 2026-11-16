@@ -226,6 +226,8 @@ function makeStore(patch: Partial<WorkbenchState> = {}): WorkbenchStore {
     restore: collection => {
       calls.push(['restore', collection]);
     },
+    getReviewedAssistantIssues: () => [],
+    recordAssistantReview: () => {},
     clear: async () => {
       calls.push('clear');
     }

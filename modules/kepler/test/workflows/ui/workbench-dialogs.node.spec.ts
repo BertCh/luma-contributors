@@ -10,7 +10,8 @@ import {
   getWorkflowAssistantTools,
   listWorkflowOperationsForAssistant,
   listWorkflowsForAssistant,
-  describeWorkflowForAssistant
+  describeWorkflowForAssistant,
+  validateWorkflowForAssistant
 } from '../../../src/workflows/workflow-assistant';
 import {
   exportWorkflowJSON,
@@ -144,6 +145,8 @@ function makeStore(patch: Partial<WorkbenchState> = {}) {
     rejectDraft: () => {
       calls.push('reject');
     },
+    getReviewedAssistantIssues: () => [],
+    recordAssistantReview: () => {},
     saveTemplate: () => '',
     deleteTemplate: () => {},
     useTemplate: () => '',
@@ -197,7 +200,9 @@ describe('workbench assistant routing', () => {
       'listWorkflows',
       'describeWorkflow',
       'setWorkflowInputs',
-      'runWorkflow'
+      'runWorkflow',
+      'listAnalysisTemplates',
+      'describeAnalysisTemplate'
     ]);
   });
 
@@ -245,32 +250,19 @@ describe('workbench assistant routing', () => {
     expect(store.getState().workflows).toHaveLength(1);
   });
 
-  test('keeps configuration errors in the draft for approval', () => {
+  test('rejects configuration errors before offering a draft for approval', () => {
     const {store, drafts, calls} = makeStore();
     const result = runWorkbenchAssistantTool(store, {
       name: 'defineWorkflow',
-      arguments: {
-        title: 'Needs points',
-        steps: [{id: 'scale', operationId: 'fixture-scale'}]
-      }
+      arguments: {title: 'Needs points', steps: [{id: 'scale', operationId: 'fixture-scale'}]}
     });
-    expect(drafts).toHaveLength(1);
-    expect(drafts[0].issues).toEqual([
-      expect.objectContaining({
-        severity: 'error',
-        code: 'input-required',
-        stepId: 'scale',
-        port: 'points'
-      })
-    ]);
     expect(result).toEqual({
-      status: 'awaiting-approval',
-      workflowTitle: 'Needs points',
-      stepCount: 1,
-      issues: drafts[0].issues.map(({severity, code, message}) => ({severity, code, message})),
-      note: 'The workflow is shown to the user as a draft. It has not been added or run.'
+      status: 'error',
+      code: 'malformed',
+      message: expect.stringContaining('Points')
     });
-    expect(calls).toEqual(['propose']);
+    expect(drafts).toEqual([]);
+    expect(calls).toEqual([]);
   });
 
   test.each([
@@ -1393,13 +1385,24 @@ describe('saved workflow assistant tools', () => {
       status: 'needs-approval',
       workflowTitle: document.title,
       steps: 3,
-      cachedResultsKnown: true
+      cachedResultsKnown: true,
+      issues: validateWorkflowForAssistant(document, {
+        registry: store.registry,
+        host: store.host
+      }).map(({severity, code, message}) => ({severity, code, message})),
+      message: 'Running a workflow needs explicit user approval of this exact call.'
     });
     expect(runWorkbenchAssistantTool(store, target)).toEqual({
       status: 'needs-approval',
       workflowTitle: document.title,
       steps: 2,
-      cachedResultsKnown: true
+      cachedResultsKnown: true,
+      issues: validateWorkflowForAssistant(document, {
+        registry: store.registry,
+        host: store.host,
+        target: 'scale'
+      }).map(({severity, code, message}) => ({severity, code, message})),
+      message: 'Running a workflow needs explicit user approval of this exact call.'
     });
     expect(calls).toEqual([]);
     const runner = new WorkflowRunner({registry: store.registry, host: store.host});
@@ -1410,7 +1413,12 @@ describe('saved workflow assistant tools', () => {
       status: 'needs-approval',
       workflowTitle: document.title,
       steps: 0,
-      cachedResultsKnown: true
+      cachedResultsKnown: true,
+      issues: validateWorkflowForAssistant(document, {
+        registry: store.registry,
+        host: store.host
+      }).map(({severity, code, message}) => ({severity, code, message})),
+      message: 'Running a workflow needs explicit user approval of this exact call.'
     });
     await runner.destroy();
     const completion = makeDeferred<WorkflowRunRecord | null>();
@@ -1423,7 +1431,12 @@ describe('saved workflow assistant tools', () => {
     };
     expect(runWorkbenchAssistantTool(store, target, {approved: true})).toEqual({
       status: 'started',
-      workflowTitle: document.title
+      workflowTitle: document.title,
+      issues: validateWorkflowForAssistant(document, {
+        registry: store.registry,
+        host: store.host,
+        target: 'scale'
+      }).map(({severity, code, message}) => ({severity, code, message}))
     });
     expect(calls).toEqual([`active:${document.id}`, 'run:scale']);
     completion.resolve(null);
@@ -1483,7 +1496,8 @@ describe('workspace template actions', () => {
       findElement(probe.render(), 'data-testid', WORKBENCH_TEST_IDS.userTemplate(document.id)),
       'onClick'
     );
-    expect(calls).toEqual(['save', 'use:saved-template', 'dialog']);
+    expect(calls).toEqual(['use:saved-template', 'dialog']);
+    expect(renderToStaticMarkup(probe.render())).toContain('Save reusable template');
     calls.length = 0;
     invokeHandler(
       findElement(
@@ -1807,7 +1821,12 @@ describe('assistant approval against reentrant store subscribers', () => {
         status: 'needs-approval',
         workflowTitle: document.title,
         steps: 3,
-        cachedResultsKnown: false
+        cachedResultsKnown: false,
+        issues: validateWorkflowForAssistant(document, {
+          registry: store.registry,
+          host: store.host
+        }).map(({severity, code, message}) => ({severity, code, message})),
+        message: 'Running a workflow needs explicit user approval of this exact call.'
       });
       expect(
         runWorkbenchAssistantTool(store, {
@@ -1818,7 +1837,13 @@ describe('assistant approval against reentrant store subscribers', () => {
         status: 'needs-approval',
         workflowTitle: document.title,
         steps: 2,
-        cachedResultsKnown: false
+        cachedResultsKnown: false,
+        issues: validateWorkflowForAssistant(document, {
+          registry: store.registry,
+          host: store.host,
+          target: 'scale'
+        }).map(({severity, code, message}) => ({severity, code, message})),
+        message: 'Running a workflow needs explicit user approval of this exact call.'
       });
       expect(store.getState()).toBe(snapshot);
       store.setActiveWorkflow(document.id);
@@ -1831,7 +1856,12 @@ describe('assistant approval against reentrant store subscribers', () => {
         status: 'needs-approval',
         workflowTitle: document.title,
         steps: 0,
-        cachedResultsKnown: true
+        cachedResultsKnown: true,
+        issues: validateWorkflowForAssistant(document, {
+          registry: store.registry,
+          host: store.host
+        }).map(({severity, code, message}) => ({severity, code, message})),
+        message: 'Running a workflow needs explicit user approval of this exact call.'
       });
       expect(operationCalls).toEqual([]);
     } finally {

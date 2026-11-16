@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 export type {
+  KeplerDatasetNetworkProfile,
   KeplerDatasetProfile,
   KeplerDatasetProfileDeclarations
 } from './dataset-profile-types';
@@ -13,7 +14,8 @@ export {
   describeKeplerDatasetProfile,
   profileKeplerColumnTable,
   profileKeplerFeatureCollection,
-  toKeplerRecommendationSubject
+  toKeplerRecommendationSubject,
+  withKeplerDatasetNetworkProfile
 } from './dataset-profile';
 export type {
   KeplerColumnTableProfileOptions,
@@ -34,3 +36,17 @@ export {
   serializeKeplerDatasetProfileDeclarations
 } from './dataset-profile-cache';
 export type {KeplerDatasetProfileCache} from './dataset-profile-cache';
+
+export * from './distinct-count-statistics';
+
+export * from './dataset-network-profile';
+
+export * from './native-dataset-profile';
+
+export * from './dataset-profile-stages';
+export * from './dataset-profile-gpu';
+export type {
+  KeplerDatasetProfileProgress,
+  KeplerDatasetProfileSpacing
+} from './dataset-profile-types';
+export {withKeplerDatasetProfileStatistics} from './dataset-profile';

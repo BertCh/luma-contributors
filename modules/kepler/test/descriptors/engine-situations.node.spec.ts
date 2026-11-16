@@ -30,6 +30,39 @@ function getKey(suggestion: KeplerAnalysisSuggestion): string {
 }
 
 describe('review situations', () => {
+  it('preserves strict diversity across all review situations', () => {
+    for (const situation of situations) {
+      const result = suggestKeplerAnalyses(
+        KEPLER_CATALOG_BINDINGS,
+        situation.datasets.map(dataset => dataset.profile)
+      );
+      const counts = new Map<string, number>();
+      for (const entry of result.suggestions)
+        counts.set(entry.question, (counts.get(entry.question) ?? 0) + 1);
+      for (const [question, count] of counts)
+        expect(count, `${situation.id}: ${question}`).toBeLessThanOrEqual(2);
+      expect(result.suggestions.length).toBeLessThanOrEqual(6);
+    }
+  });
+
+  it('offers temporal event analysis for incident dates while keeping static answers and diversity', () => {
+    const situation = situations.find(entry => entry.id === 'S03-crime-incidents')!;
+    const result = suggestKeplerAnalyses(
+      KEPLER_CATALOG_BINDINGS,
+      situation.datasets.map(dataset => dataset.profile)
+    );
+    const top = result.suggestions.slice(0, 3);
+    expect(top.map(getKey)).toContain('emerging-hot-spots');
+    expect(top.some(entry => ['density-surface', 'hot-spot-map'].includes(getKey(entry)))).toBe(
+      true
+    );
+    expect(top.some(entry => situation.expectation.first.includes(getKey(entry)))).toBe(true);
+    const emerging = top.find(entry => getKey(entry) === 'emerging-hot-spots')!;
+    expect(emerging.applicability.fieldBindings['timeProperty']).toBe('date');
+    expect(emerging.scoreTerms['rowSemanticsMismatch']).toBeCloseTo(0);
+    expect(emerging.scoreTerms['timeColumn']).toBe(12);
+  });
+
   it('writes the table', () => {
     const lines: string[] = [];
     for (const situation of situations) {

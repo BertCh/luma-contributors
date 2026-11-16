@@ -187,6 +187,8 @@ function makeStore(patch: Partial<WorkbenchState> = {}) {
     },
     serialize: () => undefined,
     restore: () => {},
+    getReviewedAssistantIssues: () => [],
+    recordAssistantReview: () => {},
     clear: async () => {}
   };
   return {store, calls};

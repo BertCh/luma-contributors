@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {evaluateGPUAnalysisParameterCondition} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
 import {describe, expect, it} from 'vitest';
 import type {
   GPUAnalysisColumnProfile,
@@ -18,6 +20,8 @@ import {
 import type {CatalogFeatureCollection} from '../../src/analysis/catalog-geojson';
 import {resolveKeplerOperationParameters} from '../../src/descriptors/default-parameters';
 import {getKeplerOperationDescriptor} from '../../src/descriptors/operation-descriptors';
+import {profileKeplerNativeDataset} from '../../src/profile/native-dataset-profile';
+import {evaluateKeplerOperationApplicability} from '../../src/descriptors/applicability';
 import {profileKeplerFeatureCollection} from '../../src/profile/dataset-profile';
 import {
   buildKeplerCuratedAnalysisRequest,
@@ -75,7 +79,10 @@ function makeProfile(
     ...(rowSemantics === undefined
       ? {}
       : {rowSemantics: {value: rowSemantics, source: 'declared' as const}}),
-    geometryColumns: []
+    geometryColumns: [],
+    ...(kind === 'points' || kind === 'trajectories' ? {catalogGeometry: 'point' as const} : {}),
+    ...(kind === 'polygons' ? {catalogGeometry: 'polygon' as const} : {}),
+    ...(kind === 'lines' || kind === 'network' ? {catalogGeometry: 'line' as const} : {})
   };
 }
 
@@ -86,6 +93,50 @@ function getAnalysis(id: string): KeplerCuratedAnalysis {
   }
   return analysis;
 }
+
+it('rejects wrong-type field choices and invalidates a saved field when its type changes', () => {
+  const analysis = getAnalysis('idw-surface');
+  const profile = makeProfile(
+    'gauges',
+    'points',
+    [
+      makeColumn('rainfall', 'number', 'amount'),
+      makeColumn('station_label', 'category', 'nominal')
+    ],
+    'surface-samples'
+  );
+  const mapping = createKeplerCuratedAnalysisMapping(analysis, [profile]);
+  expect(mapping.slots[0].roles[0].candidates.map(candidate => candidate.name)).not.toContain(
+    'station_label'
+  );
+  expect(() =>
+    updateKeplerCuratedAnalysisMapping(
+      mapping,
+      {
+        slot: 'points',
+        role: 'value',
+        columns: ['station_label']
+      },
+      analysis,
+      [profile]
+    )
+  ).toThrow();
+  const chosen = updateKeplerCuratedAnalysisMapping(
+    mapping,
+    {
+      slot: 'points',
+      role: 'value',
+      columns: ['rainfall']
+    },
+    analysis,
+    [profile]
+  );
+  const changed = {...profile, columns: [makeColumn('rainfall', 'category', 'nominal')]};
+  const replayed = replayKeplerCuratedAnalysisMapping(analysis, chosen.choices, [changed]);
+  expect(replayed.ready).toBe(false);
+  expect(replayed.problems.some(problem => problem.kind === 'saved-choice-lost')).toBe(true);
+  expect(() => buildKeplerCuratedAnalysisRequest(analysis, replayed)).toThrow();
+});
 
 /** One dataset per slot whose columns carry the sample's column names, as the sample's own data would. */
 function makeSampleShapedProfiles(analysis: KeplerCuratedAnalysis): KeplerDatasetProfile[] {
@@ -998,9 +1049,15 @@ describe('buildKeplerCuratedAnalysisRequest', () => {
     expect(() =>
       buildKeplerCuratedAnalysisRequest(idw, mapping, {parameterOverrides: {valueProperty: 'x'}})
     ).toThrow(/valueProperty.*change the mapping/);
-    const pending = KEPLER_CURATED_ANALYSES.find(
-      analysis => analysis.execution.status === 'needs-binding'
-    ) as KeplerCuratedAnalysis;
+    const pending: KeplerCuratedAnalysis = {
+      ...idw,
+      exposedParameters: [],
+      execution: {
+        status: 'needs-binding',
+        implementation: 'addFutureRecipe',
+        reason: 'No binding has been registered for this future recipe.'
+      }
+    };
     expect(() =>
       buildKeplerCuratedAnalysisRequest(
         pending,
@@ -2077,13 +2134,15 @@ describe('validateKeplerCuratedAnalysis', () => {
           parameter =>
             parameter.level === 'basic' &&
             parameter.name !== 'coordinateSystem' &&
-            (parameter.activeWhen === undefined ||
-              parameter.activeWhen.equals.includes(
-                (execution.parameters[parameter.activeWhen.parameter] ??
-                  getCatalogBinding(execution.bindingId)!.parameters.find(
-                    entry => entry.name === parameter.activeWhen!.parameter
-                  )?.defaultValue) as never
-              ))
+            evaluateGPUAnalysisParameterCondition(parameter.activeWhen, {
+              ...Object.fromEntries(
+                getCatalogBinding(execution.bindingId)!.parameters.map(entry => [
+                  entry.name,
+                  entry.defaultValue
+                ])
+              ),
+              ...execution.parameters
+            })
         )
         .map(parameter => parameter.name),
       slots: analysis.slots.map(slot => {
@@ -2115,9 +2174,15 @@ describe('validateKeplerCuratedAnalysis', () => {
     for (const analysis of AVAILABLE_ANALYSES) {
       expect(validateKeplerCuratedAnalysis(analysis), analysis.id).toEqual([]);
     }
-    const pending = KEPLER_CURATED_ANALYSES.find(
-      analysis => analysis.execution.status === 'needs-binding'
-    )!;
+    const pending: KeplerCuratedAnalysis = {
+      ...getAnalysis('density-surface'),
+      exposedParameters: [],
+      execution: {
+        status: 'needs-binding',
+        implementation: 'addFutureRecipe',
+        reason: 'No binding has been registered for this future recipe.'
+      }
+    };
     expect(validateKeplerCuratedAnalysis(pending)).toEqual([]);
   });
 
@@ -2128,12 +2193,15 @@ describe('validateKeplerCuratedAnalysis', () => {
     const inactive = descriptor.parameters.find(
       parameter =>
         parameter.activeWhen !== undefined &&
-        !parameter.activeWhen.equals.includes(
-          (execution.parameters[parameter.activeWhen.parameter] ??
-            getCatalogBinding(execution.bindingId)!.parameters.find(
-              entry => entry.name === parameter.activeWhen!.parameter
-            )?.defaultValue) as never
-        )
+        !evaluateGPUAnalysisParameterCondition(parameter.activeWhen, {
+          ...Object.fromEntries(
+            getCatalogBinding(execution.bindingId)!.parameters.map(entry => [
+              entry.name,
+              entry.defaultValue
+            ])
+          ),
+          ...execution.parameters
+        })
     );
     expect(inactive).toBeDefined();
     // The mirror lists the basic ones; it must not list the inactive one or coordinateSystem.
@@ -2288,7 +2356,12 @@ async function runRequest(
 }
 
 describe('from a real profile to a finished run', () => {
-  for (const analysis of AVAILABLE_ANALYSES) {
+  // Typed GPU recipes have mapped execution checks in their dedicated headless specs.
+  for (const analysis of AVAILABLE_ANALYSES.filter(
+    analysis =>
+      analysis.execution.status === 'available' &&
+      getCatalogBinding(analysis.execution.bindingId)?.engine !== 'gpu'
+  )) {
     for (const variant of ['sample columns', 'renamed columns'] as const) {
       it(`${analysis.id} (${variant}) builds, resolves its parameters and runs`, async () => {
         const sample = createKeplerCuratedAnalysisSample(analysis.sampleId!) as SampleCollections;
@@ -2306,6 +2379,13 @@ describe('from a real profile to a finished run', () => {
         expect(mapping.complete).toBe(true);
         expect(mapping.slots.every(slot => slot.datasetId === slot.slot)).toBe(true);
         const request = buildKeplerCuratedAnalysisRequest(analysis, mapping);
+        if (getCatalogBinding(request.bindingId)!.engine === 'gpu') {
+          // Dedicated headless specs verify both mappings against the real recipe fixture.
+          await expect(runRequest(request, profiles, collectionsById)).rejects.toThrow(
+            'GPU device required'
+          );
+          return;
+        }
         const result = await runRequest(request, profiles, collectionsById);
         expect(result.diagnostics.filter(diagnostic => diagnostic.severity === 'error')).toEqual(
           []
@@ -2395,4 +2475,101 @@ describe('curated network sample slots', () => {
       expect(request.parameters['weightProperty']).toBe('residents');
     }
   });
+});
+
+it('requires a mapped role when either of two different parameter conditions holds', () => {
+  const analysis: KeplerCuratedAnalysis = {
+    ...SYNTHETIC_ANALYSIS,
+    slots: SYNTHETIC_ANALYSIS.slots.map(slot => ({
+      ...slot,
+      fields: slot.fields.map(role =>
+        role.role === 'weight'
+          ? {
+              ...role,
+              required: {
+                anyOf: [
+                  {whenParameter: 'mode', equals: ['weighted']},
+                  {parameter: 'useWeight', equals: [true]}
+                ]
+              }
+            }
+          : role
+      )
+    }))
+  };
+  const dataset = makeProfile('areas', 'polygons', [
+    makeColumn('n_cases', 'integer', 'count'),
+    makeColumn('pop_total', 'integer', 'count')
+  ]);
+  for (const [mode, useWeight, required] of [
+    ['plain', false, false],
+    ['weighted', false, true],
+    ['plain', true, true]
+  ] as const) {
+    const mapping = createKeplerCuratedAnalysisMapping(analysis, [dataset], {
+      parameters: {mode, useWeight}
+    });
+    expect(mapping.slots[0].roles.find(role => role.role === 'weight')?.required).toBe(required);
+    expect(mapping.complete).toBe(!required);
+  }
+});
+
+it('maps native polygon-backed cells through shared compatibility while retaining polygon slot restrictions', () => {
+  const profile = profileKeplerNativeDataset(
+    {
+      rowCount: 4,
+      geometryColumn: 'geometry',
+      columns: [
+        {name: 'rate', type: 'float64', values: [1, 2, 3, 4]},
+        {
+          name: 'geometry',
+          type: 'string',
+          values: [0, 1, 2, 3].map(column =>
+            JSON.stringify({
+              type: 'Polygon',
+              coordinates: [
+                [
+                  [column, 0],
+                  [column + 1, 0],
+                  [column + 1, 1],
+                  [column, 1],
+                  [column, 0]
+                ]
+              ]
+            })
+          )
+        }
+      ]
+    },
+    {
+      datasetId: 'native-cells',
+      label: 'Native cells',
+      declarations: {
+        coordinateModel: 'planar',
+        rowSemantics: 'objects',
+        measurement: {rate: 'rate'}
+      }
+    },
+    {kind: 'cells'}
+  );
+  expect(profile).toMatchObject({kind: 'cells', catalogGeometry: 'polygon'});
+  const analysis = getAnalysis('cluster-and-outlier-map');
+  const binding = getCatalogBinding('local-moran-statistics')!;
+  const applicability = evaluateKeplerOperationApplicability(
+    binding,
+    getKeplerOperationDescriptor(binding.id)!,
+    [profile],
+    {executionEngine: 'cpu'}
+  );
+  expect(applicability.status).toBe('ready');
+  const mapping = createKeplerCuratedAnalysisMapping(analysis, [profile]);
+  expect(mapping.slots[0].candidates[0].fit).toBe('fits');
+  expect(mapping.slots[0].datasetId).toBe(profile.datasetId);
+  expect(mapping.ready).toBe(true);
+  for (const catalogGeometry of ['point', 'line'] as const) {
+    const incompatible = createKeplerCuratedAnalysisMapping(analysis, [
+      {...profile, catalogGeometry}
+    ]);
+    expect(incompatible.slots[0].candidates[0].fit).toBe('wrong-kind');
+  }
 });

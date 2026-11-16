@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {prepareEmergingHotSpots} from '../../src/curated/bindings/curated-emerging-hot-spots-binding';
 import {GPU_ANALYSIS_DEFAULT_RULES} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import {describe, expect, it} from 'vitest';
 import type {CatalogOperationBinding} from '../../src/analysis/catalog-binding-types';
@@ -233,6 +234,7 @@ describe('resolveKeplerOperationParameters', () => {
       parameters: [
         {
           name: 'cells',
+          apply: 'rebuild',
           defaultPolicy: {from: 'data', input: 'points', rule: 'extent-shorter-side-over-250'},
           level: 'basic'
         }
@@ -1152,7 +1154,7 @@ describe('grid caps in the operation frame', () => {
     return {type: 'FeatureCollection', features} as unknown as CatalogFeatureCollection;
   }
 
-  it('runs every grid binding at the resolved cell size, for large extents, in both engines', async () => {
+  it('prepares every grid binding and runs CPU-capable bindings at resolved cell sizes, under both engine policies', async () => {
     const failures: string[] = [];
     for (const bindingId of Object.keys(KEPLER_GRID_CELL_CAPS)) {
       const binding = getCatalogBinding(bindingId)!;
@@ -1162,6 +1164,11 @@ describe('grid caps in the operation frame', () => {
         const profiles: Record<string, KeplerDatasetProfile> = {};
         for (const input of binding.inputs) {
           inputs[input.name] = build(input.accepts[0], layout);
+          if (bindingId === 'curated-emerging-hot-spots') {
+            inputs[input.name].features.forEach((feature, index) => {
+              feature.properties = {v: Date.UTC(2023, index % 12, 1)};
+            });
+          }
           profiles[input.name] = profileKeplerFeatureCollection(inputs[input.name], {
             datasetId: input.name,
             label: input.name,
@@ -1178,7 +1185,15 @@ describe('grid caps in the operation frame', () => {
             fieldBindings
           });
           try {
-            await runCatalogOperationAsync(binding, resolved.parameters, inputs, {engine: 'cpu'});
+            if (bindingId === 'curated-emerging-hot-spots') {
+              // Node can qualify preparation and allocation bounds; actual recipe dispatch is headless-only.
+              const prepared = prepareEmergingHotSpots(inputs['points'], resolved.parameters);
+              expect(prepared.cellCount).toBeLessThanOrEqual(4096);
+              expect(prepared.cellCount * prepared.slices.count).toBeLessThanOrEqual(65536);
+              expect(resolved.confirmations).toEqual([]);
+            } else {
+              await runCatalogOperationAsync(binding, resolved.parameters, inputs, {engine: 'cpu'});
+            }
           } catch (error) {
             failures.push(
               `${bindingId} | ${layout.label} | ${executionEngine} | cell ${String(resolved.parameters['cellSize'])}: ${(error as Error).message.slice(0, 80)}`
@@ -1570,6 +1585,7 @@ describe('final coordinate model and total-aware defaults', () => {
           ...descriptor.parameters.filter(parameter => parameter.name !== 'coordinateSystem'),
           {
             name: 'coordinateSystem',
+            apply: 'rebuild',
             level: 'advanced',
             defaultPolicy: {from: 'preset', value: 'planar', reason: 'Chosen planar interpretation'}
           }
@@ -1813,4 +1829,27 @@ describe('third review safe data defaults', () => {
       ).parameters['dotValue']
     ).toBe(7);
   });
+});
+
+it('resolves cross-parameter OR activity without dropping inactive binding values', () => {
+  const binding = getCatalogBinding('geometry-line-buffer')!;
+  const descriptor = getKeplerOperationDescriptor(binding.id)!;
+  for (const [capStyle, joinStyle, expected] of [
+    ['flat', 'mitre', false],
+    ['round', 'mitre', true],
+    ['flat', 'round', true],
+    ['round', 'round', true]
+  ] as const) {
+    const resolved = resolveKeplerOperationParameters(
+      binding,
+      descriptor,
+      {},
+      {overrides: {capStyle, joinStyle}}
+    );
+    expect(
+      resolved.resolutions.find(parameter => parameter.parameter === 'quadSegments')?.active
+    ).toBe(expected);
+    expect(resolved.inactive.includes('quadSegments')).toBe(!expected);
+    expect(resolved.parameters['quadSegments']).toBeDefined();
+  }
 });

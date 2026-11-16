@@ -4,6 +4,7 @@
 
 import {formatWorkflowParameterValue} from './workflow-parameters';
 import {getWorkflowTopologicalOrder} from './workflow-plan';
+import type {WorkflowPreflight} from './workflow-preflight';
 import type {
   WorkflowDocument,
   WorkflowOperation,
@@ -56,7 +57,8 @@ export function makeWorkflowRunReport(
   document: WorkflowDocument,
   registry: WorkflowOperationRegistry,
   state: WorkflowRunnerState,
-  record: WorkflowRunRecord
+  record: WorkflowRunRecord,
+  preflight?: WorkflowPreflight
 ): string {
   const steps = new Map(document.steps.map(step => [step.id, step]));
   const lines = [
@@ -70,6 +72,29 @@ export function makeWorkflowRunReport(
       const value = Array.isArray(input.value) ? input.value.join(', ') : String(input.value);
       lines.push(
         `- ${escapeMarkdown(input.label)}: ${escapeMarkdown(value)}${input.unit ? ` ${escapeMarkdown(input.unit)}` : ''}`
+      );
+    }
+  }
+  if (preflight) {
+    lines.push(
+      '',
+      '## Preflight (current document, cold run)',
+      '',
+      `GPU scratch peak: ${preflight.peakScratchBytes ?? 'unknown'} bytes; command nodes: ${preflight.commandNodeCount ?? 'unknown'}.`,
+      'Logical GPU transients only; excludes inputs, outputs, staging, JavaScript heap and driver overhead.',
+      '',
+      '| Step | Scratch bytes | Command nodes | Basis |',
+      '| --- | --- | --- | --- |'
+    );
+    for (const estimate of preflight.steps) {
+      lines.push(
+        `| ${escapeMarkdown(estimate.stepId)} | ${estimate.scratchBytes ?? 'unknown'} | ${estimate.commandNodeCount ?? 'unknown'} | ${escapeMarkdown(estimate.reason)} |`
+      );
+    }
+    lines.push('', '### Materialisation boundaries', '');
+    for (const boundary of preflight.boundaries) {
+      lines.push(
+        `- ${escapeMarkdown(boundary.producer)}.${escapeMarkdown(boundary.output)} → ${escapeMarkdown(boundary.consumer)}.${escapeMarkdown(boundary.input)}: ${boundary.materialization === 'cpu-raster' ? 'CPU raster band' : 'CPU table'}; ${escapeMarkdown(boundary.reason)}`
       );
     }
   }
@@ -138,6 +163,18 @@ export function makeWorkflowRunReport(
               : String(value);
       lines.push(
         `- ${escapeMarkdown(parameter?.label ?? name)}: ${escapeMarkdown(formatted)}${parameter?.unit ? ` ${escapeMarkdown(parameter.unit)}` : ''}`
+      );
+    }
+    const sensitivity = entry.sensitivity ?? runResult?.sensitivity;
+    if (sensitivity) {
+      lines.push(
+        `- Exploratory parameter search: ${escapeMarkdown(sensitivity.parameter)} = ${sensitivity.values.join(', ')}; chosen ${sensitivity.chosenValue ?? 'none'}.`
+      );
+      lines.push(
+        `- Search population: ${escapeMarkdown(sensitivity.population.scope)}; ${sensitivity.population.rowCount}/${sensitivity.population.sourceRowCount} rows; selection ${escapeMarkdown(sensitivity.population.selectionKey)}; revision ${escapeMarkdown(sensitivity.revisionKey)}.`
+      );
+      lines.push(
+        '- Correction within one map does not control error across this parameter search.'
       );
     }
     const contributors = entry.dispatchedContributors ?? runResult?.dispatchedContributors ?? [];

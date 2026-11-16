@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {evaluateGPUAnalysisParameterCondition} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
 import {appendFileSync, readdirSync, readFileSync, statSync} from 'node:fs';
 import {join} from 'node:path';
 import {describe, expect, it} from 'vitest';
@@ -13,6 +15,7 @@ import {
 } from '../../src/analysis/catalog-bindings';
 import type {CatalogRunResult} from '../../src/analysis/catalog-binding-types';
 import type {CatalogFeatureCollection} from '../../src/analysis/catalog-geojson';
+import {getCatalogFeatureInputs} from '../../src/analysis/catalog-data-input';
 import {
   getKeplerCuratedAnalysis,
   KEPLER_CURATED_ANALYSES,
@@ -32,6 +35,7 @@ import {
   getStreetGridResidents,
   KEPLER_CURATED_ANALYSIS_SAMPLE_COLUMNS,
   KEPLER_CURATED_ANALYSIS_SAMPLE_IDS,
+  KEPLER_CURATED_FEATURE_ANALYSIS_SAMPLE_IDS,
   STREET_GRID,
   STREET_GRID_FACILITIES
 } from '../../src/curated/curated-analysis-samples';
@@ -70,14 +74,16 @@ const README_TABLE: readonly (readonly [string, 1 | 2])[] = [
   ['network-disruption', 2],
   ['fleet-dwell', 2],
   ['track-quality', 2],
-  ['cell-flow-topology', 2]
+  ['cell-flow-topology', 2],
+  ['drive-time-bands', 1]
 ];
 
 const KIND_TO_GEOMETRY: Readonly<Record<string, 'point' | 'line' | 'polygon'>> = {
   points: 'point',
   polygons: 'polygon',
   lines: 'line',
-  network: 'line'
+  network: 'line',
+  trajectories: 'point'
 };
 
 const ANALYSIS_SOURCE_ROOT = join(__dirname, '../../../analysis/src');
@@ -186,7 +192,11 @@ function findAnalysisProblems(analysis: KeplerCuratedAnalysis): string[] {
       continue;
     }
     const geometry = KIND_TO_GEOMETRY[slot.kind];
-    if (!geometry || !input.accepts.includes(geometry))
+    if (
+      !(input.dataKind === 'raster' && slot.kind === 'surface') &&
+      !(input.dataKind === 'table' && slot.kind === 'attributes') &&
+      (!geometry || !input.accepts.includes(geometry))
+    )
       problems.push(
         `slot ${slot.name} of kind ${slot.kind} is not accepted by input ${input.name}`
       );
@@ -232,13 +242,14 @@ function findAnalysisProblems(analysis: KeplerCuratedAnalysis): string[] {
     // An exposed parameter must have an effect under the presets: not inactive by `activeWhen`.
     const activeWhen = descriptor?.parameters.find(entry => entry.name === name)?.activeWhen;
     if (activeWhen) {
-      const current =
-        execution.parameters[activeWhen.parameter] ??
-        binding.parameters.find(spec => spec.name === activeWhen.parameter)?.defaultValue;
-      if (!activeWhen.equals.includes(current as never))
-        problems.push(
-          `exposed ${name} is inactive while ${activeWhen.parameter} is ${String(current)}`
-        );
+      const parameters = {
+        ...Object.fromEntries(
+          binding.parameters.map(parameter => [parameter.name, parameter.defaultValue])
+        ),
+        ...execution.parameters
+      };
+      if (!evaluateGPUAnalysisParameterCondition(activeWhen, parameters))
+        problems.push(`exposed ${name} is inactive under ${JSON.stringify(activeWhen)}`);
     }
     if (!binding.parameters.some(spec => spec.name === name))
       problems.push(`exposed ${name} is not a parameter of ${binding.id}`);
@@ -349,7 +360,9 @@ async function runCuratedAnalysisOnSample(
     throw new Error(
       `runCuratedAnalysisOnSample: ${analysisId} is not an available analysis with a sample`
     );
-  const sample = createKeplerCuratedAnalysisSample(sampleId, options.seedOffset ?? 0);
+  const sample = getCatalogFeatureInputs(
+    createKeplerCuratedAnalysisSample(sampleId, options.seedOffset ?? 0)
+  );
   const columns =
     KEPLER_CURATED_ANALYSIS_SAMPLE_COLUMNS[
       sampleId as (typeof KEPLER_CURATED_ANALYSIS_SAMPLE_IDS)[number]
@@ -411,12 +424,12 @@ describe('curated analyses: structure', () => {
     expect(KEPLER_CURATED_ANALYSES.map(analysis => analysis.id)).toEqual(
       README_TABLE.map(([id]) => id)
     );
-    expect(new Set(KEPLER_CURATED_ANALYSES.map(analysis => analysis.id)).size).toBe(27);
+    expect(new Set(KEPLER_CURATED_ANALYSES.map(analysis => analysis.id)).size).toBe(28);
     for (const [id, wave] of README_TABLE) expect(getKeplerCuratedAnalysis(id)?.wave).toBe(wave);
     expect(listKeplerCuratedAnalyses({wave: 1}).map(analysis => analysis.id)).toEqual(
       README_TABLE.filter(([, wave]) => wave === 1).map(([id]) => id)
     );
-    expect(listKeplerCuratedAnalyses({wave: 1})).toHaveLength(12);
+    expect(listKeplerCuratedAnalyses({wave: 1})).toHaveLength(13);
   });
 
   it('ids are kebab case and titles are questions with a method paragraph', () => {
@@ -511,7 +524,15 @@ describe('curated analyses: structure', () => {
         slots: [{...hotSpotMap.slots[0], kind: 'polygons'}]
       })
     ).not.toHaveLength(0);
-    const needsBinding = getKeplerCuratedAnalysis('emerging-hot-spots')!;
+    const needsBinding: KeplerCuratedAnalysis = {
+      ...getKeplerCuratedAnalysis('drainage-network')!,
+      execution: {
+        status: 'needs-binding',
+        implementation: 'addDrainageNetworkRecipe',
+        reason: 'The test placeholder needs a recipe binding before it can run.'
+      },
+      exposedParameters: []
+    };
     const needsExecution = needsBinding.execution as Extract<
       typeof needsBinding.execution,
       {status: 'needs-binding'}
@@ -540,7 +561,20 @@ describe('curated analyses: structure', () => {
         ];
       for (const slot of analysis.slots) {
         expect(sample[slot.name], `${analysis.id} slot ${slot.name}`).toBeDefined();
-        expect(sample[slot.name].features.length).toBeGreaterThanOrEqual(3);
+        const input = sample[slot.name];
+        if (input.type === 'raster') {
+          expect(slot.kind).toBe('surface');
+          expect(input.grid.width * input.grid.height).toBeGreaterThanOrEqual(3);
+          continue;
+        }
+        if (input.type === 'table') {
+          expect(input.table.rowCount).toBeGreaterThan(0);
+          for (const field of slot.fields)
+            if (field.required === true)
+              expect(input.table.columns[columns[`${slot.name}.${field.role}`]]).toBeDefined();
+          continue;
+        }
+        expect(input.features.length).toBeGreaterThan(0);
         for (const field of slot.fields) {
           const column = columns[`${slot.name}.${field.role}`];
           if (field.required === true)
@@ -548,7 +582,7 @@ describe('curated analyses: structure', () => {
           // A role with several columns (regression predictors) holds a comma separated list.
           if (column)
             for (const name of column.split(','))
-              for (const feature of sample[slot.name].features)
+              for (const feature of input.features)
                 expect(typeof feature.properties?.[name]).not.toBe('undefined');
         }
       }
@@ -558,9 +592,9 @@ describe('curated analyses: structure', () => {
   it('lists by question, wave and status', () => {
     const available = listKeplerCuratedAnalyses({status: 'available'});
     const needsBinding = listKeplerCuratedAnalyses({status: 'needs-binding'});
-    expect(available.length + needsBinding.length).toBe(27);
+    expect(available.length + needsBinding.length).toBe(28);
     expect(available.length).toBeGreaterThan(0);
-    expect(needsBinding.length).toBeGreaterThan(0);
+    expect(needsBinding).toEqual([]);
     expect(
       listKeplerCuratedAnalyses({question: 'where-significant'}).map(item => item.id)
     ).toContain('hot-spot-map');
@@ -569,7 +603,7 @@ describe('curated analyses: structure', () => {
         item => item.id
       )
     ).toEqual(['excess-risk']);
-    expect(listKeplerCuratedAnalyses()).toHaveLength(27);
+    expect(listKeplerCuratedAnalyses()).toHaveLength(28);
     expect(getKeplerCuratedAnalysis('no-such-analysis')).toBeUndefined();
   });
 });
@@ -583,7 +617,7 @@ describe('curated analysis samples', () => {
   });
 
   it('varies every sample across recovery seeds instead of repeating deterministic observations', () => {
-    for (const sampleId of KEPLER_CURATED_ANALYSIS_SAMPLE_IDS) {
+    for (const sampleId of KEPLER_CURATED_FEATURE_ANALYSIS_SAMPLE_IDS) {
       expect(createKeplerCuratedAnalysisSample(sampleId, 101), sampleId).not.toEqual(
         createKeplerCuratedAnalysisSample(sampleId, 118)
       );
@@ -596,7 +630,10 @@ describe('curated analysis samples', () => {
     expect(incidents.features.length).toBeGreaterThanOrEqual(300);
     expect(incidents.features.length).toBeLessThanOrEqual(6000);
     expect(JSON.stringify(incidents)).not.toBe(JSON.stringify(before));
-    for (const sampleId of KEPLER_CURATED_ANALYSIS_SAMPLE_IDS)
+    // The recipe parity fixture uses a declared planar lattice, rather than the city frame.
+    for (const sampleId of KEPLER_CURATED_FEATURE_ANALYSIS_SAMPLE_IDS.filter(
+      id => !['emerging-hot-spots', 'track-quality'].includes(id)
+    ))
       for (const collection of Object.values(createKeplerCuratedAnalysisSample(sampleId)))
         for (const feature of collection.features) {
           const [longitude, latitude] = getGeometryCenter(JSON.stringify(feature.geometry));
@@ -1063,9 +1100,11 @@ describe('curated analyses: results on their samples show the planted structure'
     expect(scores[0]).toBeGreaterThan(Math.max(scores[1], scores[2]) * 2);
   });
 
-  it('every available analysis with a sample runs without error diagnostics', async () => {
+  it('every available CPU analysis with a sample runs without error diagnostics', async () => {
     for (const analysis of KEPLER_CURATED_ANALYSES) {
       if (analysis.execution.status !== 'available' || !analysis.sampleId) continue;
+      // GPU-only samples are exercised by their dedicated headless recipe parity specs.
+      if (getCatalogBinding(analysis.execution.bindingId)?.engine === 'gpu') continue;
       const result = await runCuratedAnalysisOnSample(analysis.id);
       expect(result.engine, analysis.id).toBe('cpu-reference');
       // Every preset reaches the binding unchanged.
@@ -1645,7 +1684,9 @@ const MINIMUM_RECOVERED_SEEDS = 18; // At least 90 percent recovery for the adve
 // The corrected and smoothed map recovers the lone outlier less often than the block.
 const MINIMUM_LONE_OUTLIER_RECOVERED_SEEDS = 12;
 const AVAILABLE_SAMPLE_ANALYSES = KEPLER_CURATED_ANALYSES.filter(
-  analysis => analysis.execution.status === 'available'
+  analysis =>
+    analysis.execution.status === 'available' &&
+    getCatalogBinding(analysis.execution.bindingId)?.engine !== 'gpu'
 );
 
 function countElevatedBlock(classes: readonly unknown[]): number {

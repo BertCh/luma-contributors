@@ -42,6 +42,67 @@ function makeDraft(source: WorkbenchDraft['source'] = 'assistant'): WorkbenchDra
 }
 
 describe('workbench store', () => {
+  test('remove then undo restores edges while dependents need fresh results', async () => {
+    const {store, calls} = makeStore();
+    store.addWorkflow(makeFixtureDocument());
+    await store.run();
+    const original = store.getState().document;
+    store.select(['scale']);
+    expect(store.cutSelection()).toBe(true);
+    store.undo();
+    expect(store.getState().document).toEqual(original);
+    expect(store.getState().runner?.steps['source'].status).toBe('done');
+    expect(store.getState().runner?.steps['scale'].status).toBe('ready');
+    expect(store.getState().runner?.steps['count'].status).toBe('stale');
+    calls.length = 0;
+    await store.run();
+    expect(calls).toEqual(['fixture-scale:scale', 'fixture-count:count']);
+    await store.clear();
+  });
+
+  test('a revision notification aborts a run after switching to another workflow', async () => {
+    const host = makeFixtureHost();
+    let enter!: () => void;
+    const entered = new Promise<void>(resolve => {
+      enter = resolve;
+    });
+    const registry = makeFixtureRegistry();
+    const source = registry.get('fixture-source')!;
+    const operation = {
+      ...source,
+      run: async (context: Parameters<typeof source.run>[0]) => {
+        enter();
+        await new Promise<void>(resolve =>
+          context.signal.addEventListener('abort', () => resolve(), {once: true})
+        );
+        return {
+          outputs: {},
+          diagnostics: [],
+          summary: {},
+          engine: 'host' as const,
+          dispatchedContributors: []
+        };
+      }
+    };
+    const store = createWorkbenchStore({
+      host,
+      registry: {
+        list: () =>
+          registry.list().map(candidate => (candidate.id === source.id ? operation : candidate)),
+        get: id => (id === source.id ? operation : registry.get(id))
+      }
+    });
+    store.addWorkflow(makeFixtureDocument());
+    const running = store.run();
+    await entered;
+    store.addWorkflow(makeFixtureDocument());
+    host.revision++;
+    store.notifyExternalChange();
+    expect((await running)?.status).toBe('cancelled');
+    expect(host.published).toEqual([]);
+    await store.clear();
+  });
+
   test('starts empty without needing the default registry, and empty calls are stable', async () => {
     const host = makeFixtureHost();
     const store = createWorkbenchStore({host});
@@ -815,7 +876,7 @@ describe('workbench store', () => {
     expect(store.getState().workflows).toEqual([]);
   });
 
-  test('refreshes external revisions only on the active runner and on activation', async () => {
+  test('refreshes external revisions on every runner including inactive workflows', async () => {
     const {store, host} = makeStore();
     const firstId = store.addWorkflow(makeFixtureDocument());
     await store.run();
@@ -826,7 +887,8 @@ describe('workbench store', () => {
     host.revision++;
     store.notifyExternalChange();
     expect(store.getState().runner?.steps['source'].status).toBe('stale');
-    expect(firstRunner.getState()).toBe(firstState);
+    expect(firstRunner.getState()).not.toBe(firstState);
+    expect(firstRunner.getState().steps['source'].status).toBe('stale');
     store.setActiveWorkflow(firstId);
     expect(store.getState().runner?.steps['source'].status).toBe('stale');
     store.setActiveWorkflow(secondId);

@@ -2,18 +2,29 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {
-  CatalogOperationBinding,
-  CatalogParameterValue
-} from '../analysis/catalog-binding-types';
+import type {CatalogOperationBinding, CatalogRunResult} from '../analysis/catalog-binding-types';
+import type {KeplerOperationDescriptor} from '../descriptors/operation-descriptor-types';
 import {
   KEPLER_CATALOG_BINDINGS,
   normalizeCatalogParameters,
+  validateCatalogInputs,
   runCatalogOperationAsync
 } from '../analysis/catalog-bindings';
-import type {CatalogFeatureCollection} from '../analysis/catalog-geojson';
+import type {CatalogDataInput} from '../analysis/catalog-data-input';
+import {applyKeplerDatasetProfileDeclarations} from '../profile/dataset-profile';
+import {resolveKeplerOperationDescriptor} from '../descriptors/operation-descriptors';
+import {
+  evaluateKeplerWorkbenchInputs,
+  getKeplerWorkbenchCuratedPresets,
+  profileKeplerWorkbenchData
+} from '../descriptors/workbench-adapters';
+import {getKeplerBindingResultPresentations} from '../presentation/result-presentation';
+import {
+  describeKeplerCatalogResult,
+  type KeplerResultReportContext
+} from '../presentation/result-report';
 import {KeplerAllocationError} from '../runtime/dataset-registry';
-import {getWorkflowFeatures, makeWorkflowData} from './workflow-data';
+import {getWorkflowCatalogInput, getWorkflowFeatures, makeWorkflowData} from './workflow-data';
 import {normalizeWorkflowParameters} from './workflow-parameters';
 import {getWorkflowSourceOperations} from './workflow-source-operations';
 import {getWorkflowSqlOperations} from './workflow-sql-operation';
@@ -21,6 +32,7 @@ import {getWorkflowTableOperations} from './workflow-table-operations';
 import {WorkflowError} from './workflow-types';
 import type {
   WorkflowInputPortSpec,
+  WorkflowData,
   WorkflowOperation,
   WorkflowOperationCategory,
   WorkflowOperationRegistry,
@@ -28,6 +40,46 @@ import type {
   WorkflowPortCompatibility,
   WorkflowPortKind
 } from './workflow-types';
+
+/** Coordinate lineage shared by catalog cards and workflow intermediates. */
+export function profileKeplerCatalogOutput(
+  data: WorkflowData,
+  result: Pick<CatalogRunResult, 'operationId' | 'parameters'>,
+  profiles: NonNullable<KeplerResultReportContext['profiles']>,
+  descriptor: KeplerOperationDescriptor
+) {
+  const profile = profileKeplerWorkbenchData(data);
+  if (data.kind === 'table' || data.kind === 'raster') return profile;
+  // An explicit producer CRS describes this output, even when the input used another frame.
+  if (data.table.coordinateSystem) return profile;
+  const parameterModel =
+    result.parameters['coordinateSystem'] === 'planar'
+      ? 'planar'
+      : result.parameters['coordinateSystem'] === 'EPSG:4326'
+        ? 'geographic'
+        : undefined;
+  const inputName = descriptor.outputs.find(output => output.tableId === data.table.id)?.kindFrom;
+  const sources = inputName ? [profiles[inputName]] : Object.values(profiles);
+  const inputModels = sources.map(source =>
+    source?.coordinates?.source === 'declared' ? source.coordinates.model : undefined
+  );
+  const inheritedModel =
+    inputModels.length > 0 && inputModels.every(model => model === inputModels[0])
+      ? inputModels[0]
+      : undefined;
+  // Projection changes frames; affine transforms do not establish a new unit convention.
+  const coordinateModel =
+    result.operationId === 'geometry-local-frame-projection'
+      ? result.parameters['direction'] === 'inverse'
+        ? 'geographic'
+        : 'planar'
+      : result.operationId === 'affine-transform'
+        ? undefined
+        : (parameterModel ?? inheritedModel);
+  return coordinateModel === 'planar' || coordinateModel === 'geographic'
+    ? applyKeplerDatasetProfileDeclarations(profile, {coordinateModel})
+    : profile;
+}
 
 // Bindings are immutable catalog definitions; adapters retain their identity for the UI and planner.
 const CATALOG_OPERATION_CACHE = new WeakMap<CatalogOperationBinding, WorkflowOperation>();
@@ -46,9 +98,12 @@ function rethrowCatalogFailure(binding: CatalogOperationBinding, cause: unknown)
   if (!(cause instanceof Error)) throw cause;
   const message = cause.message;
   if (cause instanceof KeplerAllocationError && cause.reason === 'capacity') {
-    const limits = binding.inputs.map(
-      input =>
-        `${input.label} ${formatCapacity(input.maximumFeatures)} features, ${formatCapacity(input.maximumVertices)} vertices`
+    const limits = binding.inputs.map(input =>
+      input.dataKind === 'raster'
+        ? `${input.label} ${formatCapacity(input.maximumCells ?? 0)} cells`
+        : input.dataKind === 'table'
+          ? `${input.label} ${formatCapacity(input.maximumFeatures)} rows`
+          : `${input.label} ${formatCapacity(input.maximumFeatures)} features, ${formatCapacity(input.maximumVertices)} vertices`
     );
     throw new WorkflowError(
       'capacity-exceeded',
@@ -69,7 +124,7 @@ function rethrowCatalogFailure(binding: CatalogOperationBinding, cause: unknown)
   if (message === 'Input required') {
     throw new WorkflowError(
       'input-required',
-      `${binding.title}: Input required; ${binding.inputs.map(input => `"${input.label}"`).join(', ')} must contain at least one feature.`,
+      `${binding.title}: Input required; ${binding.inputs.map(input => `"${input.label}"`).join(', ')} must contain at least one ${binding.inputs.some(input => input.dataKind === 'table') ? 'row' : 'feature'}.`,
       {cause}
     );
   }
@@ -81,45 +136,44 @@ function rethrowCatalogFailure(binding: CatalogOperationBinding, cause: unknown)
 
 /**
  * Workflow form of a catalog binding: the same id, ports from its input and output specs
- * (geometry `none` becomes `table`), string parameters named `*Property` or `*Properties`
- * upgraded to column pickers, and a `run` that checks kinds and capacities, converts table inputs
- * to feature collections, calls `runCatalogOperationAsync` and wraps the output tables.
+ * (geometry `none` becomes `table`), and descriptor field roles become column pickers. Feature ports read the geometry column; typed table and raster ports
+ * preserve their payload. `runCatalogOperationAsync` checks capacities and executes the binding.
  */
 export function makeWorkflowOperationFromCatalogBinding(
   binding: CatalogOperationBinding
 ): WorkflowOperation {
   const cached = CATALOG_OPERATION_CACHE.get(binding);
   if (cached) return cached;
-  // A catalog parameter without a default is derived by the binding from its input data, so the
-  // workflow form leaves it out and the binding keeps deriving it.
-  const settableParameters = binding.parameters.filter(
-    (parameter): parameter is typeof parameter & {defaultValue: CatalogParameterValue} =>
-      parameter.defaultValue !== undefined
+  const {descriptor} = resolveKeplerOperationDescriptor(binding);
+  const fields = descriptor.inputs.flatMap(input =>
+    input.fields.map(field => ({input: input.name, field}))
   );
-  const parameters: WorkflowParameterSpec[] = settableParameters.map(parameter => {
-    if (parameter.kind !== 'string') return {...parameter};
-    const kind = parameter.name.endsWith('Properties')
-      ? 'column-list'
-      : parameter.name.endsWith('Property')
-        ? 'column'
-        : 'string';
+  // Keep derived catalog parameters visible and valid as explicit overrides. An omitted
+  // default stays omitted until AX or the binding can derive it from the connected input.
+  const parameters: WorkflowParameterSpec[] = binding.parameters.map(parameter => {
+    const role = fields.find(entry => entry.field.parameter === parameter.name);
+    const policy = descriptor.parameters.find(entry => entry.name === parameter.name);
+    const kind = role ? (role.field.multiple ? 'column-list' : 'column') : parameter.kind;
     return {
       ...parameter,
       kind,
-      // Workflow column lists default to 256, but catalog strings default to 64.
-      ...(kind === 'column-list' ? {maximumLength: parameter.maximumLength ?? 64} : {}),
-      ...(kind !== 'string' && binding.inputs.length === 1
-        ? {columnsFrom: binding.inputs[0].name}
-        : {})
+      ...(role ? {columnsFrom: role.input, fieldRole: role.field} : {}),
+      ...(policy ? {level: policy.level, apply: policy.apply} : {}),
+      ...(kind === 'column-list' ? {maximumLength: parameter.maximumLength ?? 64} : {})
     };
   });
   const operation: WorkflowOperation = {
+    analysisBinding: binding,
+    analysisDescriptor: descriptor,
+    get analysisPresets() {
+      return getKeplerWorkbenchCuratedPresets().filter(preset => preset.bindingId === binding.id);
+    },
     id: binding.id,
     title: binding.title,
     summary: binding.summary,
     category: binding.domain,
     origin: 'catalog',
-    version: 'catalog-1',
+    version: 'catalog-ax-3',
     engine: binding.engine,
     capabilityIds: binding.capabilityIds,
     contributorNames: [...new Set([...binding.contributorNames, ...binding.gpuContributorNames])],
@@ -128,19 +182,26 @@ export function makeWorkflowOperationFromCatalogBinding(
     inputs: binding.inputs.map(input => ({
       name: input.name,
       label: input.label,
-      accepts: input.accepts,
-      maximumRows: input.maximumFeatures,
+      accepts:
+        input.dataKind === 'table' || input.dataKind === 'raster'
+          ? [input.dataKind]
+          : input.accepts,
+      ...(input.dataKind === 'table' ? {geometryFree: true} : {}),
+      maximumRows: input.dataKind === 'raster' ? 0 : input.maximumFeatures,
+      ...(input.dataKind === 'raster' ? {maximumCells: input.maximumCells} : {}),
       maximumVertices: input.maximumVertices
     })),
     outputs: binding.outputs.map(output => ({
       name: output.tableId,
       label: output.label,
       kind:
-        output.geometry === 'none'
-          ? 'table'
-          : output.geometry === 'mixed'
-            ? 'features'
-            : output.geometry,
+        output.dataKind === 'raster'
+          ? 'raster'
+          : output.geometry === 'none'
+            ? 'table'
+            : output.geometry === 'mixed'
+              ? 'features'
+              : output.geometry,
       identityColumns: output.identityColumns,
       maximumRows: output.maximumRows
     })),
@@ -161,11 +222,27 @@ export function makeWorkflowOperationFromCatalogBinding(
     },
     run: async (context, inputs, values) => {
       checkCancellation(context.signal, binding.title);
-      const collections: Record<string, CatalogFeatureCollection> = Object.create(null);
+      const collections: Record<string, CatalogDataInput> = Object.create(null);
       for (const input of binding.inputs) {
         if (!Object.hasOwn(inputs, input.name)) continue;
         const data = inputs[input.name];
         if (!data) continue;
+        if (input.dataKind === 'table' || input.dataKind === 'raster') {
+          if (data.kind !== input.dataKind)
+            throw new WorkflowError(
+              'geometry-kind-not-accepted',
+              `${binding.title}: "${input.label}" requires ${input.dataKind}; received ${data.kind}.`,
+              {port: input.name}
+            );
+          collections[input.name] = getWorkflowCatalogInput(data, input.maximumFeatures);
+          continue;
+        }
+        if (data.kind === 'raster')
+          throw new WorkflowError(
+            'geometry-required',
+            `${binding.title}: "${input.label}" needs geometry; raster cells cannot be read as features.`,
+            {port: input.name}
+          );
         if (
           data.table.geometryColumn === undefined ||
           !Object.hasOwn(data.table.columns, data.table.geometryColumn)
@@ -190,10 +267,58 @@ export function makeWorkflowOperationFromCatalogBinding(
         }
       }
       try {
-        const result = await runCatalogOperationAsync(binding, values, collections, {
+        validateCatalogInputs(binding, collections);
+      } catch (cause) {
+        rethrowCatalogFailure(binding, cause);
+      }
+      if (binding.engine === 'gpu' && (!context.device || context.engine === 'cpu'))
+        rethrowCatalogFailure(binding, new Error('GPU device required'));
+      const profiles = Object.fromEntries(
+        Object.entries(inputs).map(([name, data]) => [
+          name,
+          data.analysisProfile ?? profileKeplerWorkbenchData(data)
+        ])
+      );
+      const analysis = evaluateKeplerWorkbenchInputs(binding, profiles, {
+        overrides: context.parameterOverrides ?? values,
+        executionEngine: context.engine === 'cpu' || !context.device ? 'cpu' : 'gpu'
+      });
+      if (analysis.status !== 'ready') {
+        throw new WorkflowError(
+          'analysis-requirement',
+          `${binding.title}: ${analysis.missing
+            .map(missing => `${missing.what}. ${missing.remedy}`)
+            .join('; ')}`
+        );
+      }
+      try {
+        const result = await runCatalogOperationAsync(binding, analysis.parameters, collections, {
+          signal: context.signal,
           device: context.device ?? undefined,
           engine: context.engine
         });
+        const presentations = getKeplerBindingResultPresentations(result, descriptor);
+        const preset = context.curatedAnalysisId
+          ? operation.analysisPresets?.find(
+              candidate => candidate.curatedAnalysisId === context.curatedAnalysisId
+            )
+          : undefined;
+        const reportContext: KeplerResultReportContext = structuredClone({
+          profiles,
+          presetParameters: preset
+            ? Object.keys(preset.executionParameters).filter(
+                name =>
+                  JSON.stringify(result.parameters[name]) ===
+                  JSON.stringify(preset.executionParameters[name])
+              )
+            : undefined,
+          resolutions: analysis.resolutions,
+          fieldBindings: analysis.fieldBindings,
+          warnings: analysis.warnings,
+          guessedCoordinates: analysis.guessedFacts.some(fact => fact.kind === 'coordinate-model')
+        });
+        const report = describeKeplerCatalogResult(result, binding, descriptor, reportContext);
+        if (preset) report.notes = [...report.notes, `Curated analysis: ${preset.title}`];
         const outputs = Object.fromEntries(
           result.tables.map(table => {
             const output = binding.outputs.find(spec => spec.tableId === table.id);
@@ -202,12 +327,28 @@ export function makeWorkflowOperationFromCatalogBinding(
               const values = table.columns[name];
               return new Set(values).size === values.length;
             });
-            return [table.id, makeWorkflowData(table, {identityColumn})];
+            const data = makeWorkflowData(table, {identityColumn});
+            if (data.kind !== 'table' && data.kind !== 'raster') {
+              data.analysisProfile = profileKeplerCatalogOutput(data, result, profiles, descriptor);
+            }
+            return [
+              table.id,
+              {
+                ...data,
+                analysisPresentation: presentations.find(
+                  presentation => presentation.tableId === table.id
+                ),
+                analysisReport: report,
+                analysisRun: {result, context: reportContext}
+              }
+            ];
           })
         );
         checkCancellation(context.signal, binding.title);
         return {
           outputs,
+          ...(preset ? {curatedAnalysisId: preset.curatedAnalysisId} : {}),
+          resolvedParameters: result.parameters,
           engine: result.engine,
           ...(binding.engine === 'gpu-or-cpu' &&
           result.engine === 'cpu-reference' &&
@@ -219,6 +360,7 @@ export function makeWorkflowOperationFromCatalogBinding(
           summary: result.summary
         };
       } catch (cause) {
+        checkCancellation(context.signal, binding.title);
         rethrowCatalogFailure(binding, cause);
       }
     }
@@ -263,10 +405,16 @@ export function getWorkflowOperationRegistry(): WorkflowOperationRegistry {
  */
 export function getWorkflowPortCompatibility(
   outputKind: WorkflowPortKind,
-  input: Pick<WorkflowInputPortSpec, 'accepts'>
+  input: Pick<WorkflowInputPortSpec, 'accepts' | 'geometryFree'>
 ): WorkflowPortCompatibility {
-  if (input.accepts.includes('table') || input.accepts.includes(outputKind)) return 'yes';
-  const acceptsGeometry = input.accepts.some(kind => kind !== 'table');
+  if (input.geometryFree && outputKind !== 'table')
+    return outputKind === 'features' ? 'maybe' : 'no';
+  if (input.accepts.includes(outputKind)) return 'yes';
+  if (outputKind === 'raster') return 'no';
+  // Dataset sources historically declare features before their actual representation is read.
+  if (outputKind === 'features' && input.accepts.includes('raster')) return 'maybe';
+  if (input.accepts.includes('table')) return 'yes';
+  const acceptsGeometry = input.accepts.some(kind => kind !== 'table' && kind !== 'raster');
   if (!acceptsGeometry) return 'no';
   if (outputKind === 'features' || outputKind === 'table') return 'maybe';
   return input.accepts.includes('features') ? 'yes' : 'no';

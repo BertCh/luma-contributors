@@ -561,7 +561,7 @@ export function promoteWorkflowParameter(
   registry: WorkflowOperationRegistry,
   stepId: string,
   parameterName: string,
-  options: {label?: string; inputId?: string} = {}
+  options: {label?: string; inputId?: string; value?: CatalogParameterValue} = {}
 ): {document: WorkflowDocument; inputId: string} {
   const step = requireStep(document, stepId);
   const parameter = requireParameter(step, registry, parameterName);
@@ -592,6 +592,15 @@ export function promoteWorkflowParameter(
       `${step.label ?? step.operationId}: Workflow inputs must not exceed maximumInputs (${WORKFLOW_LIMITS.maximumInputs}).`,
       {stepId, parameter: parameterName}
     );
+  // The form can supply the current AX default; the graph editor has no input profile.
+  const value =
+    binding?.from === 'static' ? binding.value : (options.value ?? parameter.defaultValue);
+  if (value === undefined)
+    throw new WorkflowError(
+      'parameter-out-of-range',
+      `${step.label ?? step.operationId}: Set ${parameter.label} before promoting its data-derived default.`,
+      {stepId, parameter: parameterName}
+    );
   const taken = document.inputs.map(input => input.id);
   const inputId = options.inputId ?? makeUniqueWorkflowId(parameterName, taken);
   requireFreeId(inputId, taken, step.label ?? step.operationId);
@@ -599,7 +608,7 @@ export function promoteWorkflowParameter(
     id: inputId,
     label: options.label ?? parameter.label,
     kind,
-    value: copyParameterValue(binding?.from === 'static' ? binding.value : parameter.defaultValue),
+    value: copyParameterValue(value),
     ...(parameter.unit === undefined ? {} : {unit: parameter.unit}),
     ...(parameter.minimum === undefined ? {} : {minimum: parameter.minimum}),
     ...(parameter.maximum === undefined ? {} : {maximum: parameter.maximum}),

@@ -919,7 +919,8 @@ function buildKeplerResultPresentation(
   output: KeplerOperationOutputDescriptor
 ): KeplerResultPresentation | undefined {
   const presentation = output.presentation;
-  if (!presentation) return undefined;
+  // An explicit uniform-style exception keeps the host's geometry style; no legend is invented.
+  if (output.presentationException || !presentation) return undefined;
   const column = presentation.column;
   if (!hasColumn(table, column)) return undefined;
   const values = table.columns[column];
@@ -930,8 +931,19 @@ function buildKeplerResultPresentation(
     if (presentation.classScheme) {
       const encoding = presentation.classEncoding ?? 'contributor-integer';
       const neighborCounts = table.columns['neighbor_count'];
-      const excludedRows =
-        presentation.classScheme === 'hot-spot-confidence-bins' && neighborCounts
+      // The FDR adapter writes significant=0 for invalid tests as well as tested negatives.
+      // Only adjusted_pvalue establishes which rows entered the testing family.
+      const adjustedPValues =
+        table.id === 'validation-fdr' && presentation.classScheme === 'significance-flag'
+          ? table.columns['adjusted_pvalue']
+          : undefined;
+      const excludedRows = adjustedPValues
+        ? values.flatMap((_, row) =>
+            typeof adjustedPValues[row] !== 'number' || !Number.isFinite(adjustedPValues[row])
+              ? [row]
+              : []
+          )
+        : presentation.classScheme === 'hot-spot-confidence-bins' && neighborCounts
           ? values.flatMap((_, row) => (neighborCounts[row] === 0 ? [row] : []))
           : [];
       const excluded = new Set(excludedRows);
@@ -954,8 +966,8 @@ function buildKeplerResultPresentation(
           legend: [
             ...plan.legend,
             {
-              value: 'excluded-no-neighbors',
-              label: 'Excluded: no neighbours',
+              value: adjustedPValues ? 'excluded-untested' : 'excluded-no-neighbors',
+              label: adjustedPValues ? 'Untested' : 'Excluded: no neighbours',
               tone: 'excluded',
               count: excludedRows.length,
               color: getKeplerResultToneColor('excluded')
@@ -963,7 +975,9 @@ function buildKeplerResultPresentation(
           ],
           notes: [
             ...notes.filter(note => !note.includes('they are not in the legend')),
-            'Rows with no neighbours are excluded from hot and cold counts; use the excluded fill for these rows.'
+            adjustedPValues
+              ? 'Rows without finite adjusted p-values were untested; they are excluded from significance counts. Use the excluded fill for these rows.'
+              : 'Rows with no neighbours are excluded from hot and cold counts; use the excluded fill for these rows.'
           ]
         };
       }
@@ -1096,4 +1110,140 @@ export function getKeplerBindingResultPresentations(
       legend: presentation ? getLegendRows(presentation) : []
     };
   });
+}
+
+/**
+ * A publication-only categorical encoding of the exact AX plan. Numeric classes are closed on
+ * the upper bound; classifying before Float32 display conversion preserves ties at the breaks.
+ * The same legend supplies labels, counts and colours in the map and result card.
+ */
+export function encodeKeplerResultPresentation(
+  table: CatalogOutputTable,
+  presentation: KeplerBindingResultPresentation,
+  colorColumn?: string
+): KeplerResultEncoding | undefined {
+  if (colorColumn && colorColumn !== presentation.presentation?.column) {
+    const selected = planKeplerResultPresentation(table, {
+      tableId: table.id,
+      kind: 'attributes',
+      presentation: {
+        column: colorColumn,
+        scale:
+          table.columnTypes[colorColumn] === 'string' ||
+          table.columnTypes[colorColumn] === 'boolean'
+            ? 'categorical'
+            : 'sequential'
+      }
+    });
+    presentation = {
+      tableId: table.id,
+      presentation: selected,
+      display: toKeplerWorkbenchDisplayStyle(selected),
+      legend: selected ? getLegendRows(selected) : []
+    };
+  }
+  const plan = presentation.presentation;
+  if (!plan) return undefined;
+  const values = table.columns[plan.column];
+  if (!values) return undefined;
+  // Labels are the published categories, so Kepler's native legend is meaningful too.
+  const usedLabels = new Set<string>();
+  const categoryLabels = presentation.legend.map(entry => {
+    let label = entry.label;
+    let suffix = 2;
+    while (usedLabels.has(label)) label = `${entry.label} (${suffix++})`;
+    usedLabels.add(label);
+    return label;
+  });
+  const excluded = new Set(plan.excludedRows ?? []);
+  const missingIndex = presentation.legend.length - 1;
+  const otherIndex =
+    plan.other || plan.legend.at(-1)?.value === 'other-clusters'
+      ? plan.legend.length - 1
+      : undefined;
+  // Overflow is a synthetic class: its sentinel can also be a real category value.
+  const categories = new Map(
+    plan.legend.flatMap((entry, index) =>
+      index === otherIndex ? [] : [[entry.value, index] as const]
+    )
+  );
+  const excludedIndex = plan.legend.findIndex(entry => entry.tone === 'excluded');
+  let classColumn = `analysis_result_class (${plan.column})`;
+  while (hasColumn(table, classColumn)) classColumn += '_';
+  const encodedValues = values.map((value, row) => {
+    let index: number | undefined;
+    if (excluded.has(row) && excludedIndex >= 0) index = excludedIndex;
+    else if (plan.scale === 'categorical') {
+      // Match the shared classifier's boolean decoding for the two flag schemes.
+      const category =
+        typeof value === 'boolean' &&
+        (plan.classScheme === 'significance-flag' || plan.classScheme === 'validity-flag')
+          ? value
+            ? 1
+            : 0
+          : value;
+      index =
+        category === null ||
+        category === undefined ||
+        (typeof category === 'number' && !Number.isFinite(category))
+          ? undefined
+          : (categories.get(category) ?? otherIndex);
+    } else if (typeof value === 'number' && Number.isFinite(value)) {
+      index = plan.breaks.findIndex(bound => value <= bound);
+      if (index < 0) index = plan.ranges.length - 1;
+    }
+    return categoryLabels[index ?? missingIndex];
+  });
+  return {
+    values: encodedValues,
+    categories: categoryLabels,
+    legend: presentation.legend,
+    presentation: plan,
+    classColumn,
+    table: {
+      ...table,
+      columns: {...table.columns, [classColumn]: encodedValues},
+      columnTypes: {...table.columnTypes, [classColumn]: 'string'}
+    }
+  };
+}
+
+/** One exact publication encoding shared by catalog staging and workflow display. */
+export type KeplerResultEncoding = {
+  values: string[];
+  categories: string[];
+  legend: readonly KeplerResultLegendRow[];
+  presentation: KeplerResultPresentation;
+  classColumn: string;
+  table: CatalogOutputTable;
+};
+
+/** Native Kepler style for an encoded class column; it never asks Kepler to reclassify values. */
+export function getKeplerResultEncodingStyle(encoding: KeplerResultEncoding) {
+  const colors = encoding.legend.map(
+    entry => `#${entry.color.map(value => value.toString(16).padStart(2, '0')).join('')}`
+  );
+  return {
+    visualChannels: {
+      colorField: {name: encoding.classColumn, type: 'string'},
+      colorScale: 'customOrdinal'
+    },
+    visConfig: {
+      colorRange: {
+        name: encoding.presentation.column,
+        type: 'customOrdinal',
+        category: 'Custom',
+        colors,
+        colorMap: colors.map((color, index) => [encoding.categories[index], color] as const)
+      },
+      ...(encoding.presentation.outline?.required
+        ? {
+            outline: true,
+            stroked: true,
+            strokeColor: [...encoding.presentation.outline.color],
+            thickness: 1
+          }
+        : {})
+    }
+  };
 }

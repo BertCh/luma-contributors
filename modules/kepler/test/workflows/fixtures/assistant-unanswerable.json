@@ -1,0 +1,288 @@
+[
+  {
+    "id": "unsupported-prediction",
+    "request": "Predict the exact location and time of the next earthquake.",
+    "profile": "events",
+    "call": {
+      "name": "defineWorkflow",
+      "arguments": {
+        "templateId": "exact-earthquake-prediction",
+        "datasets": {},
+        "columns": {}
+      }
+    },
+    "requirement": "not available.*supported method"
+  },
+  {
+    "id": "population-missing",
+    "request": "Map disease rates using these areas, which have cases but no population column.",
+    "profile": "areas",
+    "call": {
+      "name": "defineWorkflow",
+      "arguments": {
+        "templateId": "rate-cluster-map",
+        "datasets": {
+          "areas": "observations"
+        },
+        "columns": {
+          "areas.cases": [
+            "cases"
+          ],
+          "areas.population": [
+            "population"
+          ]
+        }
+      }
+    },
+    "requirement": "[Pp]opulation|population"
+  },
+  {
+    "id": "wrong-role-type",
+    "request": "Interpolate the category description as a continuous measured value.",
+    "profile": "surface",
+    "call": {
+      "name": "defineWorkflow",
+      "arguments": {
+        "title": "Requested analysis",
+        "steps": [
+          {
+            "id": "source",
+            "operationId": "source-dataset",
+            "parameters": {
+              "dataset": "observations",
+              "geometryMode": "geojson-field",
+              "geometryField": "geometry"
+            }
+          },
+          {
+            "id": "analysis",
+            "operationId": "idw-grid",
+            "inputs": {
+              "points": "source.data"
+            },
+            "parameters": {
+              "valueProperty": "description"
+            }
+          }
+        ]
+      }
+    },
+    "requirement": "[Vv]alue|number|numeric"
+  },
+  {
+    "id": "units-unknown",
+    "request": "Use a metric bandwidth without confirming these unknown coordinate units.",
+    "profile": "unknown-units",
+    "call": {
+      "name": "defineWorkflow",
+      "arguments": {
+        "title": "Requested analysis",
+        "steps": [
+          {
+            "id": "source",
+            "operationId": "source-dataset",
+            "parameters": {
+              "dataset": "observations",
+              "geometryMode": "geojson-field",
+              "geometryField": "geometry"
+            }
+          },
+          {
+            "id": "analysis",
+            "operationId": "kernel-density-grid",
+            "inputs": {
+              "points": "source.data"
+            },
+            "parameters": {}
+          }
+        ]
+      }
+    },
+    "requirement": "[Cc]oordinate|units|[Uu]nit"
+  },
+  {
+    "id": "profile-unavailable",
+    "request": "Run density even though this source no longer has a current profile.",
+    "profile": "missing",
+    "call": {
+      "name": "defineWorkflow",
+      "arguments": {
+        "title": "Requested analysis",
+        "steps": [
+          {
+            "id": "source",
+            "operationId": "source-dataset",
+            "parameters": {
+              "dataset": "observations",
+              "geometryMode": "geojson-field",
+              "geometryField": "geometry"
+            }
+          },
+          {
+            "id": "analysis",
+            "operationId": "kernel-density-grid",
+            "inputs": {
+              "points": "source.data"
+            },
+            "parameters": {}
+          }
+        ]
+      }
+    },
+    "requirement": "current profile.*Refresh"
+  },
+  {
+    "id": "wrong-data-kind",
+    "request": "Interpolate a surface using polygons as point observations.",
+    "profile": "areas",
+    "call": {
+      "name": "defineWorkflow",
+      "arguments": {
+        "title": "Requested analysis",
+        "steps": [
+          {
+            "id": "source",
+            "operationId": "source-dataset",
+            "parameters": {
+              "dataset": "observations",
+              "geometryMode": "geojson-field",
+              "geometryField": "geometry"
+            }
+          },
+          {
+            "id": "analysis",
+            "operationId": "idw-grid",
+            "inputs": {
+              "points": "source.data"
+            },
+            "parameters": {
+              "valueProperty": "cases"
+            }
+          }
+        ]
+      }
+    },
+    "requirement": "point|Point|polygon|Polygon"
+  },
+  {
+    "id": "unknown-operation",
+    "request": "Run a method that does not exist in the operation registry.",
+    "profile": "events",
+    "call": {
+      "name": "defineWorkflow",
+      "arguments": {
+        "title": "Requested analysis",
+        "steps": [
+          {
+            "id": "source",
+            "operationId": "source-dataset",
+            "parameters": {
+              "dataset": "observations",
+              "geometryMode": "geojson-field",
+              "geometryField": "geometry"
+            }
+          },
+          {
+            "id": "analysis",
+            "operationId": "invented-analysis",
+            "inputs": {
+              "points": "source.data"
+            },
+            "parameters": {}
+          }
+        ]
+      }
+    },
+    "requirement": "not (available|registered)|[Uu]nknown operation"
+  },
+  {
+    "id": "unavailable-raster-recipe",
+    "request": "Run the drainage recipe although this host cannot supply its raster tile input.",
+    "profile": "events",
+    "call": {
+      "name": "defineWorkflow",
+      "arguments": {
+        "templateId": "drainage-network",
+        "datasets": {
+          "elevation": "observations"
+        },
+        "columns": {}
+      }
+    },
+    "requirement": "Elevation raster.*needs a raster"
+  },
+  {
+    "id": "capacity-exceeded",
+    "request": "Run density on a dataset beyond the supported row capacity.",
+    "profile": "over-capacity",
+    "call": {
+      "name": "defineWorkflow",
+      "arguments": {
+        "title": "Requested analysis",
+        "steps": [
+          {
+            "id": "source",
+            "operationId": "source-dataset",
+            "parameters": {
+              "dataset": "observations",
+              "geometryMode": "geojson-field",
+              "geometryField": "geometry"
+            }
+          },
+          {
+            "id": "analysis",
+            "operationId": "kernel-density-grid",
+            "inputs": {
+              "points": "source.data"
+            },
+            "parameters": {}
+          }
+        ]
+      }
+    },
+    "requirement": "row|capacity|limit"
+  },
+  {
+    "id": "unprofiled-intermediate",
+    "request": "Interpolate a filtered intermediate whose measurement and requirements have not been profiled.",
+    "profile": "surface",
+    "call": {
+      "name": "defineWorkflow",
+      "arguments": {
+        "title": "Unprofiled interpolation",
+        "steps": [
+          {
+            "id": "source",
+            "operationId": "source-dataset",
+            "parameters": {
+              "dataset": "observations",
+              "geometryMode": "geojson-field",
+              "geometryField": "geometry"
+            }
+          },
+          {
+            "id": "filter",
+            "operationId": "table-filter-rows",
+            "inputs": {
+              "rows": "source.data"
+            },
+            "parameters": {
+              "expression": "measurement >= 1"
+            }
+          },
+          {
+            "id": "analysis",
+            "operationId": "idw-grid",
+            "inputs": {
+              "points": "filter.filtered"
+            },
+            "parameters": {
+              "valueProperty": "measurement"
+            }
+          }
+        ]
+      }
+    },
+    "requirement": "current profile.*intermediate"
+  }
+]

@@ -7,6 +7,7 @@ export type {
   KeplerOperationFieldDescriptor,
   KeplerOperationInputDescriptor,
   KeplerOperationOutputDescriptor,
+  KeplerOperationUniformStyleException,
   KeplerOperationParameterDescriptor,
   KeplerOperationRequirement
 } from './operation-descriptor-types';
@@ -17,12 +18,19 @@ export {
 export {AGGREGATION_OPERATION_DESCRIPTORS} from './descriptors-aggregation';
 export {CLUSTERING_OPERATION_DESCRIPTORS} from './descriptors-clustering';
 export {CURATED_OPERATION_DESCRIPTORS} from './descriptors-curated';
+export * from './descriptors-curated-dasymetric-redistribution';
 export {GEOMETRY_A_OPERATION_DESCRIPTORS} from './descriptors-geometry-a';
 export {GEOMETRY_B_OPERATION_DESCRIPTORS} from './descriptors-geometry-b';
 export {INTERPOLATION_DENSITY_OPERATION_DESCRIPTORS} from './descriptors-interpolation-density';
 export {NETWORK_OPERATION_DESCRIPTORS} from './descriptors-network';
+export {POINT_CLOUD_OPERATION_DESCRIPTORS} from './descriptors-pointcloud';
+export {NETWORK_CATEGORICAL_OPERATION_DESCRIPTORS} from './descriptors-network-categorical';
 export {RASTER_OPERATION_DESCRIPTORS} from './descriptors-raster';
+export {RASTER_EMBEDDING_OPERATION_DESCRIPTORS} from './descriptors-raster-embedding';
 export {STATISTICS_OPERATION_DESCRIPTORS} from './descriptors-statistics';
+export {VALIDATION_OPERATION_DESCRIPTORS} from './descriptors-validation';
+export {TRAJECTORY_OPERATION_DESCRIPTORS} from './descriptors-trajectory';
+export {SPACETIME_OPERATION_DESCRIPTORS} from './descriptors-spacetime';
 export {
   KEPLER_OPERATION_DESCRIPTORS,
   deriveKeplerOperationDescriptor,
@@ -101,6 +109,9 @@ export {
   type KeplerSuggestionResult
 } from './applicability';
 export {
+  evaluateKeplerWorkbenchInputs,
+  profileKeplerWorkbenchData,
+  type KeplerWorkbenchProfiles,
   evaluateKeplerWorkbenchApplicability,
   getKeplerWorkbenchCuratedPresets,
   getKeplerWorkbenchParameterDefaults,
@@ -111,3 +122,15 @@ export {
   type KeplerWorkbenchParameterValue,
   type KeplerWorkbenchSubject
 } from './workbench-adapters';
+export * from './descriptors-curated-emerging-hot-spots';
+export * from './descriptors-curated-track-quality';
+export * from './descriptors-curated-landscape-metrics';
+export * from './descriptors-curated-fleet-dwell';
+
+export * from './descriptors-curated-drainage-network';
+export * from './descriptors-curated-surface-preparation';
+export * from './descriptors-curated-zonal-exposure';
+export * from './descriptors-curated-regional-raster-change';
+export * from './descriptors-curated-network-disruption';
+export * from './descriptors-curated-cell-flow-topology';
+export * from './descriptors-curated-drive-time-bands';

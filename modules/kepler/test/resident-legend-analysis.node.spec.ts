@@ -49,7 +49,7 @@ describe('resident channel legend model', () => {
 describe('analysis legend model', () => {
   it('has fixed categorical entries and missing counts for Moran', () => {
     const model = getAnalysisLegendModel('local-moran-points', {localMoran: {invalidCount: 3}});
-    expect(model?.entries.map(entry => entry.label)).toContain('High-high');
+    expect(model?.entries.map(entry => entry.label)).toContain('High-high cluster core');
     expect(model?.missingCount).toBe(3);
   });
   it('has no legend for off, OLS and grid modes', () => {

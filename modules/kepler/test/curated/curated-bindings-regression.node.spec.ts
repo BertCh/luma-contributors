@@ -2,16 +2,42 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {describe, expect, it} from 'vitest';
+import {describe, expect, it, vi} from 'vitest';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
+import {
+  createNullWebGPUDevice,
+  getGPUCommandNodeKernelSources
+} from '@luma-contributors/analysis/testing';
+import {CatalogGpuSession} from '../../src/analysis/catalog-gpu-session';
+import {getKeplerCuratedAnalysis} from '../../src/curated/curated-analyses';
+import {createKeplerCuratedAnalysisSample} from '../../src/curated/curated-analysis-samples';
+import {
+  createKeplerCuratedAnalysisMapping,
+  updateKeplerCuratedAnalysisMapping,
+  buildKeplerCuratedAnalysisRequest
+} from '../../src/curated/curated-analysis-mapping';
+import {profileKeplerFeatureCollection} from '../../src/profile/dataset-profile';
 import type {
   CatalogFeatureCollection,
   CatalogOutputTable
 } from '../../src/analysis/catalog-geojson';
 import {
+  CURATED_REGRESSION_WITH_DIAGNOSTICS_BINDING,
+  prepareCuratedRegression,
+  publishCuratedRegression,
   computeBelsleyConditionNumber,
   fitStandardizedLeastSquares,
   computeSymmetricEigenvalues
 } from '../../src/curated/bindings/curated-regression-with-diagnostics-binding';
+import {
+  normalizeCatalogParameters,
+  runCatalogOperationAsync
+} from '../../src/analysis/catalog-bindings';
+import {
+  prepareCuratedRegressionGpu,
+  publishCuratedRegressionGpu,
+  type CuratedRegressionGpuReadback
+} from '../../src/curated/bindings/curated-regression-with-diagnostics-gpu';
 import {REGRESSION_LATTICE, REGRESSION_POINTS} from './curated-bindings-oracle-data';
 import {
   getMaximumRelativeError,
@@ -506,5 +532,452 @@ it('fits tiny and huge predictor units against NumPy on the rescaled problem', (
     getResultTable(result, 'residuals').columns['fitted'].forEach((value, index) =>
       expect(Number(value)).toBeCloseTo(intercept + slope * (index + 1), 12)
     );
+  }
+});
+
+// Injected readbacks qualify preparation/publication separately from external WebGPU dispatch.
+describe('curated regression GPU adapter', () => {
+  function prepareReadback(
+    areas = makeRegressionLattice(),
+    responseProperty = 'y',
+    predictorProperties = 'x1,x2'
+  ) {
+    const prepared = prepareCuratedRegression(
+      {areas},
+      normalizeCatalogParameters(CURATED_REGRESSION_WITH_DIAGNOSTICS_BINDING, {
+        ...PLANAR,
+        responseProperty,
+        predictorProperties,
+        permutations: 99
+      })
+    );
+    const scaled = prepareCuratedRegressionGpu(prepared);
+    const fit = prepared.referenceFit;
+    const slopes = fit.coefficients
+      .slice(1)
+      .map((value, column) => (value * scaled.columns[column].scale) / scaled.response.scale);
+    const intercept =
+      (fit.coefficients[0] +
+        scaled.columns.reduce(
+          (sum, column, index) => sum + column.origin * fit.coefficients[index + 1],
+          0
+        )) /
+      scaled.response.scale;
+    const readback: CuratedRegressionGpuReadback = {
+      coefficients: Float32Array.from([intercept, ...slopes]),
+      fitted: Float32Array.from(fit.fitted, value => value / scaled.response.scale),
+      residuals: Float32Array.from(fit.residuals, value => value / scaled.response.scale),
+      olsStatus: 0,
+      diagnosticsStatus: 0,
+      decision: 0,
+      tests: Float32Array.from({length: 18}, (_, index) => (index % 3 === 2 ? 0.5 : 1)),
+      diagnosticsSummary: new Float32Array(13),
+      localI: Float32Array.from({length: prepared.rowCount}, (_, index) => index / 100),
+      localPValues: new Float32Array(prepared.rowCount).fill(0.5)
+    };
+    return {prepared, scaled, readback};
+  }
+
+  function makeLargeResponseOffset(noiseDeviation: number) {
+    const areas = makePoints(
+      Array.from({length: 36}, (_, row) => row % 6),
+      Array.from({length: 36}, (_, row) => Math.floor(row / 6)),
+      row => ({x: row, y: 100000000 + 2 * row + noiseDeviation * Math.sin(row)})
+    );
+    const parameters = normalizeCatalogParameters(CURATED_REGRESSION_WITH_DIAGNOSTICS_BINDING, {
+      ...PLANAR,
+      responseProperty: 'y',
+      predictorProperties: 'x',
+      permutations: 99
+    });
+    return {areas, parameters, prepared: prepareCuratedRegression({areas}, parameters)};
+  }
+
+  it.each([
+    0, 0.1
+  ])('falls back before allocation for a large response offset (noise %s)', async noiseDeviation => {
+    const {areas, parameters, prepared} = makeLargeResponseOffset(noiseDeviation);
+    const device = createNullWebGPUDevice();
+    const allocated = vi.spyOn(device, 'createBuffer');
+    try {
+      if (noiseDeviation === 0) expect(prepared.referenceFit.residualSumOfSquares).toBe(0);
+      else expect(prepared.referenceFit.residualSumOfSquares).toBeGreaterThan(0);
+      const result = await runCatalogOperationAsync(
+        CURATED_REGRESSION_WITH_DIAGNOSTICS_BINDING,
+        parameters,
+        {areas},
+        {device}
+      );
+      expect(result.engine).toBe('cpu-reference');
+      expect(result.dispatchedContributors).toEqual([]);
+      expect(result.fallbackReason).toMatch(
+        noiseDeviation === 0 ? /CPU perfect-fit cutoff/ : /upload rounding error/
+      );
+      expect(allocated).not.toHaveBeenCalled();
+      const diagnostics = getDiagnosticRows(getResultTable(result, 'diagnostics'));
+      expect(diagnostics.has('lm-lag')).toBe(false);
+      if (noiseDeviation === 0) {
+        expect(diagnostics.has('aic')).toBe(false);
+        expect(diagnostics.has('jarque-bera')).toBe(false);
+        expect(result.summary['residualMoransI']).toBe('not computed');
+        expect(result.diagnostics.map(diagnostic => diagnostic.code)).toContain('perfect-fit');
+      } else {
+        expect(diagnostics.has('aic')).toBe(true);
+      }
+    } finally {
+      allocated.mockRestore();
+      device.destroy();
+    }
+  });
+
+  it('rejects uploaded-fit readbacks that turn a reference-perfect large-offset fit into apparent residual noise', () => {
+    const {prepared} = makeLargeResponseOffset(0);
+    const responseScale = Math.max(...prepared.responseValues);
+    const origin = prepared.predictorArray[0];
+    const predictorScale = Math.max(
+      ...Array.from(prepared.predictorArray, value => Math.abs(value - origin))
+    );
+    const predictors = Float32Array.from(
+      prepared.predictorArray,
+      value => (value - origin) / predictorScale
+    );
+    const response = Float32Array.from(prepared.responseValues, value => value / responseScale);
+    const uploadedFit = fitStandardizedLeastSquares(response, predictors, 1, 36);
+    // Reproduces the reviewer's failure entirely on Node: response quantization creates ~94.6 RSS.
+    expect(uploadedFit.residualSumOfSquares * responseScale ** 2).toBeGreaterThan(90);
+    expect(prepared.referenceFit.residualSumOfSquares).toBe(0);
+    const {scaled: ordinaryScaled, readback: ordinaryReadback} = prepareReadback();
+    const scaled = {
+      ...ordinaryScaled,
+      predictors,
+      response: {origin: 0, scale: responseScale, values: response},
+      columns: [{origin, scale: predictorScale, values: predictors}]
+    };
+    const readback = {
+      ...ordinaryReadback,
+      coefficients: Float32Array.from(uploadedFit.coefficients),
+      fitted: Float32Array.from(uploadedFit.fitted),
+      residuals: Float32Array.from(uploadedFit.residuals)
+    };
+    expect(() => publishCuratedRegressionGpu(prepared, scaled, readback)).toThrow(
+      /CPU perfect-fit cutoff/
+    );
+  });
+
+  it('rejects response quantization that overwhelms a nonzero reference residual', () => {
+    const {prepared} = makeLargeResponseOffset(0.1);
+    const responseScale = Math.max(...prepared.responseValues);
+    const predictors = Float32Array.from(prepared.predictorArray, value => value / 35);
+    const response = Float32Array.from(prepared.responseValues, value => value / responseScale);
+    const uploadedFit = fitStandardizedLeastSquares(response, predictors, 1, 36);
+    expect(uploadedFit.residualSumOfSquares * responseScale ** 2).toBeGreaterThan(
+      100 * prepared.referenceFit.residualSumOfSquares
+    );
+    expect(() => prepareCuratedRegressionGpu(prepared)).toThrow(/upload rounding error/);
+  });
+
+  it('rejects inference that becomes nonfinite while decoding finite GPU values', () => {
+    const {prepared, scaled, readback} = prepareReadback();
+    prepared.referenceFit.standardErrors[0] = Number.MAX_VALUE;
+    readback.residuals = Float32Array.from(readback.residuals, value => value * 2);
+    expect(() => publishCuratedRegressionGpu(prepared, scaled, readback)).toThrow(
+      /decoded fit inference must have finite/
+    );
+    const ordinary = prepareReadback();
+    expect(() =>
+      publishCuratedRegressionGpu(
+        ordinary.prepared,
+        {
+          ...ordinary.scaled,
+          response: {...ordinary.scaled.response, scale: Number.MAX_VALUE}
+        },
+        ordinary.readback
+      )
+    ).toThrow(/decoded fit inference must have finite/);
+  });
+
+  it('rejects out-of-range diagnostic p-values before publishing inference', () => {
+    for (const target of ['tests', 'localPValues', 'diagnosticsSummary'] as const) {
+      const {prepared, scaled, readback} = prepareReadback();
+      const index = target === 'tests' ? 2 : target === 'diagnosticsSummary' ? 9 : 0;
+      readback[target][index] = 1.1;
+      expect(() => publishCuratedRegressionGpu(prepared, scaled, readback)).toThrow(
+        /p-values must be in/
+      );
+    }
+  });
+
+  it('publishes missing source IDs as null for the 144-row sample on CPU and GPU readbacks', () => {
+    const areas = createKeplerCuratedAnalysisSample('district-regression')['areas'];
+    expect(areas.features).toHaveLength(144);
+    expect(areas.features.every(feature => feature.id === undefined)).toBe(true);
+    const {prepared, scaled, readback} = prepareReadback(areas, 'outcome', 'income,density');
+    const expectedSourceIds = Array<null>(144).fill(null);
+    const expectedSourceIndices = Array.from({length: 144}, (_, index) => index);
+    for (const result of [
+      publishCuratedRegression(prepared, prepared.referenceFit),
+      publishCuratedRegressionGpu(prepared, scaled, readback)
+    ]) {
+      const residuals = result.tables.find(table => table.id === 'residuals')!;
+      expect(residuals.columns['source_id']).toEqual(expectedSourceIds);
+      expect(residuals.columns['source_index']).toEqual(expectedSourceIndices);
+    }
+  });
+
+  it('preserves string IDs and stringifies numeric IDs consistently for CPU and GPU readbacks', () => {
+    const areas = makeRegressionLattice();
+    delete areas.features[0].id;
+    areas.features[1].id = null;
+    areas.features[2].id = 42;
+    areas.features[3].id = 0;
+    areas.features[4].id = '';
+    areas.features[5].id = 'district-5';
+    const {prepared, scaled, readback} = prepareReadback(areas);
+    for (const result of [
+      publishCuratedRegression(prepared, prepared.referenceFit),
+      publishCuratedRegressionGpu(prepared, scaled, readback)
+    ]) {
+      const residuals = result.tables.find(table => table.id === 'residuals')!;
+      expect(residuals.columns['source_id'].slice(0, 6)).toEqual([
+        null,
+        null,
+        '42',
+        '0',
+        '',
+        'district-5'
+      ]);
+      expect(residuals.columns['source_index']).toEqual(
+        Array.from({length: 36}, (_, index) => index)
+      );
+    }
+  });
+
+  it('keeps the CPU oracle and registers an actual optional GPU path', () => {
+    expect(CURATED_REGRESSION_WITH_DIAGNOSTICS_BINDING.engine).toBe('gpu-or-cpu');
+    expect(CURATED_REGRESSION_WITH_DIAGNOSTICS_BINDING.runGpu).toBeTypeOf('function');
+    expect(CURATED_REGRESSION_WITH_DIAGNOSTICS_BINDING.gpuContributorNames).toEqual([
+      'GPUOrdinaryLeastSquares',
+      'GPUSpatialRegressionDiagnostics',
+      'GPULocalMoran'
+    ]);
+  });
+
+  it('converts canonical complete-case weights to CSR without losing source identities', () => {
+    const {prepared, scaled} = prepareReadback();
+    expect(scaled.weights.offsets.length).toBe(37);
+    expect(scaled.weights.neighbors.length).toBe(scaled.weights.weights.length);
+    prepared.set.sourceIndex.forEach((row, position) => {
+      const start = scaled.weights.offsets[row];
+      const end = scaled.weights.offsets[row + 1];
+      expect(Array.from(scaled.weights.neighbors.slice(start, end))).toEqual(
+        prepared.set.weights.neighbors[position].map(other => prepared.set.sourceIndex[other])
+      );
+      expect(
+        Array.from(scaled.weights.weights.slice(start, end)).reduce((sum, value) => sum + value, 0)
+      ).toBeCloseTo(1, 6);
+    });
+  });
+
+  it('publishes GPU-supplied fitted values, coefficients and local values in input order', () => {
+    const {prepared, scaled, readback} = prepareReadback();
+    const result = publishCuratedRegressionGpu(prepared, scaled, readback);
+    const coefficients = result.tables.find(table => table.id === 'coefficients')!;
+    REGRESSION_LATTICE.coefficients.forEach((value, index) =>
+      expect(Number(coefficients.columns['estimate'][index])).toBeCloseTo(value, 5)
+    );
+    const residuals = result.tables.find(table => table.id === 'residuals')!;
+    prepared.rows.forEach((row, index) => {
+      expect(residuals.columns['local_morans_i'][row.sourceIndex]).toBe(readback.localI[index]);
+      expect(residuals.columns['fitted'][row.sourceIndex]).toBe(
+        readback.fitted[index] * scaled.response.scale
+      );
+    });
+    // A changed readback must change the published fit: a hidden CPU-only publication fails this.
+    readback.coefficients[1] += 0.1;
+    const changed = publishCuratedRegressionGpu(prepared, scaled, readback);
+    expect(changed.tables[0].columns['estimate'][1]).not.toBe(coefficients.columns['estimate'][1]);
+    expect(result.tables[1].columns['diagnostic']).toEqual(
+      expect.arrayContaining([
+        'lm-lag',
+        'lm-error',
+        'robust-lm-lag',
+        'robust-lm-error',
+        'lm-sarma',
+        'residual-morans-i-analytic',
+        'specification-decision'
+      ])
+    );
+    expect(result.summary['localMoranInference']).toContain('uncorrected');
+  });
+
+  it('refuses failed, nonfinite, truncated and rounding-floor GPU results before publication', () => {
+    const {prepared, scaled, readback} = prepareReadback();
+    for (const olsStatus of [1, 2])
+      expect(() => publishCuratedRegressionGpu(prepared, scaled, {...readback, olsStatus})).toThrow(
+        /ols status code must be 0/
+      );
+    for (const diagnosticsStatus of [1, 2, 3, 4])
+      expect(() =>
+        publishCuratedRegressionGpu(prepared, scaled, {...readback, diagnosticsStatus})
+      ).toThrow(/spatial diagnostics status code must be 0/);
+    expect(() => publishCuratedRegressionGpu(prepared, scaled, {...readback, decision: 4})).toThrow(
+      /specification decision must be/
+    );
+    expect(() =>
+      publishCuratedRegressionGpu(prepared, scaled, {...readback, fitted: new Float32Array(1)})
+    ).toThrow(/readback lengths/);
+    expect(() =>
+      publishCuratedRegressionGpu(prepared, scaled, {
+        ...readback,
+        residuals: new Float32Array(prepared.rowCount)
+      })
+    ).toThrow(/float32 rounding floor/);
+    readback.coefficients[0] = Number.NaN;
+    expect(() => publishCuratedRegressionGpu(prepared, scaled, readback)).toThrow(/must be finite/);
+  });
+
+  it('preserves large-offset/tiny-unit predictor variation before upload and never translates the response', () => {
+    for (const scale of [1e-250, 1, 1e250]) {
+      const areas = makeLattice(8, 1, index => ({
+        x: (index + 1) * scale,
+        y: 4 + index * 2 + Math.sin(index)
+      }));
+      const prepared = prepareCuratedRegression(
+        {areas},
+        normalizeCatalogParameters(CURATED_REGRESSION_WITH_DIAGNOSTICS_BINDING, {
+          ...PLANAR,
+          responseProperty: 'y',
+          predictorProperties: 'x'
+        })
+      );
+      const scaled = prepareCuratedRegressionGpu(prepared);
+      expect(new Set(scaled.predictors).size).toBe(8);
+      expect(Array.from(scaled.predictors).every(Number.isFinite)).toBe(true);
+      expect(scaled.response.origin).toBe(0);
+    }
+    const areas = makeLattice(8, 1, index => ({
+      x: 1e13 + index,
+      y: 4 + index * 2 + Math.sin(index)
+    }));
+    const prepared = prepareCuratedRegression(
+      {areas},
+      normalizeCatalogParameters(CURATED_REGRESSION_WITH_DIAGNOSTICS_BINDING, {
+        ...PLANAR,
+        responseProperty: 'y',
+        predictorProperties: 'x'
+      })
+    );
+    expect(new Set(prepareCuratedRegressionGpu(prepared).predictors).size).toBe(8);
+  });
+});
+
+it('constructs real recipe kernels and releases the session and parameter buffer on submission failure', async () => {
+  const device = createNullWebGPUDevice();
+  const sessionDestroyed = vi.spyOn(CatalogGpuSession.prototype, 'dispose');
+  const parametersDestroyed = vi.spyOn(GPUParameterBuffer.prototype, 'destroy');
+  const submitted = vi.spyOn(CatalogGpuSession.prototype, 'run').mockImplementation(function (
+    this: CatalogGpuSession
+  ) {
+    const kernels = getGPUCommandNodeKernelSources(
+      (this.graph as unknown as {nodes: unknown[]}).nodes
+    );
+    for (const prefix of [
+      'spatial-regression-ols',
+      'spatial-regression-diagnostics',
+      'spatial-regression-residual-moran',
+      'spatial-regression-specification'
+    ])
+      expect(
+        kernels.some(kernel => kernel.id.startsWith(prefix)),
+        prefix
+      ).toBe(true);
+    throw new Error('regression construction reached submission');
+  });
+  try {
+    await expect(
+      CURATED_REGRESSION_WITH_DIAGNOSTICS_BINDING.runGpu!(
+        {device},
+        {areas: makeRegressionLattice()},
+        normalizeCatalogParameters(CURATED_REGRESSION_WITH_DIAGNOSTICS_BINDING, {
+          ...PLANAR,
+          responseProperty: 'y',
+          predictorProperties: 'x1,x2',
+          permutations: 99
+        })
+      )
+    ).rejects.toThrow('regression construction reached submission');
+    expect(submitted).toHaveBeenCalledOnce();
+    expect(sessionDestroyed).toHaveBeenCalledOnce();
+    expect(parametersDestroyed).toHaveBeenCalledOnce();
+    expect(sessionDestroyed.mock.invocationCallOrder[0]).toBeLessThan(
+      parametersDestroyed.mock.invocationCallOrder[0]
+    );
+  } finally {
+    submitted.mockRestore();
+    sessionDestroyed.mockRestore();
+    parametersDestroyed.mockRestore();
+    device.destroy();
+  }
+});
+
+it('maps the sample and a second dataset with independently named columns through the existing AX mapping model', () => {
+  const analysis = getKeplerCuratedAnalysis('regression-with-diagnostics')!;
+  for (const [datasetId, areas, response, predictors] of [
+    [
+      'sample',
+      createKeplerCuratedAnalysisSample('district-regression')['areas'],
+      'outcome',
+      ['income', 'density']
+    ],
+    [
+      'second',
+      makeLattice(6, 6, row => ({
+        measured: REGRESSION_LATTICE.y[row],
+        firstDriver: REGRESSION_LATTICE.x1[row],
+        secondDriver: REGRESSION_LATTICE.x2[row]
+      })),
+      'measured',
+      ['firstDriver', 'secondDriver']
+    ]
+  ] as const) {
+    const profiles = [
+      profileKeplerFeatureCollection(areas, {
+        datasetId,
+        label: datasetId,
+        coordinateSystem: 'planar',
+        declarations: {coordinateModel: 'planar', rowSemantics: 'objects'}
+      })
+    ];
+    let mapping = createKeplerCuratedAnalysisMapping(analysis, profiles, {
+      parameters: {...PLANAR, permutations: 99}
+    });
+    mapping = updateKeplerCuratedAnalysisMapping(
+      mapping,
+      {slot: 'areas', datasetId},
+      analysis,
+      profiles
+    );
+    mapping = updateKeplerCuratedAnalysisMapping(
+      mapping,
+      {slot: 'areas', role: 'response', columns: [response]},
+      analysis,
+      profiles
+    );
+    mapping = updateKeplerCuratedAnalysisMapping(
+      mapping,
+      {slot: 'areas', role: 'predictors', columns: [...predictors]},
+      analysis,
+      profiles
+    );
+    expect(mapping.ready, JSON.stringify(mapping.problems)).toBe(true);
+    const request = buildKeplerCuratedAnalysisRequest(analysis, mapping);
+    expect(request.inputDatasetIds).toEqual({areas: datasetId});
+    expect(request.parameters['responseProperty']).toBe(response);
+    expect(request.parameters['predictorProperties']).toBe(predictors.join(','));
+    const prepared = prepareCuratedRegression(
+      {areas},
+      normalizeCatalogParameters(CURATED_REGRESSION_WITH_DIAGNOSTICS_BINDING, request.parameters)
+    );
+    expect(prepareCuratedRegressionGpu(prepared).predictors.length).toBe(areas.features.length * 2);
   }
 });

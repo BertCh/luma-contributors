@@ -151,7 +151,7 @@ describe('workflow table operations', () => {
         category: 'table',
         origin: 'builtin',
         engine: 'cpu-reference',
-        version: '1'
+        version: '2'
       });
       for (const port of operation.inputs)
         expect(port).toMatchObject({

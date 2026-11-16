@@ -3335,3 +3335,40 @@ describe('verification regressions: scaled polygon centroid moments', () => {
     }
   });
 });
+
+describe('shared exact covering-arc regressions', () => {
+  it('retains a gap smaller than the former 0.1-degree buckets across model changes', () => {
+    const profile = profileKeplerFeatureCollection(
+      collect([
+        {
+          geometry: {
+            type: 'LineString',
+            coordinates: [
+              [0.08, -5],
+              [180, 5]
+            ]
+          },
+          properties: {}
+        },
+        {
+          geometry: {
+            type: 'LineString',
+            coordinates: [
+              [-180, 0],
+              [0.02, 1]
+            ]
+          },
+          properties: {}
+        }
+      ] as CatalogFeature[]),
+      {...BASE_OPTIONS, coordinateSystem: 'EPSG:4326'}
+    );
+    expect(profile.extent?.[0]).toBeCloseTo(0.08, 12);
+    expect(profile.extent?.[2]).toBeCloseTo(0.02, 12);
+    const planar = applyKeplerDatasetProfileDeclarations(profile, {coordinateModel: 'planar'});
+    expect(planar.extent).toEqual([-180, -5, 180, 5]);
+    expect(
+      applyKeplerDatasetProfileDeclarations(planar, {coordinateModel: 'geographic'}).extent
+    ).toEqual(profile.extent);
+  });
+});

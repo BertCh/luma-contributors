@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  parseWorkflowAnalysisTemplate,
+  serializeWorkflowAnalysisTemplate
+} from './workflow-analysis-template-parser';
+import type {WorkflowAnalysisTemplate} from './workflow-analysis-template';
 import type {CatalogParameterValue} from '../analysis/catalog-binding-types';
 import {parseCatalogInvocation} from '../analysis/catalog-bindings';
 import {
@@ -225,7 +230,10 @@ export function exportWorkflowTypeScript(
   return lines.join('\n');
 }
 
-function equalValues(left: CatalogParameterValue, right: CatalogParameterValue): boolean {
+function equalValues(
+  left: CatalogParameterValue,
+  right: CatalogParameterValue | undefined
+): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
@@ -301,7 +309,7 @@ export function describeWorkflow(
 /** Where one input of a saved catalog run came from (the host's catalog history record). */
 export type WorkflowHistoryInputReference =
   | {mode: 'sample'}
-  | {mode: 'text'; text: string}
+  | {mode: 'text'; text: string; profileDeclarations?: string}
   | {mode: 'native'; datasetId: string; field: string};
 
 export type WorkflowHistoryRecord = {
@@ -361,7 +369,7 @@ export function makeWorkflowFromCatalogHistory(
     taken.add(step.id);
     for (const parameter of operation.parameters) {
       const value = parsed.invocation.parameters[parameter.name];
-      if (value !== undefined && !equalValues(value, parameter.defaultValue)) {
+      if (value !== undefined) {
         step.parameters[parameter.name] = {from: 'static', value};
       }
     }
@@ -378,7 +386,11 @@ export function makeWorkflowFromCatalogHistory(
       const key =
         reference.mode === 'native'
           ? JSON.stringify(['native', reference.datasetId, reference.field])
-          : JSON.stringify(['text', text]);
+          : JSON.stringify([
+              'text',
+              text,
+              reference.mode === 'text' ? reference.profileDeclarations : undefined
+            ]);
       let sourceId = pendingSources.get(key);
       if (!sourceId) {
         const label =
@@ -396,7 +408,17 @@ export function makeWorkflowFromCatalogHistory(
                 geometryMode: {from: 'static', value: 'geojson-field'},
                 geometryField: {from: 'static', value: reference.field}
               }
-            : {text: {from: 'static', value: text!}};
+            : {
+                text: {from: 'static', value: text!},
+                ...(reference.mode === 'text' && reference.profileDeclarations
+                  ? {
+                      profileDeclarations: {
+                        from: 'static' as const,
+                        value: reference.profileDeclarations
+                      }
+                    }
+                  : {})
+              };
         additions.push({
           id: sourceId,
           operationId: reference.mode === 'native' ? 'source-dataset' : 'source-geojson',
@@ -419,4 +441,13 @@ export function makeWorkflowFromCatalogHistory(
     throw new WorkflowError('malformed', 'Catalog history contains no supported runs to promote.');
   }
   return layoutWorkflow(document);
+}
+
+/** Compact export stays within the AX-30 wire budget. */
+export function exportWorkflowAnalysisTemplateJSON(template: WorkflowAnalysisTemplate): string {
+  return JSON.stringify(serializeWorkflowAnalysisTemplate(template));
+}
+
+export function importWorkflowAnalysisTemplateJSON(text: string): WorkflowAnalysisTemplate {
+  return parseWorkflowAnalysisTemplate(text);
 }

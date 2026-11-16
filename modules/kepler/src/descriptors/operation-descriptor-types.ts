@@ -5,6 +5,7 @@
 import type {CatalogParameterValue} from '../analysis/catalog-binding-types';
 import type {
   GPUAnalysisDefaultRule,
+  GPUAnalysisParameterCondition,
   GPUAnalysisMeasurementLevel,
   GPUAnalysisFieldRoleSpec,
   GPUAnalysisInterpretationSpec,
@@ -38,6 +39,14 @@ export type KeplerOperationFieldDescriptor = GPUAnalysisFieldRoleSpec & {
    * `multiple` writes a comma-separated list, as the binding's parameter documents.
    */
   parameter: string;
+  /**
+   * Optional computation inputs that must be chosen explicitly. Applicability offers candidates
+   * without assigning one; parameter resolution uses an empty column name until a mapping or
+   * override is supplied, even if the binding has a nonempty default column name.
+   */
+  // `explicit` also skips inference but preserves the binding default (for feature-ID fallback).
+  // Point-coordinate policies use declared pointColumns, never generic numeric measurements.
+  autoAssign?: false | 'explicit' | 'point-longitude' | 'point-latitude';
 };
 
 /** What one binding input stands for. */
@@ -94,15 +103,39 @@ export type KeplerOperationParameterDescriptor = {
         input: string;
         role: string;
         values: Partial<Record<GPUAnalysisMeasurementLevel, CatalogParameterValue>>;
+      }
+    | {
+        /** Complete ISO text can resolve automatically; ambiguous epoch units need a choice. */
+        from: 'time-encoding';
+        input: string;
+        role: string;
       };
   /** `basic` parameters are shown first; `advanced` ones are folded away. */
   level: 'basic' | 'advanced';
   /**
-   * Present when the parameter only has an effect while another parameter holds one of the
-   * listed values (a distance band only matters for the distance-band neighbourhood). A form
-   * hides or disables an inactive parameter, and a report does not list it as chosen.
+   * `rebuild` changes allocation, graph topology, prepared inputs or shader constants.
+   * `live` changes only uniforms, runtime parameter buffers or a post-pass on an existing result.
+   * This describes capability; hosts own scheduling. It does not change the execution ABI.
    */
-  activeWhen?: {parameter: string; equals: readonly (string | number | boolean)[]};
+  apply: 'live' | 'rebuild';
+  /** A false-by-default boolean certification that must be true before the operation is ready. */
+  confirmation?: {message: string; remedy: string};
+  /**
+   * Present when the parameter only has an effect while a shared condition holds
+   * (one controller matching any listed value, or anyOf across several controllers). A distance
+   * band, for example, only matters for distance-band neighbourhoods. A form hides or disables
+   * an inactive parameter, and a report does not list it as chosen.
+   */
+  activeWhen?: GPUAnalysisParameterCondition;
+};
+
+/**
+ * A geometry-only result that should retain a uniform host style. This explicitly records why
+ * a column/scale plan would be misleading; it is never inferred from missing metadata.
+ */
+export type KeplerOperationUniformStyleException = {
+  type: 'uniform-style';
+  reason: string;
 };
 
 /** How one output table is shown, read and followed up. */
@@ -117,7 +150,11 @@ export type KeplerOperationOutputDescriptor = {
    * kind of the dataset assigned to that input, and `kind` is only the usual case.
    */
   kindFrom?: string;
+  /** Significance-derived values or categories require full-population inference before keeping. */
+  inference?: boolean;
   presentation?: GPUAnalysisPresentationSpec;
+  /** Mutually exclusive with presentation; shown in report notes. */
+  presentationException?: KeplerOperationUniformStyleException;
   interpretation?: GPUAnalysisInterpretationSpec;
   /** Questions that are natural to ask of this output next. */
   next?: readonly GPUAnalysisQuestion[];
@@ -127,12 +164,16 @@ export type KeplerOperationOutputDescriptor = {
 export type KeplerOperationRequirement = GPUAnalysisRequirementSpec & {
   /** `CatalogInputSpec.name` the requirement is about. */
   input: string;
+  /** Aggregate failures may be unknown when execution discards rows without geometry. */
+  statisticsScope?: 'retained-geometry';
+  /** Resolve a count requirement's limit from the selected numeric parameter before evaluation. */
+  limitFromParameter?: {parameter: string; absolute?: boolean; offset?: number};
   /**
-   * Present when the requirement only applies while a parameter holds one of the listed values
+   * Present when the requirement only applies while a shared parameter condition holds
    * (cost columns matter only in the property cost mode; non-negative values only for the G
    * statistics). It is not evaluated otherwise.
    */
-  activeWhen?: {parameter: string; equals: readonly (string | number | boolean)[]};
+  activeWhen?: GPUAnalysisParameterCondition;
 };
 
 export type KeplerOperationDescriptor = {

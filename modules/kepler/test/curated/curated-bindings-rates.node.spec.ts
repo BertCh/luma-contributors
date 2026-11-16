@@ -3,6 +3,33 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {describe, expect, it} from 'vitest';
+import {getKeplerCuratedAnalysis} from '../../src/curated/curated-analyses';
+import {createKeplerCuratedAnalysisSample} from '../../src/curated/curated-analysis-samples';
+import {
+  buildKeplerCuratedAnalysisRequest,
+  createKeplerCuratedAnalysisMapping,
+  updateKeplerCuratedAnalysisMapping
+} from '../../src/curated/curated-analysis-mapping';
+import {profileKeplerFeatureCollection} from '../../src/profile/dataset-profile';
+import {
+  getCatalogDefaultParameters,
+  runCatalogOperationAsync
+} from '../../src/analysis/catalog-bindings';
+import {
+  CURATED_RATE_CLUSTER_MAP_BINDING,
+  publishRateClusterMap
+} from '../../src/curated/bindings/curated-rate-cluster-map-binding';
+import {
+  compareRateClusterClasses,
+  createRateClusterOverflowDataset
+} from './curated-bindings-rates-fixtures';
+import {computeEmpiricalBayesOracle} from '../../../analysis/test/gpu-spatial-analysis/rate-smoothing/empirical-bayes-oracle';
+import {
+  prepareGpuRateClusterMap,
+  readGpuRateClusterComputation,
+  type RateClusterReadback
+} from '../../src/curated/bindings/curated-rate-cluster-map-gpu';
+import {GPU_EMPIRICAL_BAYES_SUMMARY} from '@luma-contributors/analysis/gpu-spatial-analysis';
 import type {CatalogFeature, CatalogFeatureCollection} from '../../src/analysis/catalog-geojson';
 import {BENJAMINI_HOCHBERG, RATE_EXACT, RATE_LATTICE} from './curated-bindings-oracle-data';
 import {
@@ -404,4 +431,389 @@ it('reports that the absolute and doubled-tail p-value definitions can cross in 
   expect(
     result.diagnostics.find(diagnostic => diagnostic.code === 'pseudo-p-values')?.message
   ).toContain('either may give the smaller p-value');
+});
+
+describe('curated-rate-cluster-map GPU preparation and publication contract', () => {
+  const parameters = {
+    ...getCatalogDefaultParameters(CURATED_RATE_CLUSTER_MAP_BINDING),
+    ...FIELDS,
+    ...PLANAR,
+    permutations: 99
+  };
+  const areas = makeRateLattice(2, 2, [4, 20, 7, 40], [100, 200, 300, 400]);
+
+  it('registers the genuine recipe path while retaining an explicit CPU reference', () => {
+    expect(CURATED_RATE_CLUSTER_MAP_BINDING.engine).toBe('gpu-or-cpu');
+    expect(CURATED_RATE_CLUSTER_MAP_BINDING.runGpu).toBeTypeOf('function');
+    expect(CURATED_RATE_CLUSTER_MAP_BINDING.gpuContributorNames).toEqual([
+      'GPUEmpiricalBayesRates',
+      'GPUContiguityWeights',
+      'GPUSpatialWeightsTransform',
+      'GPULocalMoran',
+      'GPULocalPermutationTest',
+      'GPUMultipleTestingAdjustment'
+    ]);
+    expect(CURATED_RATE_CLUSTER_MAP_BINDING.limitation).toContain('doubled-smaller-tail');
+    const reference = runCuratedBinding(CLUSTER_ID, parameters, {areas});
+    expect(reference.engine).toBe('cpu-reference');
+    expect(reference.dispatchedContributors).toEqual([]);
+  });
+
+  it('maps the bundled sample and a second dataset with renamed numeric roles before GPU allocation', () => {
+    const analysis = getKeplerCuratedAnalysis('rate-cluster-map')!;
+    const sample = createKeplerCuratedAnalysisSample('city-district-rates')['areas'];
+    const second = makeLattice(3, 3, index => ({
+      reported: index * 3 + 1,
+      exposed: index * 100 + 500
+    }));
+    for (const [collection, casesProperty, populationProperty, coordinateSystem] of [
+      [sample, 'cases', 'population', 'EPSG:4326'],
+      [second, 'reported', 'exposed', 'planar']
+    ] as const) {
+      const profile = profileKeplerFeatureCollection(collection, {
+        datasetId: 'mapped',
+        label: 'Mapped districts',
+        coordinateSystem
+      });
+      let mapping = createKeplerCuratedAnalysisMapping(analysis, [profile]);
+      for (const [role, column] of [
+        ['cases', casesProperty],
+        ['population', populationProperty]
+      ])
+        mapping = updateKeplerCuratedAnalysisMapping(
+          mapping,
+          {slot: 'areas', role, columns: [column]},
+          analysis,
+          [profile]
+        );
+      const request = buildKeplerCuratedAnalysisRequest(analysis, mapping, {
+        parameterOverrides: {coordinateSystem}
+      });
+      expect(request.inputDatasetIds).toEqual({areas: 'mapped'});
+      expect(request.parameters['casesProperty']).toBe(casesProperty);
+      expect(request.parameters['populationProperty']).toBe(populationProperty);
+      const prepared = prepareGpuRateClusterMap({areas: collection}, request.parameters);
+      expect(prepared.rows).toHaveLength(collection.features.length);
+      expect(prepared.polygons.featureCount).toBe(collection.features.length);
+      expect(prepared.events.every(Number.isFinite)).toBe(true);
+    }
+  });
+
+  it('packs canonical rows, multipart features and original identities without running a CPU statistic', () => {
+    const multipart = structuredClone(areas);
+    const geometry = multipart.features[2].geometry!;
+    if (geometry.type !== 'Polygon') throw new Error('Expected polygon fixture');
+    multipart.features[2].geometry = {type: 'MultiPolygon', coordinates: [geometry.coordinates]};
+    multipart.features.push({
+      ...makeIsland(),
+      id: 'excluded',
+      properties: {cases: 10, population: 0}
+    });
+    const prepared = prepareGpuRateClusterMap({areas: multipart}, parameters);
+    // Column first, then row: canonical anchors (0.5,0.5), (0.5,1.5), (1.5,0.5), (1.5,1.5).
+    expect(prepared.rows.map(row => row.sourceIndex)).toEqual([0, 2, 1, 3]);
+    expect(Array.from(prepared.events)).toEqual([4, 7, 20, 40]);
+    expect(Array.from(prepared.populations)).toEqual([100, 300, 200, 400]);
+    expect(Array.from(prepared.polygons.featureOffsets)).toEqual([0, 1, 2, 3, 4]);
+    expect(Array.from(prepared.polygons.ringOffsets)).toEqual([0, 4, 8, 12, 16]);
+    expect(Array.from(prepared.polygons.positions.slice(0, 8))).toEqual([0, 0, 1, 0, 1, 1, 0, 1]);
+    expect(prepared.statuses).toEqual([
+      'analysed',
+      'analysed',
+      'analysed',
+      'analysed',
+      'non-positive-population'
+    ]);
+    expect(prepared.droppedCount).toBe(1);
+    expect(prepared.diagnostics.find(item => item.code === 'non-positive-population')?.count).toBe(
+      1
+    );
+    const reversed = prepareGpuRateClusterMap(
+      {areas: {type: 'FeatureCollection', features: [...multipart.features].reverse()}},
+      parameters
+    );
+    expect(reversed.rows.map(row => row.feature.id)).toEqual(
+      prepared.rows.map(row => row.feature.id)
+    );
+    expect(reversed.polygons.positions).toEqual(prepared.polygons.positions);
+  });
+
+  function createReadback(): RateClusterReadback {
+    const summary = new Float32Array(GPU_EMPIRICAL_BAYES_SUMMARY.length);
+    summary[GPU_EMPIRICAL_BAYES_SUMMARY.count] = 4;
+    summary[GPU_EMPIRICAL_BAYES_SUMMARY.pooledRate] = 0.1;
+    summary[GPU_EMPIRICAL_BAYES_SUMMARY.clampedPriorVariance] = 0.01;
+    return {
+      summary,
+      rawRates: new Float32Array([0.04, 0.02, 0.1, 0.1]),
+      smoothedRates: new Float32Array([0.05, 0.03, 0.1, 0.1]),
+      localI: new Float32Array([2, NaN, -1, 0.5]),
+      spatialLag: new Float32Array([1, NaN, -0.5, 0.2]),
+      pValues: new Float32Array([0.02, NaN, 0.2, 0.01]),
+      adjustedPValues: new Float32Array([0.03, NaN, 0.2, 0.03]),
+      quadrants: new Uint32Array([1, 0, 0, 4]),
+      offsets: new Uint32Array([0, 1, 1, 2, 3]),
+      weightsOverflow: 0,
+      weightsRequiredCount: 3,
+      permutationOverflow: 0
+    };
+  }
+
+  it('preserves null islands, recipe quadrant names and the rate-moment shrinkage formula', () => {
+    const prepared = prepareGpuRateClusterMap({areas}, parameters);
+    const result = readGpuRateClusterComputation(prepared, createReadback());
+    expect(result.clusters).toEqual(['HH', 'not-tested', 'not-significant', 'HL']);
+    expect(result.pValues[1]).toBeNull();
+    expect(result.localI[1]).toBeNull();
+    expect(result.neighborCounts).toEqual([1, 0, 1, 1]);
+    // Closed form: a / (a + m / population), using the GPU's published float32 moments.
+    expect(result.shrinkages[0]).toBeCloseTo(0.01 / (0.01 + 0.1 / 100), 7);
+    const constant = createReadback();
+    constant.summary[GPU_EMPIRICAL_BAYES_SUMMARY.clampedPriorVariance] = 0;
+    const untested = readGpuRateClusterComputation(prepared, constant);
+    expect(untested.clusters).toEqual(new Array(4).fill('not-tested'));
+    expect(untested.pValues).toEqual(new Array(4).fill(null));
+    expect(untested.shrinkages).toEqual(new Array(4).fill(0));
+  });
+
+  it('refuses incomplete GPU output and non-finite moments before any publication', () => {
+    const prepared = prepareGpuRateClusterMap({areas}, parameters);
+    for (const invalid of [
+      {weightsOverflow: 1},
+      {weightsRequiredCount: prepared.neighborCapacity + 1},
+      {permutationOverflow: 1},
+      {localI: new Float32Array(3)},
+      {offsets: new Uint32Array(4)},
+      {summary: new Float32Array(2)},
+      {smoothedRates: new Float32Array([NaN, 1, 2, 3])}
+    ])
+      expect(() =>
+        readGpuRateClusterComputation(prepared, {...createReadback(), ...invalid})
+      ).toThrow(/curated-rate-cluster-map /);
+  });
+
+  it('checks usable rows, work and float32 input limits before GPU allocation', () => {
+    const tooFew = structuredClone(areas);
+    tooFew.features[0].properties = {cases: 1, population: 0};
+    expect(() => prepareGpuRateClusterMap({areas: tooFew}, parameters)).toThrow(/at least 4/);
+    const tooLarge = structuredClone(areas);
+    tooLarge.features[0].properties = {cases: 1e30, population: 1e30};
+    expect(() => prepareGpuRateClusterMap({areas: tooLarge}, parameters)).toThrow(
+      /GPU rate input limit/
+    );
+    const large = makeRateLattice(50, 42, new Array(2100).fill(5), new Array(2100).fill(100));
+    expect(() =>
+      prepareGpuRateClusterMap({areas: large}, {...parameters, permutations: 9999})
+    ).toThrow(/areas times permutations/);
+  });
+
+  it('rejects cases above population identically before CPU execution or GPU allocation (finding 1)', async () => {
+    const invalid = makeRateLattice(2, 2, [1001, 100, 200, 300], new Array(4).fill(1000));
+    const message =
+      /curated-rate-cluster-map casesProperty "cases" at source row 0 must not exceed populationProperty "population"/;
+    expect(() => prepareGpuRateClusterMap({areas: invalid}, parameters)).toThrow(message);
+    expect(() => runCuratedBinding(CLUSTER_ID, parameters, {areas: invalid})).toThrow(message);
+    await expect(
+      runCatalogOperationAsync(
+        CURATED_RATE_CLUSTER_MAP_BINDING,
+        parameters,
+        {areas: invalid},
+        {device: {} as never}
+      )
+    ).rejects.toThrow(message);
+    // Equality remains a valid rate for both engines.
+    invalid.features[0].properties!['cases'] = 1000;
+    expect(() => prepareGpuRateClusterMap({areas: invalid}, parameters)).not.toThrow();
+    expect(() => runCuratedBinding(CLUSTER_ID, parameters, {areas: invalid})).not.toThrow();
+  });
+
+  it('can execute the exact headless overflow fixture on its CPU fallback (finding 2)', () => {
+    const overflow = createRateClusterOverflowDataset();
+    expect(
+      Math.max(...overflow.features.map(feature => Number(feature.properties!['reported'])))
+    ).toBe(4225);
+    expect(overflow.features.every(feature => Number(feature.properties!['exposed']) >= 4225)).toBe(
+      true
+    );
+    const result = runCuratedBinding(
+      CLUSTER_ID,
+      {...parameters, casesProperty: 'reported', populationProperty: 'exposed'},
+      {areas: overflow}
+    );
+    expect(result.tables[0].rowCount).toBe(66);
+    expect(result.engine).toBe('cpu-reference');
+    expect(result.summary['areaCount']).toBe(66);
+  });
+
+  it('ignores island-only rate variation and leaves undefined local inference untested (finding 3)', () => {
+    const collection = makeRateLattice(2, 2, [100, 100, 100, 100], [1000, 1000, 1000, 1000]);
+    collection.features.push({...makeIsland(), properties: {cases: 900, population: 1000}});
+    const prepared = prepareGpuRateClusterMap({areas: collection}, parameters);
+    const oracle = computeEmpiricalBayesOracle({
+      events: prepared.events,
+      populations: prepared.populations,
+      clampPriorVariance: true
+    });
+    const summary = new Float32Array(GPU_EMPIRICAL_BAYES_SUMMARY.length);
+    summary[GPU_EMPIRICAL_BAYES_SUMMARY.count] = 5;
+    summary[GPU_EMPIRICAL_BAYES_SUMMARY.pooledRate] = oracle.pooledRate;
+    summary[GPU_EMPIRICAL_BAYES_SUMMARY.clampedPriorVariance] = Math.max(0, oracle.priorVariance);
+    const readback: RateClusterReadback = {
+      ...createReadback(),
+      summary,
+      rawRates: Float32Array.from(oracle.raw),
+      smoothedRates: Float32Array.from(oracle.smoothed),
+      localI: new Float32Array(5).fill(NaN),
+      spatialLag: new Float32Array([0, 0, 0, 0, NaN]),
+      pValues: new Float32Array([1, 1, 1, 1, NaN]),
+      adjustedPValues: new Float32Array([1, 1, 1, 1, NaN]),
+      quadrants: new Uint32Array(5),
+      offsets: new Uint32Array([0, 3, 6, 9, 12, 12]),
+      weightsRequiredCount: 12
+    };
+    expect(new Set(readback.smoothedRates).size).toBe(2);
+    expect(new Set(readback.smoothedRates.slice(0, 4)).size).toBe(1);
+    const computation = readGpuRateClusterComputation(prepared, readback);
+    const result = publishRateClusterMap({areas: collection}, parameters, [], computation, true);
+    expect(result.summary['testedCount']).toBe(0);
+    for (const column of ['local_i', 'spatial_lag', 'p_value', 'adjusted_p_value'])
+      expect(result.tables[0].columns[column], column).toEqual(new Array(5).fill(null));
+    expect(result.tables[0].columns['cluster']).toEqual(new Array(5).fill('not-tested'));
+    // Island-only spread is insufficient even if rounding leaves finite local statistics.
+    const finiteStatistics = readGpuRateClusterComputation(prepared, {
+      ...readback,
+      localI: new Float32Array([0, 0, 0, 0, NaN])
+    });
+    expect(finiteStatistics.pValues).toEqual(new Array(5).fill(null));
+    expect(finiteStatistics.clusters).toEqual(new Array(5).fill('not-tested'));
+    // A nonfinite statistic is untested even when other connected rates vary.
+    const undefinedStatistic = createReadback();
+    undefinedStatistic.localI[0] = NaN;
+    const varying = readGpuRateClusterComputation(
+      prepareGpuRateClusterMap({areas}, parameters),
+      undefinedStatistic
+    );
+    expect(varying.pValues[0]).toBeNull();
+    expect(varying.clusters[0]).toBe('not-tested');
+  });
+
+  it('uses the recipe float32 threshold at and immediately above 0.05 throughout publication (finding 4)', () => {
+    const settings = {...parameters, significance: 0.05, permutations: 999};
+    const prepared = prepareGpuRateClusterMap({areas}, settings);
+    const readback = createReadback();
+    readback.pValues[0] = 50 / 1000;
+    readback.adjustedPValues[0] = 50 / 1000;
+    readback.adjustedPValues[2] = Math.fround(0.050000004);
+    readback.quadrants[2] = 4;
+    expect(readback.adjustedPValues[0]).toBeGreaterThan(0.05);
+    expect(readback.adjustedPValues[2]).toBeGreaterThan(Math.fround(0.05));
+    const computation = readGpuRateClusterComputation(prepared, readback);
+    const result = publishRateClusterMap({areas}, settings, [], computation, true);
+    expect(result.summary['requestedSignificance']).toBe(0.05);
+    expect(result.summary['effectiveSignificance']).toBe(Math.fround(0.05));
+    expect(result.tables[0].columns['cluster']).toEqual([
+      'HH',
+      'not-significant',
+      'not-tested',
+      'HL'
+    ]);
+    // Computation rows are canonical, while publication rows are in source order.
+    computation.adjustedPValues.forEach((value, row) => {
+      if (value !== null && ['HH', 'LH', 'LL', 'HL'].includes(computation.clusters[row]))
+        expect(value).toBeLessThanOrEqual(Number(result.summary['effectiveSignificance']));
+    });
+    expect(result.diagnostics.find(item => item.code === 'pseudo-p-values')?.message).toContain(
+      `at most ${Math.fround(0.05)}`
+    );
+  });
+
+  it('rounds doubled-tail permutation requirements only after applying the multiplier (finding 5)', () => {
+    for (const permutations of [65, 66, 67]) {
+      const settings = {...parameters, significance: 0.03, permutations, multipleTesting: 'none'};
+      const computation = readGpuRateClusterComputation(
+        prepareGpuRateClusterMap({areas}, settings),
+        createReadback()
+      );
+      const result = publishRateClusterMap({areas}, settings, [], computation, true);
+      expect(result.summary['permutationsNeeded']).toBe(66);
+      expect(result.summary['significanceNotAttainable']).toBe(permutations < 66 ? 1 : 0);
+    }
+  });
+
+  it('reports the unsupported Sidak GPU correction as an explicit catalog fallback', async () => {
+    // The unsupported method is rejected before accessing this inert device.
+    const result = await runCatalogOperationAsync(
+      CURATED_RATE_CLUSTER_MAP_BINDING,
+      {...parameters, multipleTesting: 'sidak'},
+      {areas},
+      {device: {} as never}
+    );
+    expect(result.engine).toBe('cpu-reference');
+    expect(result.fallbackReason).toContain('Sidak correction');
+    expect(result.diagnostics.map(item => item.code)).toContain('gpu-fallback');
+  });
+});
+
+describe('rate-cluster GPU class comparison boundary qualification', () => {
+  const effectiveSignificance = Math.fround(0.05);
+  const createRow = (
+    sourceIndex: number,
+    oracleAdjustedPValue: number,
+    adjustedPValue = oracleAdjustedPValue
+  ) => ({
+    sourceIndex,
+    oracleAdjustedPValue,
+    adjustedPValue,
+    actualClass: adjustedPValue <= effectiveSignificance ? 'HH' : 'not-significant',
+    significantClass: 'HH'
+  });
+
+  it('accepts 38 clear classes and reports all three near-threshold rows instead of imposing a count cap', async ({
+    annotate
+  }) => {
+    const rows = Array.from({length: 38}, (_, index) => createRow(index, index % 2 ? 0.2 : 0.01));
+    rows.push(
+      createRow(38, 0.049, 0.051),
+      createRow(39, 0.051, 0.049),
+      createRow(40, 0.055, 0.055)
+    );
+    const report = compareRateClusterClasses(rows, effectiveSignificance);
+    expect(report.mismatches).toEqual([]);
+    expect(report.testedCount).toBe(41);
+    expect(report.comparedSourceIndices).toEqual(Array.from({length: 38}, (_, index) => index));
+    expect(report.nearThresholdRows.map(row => row.sourceIndex)).toEqual([38, 39, 40]);
+    expect(report.nearThresholdRows[0]).toMatchObject({
+      oracleAdjustedPValue: 0.049,
+      adjustedPValue: 0.051,
+      oracleClass: 'HH',
+      actualClass: 'not-significant'
+    });
+    await annotate(JSON.stringify(report), 'rate-cluster-class-parity');
+  });
+
+  it('still rejects a wrong oracle class clearly away from the threshold', () => {
+    const report = compareRateClusterClasses([createRow(3, 0.01, 0.2)], effectiveSignificance);
+    expect(report.mismatches).toEqual(['oracle class[3] not-significant != HH']);
+  });
+
+  it('still rejects an incorrect published gate even inside the boundary band', () => {
+    const row = {...createRow(4, 0.049, 0.051), actualClass: 'HH'};
+    const report = compareRateClusterClasses([row], effectiveSignificance);
+    expect(report.nearThresholdRows).toHaveLength(1);
+    expect(report.mismatches).toEqual(['class/gate[4] HH != not-significant']);
+  });
+
+  it('uses the effective float32 cutoff and checks the gate of untested rows', () => {
+    const boundary = createRow(5, Math.fround(0.05));
+    const untested = {...createRow(6, NaN), adjustedPValue: null, actualClass: 'not-tested'};
+    expect(
+      compareRateClusterClasses([boundary, untested], effectiveSignificance).mismatches
+    ).toEqual([]);
+    const invalid = compareRateClusterClasses(
+      [{...untested, actualClass: 'not-significant'}],
+      effectiveSignificance
+    );
+    expect(invalid.mismatches).toEqual(['class/gate[6] not-significant != not-tested']);
+    expect(invalid.testedCount).toBe(0);
+  });
 });

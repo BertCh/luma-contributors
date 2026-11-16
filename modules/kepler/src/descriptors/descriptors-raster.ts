@@ -8,6 +8,9 @@ import type {
   KeplerOperationRequirement
 } from './operation-descriptor-types';
 
+// Apply policy: these settings change prepared geometry, row/vertex allocation, graph construction
+// or compiled shader constants. Rebuild keeps those resources consistent with the chosen value.
+
 // Descriptors of the four grid-based bindings that the catalog files under `raster`:
 // `raster-join-points-in-polygons` (`catalog-platform4-raster.ts`), `recipe-straight-line-catchments`
 // (`catalog-platform5-recipes.ts`), `raster-density-smoothing` and `raster-cell-clusters`
@@ -36,6 +39,7 @@ function describeParameters(
 ): KeplerOperationParameterDescriptor[] {
   return names.map(name => ({
     name,
+    apply: 'rebuild',
     defaultPolicy: {from: 'constant'},
     level: basicNames.includes(name) ? 'basic' : 'advanced'
   }));
@@ -49,6 +53,7 @@ function describeCellSize(
 ): KeplerOperationParameterDescriptor {
   return {
     name: 'cellSize',
+    apply: 'rebuild',
     defaultPolicy: {from: 'data', input, rule: 'extent-shorter-side-over-250', factor},
     level
   };

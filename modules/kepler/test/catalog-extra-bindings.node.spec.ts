@@ -68,10 +68,21 @@ test('every extra binding is runnable, defaults normalize and entries report the
       const entry = entries.find(candidate => candidate.contributorName === name);
       expect(entry?.runnable, name).toBe('catalog-binding');
       expect(entry?.bindingIds).toContain(binding.id);
-      // PLATFORM4 upgrades some of these to gpu-or-cpu; the catalog binding is authoritative.
-      // A contributor shared with a newer GPU-dispatching binding (PLATFORM5 recipes) reports gpu-or-cpu.
-      if (entry?.engine !== 'gpu-or-cpu')
-        expect(entry?.engine).toBe(getCatalogBinding(binding.id)?.engine);
+      // Fleet dwell now dispatches the polygon join; network disruption dispatches the cost matrix.
+      // Those GPU-only curated paths take precedence over this binding's CPU mirror.
+      const curatedBindingId =
+        name === 'GPUPointInPolygonJoin'
+          ? 'curated-fleet-dwell'
+          : name === 'GPUNetworkCostMatrix'
+            ? 'curated-network-disruption'
+            : undefined;
+      if (curatedBindingId) {
+        expect(entry?.bindingIds).toContain(curatedBindingId);
+        expect(entry?.engine, name).toBe('gpu');
+      } else if (entry?.engine !== 'gpu-or-cpu') {
+        // Other PLATFORM4 and PLATFORM5 dispatches also provide a CPU path.
+        expect(entry?.engine, name).toBe(getCatalogBinding(binding.id)?.engine);
+      }
     }
   }
 });

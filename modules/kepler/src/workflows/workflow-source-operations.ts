@@ -3,11 +3,20 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {CatalogParameterValue} from '../analysis/catalog-binding-types';
+import {applyKeplerDatasetProfileDeclarations} from '../profile/dataset-profile';
+import {parseKeplerDatasetProfileDeclarations} from '../profile/dataset-profile-cache';
+import {profileKeplerWorkbenchData} from '../descriptors/workbench-adapters';
+
 import {
   parseCatalogFeatureCollection,
   type CatalogFeatureCollection
 } from '../analysis/catalog-geojson';
-import {makeWorkflowDataFromFeatures} from './workflow-data';
+import {
+  getWorkflowFeaturePropertyColumns,
+  hashWorkflowValue,
+  makeWorkflowDataFromFeatures
+} from './workflow-data';
+import type {KeplerDatasetProfileDeclarations} from '../profile/dataset-profile-types';
 import {normalizeWorkflowParameters} from './workflow-parameters';
 import {
   WORKFLOW_LIMITS,
@@ -22,6 +31,37 @@ import {
 export const WORKFLOW_SOURCE_DATASET_OPERATION_ID = 'source-dataset';
 export const WORKFLOW_SOURCE_GEOJSON_OPERATION_ID = 'source-geojson';
 export const WORKFLOW_SOURCE_DRAWING_OPERATION_ID = 'source-drawing';
+
+/** Planning and execution inspect the same table schema and declaration column names. */
+export function makeWorkflowSourceGeoJSONData(
+  collection: CatalogFeatureCollection,
+  options: {
+    id: string;
+    label: string;
+    declarations?: KeplerDatasetProfileDeclarations;
+    coordinateSystem?: string;
+  }
+): WorkflowData {
+  const data = makeWorkflowDataFromFeatures(collection, {id: options.id, label: options.label});
+  const propertyColumns = getWorkflowFeaturePropertyColumns(collection);
+  data.analysisProfile = applyKeplerDatasetProfileDeclarations(profileKeplerWorkbenchData(data), {
+    ...options.declarations,
+    ...(options.declarations?.measurement
+      ? {
+          measurement: Object.fromEntries(
+            Object.entries(options.declarations.measurement).map(([name, measurement]) => [
+              propertyColumns.get(name) ?? name,
+              measurement
+            ])
+          )
+        }
+      : {}),
+    ...(options.coordinateSystem === 'planar' || options.coordinateSystem === 'EPSG:4326'
+      ? {coordinateModel: options.coordinateSystem === 'planar' ? 'planar' : 'geographic'}
+      : {})
+  });
+  return data;
+}
 
 const MAXIMUM_DRAWING_ROWS = 1000;
 
@@ -135,7 +175,25 @@ const GEOJSON_PARAMETERS = freezeParameterSpecs([
     maximumLength: WORKFLOW_LIMITS.maximumTextCharacters,
     defaultValue: ''
   },
-  {name: 'name', kind: 'string', label: 'Name', defaultValue: ''}
+  {name: 'name', kind: 'string', label: 'Name', defaultValue: ''},
+  {
+    name: 'coordinateSystem',
+    kind: 'enum',
+    label: 'Source coordinates',
+    options: ['auto', 'EPSG:4326', 'planar'],
+    defaultValue: 'auto',
+    description:
+      'Auto keeps inferred coordinates unconfirmed. Choose a CRS to confirm the convention of this source.'
+  },
+  {
+    name: 'profileDeclarations',
+    kind: 'text',
+    label: 'Dataset declarations',
+    maximumLength: WORKFLOW_LIMITS.maximumTextCharacters,
+    defaultValue: '',
+    level: 'advanced',
+    description: 'Saved coordinate, row meaning and column measurement declarations.'
+  }
 ]);
 
 const DRAWING_PARAMETERS = freezeParameterSpecs([
@@ -456,7 +514,10 @@ export function getWorkflowSourceOperations(): readonly WorkflowOperation[] {
       normalizeParameters: normalizeDatasetParameters,
       getExternalRevisionKey: (host, parameters) => {
         try {
-          return host.getDatasetRevisionKey(resolveDatasetRequest(host, parameters));
+          const request = resolveDatasetRequest(host, parameters);
+          const revision = host.getDatasetRevisionKey(request);
+          const profile = host.getAnalysisProfile?.(request.datasetId);
+          return profile ? hashWorkflowValue([revision, profile]) : revision;
         } catch {
           // Planning must remain synchronous and non-throwing when a host dataset is unavailable.
           return 'missing';
@@ -523,6 +584,17 @@ export function getWorkflowSourceOperations(): readonly WorkflowOperation[] {
             parameter: 'text'
           });
         }
+        if (parameters['profileDeclarations']) {
+          try {
+            parseKeplerDatasetProfileDeclarations(parameters['profileDeclarations'] as string);
+          } catch (cause) {
+            throw new WorkflowError(
+              'parameter-out-of-range',
+              `GeoJSON: profileDeclarations must contain valid dataset declarations: ${getErrorMessage(cause)}`,
+              {parameter: 'profileDeclarations', cause}
+            );
+          }
+        }
         return parameters;
       },
       run: async (context, _inputs, parameters) => {
@@ -545,9 +617,13 @@ export function getWorkflowSourceOperations(): readonly WorkflowOperation[] {
         validateGeoJSONTableCapacity(collection);
         let data: WorkflowData;
         try {
-          data = makeWorkflowDataFromFeatures(collection, {
-            id: 'data',
-            label: (parameters['name'] as string) || 'GeoJSON'
+          data = makeWorkflowSourceGeoJSONData(collection, {
+            id: context.stepId,
+            label: (parameters['name'] as string) || 'GeoJSON',
+            coordinateSystem: parameters['coordinateSystem'] as string,
+            declarations: parameters['profileDeclarations']
+              ? parseKeplerDatasetProfileDeclarations(parameters['profileDeclarations'] as string)
+              : {}
           });
         } catch (cause) {
           throw makeInvalidGeoJSONError(cause);

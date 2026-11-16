@@ -377,3 +377,14 @@ for (const representation of ['JavaScript array', 'Arrow List', 'Arrow Int64 Lis
     ]);
   });
 }
+
+test('typed non-feature support preserves the trajectory feature callback contract', () => {
+  const binding = getCatalogBinding('trajectory-thinning')!;
+  expect(binding.inputs[0].dataKind).toBeUndefined();
+  expect(binding.runData).toBeUndefined();
+  const tracks = JSON.parse(getCatalogSampleInputs(binding.id)['tracks']);
+  const expected = binding.run!({tracks}, getCatalogDefaultParameters(binding));
+  const actual = runCatalogOperation(binding, {}, {tracks});
+  expect(actual.tables).toEqual(expected.tables);
+  expect(actual.summary).toEqual(expected.summary);
+});

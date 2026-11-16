@@ -428,6 +428,8 @@ function makeStore(patch: Partial<WorkbenchState> = {}, registry = makeFixtureRe
     paste: () => false,
     serialize: () => undefined,
     restore: value => record('restore', value),
+    getReviewedAssistantIssues: () => [],
+    recordAssistantReview: () => {},
     clear: async () => {
       record('clear');
     }

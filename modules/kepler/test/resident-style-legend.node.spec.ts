@@ -8,6 +8,7 @@ import {LayerColorLegendFactory} from '@kepler.gl/components';
 import {
   createResidentStyleLegendFactory,
   getResidentStyleLegendRows,
+  getResidentStyleLegendTitle,
   matchesResidentStyleLegend,
   type ResidentStyleLegendSnapshot
 } from '../../../examples/deck/kepler-compute/src/resident-style-legend';
@@ -72,6 +73,21 @@ function render(state: ResidentStyleLegendSnapshot | null, resident = true, stro
 }
 
 describe('resident style legend injection', () => {
+  test('exact encoded classes name their source field, retaining ordinary legend titles', () => {
+    expect(
+      getResidentStyleLegendTitle(
+        'analysis_result_class (classification)',
+        'analysis_result_class (classification)',
+        {type: 'customOrdinal', name: 'classification'}
+      )
+    ).toBe('classification');
+    expect(
+      getResidentStyleLegendTitle('value', 'Measured value', {
+        type: 'customOrdinal',
+        name: 'Palette'
+      })
+    ).toBe('Measured value');
+  });
   test('retains exact native factory dependencies and delegates ordinary datasets', () => {
     const result = render(null, false);
     expect(result.factory.deps).toBe(LayerColorLegendFactory.deps);

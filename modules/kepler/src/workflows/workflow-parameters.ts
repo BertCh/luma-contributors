@@ -67,15 +67,15 @@ function getMaximumStringLength(spec: WorkflowParameterSpec): number {
   }
 }
 
-/** Default value of every parameter, by name. */
+/** Static defaults by name; input-derived parameters remain absent until resolved. */
 export function getWorkflowParameterDefaults(
   specs: readonly WorkflowParameterSpec[]
 ): Record<string, CatalogParameterValue> {
   return Object.fromEntries(
-    specs.map(spec => [
-      spec.name,
-      Array.isArray(spec.defaultValue) ? [...spec.defaultValue] : spec.defaultValue
-    ])
+    specs.flatMap(spec => {
+      const value = spec.defaultValue;
+      return value === undefined ? [] : [[spec.name, Array.isArray(value) ? [...value] : value]];
+    })
   );
 }
 
@@ -150,7 +150,8 @@ export function getWorkflowParameterProblem(
 
 /**
  * Coerces and range-checks raw values (form text, saved JSON) against parameter specs of any
- * kind; absent names take the default and unknown names are rejected. Throws
+ * kind; absent names take any static default and unknown names are rejected. Parameters with
+ * no static default remain absent for AX or the binding to derive from its input. Throws
  * `WorkflowError('parameter-out-of-range', message, {parameter})` (or `unknown-parameter`) where
  * the message is `${operationTitle}: ${label}${unit} ${problem}.`
  *
@@ -176,8 +177,10 @@ export function normalizeWorkflowParameters(
     }
   }
   return Object.fromEntries(
-    specs.map(spec => {
-      const rawValue = Object.hasOwn(raw, spec.name) ? raw[spec.name] : spec.defaultValue;
+    specs.flatMap(spec => {
+      const supplied = Object.hasOwn(raw, spec.name);
+      if (!supplied && spec.defaultValue === undefined) return [];
+      const rawValue = supplied ? raw[spec.name] : spec.defaultValue;
       const problem = getWorkflowParameterProblem(spec, rawValue);
       if (problem !== null) {
         const unit = spec.unit ? ` (${spec.unit === 'crs' ? 'CRS units' : spec.unit})` : '';
@@ -205,7 +208,7 @@ export function normalizeWorkflowParameters(
         default:
           value = rawValue as string | boolean;
       }
-      return [spec.name, value];
+      return [[spec.name, value]];
     })
   );
 }

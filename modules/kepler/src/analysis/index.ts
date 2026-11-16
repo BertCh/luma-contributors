@@ -65,3 +65,11 @@ export {completeNetworkCategoricalCatalogEntries} from './catalog-network-catego
 export * from './catalog-raster-embeddings-bindings';
 
 export * from './raster-timeseries';
+
+export * from './catalog-data-input';
+export * from './catalog-raster-input';
+
+export * from './analysis-preview-session';
+export * from './analysis-sensitivity';
+
+export {countCatalogCatchmentSeedCollisions} from './catalog-platform5-recipes';

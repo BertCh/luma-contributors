@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {evaluateGPUAnalysisParameterCondition} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
 import {
   describeGPUAnalysisPermutationResolution,
   formatGPUAnalysisMeasuredValue,
@@ -18,6 +20,7 @@ import type {
   CatalogRunResult
 } from '../../src/analysis/catalog-binding-types';
 import {getCatalogBinding, runCatalogOperationAsync} from '../../src/analysis/catalog-bindings';
+import {getCatalogFeatureInputs} from '../../src/analysis/catalog-data-input';
 import type {
   CatalogFeatureCollection,
   CatalogOutputTable
@@ -115,7 +118,7 @@ async function runCuratedAnalysis(
     throw new Error(`runCuratedAnalysis: ${analysisId} is not an available analysis with a sample`);
   }
   const execution = analysis.execution;
-  const sample = createKeplerCuratedAnalysisSample(analysis.sampleId);
+  const sample = getCatalogFeatureInputs(createKeplerCuratedAnalysisSample(analysis.sampleId));
   const columns =
     KEPLER_CURATED_ANALYSIS_SAMPLE_COLUMNS[
       analysis.sampleId as keyof typeof KEPLER_CURATED_ANALYSIS_SAMPLE_COLUMNS
@@ -1582,7 +1585,7 @@ describe('result report: parameters from the real defaults engine', () => {
     // The distance band is derived whatever the neighbourhood, but it acts only for `distance-band`.
     if (policy?.activeWhen) {
       expect(bandIsListed).toBe(
-        policy.activeWhen.equals.includes(resolved.parameters['neighborhood'] as string)
+        evaluateGPUAnalysisParameterCondition(policy.activeWhen, resolved.parameters)
       );
     }
     expect(
@@ -2723,4 +2726,29 @@ it.each([
       permutationCount: 999
     })
   );
+});
+
+it('reports a chosen parameter if either controller activates it', () => {
+  const binding = getBinding('geometry-line-buffer');
+  const descriptor = getDescriptor(binding.id);
+  for (const [capStyle, joinStyle, active] of [
+    ['flat', 'mitre', false],
+    ['round', 'mitre', true],
+    ['flat', 'round', true]
+  ] as const) {
+    const resolved = resolveKeplerOperationParameters(
+      binding,
+      descriptor,
+      {},
+      {overrides: {capStyle, joinStyle, quadSegments: 12}}
+    );
+    const result = makeResult({operationId: binding.id, parameters: resolved.parameters});
+    // Leave resolution.active unset so this asserts the report's own condition handling.
+    const report = describeKeplerCatalogResult(result, binding, descriptor, {
+      resolutions: resolved.resolutions.map(({active: _active, ...resolution}) => resolution)
+    });
+    expect(report.chosen.some(sentence => sentence.includes('Segments per quarter circle'))).toBe(
+      active
+    );
+  }
 });

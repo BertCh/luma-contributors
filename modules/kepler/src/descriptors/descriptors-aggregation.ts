@@ -9,6 +9,9 @@ import type {
   KeplerOperationRequirement
 } from './operation-descriptor-types';
 
+// Apply policy: these settings change prepared geometry, row/vertex allocation, graph construction
+// or compiled shader constants. Rebuild keeps those resources consistent with the chosen value.
+
 // Descriptors of the aggregation bindings (`catalog-platform3-b-bindings.ts`,
 // `catalog-platform4-dggs.ts`, `catalog-platform5-recipes.ts`): counting and summarising points
 // per area, per lattice cell, per discrete-global-grid cell, and the two recipes that do it per
@@ -36,6 +39,7 @@ const LATTICE_CELL_SIZE_FACTOR = 10;
 function describeLatticeCellSize(input: string): KeplerOperationParameterDescriptor {
   return {
     name: 'cellSize',
+    apply: 'rebuild',
     defaultPolicy: {
       from: 'data',
       input,
@@ -59,6 +63,7 @@ function describeParameters(
 ): KeplerOperationParameterDescriptor[] {
   return names.map(name => ({
     name,
+    apply: 'rebuild',
     defaultPolicy: {from: 'constant'},
     level: basicNames.includes(name) ? 'basic' : 'advanced'
   }));
@@ -85,6 +90,18 @@ function makeCapacityRequirements(
     });
   }
   return requirements;
+}
+
+/** Count-only cell maps describe the sampling layout rather than a continuous surface. */
+function makeCountSemanticsRequirement(input: string): KeplerOperationRequirement {
+  return {
+    input,
+    id: 'row-semantics',
+    severity: 'warn',
+    expects: ['events', 'objects'],
+    activeWhen: {parameter: 'valueProperty', equals: ['']},
+    remedy: 'For surface samples choose a measured-value analysis, or explicitly map valueProperty'
+  };
 }
 
 /** Rows without a numeric value are skipped (or, for the recipes, left out of the statistic). */
@@ -205,6 +222,7 @@ export const AGGREGATION_OPERATION_DESCRIPTORS: readonly KeplerOperationDescript
     inputs: [{name: 'points', kind: 'points', fields: [OPTIONAL_VALUE_FIELD]}],
     parameters: [describeLatticeCellSize('points')],
     requirements: [
+      makeCountSemanticsRequirement('points'),
       ...makeCapacityRequirements('points', 20000, 20000, POINT_REMEDY),
       makeMissingValueRequirement('points', MISSING_VALUE_REMEDY)
     ],
@@ -236,6 +254,7 @@ export const AGGREGATION_OPERATION_DESCRIPTORS: readonly KeplerOperationDescript
       ...describeParameters(['levels', 'factor'], ['levels'])
     ],
     requirements: [
+      makeCountSemanticsRequirement('points'),
       ...makeCapacityRequirements('points', 20000, 20000, POINT_REMEDY),
       makeMissingValueRequirement('points', MISSING_VALUE_REMEDY)
     ],
@@ -243,6 +262,11 @@ export const AGGREGATION_OPERATION_DESCRIPTORS: readonly KeplerOperationDescript
       {
         tableId: 'rollup',
         kind: 'cells',
+        presentationException: {
+          type: 'uniform-style',
+          reason:
+            'Rollup levels overlap and have different cell areas; a common count scale would compare unlike spatial supports. Show a selected level uniformly or choose a scale after filtering to one level.'
+        },
         // Every level is in one table and the levels overlap, so one colour scale over the counts
         // would compare cells of different sizes and a level number is not worth colouring: the
         // host shows one level at a time.
@@ -340,6 +364,11 @@ export const AGGREGATION_OPERATION_DESCRIPTORS: readonly KeplerOperationDescript
         // Cell identifiers are labels with no order, so there is nothing to colour by.
         tableId: 'point-cells',
         kind: 'points',
+        presentationException: {
+          type: 'uniform-style',
+          reason:
+            'Cell identifiers label the cell containing each point and have no quantitative order; show points uniformly until values are aggregated by cell.'
+        },
         interpretation: {summary: 'row-count', cautions: []},
         next: ['how-much-per-area']
       }
@@ -354,6 +383,7 @@ export const AGGREGATION_OPERATION_DESCRIPTORS: readonly KeplerOperationDescript
     inputs: [{name: 'points', kind: 'points', fields: [OPTIONAL_VALUE_FIELD]}],
     parameters: describeParameters(['family', 'resolution'], ['family', 'resolution']),
     requirements: [
+      makeCountSemanticsRequirement('points'),
       ...makeCapacityRequirements('points', 20000, 200000, POINT_REMEDY),
       makeGeographicCoordinates('points'),
       makeMissingValueRequirement('points', MISSING_VALUE_REMEDY)
@@ -387,6 +417,7 @@ export const AGGREGATION_OPERATION_DESCRIPTORS: readonly KeplerOperationDescript
       ['family', 'resolution', 'levels']
     ),
     requirements: [
+      makeCountSemanticsRequirement('points'),
       ...makeCapacityRequirements('points', 20000, 200000, POINT_REMEDY),
       makeGeographicCoordinates('points'),
       makeMissingValueRequirement('points', MISSING_VALUE_REMEDY)
@@ -395,6 +426,11 @@ export const AGGREGATION_OPERATION_DESCRIPTORS: readonly KeplerOperationDescript
       {
         tableId: 'rollup',
         kind: 'cells',
+        presentationException: {
+          type: 'uniform-style',
+          reason:
+            'Rollup levels overlap and have different cell areas; a common count scale would compare unlike spatial supports. Show a selected level uniformly or choose a scale after filtering to one level.'
+        },
         // Levels overlap in one table; see cell-rollup.
         interpretation: {summary: 'row-count', cautions: []},
         next: ['where-significant']

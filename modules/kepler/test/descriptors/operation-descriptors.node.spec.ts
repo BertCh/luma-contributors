@@ -70,10 +70,135 @@ function makeSyntheticBinding(
   };
 }
 
+// AX-80 is complete: every catalog binding has a hand-written descriptor. A new binding that
+// falls back to a derived descriptor must be described, not added here.
+const DERIVED_BINDING_ALLOWANCE = new Set<string>();
+
 describe('operation descriptor registry', () => {
+  it('permits column-role debt only for the explicitly listed derived bindings', () => {
+    const coverage = getKeplerOperationDescriptorCoverage(KEPLER_CATALOG_BINDINGS);
+    expect(coverage.derivedBindingIds.filter(id => !DERIVED_BINDING_ALLOWANCE.has(id))).toEqual([]);
+    for (const binding of KEPLER_CATALOG_BINDINGS) {
+      const {descriptor, source} = resolveKeplerOperationDescriptor(binding);
+      if (source === 'derived') continue;
+      expect(validateKeplerOperationDescriptor(descriptor, binding), binding.id).toEqual([]);
+      // Ordinary strings are literal comparison values or vertical reference labels, not columns.
+      expect(
+        binding.parameters
+          .filter(
+            parameter =>
+              parameter.kind === 'string' &&
+              descriptor.parameters.some(setting => setting.name === parameter.name)
+          )
+          .map(parameter => parameter.name),
+        binding.id
+      ).toEqual(
+        binding.id === 'network-subgraph-filter'
+          ? ['propertyValue']
+          : binding.id === 'curated-zonal-exposure'
+            ? ['densityAreaUnit', 'cellAreaUnit']
+            : binding.id === 'datum-grid-transform'
+              ? ['sourceVerticalReference', 'targetVerticalReference']
+              : []
+      );
+      expect(
+        descriptor.parameters.every(parameter => ['live', 'rebuild'].includes(parameter.apply)),
+        binding.id
+      ).toBe(true);
+    }
+  });
+
+  it('accepts confirmations only on false-by-default booleans with explicit instructions', () => {
+    const binding = makeSyntheticBinding();
+    const descriptor = deriveKeplerOperationDescriptor(binding);
+    const confirmation = {
+      message: 'Confirm the shared frame',
+      remedy: 'Set flag to true after aligning'
+    };
+    descriptor.parameters = descriptor.parameters.map(parameter =>
+      parameter.name === 'flag' ? {...parameter, confirmation} : parameter
+    );
+    expect(validateKeplerOperationDescriptor(descriptor, binding)).toEqual([]);
+    const preset = {
+      ...descriptor,
+      parameters: descriptor.parameters.map(parameter =>
+        parameter.name === 'flag'
+          ? {
+              ...parameter,
+              defaultPolicy: {from: 'preset' as const, value: true, reason: 'Automatic'}
+            }
+          : parameter
+      )
+    };
+    expect(validateKeplerOperationDescriptor(preset, binding)).toContain(
+      `${binding.id}: parameter flag confirmation requires a false-by-default boolean with a constant policy`
+    );
+    const wrongKind = {
+      ...descriptor,
+      parameters: descriptor.parameters.map(parameter =>
+        parameter.name === 'radius'
+          ? {...parameter, confirmation: {message: '', remedy: ''}}
+          : parameter
+      )
+    };
+    expect(validateKeplerOperationDescriptor(wrongKind, binding)).toContain(
+      `${binding.id}: parameter radius confirmation requires a false-by-default boolean with a constant policy`
+    );
+    expect(validateKeplerOperationDescriptor(wrongKind, binding)).toContain(
+      `${binding.id}: parameter radius confirmation needs a message and remedy`
+    );
+    const trueDefault = {
+      ...binding,
+      parameters: binding.parameters.map(parameter =>
+        parameter.name === 'flag' ? {...parameter, defaultValue: true} : parameter
+      )
+    };
+    expect(validateKeplerOperationDescriptor(descriptor, trueDefault)).toContain(
+      `${binding.id}: parameter flag confirmation requires a false-by-default boolean with a constant policy`
+    );
+  });
+
+  it('rejects a column reference disguised as an ordinary setting', () => {
+    const binding = makeSyntheticBinding({
+      parameters: [
+        {name: 'valueProperty', label: 'Value column', kind: 'string', defaultValue: 'value'}
+      ]
+    });
+    const descriptor = deriveKeplerOperationDescriptor(binding);
+    expect(validateKeplerOperationDescriptor(descriptor, binding)).toContain(
+      `${binding.id}: column-naming string parameter valueProperty must be mapped to a field role`
+    );
+    expect(
+      validateKeplerOperationDescriptor(descriptor, binding, {allowUnmappedColumnParameters: true})
+    ).toEqual([]);
+  });
+
+  it('validates every branch of a cross-parameter condition', () => {
+    const binding = makeSyntheticBinding();
+    const descriptor = deriveKeplerOperationDescriptor(binding);
+    descriptor.parameters = descriptor.parameters.map(parameter =>
+      parameter.name === 'radius'
+        ? {
+            ...parameter,
+            activeWhen: {
+              anyOf: [
+                {parameter: 'mode', equals: ['a']},
+                {parameter: 'steps', equals: [1.5]},
+                {parameter: 'unknown', equals: [true]}
+              ]
+            }
+          }
+        : parameter
+    );
+    expect(validateKeplerOperationDescriptor(descriptor, binding)).toEqual([
+      `${binding.id}: parameter radius activeWhen value 1.5 is outside the allowed values of parameter steps (integer)`,
+      `${binding.id}: parameter radius activeWhen names unknown parameter unknown`
+    ]);
+  });
+
   it('has a hand-written descriptor with no validation issue for every binding it describes', () => {
-    // Other work adds catalog bindings; one without a hand-written descriptor gets a derived one
-    // (conservative, never suggested), so it is reported here and does not fail the registry.
+    // AX-80 is not complete while the explicit allowance above remains. Each registered binding
+    // must resolve; derived descriptors remain conservative and must not hide validation issues.
     const coverage = getKeplerOperationDescriptorCoverage(KEPLER_CATALOG_BINDINGS);
     expect(KEPLER_OPERATION_DESCRIPTORS.length).toBeGreaterThanOrEqual(136);
     expect(coverage.validationIssues).toEqual([]);
@@ -81,10 +206,19 @@ describe('operation descriptor registry', () => {
     expect(coverage.handWrittenBindingIds.length + coverage.derivedBindingIds.length).toBe(
       KEPLER_CATALOG_BINDINGS.length
     );
-    if (coverage.derivedBindingIds.length > 0) {
-      console.info(
-        `${coverage.derivedBindingIds.length} catalog bindings have only a derived descriptor: ${coverage.derivedBindingIds.join(', ')}`
-      );
+    for (const binding of KEPLER_CATALOG_BINDINGS) {
+      const {descriptor, source} = resolveKeplerOperationDescriptor(binding);
+      expect(descriptor.bindingId, binding.id).toBe(binding.id);
+      if (source === 'derived') {
+        expect(DERIVED_BINDING_ALLOWANCE.has(binding.id), binding.id).toBe(true);
+        expect(descriptor.prominence, binding.id).toBe(3);
+        expect(
+          validateKeplerOperationDescriptor(descriptor, binding, {
+            allowUnmappedColumnParameters: true
+          }),
+          binding.id
+        ).toEqual([]);
+      }
     }
   });
 
@@ -220,4 +354,35 @@ describe('resolveKeplerOperationDescriptor', () => {
     expect(resolved.source).toBe('derived');
     expect(resolved.descriptor.bindingId).toBe('synthetic-unregistered-operation');
   });
+});
+
+it('distinguishes runtime/post-pass edits from allocation and shader changes', () => {
+  const cases = [
+    ['idw-grid', 'power', 'live'],
+    ['idw-grid', 'minimumNeighborCount', 'live'],
+    ['idw-grid', 'neighborCount', 'rebuild'],
+    ['idw-grid', 'cellSize', 'rebuild'],
+    ['kernel-density-grid', 'bandwidth', 'live'],
+    ['kernel-density-grid', 'kernel', 'rebuild'],
+    ['kernel-density-grid', 'includeEmptyCells', 'live'],
+    ['kriging-grid', 'range', 'live'],
+    ['kriging-grid', 'neighborCount', 'rebuild'],
+    ['affine-transform', 'translateX', 'live'],
+    ['affine-transform', 'pivot', 'rebuild'],
+    ['geometry-line-buffer', 'quadSegments', 'rebuild'],
+    ['local-moran-statistics', 'significance', 'live'],
+    ['local-moran-statistics', 'permutations', 'rebuild'],
+    ['similar-locations', 'resultCount', 'live'],
+    ['s2-cell-measures', 'radius', 'live'],
+    ['s2-cell-measures', 'level', 'rebuild'],
+    ['local-outlier-factor', 'threshold', 'live'],
+    ['local-outlier-factor', 'neighborCount', 'rebuild']
+  ];
+  for (const [bindingId, name, apply] of cases) {
+    expect(
+      getKeplerOperationDescriptor(bindingId)?.parameters.find(parameter => parameter.name === name)
+        ?.apply,
+      `${bindingId}.${name}`
+    ).toBe(apply);
+  }
 });

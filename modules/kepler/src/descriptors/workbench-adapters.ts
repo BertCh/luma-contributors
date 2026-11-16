@@ -6,7 +6,16 @@ import type {
   GPUAnalysisColumnProfile,
   GPUSpatialAnalysisDataKind
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
-import type {CatalogParameterValue} from '../analysis/catalog-binding-types';
+import type {WorkflowData} from '../workflows/workflow-types';
+import {
+  applyKeplerDatasetProfileDeclarations,
+  profileKeplerColumnTable
+} from '../profile/dataset-profile';
+import type {KeplerApplicabilityOptions, KeplerOperationApplicability} from './applicability';
+import type {
+  CatalogOperationBinding,
+  CatalogParameterValue
+} from '../analysis/catalog-binding-types';
 import {getCatalogBinding} from '../analysis/catalog-bindings';
 import {KEPLER_CURATED_ANALYSES} from '../curated/curated-analyses';
 import {
@@ -17,15 +26,16 @@ import {
 } from '../curated/curated-analysis-samples';
 import type {KeplerDatasetProfile} from '../profile/dataset-profile-types';
 import {evaluateKeplerOperationApplicability} from './applicability';
-import {KEPLER_GRID_CELL_CAPS, resolveKeplerOperationParameters} from './default-parameters';
+import {type KeplerParameterResolution} from './default-parameters';
 import {resolveKeplerOperationDescriptor} from './operation-descriptors';
 
-// Thin adapters for the analysis workbench. They use local structural types only, so the
-// workbench and this module share no import: the join keys are the catalog binding id and the
-// binding's parameter names.
+// AX adapters over the actual workflow parameter and immutable data contracts. Catalog binding
+// ids, input port names and field-role parameters remain the join keys.
 
-/** A parameter value the workbench can hold in a form field. A list of numbers is omitted. */
-export type KeplerWorkbenchParameterValue = string | number | boolean;
+/** The workbench and catalog share the complete parameter value contract. */
+export type KeplerWorkbenchParameterValue = CatalogParameterValue;
+
+export type KeplerWorkbenchProfiles = Readonly<Record<string, KeplerDatasetProfile | undefined>>;
 
 /** What the workbench knows about a dataset it has: geometry kind, size and typed columns. */
 export type KeplerWorkbenchSubject = {
@@ -47,13 +57,15 @@ export type KeplerWorkbenchSubject = {
 export type KeplerWorkbenchOptions = {
   /** Where the operation will run; default `gpu`. See `KeplerApplicabilityOptions`. */
   executionEngine?: 'gpu' | 'cpu';
+  profilesByInput?: KeplerWorkbenchProfiles;
+  overrides?: Readonly<Record<string, CatalogParameterValue>>;
 };
 
 export type KeplerWorkbenchApplicability = {
   status: 'passed' | 'failed' | 'unknown';
   reason: string;
   remedy?: string;
-  /** Resolved parameters; parameters that are lists of numbers are omitted. */
+  /** Complete resolved parameters, including number lists. */
   parameters: Record<string, KeplerWorkbenchParameterValue>;
   /** Resolved output kinds by table id, including geometry inherited from the input. */
   outputKinds: Readonly<Record<string, GPUSpatialAnalysisDataKind>>;
@@ -61,6 +73,8 @@ export type KeplerWorkbenchApplicability = {
 
 export type KeplerWorkbenchParameterDefaults = {
   values: Record<string, KeplerWorkbenchParameterValue>;
+  resolutions: readonly KeplerParameterResolution[];
+  confirmations: readonly string[];
   basic: string[];
   advanced: string[];
   /** Parameters that do not matter for the current values of the others; also given in `values`. */
@@ -68,9 +82,12 @@ export type KeplerWorkbenchParameterDefaults = {
 };
 
 export type KeplerWorkbenchCuratedPreset = {
+  curatedAnalysisId: string;
   bindingId: string;
   /** The method's name, for a button: `Hot spot map`. */
   title: string;
+  /** Method settings only, independent of sample field names and sample scale. */
+  executionParameters: Record<string, KeplerWorkbenchParameterValue>;
   /** The curated presets, the parameters that suit the sample and the sample's column choices. */
   parameters: Record<string, KeplerWorkbenchParameterValue>;
   /** GeoJSON text of the sample, by binding input name. Absent when the analysis has no sample. */
@@ -84,16 +101,113 @@ const SUBJECT_COLUMN_TYPES: Readonly<Record<string, GPUAnalysisColumnProfile['ty
   boolean: 'boolean'
 };
 
-function omitNumberLists(
+function copyParameters(
   values: Readonly<Record<string, CatalogParameterValue>>
-): Record<string, KeplerWorkbenchParameterValue> {
-  const result: Record<string, KeplerWorkbenchParameterValue> = {};
-  for (const [name, value] of Object.entries(values)) {
-    if (!Array.isArray(value)) {
-      result[name] = value as KeplerWorkbenchParameterValue;
-    }
+): Record<string, CatalogParameterValue> {
+  return Object.fromEntries(
+    Object.entries(values).map(([name, value]) => [name, Array.isArray(value) ? [...value] : value])
+  );
+}
+
+/** Evaluate the connected input assignment exactly; never rematch profiles between ports. */
+export function evaluateKeplerWorkbenchInputs(
+  bindingId: string | CatalogOperationBinding,
+  profilesByInput: KeplerWorkbenchProfiles,
+  options: Omit<KeplerApplicabilityOptions, 'inputAssignments' | 'subjectOnly'> = {}
+): KeplerOperationApplicability {
+  const binding =
+    typeof bindingId === 'string'
+      ? requireBinding('evaluateKeplerWorkbenchInputs', bindingId)
+      : bindingId;
+  const {descriptor} = resolveKeplerOperationDescriptor(binding);
+  // Distinct aliases preserve assignments even when the same dataset feeds two ports.
+  const datasets = binding.inputs.flatMap(input => {
+    const profile = Object.hasOwn(profilesByInput, input.name)
+      ? profilesByInput[input.name]
+      : undefined;
+    if (!profile) return [];
+    const coordinateSystem = options.overrides?.['coordinateSystem'];
+    const effective =
+      profile.coordinates?.source !== 'declared' &&
+      (coordinateSystem === 'planar' || coordinateSystem === 'EPSG:4326')
+        ? applyKeplerDatasetProfileDeclarations(profile, {
+            coordinateModel: coordinateSystem === 'planar' ? 'planar' : 'geographic'
+          })
+        : profile;
+    const datasetId = `workbench-input:${input.name}`;
+    return [
+      {
+        ...effective,
+        datasetId,
+        sourceDatasetId: effective.sourceDatasetId ?? effective.datasetId,
+        ...(effective.network && effective.network.datasetId === effective.datasetId
+          ? {network: {...effective.network, datasetId}}
+          : {}),
+        ...(effective.catchmentSeeds
+          ? {
+              catchmentSeeds: {
+                ...effective.catchmentSeeds,
+                observationsDatasetId:
+                  effective.catchmentSeeds.observationsDatasetId ===
+                  profilesByInput['observations']?.datasetId
+                    ? 'workbench-input:observations'
+                    : effective.catchmentSeeds.observationsDatasetId
+              }
+            }
+          : {})
+      }
+    ];
+  });
+  return evaluateKeplerOperationApplicability(binding, descriptor, datasets, {
+    ...options,
+    inputAssignments: Object.fromEntries(
+      binding.inputs.map(input => [input.name, `workbench-input:${input.name}`])
+    )
+  });
+}
+
+const DATA_PROFILE_CACHE = new WeakMap<WorkflowData, KeplerDatasetProfile>();
+
+/** One bounded profile per immutable intermediate; host source profiles retain declarations. */
+export function profileKeplerWorkbenchData(data: WorkflowData): KeplerDatasetProfile {
+  const cached = DATA_PROFILE_CACHE.get(data);
+  if (cached) return cached;
+  if (data.kind === 'raster' && data.raster) {
+    const rasterProfile: KeplerDatasetProfile = {
+      datasetId: data.table.id,
+      label: data.table.label,
+      kind: 'surface',
+      rowCount: data.raster.grid.width * data.raster.grid.height,
+      geometryColumns: [],
+      columns: [],
+      coordinates: {
+        model: data.raster.crs === 'EPSG:4326' ? 'geographic' : 'planar',
+        source: 'declared'
+      }
+    };
+    DATA_PROFILE_CACHE.set(data, rasterProfile);
+    return rasterProfile;
   }
-  return result;
+  const profile = profileKeplerColumnTable(
+    {
+      rowCount: data.table.rowCount,
+      geometryColumn: data.table.geometryColumn,
+      columns: Object.entries(data.table.columns).map(([name, values]) => ({
+        name,
+        values,
+        type: data.table.columnTypes[name]
+      }))
+    },
+    {
+      datasetId: data.table.id,
+      label: data.table.label,
+      maximumSampleSize: 1024,
+      inferPointColumns: data.kind !== 'table',
+      coordinateSystem: data.table.coordinateSystem
+    }
+  );
+  DATA_PROFILE_CACHE.set(data, profile);
+  return profile;
 }
 
 function requireBinding(functionName: string, bindingId: string) {
@@ -136,23 +250,7 @@ function buildSubjectProfile(
   };
 }
 
-/**
- * Judges one operation for the workbench's current subject.
- *
- * Status mapping. The engine has four statuses and the workbench three:
- * - `ready` is `passed`; `blocked` is `failed` (the reason names what is missing).
- * - `needs-confirmation` and `needs-mapping` are `unknown` when a profile is given: a person has
- *   something to confirm or choose.
- * - Without a profile the call knows only the columns' storage types, the geometry kind and
- *   (optionally) the row and vertex counts. It cannot know what a column measures, whether the
- *   coordinates are degrees, or the spacing of the points, and a person can do nothing about those
- *   from here. So in that mode they never lower the status: the result is `passed` and `reason`
- *   ends with "not known from the subject alone: ..." naming them. `unknown` is then not returned.
- *
- * Without a profile one is built from the subject: typed columns, no coordinate model and no
- * spacing statistics. A table with `pointColumns` is a layer of points. `parameters` are the
- * resolved parameters without the lists of numbers, which a form field cannot hold.
- */
+/** A subject without statistics leaves mandatory unknown evidence unresolved. */
 export function evaluateKeplerWorkbenchApplicability(
   bindingId: string,
   subject: KeplerWorkbenchSubject,
@@ -177,17 +275,20 @@ export function evaluateKeplerWorkbenchApplicability(
         ? ['point', 'polygon', 'line']
         : [subject.kind];
   const options = {
-    unknownRowCount: subject.rowCount === undefined,
-    subjectOnly: profile === undefined,
+    unknownRowCount: !profile && !adapterOptions.profilesByInput && subject.rowCount === undefined,
+    subjectOnly: false,
+    ...(adapterOptions.overrides ? {overrides: adapterOptions.overrides} : {}),
     ...(adapterOptions.executionEngine ? {executionEngine: adapterOptions.executionEngine} : {})
   };
-  let applicability = evaluateKeplerOperationApplicability(
-    binding,
-    descriptor,
-    [profile ?? buildSubjectProfile(subject, geometries[0])],
-    options
-  );
-  if (!profile && subject.kind === 'features') {
+  let applicability = adapterOptions.profilesByInput
+    ? evaluateKeplerWorkbenchInputs(bindingId, adapterOptions.profilesByInput, options)
+    : evaluateKeplerOperationApplicability(
+        binding,
+        descriptor,
+        [profile ?? buildSubjectProfile(subject, geometries[0])],
+        options
+      );
+  if (!profile && !adapterOptions.profilesByInput && subject.kind === 'features') {
     for (const geometry of geometries) {
       const candidate = evaluateKeplerOperationApplicability(
         binding,
@@ -224,33 +325,36 @@ export function evaluateKeplerWorkbenchApplicability(
           ? `${first.what} (and ${extra} more)`
           : first.what,
     ...(first?.remedy === undefined ? {} : {remedy: first.remedy}),
-    parameters: omitNumberLists(applicability.parameters),
+    parameters: copyParameters(applicability.parameters),
     outputKinds: applicability.outputKinds
   };
 }
 
-/**
- * Default parameter values for an operation: derived from the profile where the descriptor says
- * so (every input is read from the one profile), the binding's defaults otherwise. Without a
- * profile every value is the binding's default. `basic` and `advanced` split the parameter names.
- *
- * @throws Error when `bindingId` is not registered.
- */
+/** Resolve defaults and their provenance using each connected input's own profile. */
 export function getKeplerWorkbenchParameterDefaults(
-  bindingId: string,
+  bindingId: string | CatalogOperationBinding,
   profile?: KeplerDatasetProfile,
   adapterOptions: KeplerWorkbenchOptions = {}
 ): KeplerWorkbenchParameterDefaults {
-  const binding = requireBinding('getKeplerWorkbenchParameterDefaults', bindingId);
-  const {descriptor} = resolveKeplerOperationDescriptor(binding);
-  const profilesByInput = Object.fromEntries(binding.inputs.map(input => [input.name, profile]));
-  const resolved = resolveKeplerOperationParameters(binding, descriptor, profilesByInput, {
-    maximumCellCount: KEPLER_GRID_CELL_CAPS[binding.id]?.maximumCellCount,
+  const binding =
+    typeof bindingId === 'string'
+      ? requireBinding('getKeplerWorkbenchParameterDefaults', bindingId)
+      : bindingId;
+  // Legacy single-profile callers bind only the first port, never every port.
+  const profilesByInput =
+    adapterOptions.profilesByInput ??
+    (profile && binding.inputs[0] ? {[binding.inputs[0].name]: profile} : {});
+  // Applicability chooses role columns before resolving data-dependent defaults. The form
+  // consumes that same parameter set and provenance rather than resolving without mappings.
+  const resolved = evaluateKeplerWorkbenchInputs(binding, profilesByInput, {
+    overrides: adapterOptions.overrides,
     ...(adapterOptions.executionEngine ? {executionEngine: adapterOptions.executionEngine} : {})
   });
-  const values = omitNumberLists(resolved.parameters);
+  const values = copyParameters(resolved.parameters);
   return {
     values,
+    resolutions: resolved.resolutions,
+    confirmations: resolved.confirmations,
     basic: resolved.basic.filter(name => name in values && !resolved.inactive.includes(name)),
     advanced: resolved.advanced.filter(name => name in values && !resolved.inactive.includes(name)),
     inactive: resolved.inactive.filter(name => name in values)
@@ -261,9 +365,12 @@ export function getKeplerWorkbenchParameterDefaults(
  * Presets for the curated analyses that run today, one per analysis. Each carries the parameters
  * that make it run on its own sample (the curated presets, then the sample's scale parameters,
  * then the sample's columns written into the column parameters) and the sample as GeoJSON text by
- * binding input name. Lists of numbers are omitted from `parameters`.
+ * binding input name. Number lists are preserved.
  */
+let curatedPresets: KeplerWorkbenchCuratedPreset[] | undefined;
+
 export function getKeplerWorkbenchCuratedPresets(): KeplerWorkbenchCuratedPreset[] {
+  if (curatedPresets) return curatedPresets;
   const presets: KeplerWorkbenchCuratedPreset[] = [];
   for (const analysis of KEPLER_CURATED_ANALYSES) {
     if (analysis.execution.status !== 'available') {
@@ -286,20 +393,27 @@ export function getKeplerWorkbenchCuratedPresets(): KeplerWorkbenchCuratedPreset
         }
       }
       const sample = createKeplerCuratedAnalysisSample(analysis.sampleId);
-      sampleGeoJSONByInput = {};
-      for (const [slotName, collection] of Object.entries(sample)) {
-        const inputName = execution.inputs[slotName];
-        if (inputName !== undefined) {
-          sampleGeoJSONByInput[inputName] = JSON.stringify(collection);
+      // The GeoJSON bridge must not serialize a decoded raster as feature data. Typed inputs
+      // remain available through the shared sample factory, with number-list settings intact.
+      if (Object.values(sample).every(input => input.type === 'FeatureCollection')) {
+        sampleGeoJSONByInput = {};
+        for (const [slotName, collection] of Object.entries(sample)) {
+          const inputName = execution.inputs[slotName];
+          if (inputName !== undefined) {
+            sampleGeoJSONByInput[inputName] = JSON.stringify(collection);
+          }
         }
       }
     }
     presets.push({
+      curatedAnalysisId: analysis.id,
+      executionParameters: copyParameters(execution.parameters),
       bindingId: execution.bindingId,
       title: analysis.name,
-      parameters: omitNumberLists(parameters),
+      parameters: copyParameters(parameters),
       ...(sampleGeoJSONByInput ? {sampleGeoJSONByInput} : {})
     });
   }
+  curatedPresets = presets;
   return presets;
 }

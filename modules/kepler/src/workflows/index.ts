@@ -20,4 +20,12 @@ export * from './workflow-export';
 export * from './workflow-assistant';
 export * from './workflow-suggestions';
 export * from './workflow-report';
+export * from './workflow-preflight';
+export * from './workflow-computation-record';
 export * from './workflow-recommendations';
+
+export * from './workflow-analysis-template';
+export * from './workflow-analysis-template-parser';
+
+export * from './workflow-save-template';
+export * from './workflow-analysis-search';

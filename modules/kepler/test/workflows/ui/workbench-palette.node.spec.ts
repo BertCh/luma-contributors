@@ -8,6 +8,10 @@ import * as ReactHooks from 'react';
 import type {DependencyList, EffectCallback, KeyboardEvent, ReactElement} from 'react';
 import {
   addPaletteOperation,
+  getPaletteActiveDatasetId,
+  openPaletteAnalysis,
+  subscribePaletteShortcut,
+  WorkbenchAnalysisPaletteDialog,
   getPaletteCategoryCounts,
   getPaletteConnection,
   getPalettePortLine,
@@ -26,6 +30,16 @@ import type {
   WorkbenchStore
 } from '../../../../../examples/deck/kepler-compute/src/workflow/workbench-store';
 import {searchWorkflowOperations} from '../../../src/workflows/workflow-operations';
+import {createWorkbenchAnalysisDocument} from '../../../../../examples/deck/kepler-compute/src/workflow/workbench-analysis-launch';
+import * as WorkbenchAnalysisLaunch from '../../../../../examples/deck/kepler-compute/src/workflow/workbench-analysis-launch';
+import {
+  getWorkflowOperationRegistry,
+  getKeplerCuratedAnalysis,
+  profileKeplerFeatureCollection,
+  searchWorkflowAnalyses,
+  type KeplerDatasetProfile,
+  type WorkflowRunRecord
+} from '@luma-contributors/kepler';
 import {
   WorkflowError,
   WORKFLOW_LIMITS,
@@ -138,6 +152,8 @@ function makeStore(
     paste: () => false,
     serialize: () => undefined,
     restore: () => {},
+    getReviewedAssistantIssues: () => [],
+    recordAssistantReview: () => {},
     clear: async () => {}
   };
   return {store, calls, errors};
@@ -223,7 +239,11 @@ function findPaletteElement(tree: unknown, property: string, value: unknown): Pa
 }
 
 /** Runs the component's handlers and effects without claiming to simulate a browser renderer. */
-function makePaletteHarness(store: WorkbenchStore) {
+function makePaletteHarness(
+  store: WorkbenchStore,
+  component: typeof WorkbenchPaletteDialog = WorkbenchPaletteDialog,
+  initialQuery = 'fixture'
+) {
   const states: unknown[] = [];
   const references: Array<{current: unknown}> = [];
   const effects: Array<{
@@ -273,7 +293,7 @@ function makePaletteHarness(store: WorkbenchStore) {
       })
     ];
     try {
-      tree = WorkbenchPaletteDialog({store, initialQuery: 'fixture'}) as PaletteElement;
+      tree = component({store, initialQuery}) as PaletteElement;
     } finally {
       for (const spy of spies) spy.mockReset();
     }
@@ -286,7 +306,7 @@ function makePaletteHarness(store: WorkbenchStore) {
     render: renderComponent,
     find: (property: string, value: unknown) => findPaletteElement(tree, property, value),
     getSearch,
-    getDialog: () => tree,
+    getDialog: () => findPaletteElement(tree, 'role', 'dialog'),
     getHighlight: () => getSearch().props['aria-activedescendant'],
     pressKey(key: string, isComposing = false) {
       const event = {
@@ -298,7 +318,7 @@ function makePaletteHarness(store: WorkbenchStore) {
       const searchHandler = getSearch().props['onKeyDown'] as (
         event: KeyboardEvent<HTMLInputElement>
       ) => void;
-      const dialogHandler = tree.props['onKeyDown'] as (
+      const dialogHandler = findPaletteElement(tree, 'role', 'dialog').props['onKeyDown'] as (
         event: KeyboardEvent<HTMLDivElement>
       ) => void;
       searchHandler(event as unknown as KeyboardEvent<HTMLInputElement>);
@@ -325,6 +345,7 @@ function makePaletteDocument() {
     ownerDocument: unknown;
     isConnected = true;
     focus = vi.fn();
+    querySelector = vi.fn((_selector: string): ElementDouble | null => null);
     contains = vi.fn((target: unknown) => target === this);
   }
   const opener = new ElementDouble();
@@ -335,6 +356,8 @@ function makePaletteDocument() {
   const listeners = new Map<string, (event: {target: unknown}) => void>();
   const ownerDocument = {
     activeElement: opener,
+    body: new ElementDouble(),
+    documentElement: new ElementDouble(),
     querySelector: vi.fn((_selector: string): ElementDouble | null => canvas),
     getElementById: vi.fn((_id: string) => ({scrollIntoView})),
     addEventListener: vi.fn((name: string, listener: (event: {target: unknown}) => void) => {
@@ -1029,5 +1052,437 @@ describe('adding a palette operation', () => {
     expect((full.errors[0] as WorkflowError).code).toBe('limit-exceeded');
     expect((full.errors[0] as Error).message).toContain('maximumSteps');
     expect(full.store.getState().document).toBe(document);
+  });
+});
+
+function makeAnalysisProfile(
+  datasetId = 'uploaded-events',
+  geometry: 'Point' | 'Polygon' = 'Point'
+): KeplerDatasetProfile {
+  return {
+    ...profileKeplerFeatureCollection(
+      {
+        type: 'FeatureCollection',
+        features: Array.from({length: 12}, (_, index) => ({
+          type: 'Feature',
+          geometry:
+            geometry === 'Point'
+              ? {
+                  type: 'Point',
+                  coordinates: [100 + (index % 4) * 2, 200 + Math.floor(index / 4) * 3]
+                }
+              : {
+                  type: 'Polygon',
+                  coordinates: [
+                    [
+                      [index, 0],
+                      [index + 1, 0],
+                      [index + 1, 1],
+                      [index, 1],
+                      [index, 0]
+                    ]
+                  ]
+                },
+          properties: {renamed_value: index + 1}
+        }))
+      },
+      {
+        datasetId,
+        label: datasetId,
+        coordinateSystem: 'planar',
+        declarations: {rowSemantics: 'events'}
+      }
+    ),
+    geometryColumns: ['geometry']
+  };
+}
+
+function makeAnalysisStore(profiles = [makeAnalysisProfile()]) {
+  const fixture = makeStore({}, getWorkflowOperationRegistry());
+  fixture.store.host.getAnalysisProfile = datasetId =>
+    profiles.find(profile => profile.datasetId === datasetId);
+  fixture.store.host.listDatasets = () =>
+    profiles.map(profile => ({
+      id: profile.datasetId,
+      label: profile.label,
+      rowCount: profile.rowCount,
+      resident: false,
+      fields: [{name: 'geometry', type: 'string'}],
+      geometryFields: ['geometry']
+    }));
+  return fixture;
+}
+
+describe('AX command palette', () => {
+  test('renders the AX hook, question matches, dataset scope and mapped template first', () => {
+    const {store} = makeAnalysisStore();
+    const markup = renderToStaticMarkup(
+      createElement(WorkbenchAnalysisPaletteDialog, {store, initialQuery: 'hot'})
+    );
+    expect(markup).toContain('data-testid="ax-command-palette"');
+    // A wrapper with only fixed-position children has a zero-size box and is hidden to a
+    // browser locator. The AX hook must identify the actual positioned dialog.
+    expect(markup).toMatch(/<div[^>]*role="dialog"[^>]*data-testid="ax-command-palette"/);
+    expect(markup).toContain('Search questions, templates and operations');
+    expect(markup).toContain('data-testid="ax-command-dataset"');
+    expect(markup).toContain('value="uploaded-events"');
+    expect(markup.indexOf('data-testid="ax-command-template:hot-spot-map"')).toBeLessThan(
+      markup.indexOf('data-testid="workflow-palette-item-recipe-hot-spot-lattice"')
+    );
+    expect(markup).toContain('Where do values cluster or stand out?');
+    expect(render(store)).toContain('data-testid="ax-command-palette"');
+  });
+
+  test('a stationary pointer cannot replace the keyboard highlight when search rows move beneath it', () => {
+    const {store} = makeAnalysisStore();
+    const harness = makePaletteHarness(store, WorkbenchAnalysisPaletteDialog);
+    const searchChange = harness.getSearch().props['onChange'] as (event: {
+      target: {value: string};
+    }) => void;
+    searchChange({target: {value: 'hot'}});
+    harness.render();
+    const operationId = WORKBENCH_TEST_IDS.paletteItem('curated-emerging-hot-spots');
+    const movedRow = harness.find('data-testid', operationId);
+    const layoutEnter = movedRow.props['onMouseEnter'] as (() => void) | undefined;
+    layoutEnter?.();
+    harness.render();
+    expect(harness.getHighlight()).toContain('template:hot-spot-map');
+    const pointerMove = movedRow.props['onMouseMove'] as (event: {
+      movementX: number;
+      movementY: number;
+    }) => void;
+    pointerMove({movementX: 0, movementY: 0});
+    harness.render();
+    expect(harness.getHighlight()).toContain('template:hot-spot-map');
+    pointerMove({movementX: 0, movementY: 1});
+    harness.render();
+    expect(harness.getHighlight()).toContain('operation:curated-emerging-hot-spots');
+    searchChange({target: {value: 'hot'}});
+    harness.render();
+    harness.pressKey('Enter');
+    expect(
+      harness.find('analysis', getKeplerCuratedAnalysis('hot-spot-map')).props['mapping']
+    ).toMatchObject({
+      progress: {mapped: 1, required: 1},
+      slots: [{slot: 'points', datasetId: 'uploaded-events'}]
+    });
+  });
+
+  test('Enter opens the existing mapping component with filled slots and never runs', () => {
+    const {store, calls} = makeAnalysisStore();
+    const run = vi.spyOn(store, 'run');
+    const harness = makePaletteHarness(store, WorkbenchAnalysisPaletteDialog, 'hot');
+    expect(harness.getHighlight()).toContain('template:hot-spot-map');
+    harness.pressKey('Enter', true);
+    expect(harness.getHighlight()).toContain('template:hot-spot-map');
+    harness.pressKey('Enter');
+    const mappingComponent = harness.find('analysis', getKeplerCuratedAnalysis('hot-spot-map'));
+    expect(mappingComponent.props['mapping']).toMatchObject({
+      analysisId: 'hot-spot-map',
+      progress: {mapped: 1, required: 1},
+      slots: [{slot: 'points', datasetId: 'uploaded-events'}]
+    });
+    expect(run).not.toHaveBeenCalled();
+    expect(calls).toEqual([]);
+    (mappingComponent.props['onCancel'] as () => void)();
+    harness.render();
+    expect(harness.getSearch()).toBeDefined();
+  });
+
+  test('focuses search, transfers focus into mapping and restores the opener on close', () => {
+    const {store} = makeAnalysisStore();
+    const harness = makePaletteHarness(store, WorkbenchAnalysisPaletteDialog, 'hot');
+    const documentDouble = makePaletteDocument();
+    attachPaletteReferences(harness, documentDouble);
+    const mappingControl = new documentDouble.ElementDouble();
+    documentDouble.palette.querySelector.mockReturnValue(mappingControl);
+    vi.stubGlobal('Node', documentDouble.ElementDouble);
+    vi.stubGlobal('HTMLElement', documentDouble.ElementDouble);
+    try {
+      harness.flushEffects();
+      expect(documentDouble.search.focus).toHaveBeenCalled();
+      harness.pressKey('Enter');
+      harness.flushEffects();
+      expect(mappingControl.focus).toHaveBeenCalledTimes(1);
+      harness.unmount();
+      expect(documentDouble.opener.focus).toHaveBeenCalledTimes(1);
+      expect(documentDouble.listeners.size).toBe(0);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  test.each([
+    'body',
+    'documentElement',
+    'removed',
+    'palette-control'
+  ])('returns AX palette focus to the canvas when the captured opener is %s', openerKind => {
+    const {store} = makeAnalysisStore();
+    const harness = makePaletteHarness(store, WorkbenchAnalysisPaletteDialog, 'hot');
+    const documentDouble = makePaletteDocument();
+    attachPaletteReferences(harness, documentDouble);
+    documentDouble.opener.isConnected = openerKind !== 'removed';
+    documentDouble.ownerDocument.activeElement =
+      openerKind === 'body'
+        ? documentDouble.ownerDocument.body
+        : openerKind === 'documentElement'
+          ? documentDouble.ownerDocument.documentElement
+          : openerKind === 'palette-control'
+            ? documentDouble.search
+            : documentDouble.opener;
+    vi.stubGlobal('Node', documentDouble.ElementDouble);
+    vi.stubGlobal('HTMLElement', documentDouble.ElementDouble);
+    try {
+      harness.flushEffects();
+      const previousFocusCalls = documentDouble.ownerDocument.activeElement.focus.mock.calls.length;
+      harness.pressKey('Escape');
+      harness.unmount();
+      expect(documentDouble.canvas.focus).toHaveBeenCalledOnce();
+      expect(documentDouble.ownerDocument.activeElement.focus).toHaveBeenCalledTimes(
+        previousFocusCalls
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  test('returns AX palette focus to the dock when no canvas or connected opener remains', () => {
+    const {store} = makeAnalysisStore();
+    const harness = makePaletteHarness(store, WorkbenchAnalysisPaletteDialog, 'hot');
+    const documentDouble = makePaletteDocument();
+    attachPaletteReferences(harness, documentDouble);
+    const dockElement = new documentDouble.ElementDouble();
+    documentDouble.opener.isConnected = false;
+    documentDouble.ownerDocument.querySelector.mockImplementation(selector =>
+      selector === `[data-testid="${WORKBENCH_TEST_IDS.dock}"]` ? dockElement : null
+    );
+    vi.stubGlobal('Node', documentDouble.ElementDouble);
+    vi.stubGlobal('HTMLElement', documentDouble.ElementDouble);
+    try {
+      harness.flushEffects();
+      harness.unmount();
+      expect(dockElement.focus).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  test('changing the dataset scopes the next opened template', () => {
+    const profiles = [makeAnalysisProfile('first'), makeAnalysisProfile('second')];
+    const {store} = makeAnalysisStore(profiles);
+    const harness = makePaletteHarness(store, WorkbenchAnalysisPaletteDialog, 'hot');
+    const selector = harness.find('data-testid', 'ax-command-dataset');
+    (selector.props['onChange'] as (event: unknown) => void)({target: {value: 'second'}});
+    harness.render();
+    harness.pressKey('Enter');
+    expect(
+      harness.find('analysis', getKeplerCuratedAnalysis('hot-spot-map')).props['mapping']
+    ).toMatchObject({slots: [{datasetId: 'second'}]});
+  });
+
+  test('the opened mapping produces the existing launch document on the user dataset', () => {
+    const profile = makeAnalysisProfile('renamed-upload');
+    const {store} = makeAnalysisStore([profile]);
+    const match = searchWorkflowAnalyses(store.registry, 'hot', {profiles: [profile]})[0];
+    const selection = openPaletteAnalysis(store, match, profile.datasetId)!;
+    const document = createWorkbenchAnalysisDocument(selection.template, store, selection.mapping);
+    expect(document.steps.find(step => step.id === 'source-points')?.parameters['dataset']).toEqual(
+      {from: 'static', value: profile.datasetId}
+    );
+    expect(document.steps.find(step => step.id === 'analysis')).toMatchObject({
+      operationId: 'recipe-hot-spot-lattice',
+      inputs: {points: {stepId: 'source-points', output: 'data'}}
+    });
+    expect(document.inputs).toEqual([]);
+  });
+
+  test('refuses an opening whose active dataset profile disappeared since the search', () => {
+    const profile = makeAnalysisProfile();
+    const {store} = makeAnalysisStore([profile]);
+    const match = searchWorkflowAnalyses(store.registry, 'hot', {profiles: [profile]})[0];
+    store.host.getAnalysisProfile = () => undefined;
+    const selection = openPaletteAnalysis(store, match, profile.datasetId);
+    expect(selection).toBeUndefined();
+  });
+
+  test('finds the selected source through an analysis input, with cycle protection', () => {
+    const profiles = [makeAnalysisProfile('first'), makeAnalysisProfile('second')];
+    const {store} = makeAnalysisStore(profiles);
+    const state = store.getState();
+    state.document!.steps[0].parameters['dataset'] = {from: 'static', value: 'second'};
+    state.selectedStepIds = ['scaled'];
+    state.document!.steps.push({
+      id: 'scaled',
+      operationId: 'fixture-scale',
+      parameters: {},
+      position: {x: 0, y: 0},
+      inputs: {points: {stepId: 'source', output: 'data'}}
+    });
+    expect(getPaletteActiveDatasetId(state, profiles)).toBe('second');
+    state.document!.steps[0].parameters = {};
+    state.document!.steps[0].inputs = {points: {stepId: 'scaled', output: 'data'}};
+    expect(getPaletteActiveDatasetId(state, profiles)).toBe('first');
+  });
+
+  test('resolves a source dataset from a workflow input before opening its template', () => {
+    const profiles = [makeAnalysisProfile('first'), makeAnalysisProfile('second')];
+    const {store} = makeAnalysisStore(profiles);
+    const state = store.getState();
+    state.document!.inputs = [{id: 'source-id', label: 'Source', kind: 'string', value: 'second'}];
+    state.document!.steps[0].operationId = 'source-dataset';
+    state.document!.steps[0].parameters['dataset'] = {from: 'input', inputId: 'source-id'};
+    state.selectedStepIds = ['source'];
+    expect(getPaletteActiveDatasetId(state, profiles, store.registry)).toBe('second');
+    const harness = makePaletteHarness(store, WorkbenchAnalysisPaletteDialog, 'hot');
+    expect(harness.find('data-testid', 'ax-command-dataset').props['value']).toBe('second');
+    harness.pressKey('Enter');
+    expect(
+      harness.find('analysis', getKeplerCuratedAnalysis('hot-spot-map')).props['mapping']
+    ).toMatchObject({slots: [{datasetId: 'second'}]});
+  });
+
+  test('requires an explicit scope switch instead of substituting another compatible dataset', () => {
+    const areas = makeAnalysisProfile('areas', 'Polygon');
+    const events = makeAnalysisProfile('events');
+    const profiles = [areas, events];
+    const {store} = makeAnalysisStore(profiles);
+    const notice = vi.spyOn(store, 'setNotice');
+    const match = searchWorkflowAnalyses(store.registry, 'hot', {
+      profiles,
+      activeDatasetId: areas.datasetId
+    }).find(match => match.id === 'template:hot-spot-map')!;
+    expect(match).toMatchObject({
+      status: 'blocked',
+      reason: expect.stringContaining('active dataset')
+    });
+    expect(openPaletteAnalysis(store, match, areas.datasetId)).toBeUndefined();
+    expect(notice).toHaveBeenCalledWith({
+      kind: 'error',
+      message: expect.stringContaining('Choose a compatible Active dataset')
+    });
+    const harness = makePaletteHarness(store, WorkbenchAnalysisPaletteDialog, 'hot');
+    (
+      harness.find('data-testid', 'ax-command-template:hot-spot-map').props['onClick'] as () => void
+    )();
+    harness.render();
+    expect(harness.getSearch()).toBeDefined();
+    expect(harness.find('role', 'alert').props['children']).toContain(
+      'Choose a compatible Active dataset'
+    );
+    (
+      harness.find('data-testid', 'ax-command-dataset').props['onChange'] as (
+        event: unknown
+      ) => void
+    )({target: {value: 'events'}});
+    harness.render();
+    harness.pressKey('Enter');
+    expect(
+      harness.find('analysis', getKeplerCuratedAnalysis('hot-spot-map')).props['mapping']
+    ).toMatchObject({ready: true, slots: [{datasetId: 'events'}]});
+  });
+
+  test.each([
+    false,
+    true
+  ])('a launch closes only its still-mounted dialog (dismissed: %s)', async dismissed => {
+    const {store} = makeAnalysisStore();
+    const close = vi.spyOn(store, 'closePalette');
+    let finishLaunch!: (record: WorkflowRunRecord) => void;
+    const completion = new Promise<WorkflowRunRecord>(resolve => {
+      finishLaunch = resolve;
+    });
+    const launch = vi
+      .spyOn(WorkbenchAnalysisLaunch, 'launchWorkbenchAnalysis')
+      .mockReturnValue(completion);
+    const harness = makePaletteHarness(store, WorkbenchAnalysisPaletteDialog, 'hot');
+    harness.flushEffects();
+    harness.pressKey('Enter');
+    const mappingComponent = harness.find('analysis', getKeplerCuratedAnalysis('hot-spot-map'));
+    (mappingComponent.props['onRun'] as () => void)();
+    expect(launch).toHaveBeenCalledTimes(1);
+    let replacement: ReturnType<typeof makePaletteHarness> | undefined;
+    if (dismissed) {
+      (harness.getDialog().props['onKeyDown'] as (event: unknown) => void)({
+        key: 'Escape',
+        nativeEvent: {isComposing: false},
+        preventDefault: vi.fn(),
+        stopPropagation: vi.fn()
+      });
+      harness.unmount();
+      store.openPalette();
+      replacement = makePaletteHarness(store, WorkbenchAnalysisPaletteDialog, 'hot');
+      replacement.flushEffects();
+      close.mockClear();
+    }
+    try {
+      finishLaunch({
+        schemaVersion: 1,
+        runId: 'palette-launch',
+        workflowId: 'palette-workflow',
+        startedAt: 0,
+        durationMilliseconds: 0,
+        status: 'done',
+        steps: []
+      });
+      await completion;
+      await Promise.resolve();
+      expect(close).toHaveBeenCalledTimes(dismissed ? 0 : 1);
+      if (replacement) expect(replacement.getSearch().props['value']).toBe('hot');
+    } finally {
+      if (!dismissed) harness.unmount();
+      replacement?.unmount();
+      launch.mockRestore();
+    }
+  });
+
+  test('Cmd/Ctrl-K closes an open palette and leaves other workbench dialogs alone', () => {
+    const {store, calls} = makeStore();
+    let listener: (event: unknown) => void = () => {};
+    const ownerDocument = {
+      addEventListener: vi.fn((_name, callback) => {
+        listener = callback;
+      }),
+      removeEventListener: vi.fn()
+    };
+    const dispose = subscribePaletteShortcut(store, ownerDocument as unknown as Document);
+    const event = {key: 'k', ctrlKey: true, preventDefault: vi.fn()};
+    listener(event);
+    expect(calls).toEqual(['close']);
+    store.getState().dialog = 'shortcuts';
+    listener(event);
+    expect(calls).toEqual(['close']);
+    expect(event.preventDefault).toHaveBeenCalledTimes(1);
+    dispose();
+  });
+
+  test.each([
+    'ctrlKey',
+    'metaKey'
+  ])('Cmd/Ctrl-K opens from a collapsed workbench or text input (%s)', modifier => {
+    const {store} = makeStore({
+      palette: {open: false},
+      dock: {open: false, height: 380, inspectorTab: 'result', logOpen: false}
+    });
+    const open = vi.spyOn(store, 'openPalette');
+    let listener: (event: unknown) => void = () => {};
+    const ownerDocument = {
+      addEventListener: vi.fn((_name, callback) => {
+        listener = callback;
+      }),
+      removeEventListener: vi.fn()
+    };
+    const dispose = subscribePaletteShortcut(store, ownerDocument as unknown as Document);
+    const event = {key: 'k', [modifier]: true, target: {tagName: 'INPUT'}, preventDefault: vi.fn()};
+    listener({...event, isComposing: true});
+    listener({...event, altKey: true});
+    listener({...event, defaultPrevented: true});
+    listener({...event, shiftKey: true});
+    expect(open).not.toHaveBeenCalled();
+    listener(event);
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(event.preventDefault).toHaveBeenCalledTimes(1);
+    dispose();
+    expect(ownerDocument.removeEventListener).toHaveBeenCalledWith('keydown', listener, true);
   });
 });

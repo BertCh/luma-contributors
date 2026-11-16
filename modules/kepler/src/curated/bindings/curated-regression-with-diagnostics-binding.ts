@@ -22,7 +22,7 @@ import {
   type CatalogFeature
 } from '../../analysis/catalog-geojson';
 import {
-  PLATFORM3_CPU_CLEANUP,
+  PLATFORM3_GPU_OR_CPU_CLEANUP,
   SEED_PARAMETER_SPEC,
   getFeatureGeometryText,
   makeInputSpec,
@@ -49,6 +49,8 @@ import {
   runCanonicalMoranPermutationTest
 } from './curated-binding-utils';
 
+import {runCuratedRegressionOnGpu} from './curated-regression-with-diagnostics-gpu';
+
 const BINDING_ID = 'curated-regression-with-diagnostics';
 
 /** Same cap as the catalog `regression-ols` binding: a design of at most 16 columns including the intercept. */
@@ -67,7 +69,7 @@ const MAXIMUM_PREDICTOR_LIST_LENGTH = 512;
  * A residual sum of squares below this fraction of the total sum of squares is a perfect fit: the
  * log-likelihood and the residual tests are not defined for residuals that are rounding error.
  */
-const PERFECT_FIT_FRACTION = 1e-24;
+export const PERFECT_FIT_FRACTION = 1e-24;
 
 const PARAMETERS: readonly CatalogParameterSpec[] = [
   makeColumnParameter('responseProperty', 'Response property'),
@@ -213,8 +215,9 @@ export type StandardizedOlsFit = {
  * `slope_j = b_j / sd_j`, `se(slope_j) = se(b_j) / sd_j` and
  * `var(intercept) = sigma^2 (1/n + sum_jk (m_j/sd_j)(m_k/sd_k) (R^-1)_jk / n)` with `m` the means.
  * Fitted values use the centred form, so a predictor with a large mean loses no precision.
- * Replaces `fitOrdinaryLeastSquares` of `regression-ols`, whose pivot test compares unstandardised
- * Gram entries and rejects well-conditioned predictors of very different scales as collinear.
+ * The catalog OLS now standardises too, but this fit also scales offsets before squaring to
+ * preserve extreme predictor units, and rejects unexplained variance below 1e-10 rather than
+ * the catalog's 1e-12 pivot threshold. AX-87 differential probes retain these distinct safeguards.
  * @throws PredictorIdentificationError for a constant or collinear predictor.
  */
 export function fitStandardizedLeastSquares(
@@ -418,7 +421,8 @@ type DiagnosticRow = {
 export const INFORMATION_CRITERION_NOTE =
   'k counts the coefficients and the error variance (as R AIC(lm) and MuMIn AICc); statsmodels and spreg count the coefficients only and report an AIC exactly 2 lower';
 
-function runRegressionWithDiagnostics(inputs: Inputs, values: Values): CatalogRunOutput {
+/** Shared complete-case preparation and float64 identification/covariance reference. */
+export function prepareCuratedRegression(inputs: Inputs, values: Values) {
   const areas = inputs['areas'];
   const diagnostics: CatalogDiagnostic[] = [];
   const {response: responseName, names} = readPredictorNames(values);
@@ -477,8 +481,8 @@ function runRegressionWithDiagnostics(inputs: Inputs, values: Values): CatalogRu
 
   // Coefficients, standard errors, t statistics, fitted values and residuals, on standardised
   // predictors so that the units of the columns do not matter.
-  // The catalog truncates equal-distance neighbours by input index. Canonicalise before both
-  // the fit and the weights search, then use sourceIndex to restore the caller's output order.
+  // The catalog now breaks neighbour ties canonically. Ordering here also fixes the fit's
+  // floating-point accumulation order before residual inference; sourceIndex restores output order.
   const {order} = getCanonicalOrder(
     getFeatureAnchors(
       makeDerivedCollection(
@@ -510,16 +514,99 @@ function runRegressionWithDiagnostics(inputs: Inputs, values: Values): CatalogRu
     throw failure;
   }
 
+  // Spatial autocorrelation of the residuals: neighbours among the complete rows, row-standardised;
+  // rows with no neighbour are left out of the statistic (they would add a zero lag and distort I).
+  const geometryKinds = new Set(
+    rows.map(row => (/Polygon/.test(row.feature.geometry!.type) ? 'polygon' : 'point'))
+  );
+  const requested = values['neighborhood'] as 'auto' | 'queen' | 'rook' | 'knn';
+  if (requested === 'auto' && geometryKinds.size > 1)
+    throw makeCuratedError(
+      BINDING_ID,
+      'the input mixes points and polygons; choose neighborhood knn to link them by nearest centroid or point'
+    );
+  if ((requested === 'queen' || requested === 'rook') && geometryKinds.has('point'))
+    throw makeCuratedError(
+      BINDING_ID,
+      `neighborhood ${requested} needs polygons but the input has points; use auto or knn`
+    );
+  const neighborhood =
+    requested === 'auto' ? (geometryKinds.has('polygon') ? 'queen' : 'knn') : requested;
+  const derivedCollection = makeDerivedCollection(
+    rows.map(row => row.feature),
+    () => ({})
+  );
+  const set = buildAnalysisSet(derivedCollection, '', {
+    neighborhood,
+    neighborCount: values['neighborCount'] as number,
+    distanceBand: 1,
+    rowStandardize: true,
+    coordinateSystem
+  });
+  const includedRowCount = set.weights.neighbors.filter(neighbors => neighbors.length > 0).length;
+  let responseMean = 0;
+  for (const value of responseValues) responseMean += value;
+  responseMean /= rowCount;
+  let totalSumOfSquares = 0;
+  for (const value of responseValues) totalSumOfSquares += (value - responseMean) ** 2;
+  if (
+    includedRowCount >= MINIMUM_ROWS_FOR_MORAN &&
+    fit.residualSumOfSquares > PERFECT_FIT_FRACTION * totalSumOfSquares &&
+    includedRowCount * permutations > MAXIMUM_PERMUTATION_WORK
+  )
+    throw new KeplerAllocationError('capacity', {
+      message: `${BINDING_ID}: ${includedRowCount} rows times ${permutations} permutations exceeds the ${MAXIMUM_PERMUTATION_WORK} the CPU engine runs; lower permutations`
+    });
+  return {
+    totalSumOfSquares,
+    areas,
+    values,
+    diagnostics,
+    names,
+    predictorCount,
+    permutations,
+    coordinateSystem,
+    rows,
+    statuses,
+    rowCount,
+    coefficientCount,
+    responseValues: responseArray,
+    predictorArray,
+    referenceFit: fit,
+    neighborhood,
+    derivedCollection,
+    set
+  };
+}
+
+export type PreparedCuratedRegression = ReturnType<typeof prepareCuratedRegression>;
+
+/** Shared table publication: every fit-dependent value comes from the supplied fit. */
+export function publishCuratedRegression(
+  prepared: PreparedCuratedRegression,
+  fit: StandardizedOlsFit
+): CatalogRunOutput {
+  const {
+    areas,
+    values,
+    names,
+    predictorCount,
+    permutations,
+    coordinateSystem,
+    rows,
+    statuses,
+    rowCount,
+    coefficientCount,
+    predictorArray,
+    neighborhood,
+    derivedCollection,
+    set,
+    totalSumOfSquares
+  } = prepared;
+  const diagnostics = prepared.diagnostics.map(diagnostic => ({...diagnostic}));
   const freedom = rowCount - coefficientCount;
   const residuals = fit.residuals;
   const residualSumOfSquares = fit.residualSumOfSquares;
-  let totalSumOfSquares = 0;
-  {
-    let mean = 0;
-    for (const value of responseValues) mean += value;
-    mean /= rowCount;
-    for (const value of responseValues) totalSumOfSquares += (value - mean) ** 2;
-  }
   const isPerfectFit = residualSumOfSquares <= PERFECT_FIT_FRACTION * totalSumOfSquares;
 
   let informationCriteria: {aic: number; aicc: number} | undefined;
@@ -612,36 +699,7 @@ function runRegressionWithDiagnostics(inputs: Inputs, values: Values): CatalogRu
     value: computeBelsleyConditionNumber(predictorArray, predictorCount, rowCount)
   });
 
-  // Spatial autocorrelation of the residuals: neighbours among the complete rows, row-standardised;
-  // rows with no neighbour are left out of the statistic (they would add a zero lag and distort I).
-  const geometryKinds = new Set(
-    rows.map(row => (/Polygon/.test(row.feature.geometry!.type) ? 'polygon' : 'point'))
-  );
-  const requested = values['neighborhood'] as 'auto' | 'queen' | 'rook' | 'knn';
-  if (requested === 'auto' && geometryKinds.size > 1)
-    throw makeCuratedError(
-      BINDING_ID,
-      'the input mixes points and polygons; choose neighborhood knn to link them by nearest centroid or point'
-    );
-  if ((requested === 'queen' || requested === 'rook') && geometryKinds.has('point'))
-    throw makeCuratedError(
-      BINDING_ID,
-      `neighborhood ${requested} needs polygons but the input has points; use auto or knn`
-    );
-  const neighborhood =
-    requested === 'auto' ? (geometryKinds.has('polygon') ? 'queen' : 'knn') : requested;
-  const derivedCollection = makeDerivedCollection(
-    rows.map(row => row.feature),
-    () => ({})
-  );
   let tiedAnchorCount = 0;
-  const set = buildAnalysisSet(derivedCollection, '', {
-    neighborhood,
-    neighborCount: values['neighborCount'] as number,
-    distanceBand: 1,
-    rowStandardize: true,
-    coordinateSystem
-  });
   const neighborCounts = new Array<number | null>(rowCount).fill(null);
   const included: number[] = [];
   set.sourceIndex.forEach((rowIndex, position) => {
@@ -661,10 +719,6 @@ function runRegressionWithDiagnostics(inputs: Inputs, values: Values): CatalogRu
   let moranExpected: number | null = null;
   let moranPValue: number | null = null;
   if (included.length >= MINIMUM_ROWS_FOR_MORAN && !isPerfectFit) {
-    if (included.length * permutations > MAXIMUM_PERMUTATION_WORK)
-      throw new KeplerAllocationError('capacity', {
-        message: `${BINDING_ID}: ${included.length} rows times ${permutations} permutations exceeds the ${MAXIMUM_PERMUTATION_WORK} the CPU engine runs; lower permutations`
-      });
     const compactIndex = new Map(included.map((position, compact) => [position, compact]));
     const anchors = getFeatureAnchors(derivedCollection, coordinateSystem);
     const result = runCanonicalMoranPermutationTest(
@@ -806,16 +860,22 @@ export const CURATED_REGRESSION_WITH_DIAGNOSTICS_BINDING: CatalogOperationBindin
   title: 'Regression with spatial diagnostics',
   domain: 'analysis',
   summary:
-    'Fits a response on one to fifteen predictors by ordinary least squares and reports coefficients with standard errors, t statistics and p-values, R squared and adjusted R squared, AIC and AICc, the condition number, the Jarque-Bera, Breusch-Pagan and Koenker-Bassett tests, the residual of every feature and the Moran statistic of the residuals with a permutation pseudo p-value.',
+    'Fits a response on one to fifteen predictors by ordinary least squares and reports coefficients with standard errors, t statistics and p-values, R squared and adjusted R squared, AIC and AICc, the condition number, the Jarque-Bera, Breusch-Pagan and Koenker-Bassett tests, the residual of every feature and the Moran statistic of the residuals with a permutation pseudo p-value. The GPU recipe adds LM tests, a specification recommendation and local residual Moran values.',
   capabilityIds: ['spatial-regression'],
   contributorNames: [
+    'addSpatialRegressionRecipe',
+    'GPULocalMoran',
     'GPUOrdinaryLeastSquares',
     'GPUSpatialRegressionDiagnostics',
     'GPUContiguityWeights',
     'GPUSpatialWeightsTransform'
   ],
-  gpuContributorNames: [],
-  engine: 'cpu-reference',
+  gpuContributorNames: [
+    'GPUOrdinaryLeastSquares',
+    'GPUSpatialRegressionDiagnostics',
+    'GPULocalMoran'
+  ],
+  engine: 'gpu-or-cpu',
   inputs: [
     makeInputSpec(
       'areas',
@@ -837,7 +897,7 @@ export const CURATED_REGRESSION_WITH_DIAGNOSTICS_BINDING: CatalogOperationBindin
       MAXIMUM_CURATED_AREA_FEATURES
     )
   ],
-  cleanup: PLATFORM3_CPU_CLEANUP,
+  cleanup: PLATFORM3_GPU_OR_CPU_CLEANUP,
   declaredBehavior: [
     'Complete cases only: a feature with no geometry, or with a missing, non-numeric or non-finite response or predictor, is skipped and counted under its own diagnostic; the residuals table still lists it, in input order, with a status naming why and no fitted value.',
     'Fewer complete rows than the larger of predictors + 4 and 4 throws (AICc needs n above predictors + 3, so one predictor needs 5 rows and each further predictor one more); a constant response throws, as there is nothing to explain; a constant predictor, or a predictor that is an almost exact linear combination of the others (less than 1e-10 of its variance left, decided on standardised columns so the units do not matter), throws with a message naming the column. Predictors of very different scales, such as dollars beside a share, are fitted normally: each predictor is standardised before the fit and the coefficients, standard errors and intercept are transformed back exactly.',
@@ -845,9 +905,14 @@ export const CURATED_REGRESSION_WITH_DIAGNOSTICS_BINDING: CatalogOperationBindin
     'Standard errors use RSS / (n - c) with c the coefficients including the intercept, and p-values are two-sided Student t on n - c degrees of freedom. Information criteria use one convention, k = c + 1 (the error variance counts as a parameter), as R AIC(lm) and MuMIn AICc: AIC = 2k - 2 logL and AICc = AIC + 2k(k+1)/(n-k-1), with logL the Gaussian log-likelihood at the maximum likelihood variance. statsmodels and spreg count the coefficients only and report an AIC exactly 2 lower; the convention is written in the note column of the aic and aicc rows and in the summary key informationCriterionConvention.',
     'Jarque-Bera uses the residual skewness and kurtosis (2 degrees of freedom); Breusch-Pagan and Koenker-Bassett regress the squared residuals on the predictors (one degree of freedom per predictor); the condition number is the Belsley, Kuh and Welsch value of the unit-length scaled design with its intercept.',
     'The residual Moran statistic uses queen contiguity for polygons and k nearest neighbours for points (auto), row-standardised over the complete rows; rows with no neighbour are left out and counted; its p-value is a two-sided permutation pseudo p-value, (m + 1) / (permutations + 1) with m the permutations at least as far from the mean of the permuted statistics as the observed one. Rows are ordered by anchor (point, or centroid in the local frame) x then y before fitting, selecting neighbours and shuffling, so distinct-anchor results do not depend on input order, including equal-distance neighbour ties. Coincident anchors keep input order and can affect inference throughout the dataset (summary key tiedAnchorCount). The expected value reported is the permutation mean, -1/(m-1), not the Cliff-Ord expectation of OLS residuals.',
+    'The GPU path dispatches addSpatialRegressionRecipe with CPU-prepared row-standardised CSR weights in canonical complete-case order. GPU coefficients, fitted values and residuals are transformed back to source units; standard errors use the float64 reference covariance scaled by the GPU residual variance. Reference-perfect fits and uploads whose rounding error exceeds 1 percent of the reference residual norm use the CPU fallback before GPU allocation. Failed solver or diagnostic status, or nonfinite decoded inference, refuses GPU publication and permits the catalog CPU fallback. Compiled graphs, uploads, outputs and the recipe parameter buffer are released on success and failure.',
     'The input may hold polygons or points but not a mix under auto; queen and rook with points throw; at most 5000 features; rows times permutations above 20 million throws a capacity error, which can only bind above 2000 rows because permutations are at most 9999.'
   ],
   limitation:
-    'CPU reference engine only; the GPU path (GPUOrdinaryLeastSquares and GPUSpatialRegressionDiagnostics) is future work. The Lagrange multiplier tests (LM-lag, LM-error and their robust forms), the specification decision, the Cliff-Ord analytic inference for the residual Moran statistic, variance inflation factors, robust standard errors and the spatial lag, spatial error and geographically weighted fits of addSpatialRegressionRecipe are not computed. The residual Moran p-value is a permutation of the residuals, an approximation.',
-  run: (inputs, values) => runRegressionWithDiagnostics(inputs, values)
+    'The GPU path runs addSpatialRegressionRecipe on centred, scaled float32 columns. Input preparation, identification and covariance checks, supplementary fit diagnostics and the seeded global residual permutation test remain on the CPU. GPU-only rows report LM tests, Cliff-Ord analytic residual Moran and the specification decision; local Moran columns use uncorrected analytic inference, not the global permutation p-value. Spatial lag/error models, geographically weighted fits, robust standard errors and variance inflation factors are not published.',
+  run: (inputs, values) => {
+    const prepared = prepareCuratedRegression(inputs, values);
+    return publishCuratedRegression(prepared, prepared.referenceFit);
+  },
+  runGpu: (context, inputs, values) => runCuratedRegressionOnGpu(context.device, inputs, values)
 };

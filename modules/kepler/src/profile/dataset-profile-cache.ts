@@ -9,11 +9,22 @@ import {
   type GPUAnalysisMeasurementLevel,
   type GPUAnalysisRowSemantics
 } from '@luma-contributors/analysis/gpu-spatial-analysis';
+import type {CatalogParameterValue} from '../analysis/catalog-binding-types';
+import type {CatalogFeatureCollection} from '../analysis/catalog-geojson';
+import {
+  getKeplerDatasetNetworkTopologyKey,
+  profileKeplerDatasetNetwork
+} from './dataset-network-profile';
 import {
   applyKeplerDatasetProfileDeclarations,
-  getKeplerDatasetProfileUndeclared
+  getKeplerDatasetProfileUndeclared,
+  withKeplerDatasetNetworkProfile
 } from './dataset-profile';
-import type {KeplerDatasetProfile, KeplerDatasetProfileDeclarations} from './dataset-profile-types';
+import type {
+  KeplerDatasetNetworkProfile,
+  KeplerDatasetProfile,
+  KeplerDatasetProfileDeclarations
+} from './dataset-profile-types';
 
 // A profile is computed once per dataset revision. The cache keeps the latest profile of each
 // dataset, drops the least recently used when it is full, and keeps what a user declared about a
@@ -28,8 +39,28 @@ export const KEPLER_DATASET_PROFILE_DECLARATIONS_VERSION = 1;
 export type KeplerDatasetProfileCache = {
   /** The profile for exactly this revision, with the dataset's declarations applied; undefined when absent or stale. Marks the entry as recently used. */
   get(datasetId: string, revision?: number): KeplerDatasetProfile | undefined;
+  /** Source identity, unaffected by declarations or lazy derived facts. */
+  getGeneration(datasetId: string): number | undefined;
+  /** Publishes derived facts only if the cached source is still the expected generation. */
+  refine(
+    profile: KeplerDatasetProfile,
+    expectedGeneration: number | undefined
+  ): KeplerDatasetProfile | undefined;
   /** Stores the latest profile of a dataset, applies its stored declarations and returns the result. */
   set(profile: KeplerDatasetProfile): KeplerDatasetProfile;
+  /**
+   * Explicit lazy refinement. Loads only a new topology on the current revision; never loads stale
+   * sources. Pass bindingId for binding-specific preparation such as forced splitting in snaps.
+   * GPU crossing noding stays unknown. Retains at most 16 summaries per dataset.
+   */
+  profileNetwork(
+    datasetId: string,
+    revision: number | undefined,
+    parameters: Readonly<Record<string, CatalogParameterValue>>,
+    loadLines: () => CatalogFeatureCollection,
+    executionEngine?: 'cpu' | 'gpu',
+    bindingId?: string
+  ): KeplerDatasetProfile | undefined;
   /** Drops the cached profile of a dataset. Its declarations are kept. */
   invalidate(datasetId: string): void;
   /** Declarations stored for a dataset. */
@@ -56,7 +87,14 @@ export type KeplerDatasetProfileCache = {
  * `base` is the profile without declarations (the one the profile functions made before applying
  * `options.declarations`), `applied` what `get` returns.
  */
-type CacheEntry = {base: KeplerDatasetProfile; applied: KeplerDatasetProfile};
+type CacheEntry = {
+  generation: number;
+  base: KeplerDatasetProfile;
+  applied: KeplerDatasetProfile;
+  networks: Map<string, KeplerDatasetNetworkProfile>;
+};
+// Bound retained summaries when repeatedly changing the snapping slider.
+const MAXIMUM_NETWORK_TOPOLOGIES_PER_DATASET = 16;
 
 export function createKeplerDatasetProfileCache(options: {
   maximumEntries: number;
@@ -73,6 +111,7 @@ export function createKeplerDatasetProfileCache(options: {
   }
   // A Map iterates in insertion order, so the first key is the least recently used one.
   const entries = new Map<string, CacheEntry>();
+  let nextGeneration = 0;
   const declarationsByDataset = new Map<string, KeplerDatasetProfileDeclarations>();
 
   const applyStored = (datasetId: string, base: KeplerDatasetProfile): KeplerDatasetProfile => {
@@ -90,6 +129,25 @@ export function createKeplerDatasetProfileCache(options: {
       entries.set(datasetId, entry);
       return entry.applied;
     },
+    getGeneration(datasetId) {
+      return entries.get(datasetId)?.generation;
+    },
+    refine(profile, expectedGeneration) {
+      const entry = entries.get(profile.datasetId);
+      if (
+        !entry ||
+        entry.generation !== expectedGeneration ||
+        entry.base.revision !== profile.revision
+      )
+        return undefined;
+      entry.base = getKeplerDatasetProfileUndeclared(profile);
+      entry.applied = isUsingStoredDeclarations(profile.datasetId)
+        ? applyStored(profile.datasetId, entry.base)
+        : profile;
+      entries.delete(profile.datasetId);
+      entries.set(profile.datasetId, entry);
+      return entry.applied;
+    },
     set(profile) {
       // Stored declarations win over those the profile was made with; with none stored the
       // profile is kept as given.
@@ -98,12 +156,46 @@ export function createKeplerDatasetProfileCache(options: {
         ? applyStored(profile.datasetId, base)
         : profile;
       entries.delete(profile.datasetId);
-      entries.set(profile.datasetId, {base, applied});
+      entries.set(profile.datasetId, {
+        base,
+        applied,
+        networks: new Map(),
+        generation: ++nextGeneration
+      });
       while (entries.size > maximumEntries) {
         const oldest = entries.keys().next().value as string;
         entries.delete(oldest);
       }
       return applied;
+    },
+    profileNetwork(datasetId, revision, parameters, loadLines, executionEngine = 'cpu', bindingId) {
+      const entry = entries.get(datasetId);
+      if (!entry || entry.base.revision !== revision) return undefined;
+      const topologyKey = getKeplerDatasetNetworkTopologyKey(
+        parameters,
+        executionEngine,
+        bindingId
+      );
+      let network = topologyKey === undefined ? undefined : entry.networks.get(topologyKey);
+      if (!network && topologyKey !== undefined) {
+        const lines = loadLines();
+        if (entries.get(datasetId) !== entry || entry.base.revision !== revision) return undefined;
+        network = profileKeplerDatasetNetwork(
+          entry.base,
+          lines,
+          parameters,
+          executionEngine,
+          bindingId
+        );
+        if (network) entry.networks.set(topologyKey, network);
+        while (entry.networks.size > MAXIMUM_NETWORK_TOPOLOGIES_PER_DATASET) {
+          entry.networks.delete(entry.networks.keys().next().value!);
+        }
+      }
+      entry.applied = withKeplerDatasetNetworkProfile(entry.applied, network);
+      entries.delete(datasetId);
+      entries.set(datasetId, entry);
+      return entry.applied;
     },
     invalidate(datasetId) {
       entries.delete(datasetId);
@@ -124,7 +216,10 @@ export function createKeplerDatasetProfileCache(options: {
         declarationsByDataset.set(datasetId, freezeDeclarations(checked));
       }
       if (!entry) return undefined;
-      entry.applied = applyStored(datasetId, entry.base);
+      entry.applied = withKeplerDatasetNetworkProfile(
+        applyStored(datasetId, entry.base),
+        entry.applied.network
+      );
       return entry.applied;
     },
     get size() {
