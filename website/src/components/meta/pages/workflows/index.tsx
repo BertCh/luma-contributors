@@ -20,7 +20,13 @@ import {
 import type {TopicExample, TopicPageProps} from '../../topic-types';
 import {ChainFigure} from './chain-figure';
 import {OneGraphFigure} from './one-graph-figure';
-import {LOCAL_MORAN_RECORD, type Workflow, WORKFLOWS, type WorkflowRecord} from './workflows';
+import {
+  LOCAL_MORAN_RECORD,
+  type Workflow,
+  WORKFLOWS,
+  type WorkflowRecord,
+  WORKFLOW_TEMPLATES
+} from './workflows';
 import './workflows.css';
 
 const SCENARIO_ROOT = 'modules/lenses/src/computation-lenses/scenarios';
@@ -43,6 +49,14 @@ function WorkflowBlock({workflow, example}: {workflow: Workflow; example?: Topic
     <article className="workflows-block" id={`workflow-${workflow.id}`}>
       <h3 className="workflows-block__title">{workflow.title}</h3>
       <p className="workflows-block__question">{workflow.question}</p>
+      <p>{workflow.template.method}</p>
+      <p>
+        {workflow.template.execution.status === 'available'
+          ? `Curated binding: ${workflow.template.execution.bindingId}.`
+          : workflow.template.execution.reason}
+      </p>
+      <h4>Related recipe recording</h4>
+      {workflow.recordNote ? <p>{workflow.recordNote}</p> : null}
       <p className="workflows-block__start">
         <span className="workflows-block__tag">You start with</span>
         {workflow.start}
@@ -178,7 +192,29 @@ export function Page({topic, code}: TopicPageProps) {
         />
       </Section>
 
-      <Section title="Five workflows">
+      <Section title="Curated workflows">
+        <Prose>
+          These questions and methods come from the same templates as the analysis library.
+          Availability describes the current Kepler binding.
+        </Prose>
+        <div className="workflows-index">
+          {WORKFLOW_TEMPLATES.map(template => (
+            <details key={template.id} data-template-id={template.id}>
+              <summary>{template.title}</summary>
+              <p>{template.name}</p>
+              <p>{template.method}</p>
+              <p>{template.slots.map(slot => slot.label).join('; ')}</p>
+              <p>
+                {template.execution.status === 'available'
+                  ? `Available: ${template.execution.bindingId}`
+                  : template.execution.reason}
+              </p>
+            </details>
+          ))}
+        </div>
+      </Section>
+
+      <Section title="Five recipe recordings">
         <Prose>
           Each is a recipe with a recorded run. Pick a question. A card shows the operation’s own
           recorded picture, not this chain’s intermediate; the arrow line says what it passes on.

@@ -1,26 +1,35 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-// One workflow as a row of step cards that wraps: each card shows the operation's own recorded
-// picture (both themes in the HTML, CSS shows the one that matches), its title linked to its
-// function page, and what it passes to the next step with the format.
+// Prefer recorded chain intermediates; operation previews keep uncaptured stages visible.
 
 import {Link} from '@tanstack/react-router';
-import {getEntry} from '../../../../catalog';
+import {getEntry} from '../../../../catalog/index';
+import {EntryPreview} from '../../../catalog/entry-preview';
 import {getPublicUrl} from '../../../../public-url';
+import manifest from '../../../../gpu/runs/workflow-intermediates.manifest.json';
+import {
+  findWorkflowStepPictures,
+  type WorkflowPictureManifest,
+  type WorkflowPicture
+} from '../../../../gpu/runs/workflow-intermediates';
 import type {WorkflowStep} from './workflows';
+import {WORKFLOWS} from './workflows';
 
-function StepPicture({id, title}: {id: string; title: string}) {
+function StepPicture({pictures, title}: {pictures: WorkflowPicture[]; title: string}) {
   return (
     <div className="workflows-step__picture">
-      {(['dark', 'light'] as const).map(theme => (
+      {pictures.map(picture => (
         <img
-          key={theme}
-          className={`workflows-poster-${theme}`}
-          src={getPublicUrl(`runs/${id}-${theme}.webp`)}
+          key={picture.theme}
+          className={`workflows-poster-${picture.theme}`}
+          src={getPublicUrl(picture.path)}
+          data-run-id={picture.runId}
+          data-stage-id={picture.stageId}
+          data-resource-ids={picture.sources.map(source => source.resourceId).join(' ')}
           width={640}
           height={360}
-          alt={`${title}: the picture of its own recorded run`}
+          alt={`${title}: intermediate from one chained drainage run on Grand Canyon elevation`}
           loading="lazy"
           decoding="async"
         />
@@ -29,20 +38,38 @@ function StepPicture({id, title}: {id: string; title: string}) {
   );
 }
 
-function StepCard({step, number}: {step: WorkflowStep; number: number}) {
+function StepCard({
+  step,
+  number,
+  templateId
+}: {
+  step: WorkflowStep;
+  number: number;
+  templateId: string;
+}) {
   const entry = step.entry ? getEntry(step.entry) : undefined;
   const kind = entry ? 'contributor' : 'adapter';
+  const pictures = findWorkflowStepPictures(
+    manifest as WorkflowPictureManifest,
+    templateId,
+    number - 1,
+    step.entry
+  );
   return (
     <li
       className="workflows-step"
       data-kind={kind}
       data-optional={step.optional ? 'true' : undefined}
     >
-      {entry ? (
-        <StepPicture id={entry.id} title={entry.title} />
+      {entry && pictures.length === 2 ? (
+        <StepPicture pictures={pictures} title={entry.title} />
+      ) : entry ? (
+        <div className="workflows-step__picture" data-picture-source="operation-poster">
+          <EntryPreview entry={entry} live={false} aspectRatio={16 / 9} />
+        </div>
       ) : (
         <div className="workflows-step__picture workflows-step__picture--empty">
-          <span>{step.label?.startsWith('GPU') ? 'contributor' : 'adapter kernel'}</span>
+          <span>{step.label}</span>
         </div>
       )}
       <div className="workflows-step__body">
@@ -70,11 +97,22 @@ function StepCard({step, number}: {step: WorkflowStep; number: number}) {
 }
 
 export function ChainFigure({steps, label}: {steps: readonly WorkflowStep[]; label: string}) {
+  const templateId = WORKFLOWS.find(workflow => workflow.steps === steps)?.templateId ?? '';
+  const hasPictures = (manifest as WorkflowPictureManifest).runs.some(
+    run => run.templateId === templateId
+  );
   return (
-    <ol className="workflows-chain" aria-label={label}>
-      {steps.map((step, index) => (
-        <StepCard key={step.source} step={step} number={index + 1} />
-      ))}
-    </ol>
+    <>
+      <p>
+        {hasPictures
+          ? 'Step pictures show one separate drainage run on a 96 × 60 Grand Canyon elevation grid. The recipe metrics below describe the earlier recording.'
+          : 'Step pictures show individual operation examples. Chain intermediate captures are pending (WEB-HIW-03).'}
+      </p>
+      <ol className="workflows-chain" aria-label={label}>
+        {steps.map((step, index) => (
+          <StepCard key={step.source} step={step} number={index + 1} templateId={templateId} />
+        ))}
+      </ol>
+    </>
   );
 }

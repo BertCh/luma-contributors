@@ -7,7 +7,9 @@
 
 import catalogSummaries from 'virtual:catalog-summaries';
 import type {CatalogEntry} from './schema';
+import {attachCatalogAnalysisMetadata, getCatalogDataTypes} from './analysis-metadata';
 import {
+  QUESTIONS,
   DATA_TYPES,
   DOMAINS,
   USE_CASES,
@@ -22,7 +24,7 @@ export type {CatalogEntry} from './schema';
 /** Everything about an entry except the detail fields shown only on its function page. */
 export type CatalogEntryReference = Omit<
   CatalogEntry,
-  'explanation' | 'params' | 'moreRequired' | 'outputs' | 'example'
+  'explanation' | 'params' | 'moreRequired' | 'outputs' | 'example' | 'interpretation'
 >;
 
 export type CatalogSummary = CatalogEntryReference & {
@@ -51,12 +53,14 @@ export async function loadEntry(id: string): Promise<CatalogEntry | undefined> {
     return undefined;
   }
   const entries = await loadGroup();
-  return entries.find(entry => entry.id === id);
+  const entry = entries.find(candidate => candidate.id === id);
+  return entry && attachCatalogAnalysisMetadata(entry);
 }
 
-export type FacetKind = 'data' | 'use' | 'domain';
+export type FacetKind = 'question' | 'data' | 'use' | 'domain';
 
 export type CatalogFilters = {
+  question?: string;
   dataType?: DataTypeId | string;
   useCase?: UseCaseId | string;
   domain?: DomainId | string;
@@ -64,12 +68,14 @@ export type CatalogFilters = {
 };
 
 export const FACETS: Record<FacetKind, readonly Facet[]> = {
+  question: QUESTIONS,
   data: DATA_TYPES,
   use: USE_CASES,
   domain: DOMAINS
 };
 
 export const FACET_TITLES: Record<FacetKind, string> = {
+  question: 'Question',
   data: 'Data type',
   use: 'Use case',
   domain: 'Domain'
@@ -80,9 +86,9 @@ export function getFacet(kind: FacetKind, id: string): Facet | undefined {
 }
 
 function matchesDataType(entry: CatalogEntryReference, dataType: string): boolean {
+  const ports = getCatalogDataTypes(entry);
   return (
-    entry.dataTypes.input.includes(dataType as DataTypeId) ||
-    entry.dataTypes.output.includes(dataType as DataTypeId)
+    ports.input.includes(dataType as DataTypeId) || ports.output.includes(dataType as DataTypeId)
   );
 }
 
@@ -114,9 +120,10 @@ export function filterEntries(
   filters: CatalogFilters = {},
   source: CatalogSummary[] = catalog
 ): CatalogSummary[] {
-  const {dataType, useCase, domain, query} = filters;
+  const {question, dataType, useCase, domain, query} = filters;
   const matches = source.filter(
     entry =>
+      (!question || entry.questions?.some(identifier => identifier === question)) &&
       (!dataType || matchesDataType(entry, dataType)) &&
       (!useCase || entry.useCases.includes(useCase as UseCaseId)) &&
       (!domain || entry.domains.includes(domain as DomainId)) &&
@@ -127,7 +134,13 @@ export function filterEntries(
 
 export function getEntriesBy(kind: FacetKind, id: string): CatalogSummary[] {
   return filterEntries(
-    kind === 'data' ? {dataType: id} : kind === 'use' ? {useCase: id} : {domain: id}
+    kind === 'question'
+      ? {question: id}
+      : kind === 'data'
+        ? {dataType: id}
+        : kind === 'use'
+          ? {useCase: id}
+          : {domain: id}
   );
 }
 
@@ -146,11 +159,13 @@ export function getFacetCounts(filters: CatalogFilters = {}): FacetCounts {
     }
     for (const entry of matching) {
       const ids =
-        kind === 'data'
-          ? new Set<string>([...entry.dataTypes.input, ...entry.dataTypes.output])
-          : kind === 'use'
-            ? entry.useCases
-            : entry.domains;
+        kind === 'question'
+          ? (entry.questions ?? [])
+          : kind === 'data'
+            ? new Set<string>(Object.values(getCatalogDataTypes(entry)).flat())
+            : kind === 'use'
+              ? entry.useCases
+              : entry.domains;
       for (const id of ids) {
         counts[id] = (counts[id] ?? 0) + 1;
       }
@@ -158,6 +173,7 @@ export function getFacetCounts(filters: CatalogFilters = {}): FacetCounts {
     return counts;
   };
   return {
+    question: countFacet('question', 'question'),
     data: countFacet('data', 'dataType'),
     use: countFacet('use', 'useCase'),
     domain: countFacet('domain', 'domain')
@@ -195,7 +211,10 @@ function sharesDomain(entry: CatalogEntryReference, other: CatalogEntryReference
 export function getNextSteps(entry: CatalogEntryReference, limit = 6): CatalogSummary[] {
   return catalog
     .filter(other => other.id !== entry.id && sharesDomain(entry, other))
-    .map(other => ({other, score: scoreSharedTypes(entry.dataTypes.output, other.dataTypes.input)}))
+    .map(other => ({
+      other,
+      score: scoreSharedTypes(getCatalogDataTypes(entry).output, getCatalogDataTypes(other).input)
+    }))
     .filter(({score}) => score > 0)
     .sort(
       (left, right) => right.score - left.score || left.other.title.localeCompare(right.other.title)
@@ -208,7 +227,10 @@ export function getNextSteps(entry: CatalogEntryReference, limit = 6): CatalogSu
 export function getPreviousSteps(entry: CatalogEntryReference, limit = 6): CatalogSummary[] {
   return catalog
     .filter(other => other.id !== entry.id && sharesDomain(entry, other))
-    .map(other => ({other, score: scoreSharedTypes(other.dataTypes.output, entry.dataTypes.input)}))
+    .map(other => ({
+      other,
+      score: scoreSharedTypes(getCatalogDataTypes(other).output, getCatalogDataTypes(entry).input)
+    }))
     .filter(({score}) => score > 0)
     .sort(
       (left, right) => right.score - left.score || left.other.title.localeCompare(right.other.title)

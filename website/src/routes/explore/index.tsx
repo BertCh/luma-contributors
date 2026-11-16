@@ -3,7 +3,9 @@
 
 import {useEffect, useState} from 'react';
 import {createFileRoute} from '@tanstack/react-router';
-import {catalog, filterEntries, getFacetCounts, type FacetKind} from '../../catalog';
+// Include the application's route registration when this file is typechecked on its own.
+import type {} from '../../router';
+import {catalog, filterEntries, getFacetCounts, type FacetKind} from '../../catalog/index';
 import {EntryGrid} from '../../components/catalog/entry-grid';
 import {FacetPicker} from '../../components/catalog/facet-picker';
 import '../../components/catalog/catalog.css';
@@ -11,7 +13,13 @@ import {SITE_NAME} from '../__root';
 
 const PAGE_SIZE = 36;
 
-export type ExploreSearch = {q?: string; data?: string; use?: string; domain?: string};
+export type ExploreSearch = {
+  q?: string;
+  data?: string;
+  use?: string;
+  domain?: string;
+  question?: string;
+};
 
 function readText(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
@@ -19,10 +27,11 @@ function readText(value: unknown): string | undefined {
 
 export const Route = createFileRoute('/explore/')({
   validateSearch: (search: Record<string, unknown>): ExploreSearch => ({
-    q: readText(search.q),
-    data: readText(search.data),
-    use: readText(search.use),
-    domain: readText(search.domain)
+    q: readText(search['q']),
+    data: readText(search['data']),
+    use: readText(search['use']),
+    question: readText(search['question']),
+    domain: readText(search['domain'])
   }),
   head: () => ({meta: [{title: `Explore | ${SITE_NAME}`}]}),
   component: ExplorePage
@@ -36,6 +45,7 @@ function ExplorePage() {
   const search: ExploreSearch = isMounted ? urlSearch : {};
   const navigate = Route.useNavigate();
   const filters = {
+    question: search.question,
     dataType: search.data,
     useCase: search.use,
     domain: search.domain,
@@ -43,12 +53,14 @@ function ExplorePage() {
   };
   const allEntries = filterEntries(filters);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
-  const filterKey = [search.q, search.data, search.use, search.domain].join('|');
+  const filterKey = [search.q, search.data, search.use, search.domain, search.question].join('|');
   // A new filter starts again from the first page.
   useEffect(() => setVisibleCount(PAGE_SIZE), [filterKey]);
   const entries = allEntries.slice(0, visibleCount);
   const counts = getFacetCounts(filters);
-  const isFiltered = Boolean(search.q || search.data || search.use || search.domain);
+  const isFiltered = Boolean(
+    search.q || search.data || search.use || search.domain || search.question
+  );
 
   const updateSearch = (patch: Partial<ExploreSearch>) =>
     navigate({search: previous => ({...previous, ...patch}), replace: true, resetScroll: false});
@@ -68,10 +80,23 @@ function ExplorePage() {
         />
       </header>
       <FacetPicker
-        selection={{data: search.data, use: search.use, domain: search.domain}}
+        selection={{
+          question: search.question,
+          data: search.data,
+          use: search.use,
+          domain: search.domain
+        }}
         counts={counts}
         onSelect={(kind: FacetKind, id) =>
-          updateSearch(kind === 'data' ? {data: id} : kind === 'use' ? {use: id} : {domain: id})
+          updateSearch(
+            kind === 'question'
+              ? {question: id}
+              : kind === 'data'
+                ? {data: id}
+                : kind === 'use'
+                  ? {use: id}
+                  : {domain: id}
+          )
         }
       />
       <p className="explore-count" aria-live="polite">

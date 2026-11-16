@@ -2,7 +2,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Link} from '@tanstack/react-router';
-import {getFacet, getNextSteps, getPreviousSteps, resolveRelated} from '../../catalog';
+import {getGPUAnalysisCautionText} from '../../../../modules/analysis/src/gpu-spatial-analysis/ontology/index';
+import {getFacet, getNextSteps, getPreviousSteps, resolveRelated} from '../../catalog/index';
 import type {CatalogEntry} from '../../catalog/schema';
 import {LensGraphPanel} from '../meta/lens-graph-panel';
 import {Chip} from '../ui/chip';
@@ -144,6 +145,11 @@ export function FunctionPage({
         <div className="function-meta">
           <DataFlow input={entry.dataTypes.input} output={entry.dataTypes.output} />
           <div className="function-facets">
+            {entry.questions?.map(question => (
+              <Link key={question} to="/explore" search={{question}} className="chip-link">
+                <Chip>{getFacet('question', question)?.label ?? question}</Chip>
+              </Link>
+            ))}
             <span className="function-facets-group">
               <span className="function-facets-label">Use</span>
               <FacetChips kind="use" ids={entry.useCases} />
@@ -157,7 +163,24 @@ export function FunctionPage({
         </div>
       </header>
 
-      <p className="function-explanation">{renderInlineCode(entry.explanation)}</p>
+      {entry.interpretation ? (
+        <Section title="Reading the result">
+          <p>{renderInlineCode(entry.interpretation.summary)}</p>
+          {entry.interpretation.cautions.length > 0 ? (
+            <ul>
+              {entry.interpretation.cautions.map(caution => (
+                <li key={typeof caution === 'string' ? caution : caution.text}>
+                  {typeof caution === 'string'
+                    ? getGPUAnalysisCautionText(caution).text
+                    : caution.text}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </Section>
+      ) : (
+        <p className="function-explanation">{renderInlineCode(entry.explanation)}</p>
+      )}
 
       {entry.params.length > 0 ? (
         <Section title="Parameters">

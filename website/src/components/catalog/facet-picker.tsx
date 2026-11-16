@@ -2,12 +2,12 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {useEffect, useState} from 'react';
-import {FACETS, FACET_TITLES, type FacetCounts, type FacetKind} from '../../catalog';
+import {FACETS, FACET_TITLES, type FacetCounts, type FacetKind} from '../../catalog/index';
 import {FacetIcon} from '../brand/facet-icon';
 
 export type FacetSelection = Partial<Record<FacetKind, string>>;
 
-/** Three rows of facet chips with live counts. Selecting a chip again clears it. */
+/** Shared questions and three rows of facet chips with live counts. Selecting a chip again clears it. */
 export function FacetPicker({
   selection,
   counts,
@@ -24,7 +24,7 @@ export function FacetPicker({
   });
   useEffect(() => {
     if (window.matchMedia('(max-width: 640px)').matches) {
-      setCollapsed({data: true, use: true, domain: true});
+      setCollapsed({question: true, data: true, use: true, domain: true});
     }
   }, []);
   return (
@@ -65,7 +65,7 @@ export function FacetPicker({
                     title={facet.description}
                     onClick={() => onSelect(kind, selected ? undefined : facet.id)}
                   >
-                    <FacetIcon id={facet.id} size={16} />
+                    {kind !== 'question' ? <FacetIcon id={facet.id} size={16} /> : null}
                     <span>{facet.label}</span>
                     <span className="facet-count">{count}</span>
                   </button>

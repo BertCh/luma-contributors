@@ -21,6 +21,8 @@ import {existsSync, readdirSync, readFileSync, statSync, writeFileSync, mkdirSyn
 import {dirname, join, relative, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import ts from 'typescript';
+import {build} from 'esbuild';
+import type {CatalogAnalysisMetadata} from '../src/catalog/analysis-metadata';
 
 // The extracted operations use domain verbs rather than create/make. Their word arithmetic,
 // selection-expression builders and upload helpers remain implementation building blocks.
@@ -39,7 +41,7 @@ type InventoryOntology = {
   inputs: string[];
   outputs: string[];
 };
-type InventorySymbol = {
+type InventorySymbol = CatalogAnalysisMetadata & {
   symbol: string;
   kind: 'class' | 'function' | 'recipe';
   importPath: string;
@@ -93,57 +95,24 @@ function summarizeText(text: string, maxLength: number): string {
   return firstSentence.length > maxLength ? `${firstSentence.slice(0, maxLength - 1)}…` : firstSentence;
 }
 
-function readOntology(): Map<string, InventoryOntology> {
-  const ontologyDirectory = join(analysisSource, 'gpu-spatial-analysis/ontology');
-  const byOperator = new Map<string, InventoryOntology>();
-  const readStrings = (node: ts.Expression | undefined): string[] =>
-    node && ts.isArrayLiteralExpression(node)
-      ? node.elements.filter(ts.isStringLiteralLike).map(element => element.text)
-      : [];
-  for (const name of readdirSync(ontologyDirectory).filter(entry => entry.endsWith('.ts'))) {
-    const source = ts.createSourceFile(name, readFileSync(join(ontologyDirectory, name), 'utf8'), ts.ScriptTarget.ES2022, true);
-    const visit = (node: ts.Node): void => {
-      if (ts.isObjectLiteralExpression(node)) {
-        const fields = new Map<string, ts.Expression>();
-        for (const property of node.properties) {
-          if (ts.isPropertyAssignment(property) && ts.isIdentifier(property.name)) {
-            fields.set(property.name.text, property.initializer);
-          }
-        }
-        // Extracted domain functions use aggregate/diagnose/prepare verbs. Their explicit
-        // descriptors supply inventory metadata without importing GPU execution code here.
-        if (name === 'reused-analysis-catalog.ts') {
-          const exportName = fields.get('exportName');
-          const capability = fields.get('primaryCapability');
-          const role = fields.get('role');
-          if (exportName && ts.isStringLiteralLike(exportName) && capability && ts.isStringLiteralLike(capability) && !(role && ts.isStringLiteralLike(role) && role.text === 'helper')) {
-            const spatial = capability.text === 'spatial-neighborhoods';
-            byOperator.set(exportName.text, {capability: capability.text, domain: spatial ? 'spatial-statistics' : 'dataframe-analysis', stage: spatial ? 'construct' : 'aggregate', inputs: readStrings(fields.get('inputs')), outputs: readStrings(fields.get('outputs'))});
-          }
-        }
-        const operators = readStrings(fields.get('operators'));
-        const identifier = fields.get('id');
-        if (operators.length > 0 && identifier && ts.isStringLiteralLike(identifier)) {
-          const readText = (key: string) => {
-            const value = fields.get(key);
-            return value && ts.isStringLiteralLike(value) ? value.text : '';
-          };
-          const ontology = {
-            capability: identifier.text,
-            domain: readText('domain'),
-            stage: readText('stage'),
-            inputs: readStrings(fields.get('inputs')),
-            outputs: readStrings(fields.get('outputs'))
-          };
-          for (const operator of operators) if (!byOperator.has(operator)) byOperator.set(operator, ontology);
-        }
-      }
-      ts.forEachChild(node, visit);
-    };
-    visit(source);
-  }
-  return byOperator;
+async function readAnalysisLibrary(): Promise<typeof import('../src/catalog/analysis-metadata') & {
+  getGPUAnalysisCapabilityCatalog: typeof import('../../modules/analysis/src/gpu-spatial-analysis/ontology/index')['getGPUAnalysisCapabilityCatalog'];
+  getGPUAnalysisOperatorCatalog: typeof import('../../modules/analysis/src/gpu-spatial-analysis/ontology/index')['getGPUAnalysisOperatorCatalog'];
+}> {
+  const bundled = await build({
+    stdin: {
+      contents: `export * from './src/catalog/analysis-metadata.ts';
+        export {getGPUAnalysisOperatorCatalog, getGPUAnalysisCapabilityCatalog} from '../modules/analysis/src/gpu-spatial-analysis/ontology/index.ts';`,
+      resolveDir: websiteDirectory
+    },
+    bundle: true,
+    platform: 'node',
+    format: 'esm',
+    write: false
+  });
+  return import(`data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].text).toString('base64')}`);
 }
+
 
 function readDocumentationPages(): {slugs: string[]; pages: {slug: string; text: string}[]} {
   const docsRoot = join(repositoryRoot, 'docs');
@@ -163,7 +132,7 @@ function readLensScenarios(): {ids: string[]; records: {id: string; text: string
   return {ids: records.map(record => record.id).sort(), records};
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const entryPoints = listEntryPoints();
   const configFile = ts.readConfigFile(join(repositoryRoot, 'tsconfig.json'), ts.sys.readFile);
   const parsed = ts.parseJsonConfigFileContent(configFile.config, ts.sys, repositoryRoot);
@@ -172,7 +141,17 @@ function main(): void {
     options: {...parsed.options, noEmit: true, plugins: undefined}
   });
   const checker = program.getTypeChecker();
-  const ontologyByOperator = readOntology();
+  const library = await readAnalysisLibrary();
+  const capabilities = new Map(library.getGPUAnalysisCapabilityCatalog().map(capability => [capability.id, capability]));
+  const ontologyByOperator = new Map(
+    library.getGPUAnalysisOperatorCatalog().map(operator => [operator.exportName, {
+      capability: operator.primaryCapability,
+      domain: capabilities.get(operator.primaryCapability)?.domain ?? operator.package,
+      stage: capabilities.get(operator.primaryCapability)?.stage ?? operator.role ?? 'unspecified',
+      inputs: [...library.getCatalogAnalysisMetadata(operator.exportName).dataKinds.input],
+      outputs: [...library.getCatalogAnalysisMetadata(operator.exportName).dataKinds.output]
+    }])
+  );
   const documentation = readDocumentationPages();
   const lensScenarios = readLensScenarios();
 
@@ -344,6 +323,7 @@ function main(): void {
         ...(contentMatches.length <= MAX_CONTENT_LENS_MATCHES ? contentMatches : [])
       ];
       symbols.set(name, {
+        ...library.getCatalogAnalysisMetadata(name),
         symbol: name,
         kind,
         importPath,
@@ -376,4 +356,4 @@ function main(): void {
   console.log(`inventory: ${sorted.length} symbols -> ${relative(repositoryRoot, outputFile)}`);
 }
 
-main();
+await main();

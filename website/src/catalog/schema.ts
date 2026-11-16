@@ -5,8 +5,11 @@
 // src/catalog/entries/<group>.ts. Keep the prose very concise.
 
 import type {DataTypeId, DomainId, UseCaseId} from './taxonomy';
+import type {CatalogAnalysisMetadata, CatalogInterpretation} from './analysis-metadata';
 
-export type CatalogEntry = {
+export type CatalogEntry = Partial<CatalogAnalysisMetadata> & {
+  /** How to read the output; omitted prose is supplied from the existing explanation. */
+  interpretation?: CatalogInterpretation;
   /** Unique kebab-case id, used as the URL slug: /fn/<id>. */
   id: string;
   /** Exported symbol, for example `GPULocalMoran` or `addDasymetricRedistributionRecipe`. */
@@ -20,6 +23,7 @@ export type CatalogEntry = {
   summary: string;
   /** At most three short sentences: when to use it and the key idea. Inline `code` allowed. */
   explanation: string;
+  /** Legacy authoring field; metadata attachment replaces it with the shared kind projection. */
   dataTypes: {input: DataTypeId[]; output: DataTypeId[]};
   /** One to three. */
   useCases: UseCaseId[];

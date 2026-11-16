@@ -27,7 +27,9 @@
 import {existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync} from 'node:fs';
 import {dirname, join, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import ts from 'typescript';
+import {build} from 'esbuild';
+import type {CatalogAnalysisMetadata} from '../src/catalog/analysis-metadata';
+import type {CatalogEntry} from '../src/catalog/schema';
 
 const websiteDirectory = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const entriesDirectory = join(websiteDirectory, 'src/catalog/entries');
@@ -38,25 +40,23 @@ type InventoryFile = {
   entryPoints: string[];
   docSlugs: string[];
   lensScenarioIds: string[];
-  symbols: {
+  symbols: (CatalogAnalysisMetadata & {
     symbol: string;
     kind: string;
     importPath: string;
     directory: string;
     props: {name: string; optional?: boolean; jsdoc?: string}[];
     outputs?: {name: string; optional: boolean}[];
-  }[];
+  })[];
 };
 
-type LooseEntry = Record<string, any>;
+type LooseEntry = {[Key in keyof CatalogEntry]?: any};
 type Facet = {id: string};
-type Taxonomy = {DATA_TYPES: Facet[]; USE_CASES: Facet[]; DOMAINS: Facet[]};
+type Taxonomy = {DATA_TYPES: Facet[]; USE_CASES: Facet[]; DOMAINS: Facet[]; QUESTIONS: Facet[]};
 
 async function importTypeScriptFile<T>(file: string): Promise<T> {
-  const output = ts.transpileModule(readFileSync(file, 'utf8'), {
-    compilerOptions: {module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022}
-  });
-  return import(`data:text/javascript;base64,${Buffer.from(output.outputText).toString('base64')}`);
+  const output = await build({entryPoints: [file], bundle: true, platform: 'node', format: 'esm', write: false});
+  return import(`data:text/javascript;base64,${Buffer.from(output.outputFiles[0].text).toString('base64')}`);
 }
 
 function countSentences(text: string): number {
@@ -70,6 +70,7 @@ async function main(): Promise<void> {
   const filters = process.argv.slice(2).filter(argument => !argument.startsWith('--'));
   const inventory: InventoryFile = JSON.parse(readFileSync(join(websiteDirectory, 'src/catalog/generated/inventory.json'), 'utf8'));
   const taxonomy = await importTypeScriptFile<Taxonomy>(join(websiteDirectory, 'src/catalog/taxonomy.ts'));
+  const metadata = await importTypeScriptFile<typeof import('../src/catalog/analysis-metadata')>(join(websiteDirectory, 'src/catalog/analysis-metadata.ts'));
   const inventoryBySymbol = new Map(inventory.symbols.map(symbol => [symbol.symbol, symbol]));
   const dataTypeIds = new Set(taxonomy.DATA_TYPES.map(facet => facet.id));
   const useCaseIds = new Set(taxonomy.USE_CASES.map(facet => facet.id));
@@ -112,6 +113,12 @@ async function main(): Promise<void> {
       errors.push(`${label}: ${message}`);
       (errorsByFile[file] ??= []).push(`${entry.id ?? '(no id)'}: ${message}`);
     };
+    try {
+      Object.assign(entry, metadata.attachCatalogAnalysisMetadata(entry as {symbol: string; explanation?: string}));
+    } catch (error) {
+      fail(error instanceof Error ? error.message : String(error));
+      continue;
+    }
     if (typeof entry.id !== 'string' || !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(entry.id)) fail('id must be kebab-case');
 
     const inventorySymbol = inventoryBySymbol.get(entry.symbol);
@@ -164,6 +171,19 @@ async function main(): Promise<void> {
       }
     }
 
+    const expectedMetadata = metadata.getCatalogAnalysisMetadata(entry.symbol);
+    const inventoryMetadata = inventoryBySymbol.get(entry.symbol);
+    for (const field of ['questions', 'dataKinds'] as const) {
+      if (JSON.stringify(inventoryMetadata?.[field]) !== JSON.stringify(expectedMetadata[field])) {
+        fail(`inventory ${field} differs from shared metadata; regenerate inventory`);
+      }
+    }
+    if (!entry.interpretation?.summary || !Array.isArray(entry.interpretation.cautions)) {
+      fail('interpretation needs a summary and cautions');
+    }
+    if (!entry.questions?.length || entry.questions.some((question: string) => !taxonomy.QUESTIONS.some(facet => facet.id === question))) {
+      fail('questions must come from the shared question taxonomy');
+    }
     if (!entry.title) fail('missing title');
     if (typeof entry.summary !== 'string' || entry.summary.length === 0) fail('missing summary');
     else if (entry.summary.length > 120) fail(`summary is ${entry.summary.length} characters (max 120)`);
@@ -181,8 +201,11 @@ async function main(): Promise<void> {
     }
     if (!(entry.useCases?.length >= 1 && entry.useCases.length <= 3)) fail('useCases must have one to three ids');
     if (!(entry.domains?.length >= 1 && entry.domains.length <= 3)) fail('domains must have one to three ids');
-    if (!(entry.dataTypes?.input?.length >= 1)) fail('dataTypes.input must have at least one id');
-    if (!(entry.dataTypes?.output?.length >= 1)) fail('dataTypes.output must have at least one id');
+    // Settings-only helpers and handles can legitimately have no visible website ports.
+    const expectedPorts = metadata.getCatalogDataTypes(entry as {symbol: string});
+    if (JSON.stringify(entry.dataTypes) !== JSON.stringify(expectedPorts)) {
+      fail('dataTypes must be the shared kind projection');
+    }
 
     if ((entry.params?.length ?? 0) > 8) fail(`${entry.params.length} params (max 8)`);
     for (const param of entry.params ?? []) {

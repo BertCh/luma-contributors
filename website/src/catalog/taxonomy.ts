@@ -4,6 +4,18 @@
 // Our own organization of the catalog: by data type, by use case and by domain. Ids are stable URL
 // slugs (/explore/data/<id>, /explore/use/<id>, /explore/domain/<id>).
 
+import {
+  GPU_ANALYSIS_QUESTION_RECORDS,
+  type GPUAnalysisWebsiteDataType
+} from '../../../modules/analysis/src/gpu-spatial-analysis/ontology/index';
+
+/** Labels, ids and ordering come from the shared questions, including the twelfth question. */
+export const QUESTIONS = GPU_ANALYSIS_QUESTION_RECORDS.map(question => ({
+  id: question.id,
+  label: question.label,
+  description: question.summary
+}));
+
 export type Facet = {id: string; label: string; description: string};
 
 export const DATA_TYPES = [
@@ -149,6 +161,6 @@ export const DOMAINS = [
   {id: 'three-d', label: '3D and point clouds', description: 'Lidar, surfaces and 3D measurement.'}
 ] as const satisfies readonly Facet[];
 
-export type DataTypeId = (typeof DATA_TYPES)[number]['id'];
+export type DataTypeId = GPUAnalysisWebsiteDataType;
 export type UseCaseId = (typeof USE_CASES)[number]['id'];
 export type DomainId = (typeof DOMAINS)[number]['id'];

@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Link} from '@tanstack/react-router';
-import {FACET_TITLES, getEntriesBy, getFacet, type FacetKind} from '../../catalog';
+import {FACET_TITLES, getEntriesBy, getFacet, type FacetKind} from '../../catalog/index';
 import {FacetIcon} from '../brand/facet-icon';
 import {EntryGrid} from './entry-grid';
 import './catalog.css';
@@ -11,7 +11,14 @@ import './catalog.css';
 export function FacetPage({kind, id}: {kind: FacetKind; id: string}) {
   const facet = getFacet(kind, id);
   const entries = getEntriesBy(kind, id);
-  const search = kind === 'data' ? {data: id} : kind === 'use' ? {use: id} : {domain: id};
+  const search =
+    kind === 'question'
+      ? {question: id}
+      : kind === 'data'
+        ? {data: id}
+        : kind === 'use'
+          ? {use: id}
+          : {domain: id};
   return (
     <main className="page facet-page">
       <header className="facet-hero">

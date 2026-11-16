@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-// The five workflows of the page: each step in the order its recipe adds it, the data that flows to
+// Website evidence attached to five shared curated templates: each step in the order its recipe adds it, the data that flows to
 // the next step, and the recorded run behind it. Source lines are cited per step so the order can be
 // checked; the recorded numbers come from the lens view models (named JSON imports keep only the
 // fields used here in the page bundle).
+
+import {KEPLER_CURATED_ANALYSES} from '../../../../../../modules/kepler/src/curated/curated-analyses';
+import type {KeplerCuratedAnalysis} from '../../../../../../modules/kepler/src/curated/curated-analysis-types';
 
 import {
   recordedEdgeCount as driveTimeEdges,
@@ -96,11 +99,9 @@ export type WorkflowStep = {
   source: string;
 };
 
-export type Workflow = {
+export type WorkflowRecording = {
+  templateId: string;
   id: string;
-  title: string;
-  question: string;
-  start: string;
   recipe: string;
   /** Catalog id of the recipe's function page. */
   recipeEntry: string;
@@ -127,12 +128,10 @@ const SPACE_TIME =
 const DRIVE_TIME = 'modules/analysis/src/gpu-network/recipes/drive-time-catchment-recipe.ts';
 const DRAINAGE = 'modules/analysis/src/gpu-spatial-analysis/recipes/drainage-network-recipe.ts';
 
-export const WORKFLOWS: readonly Workflow[] = [
+const WORKFLOW_RECORDINGS: readonly WorkflowRecording[] = [
   {
     id: 'hot-spots',
-    title: 'Points to hot spots',
-    question: 'Where do observations cluster more than chance allows?',
-    start: 'Observation points and a study-area polygon, longitude and latitude.',
+    templateId: 'hot-spot-map',
     recipe: 'addHotSpotAnalysisRecipe',
     recipeEntry: 'hot-spot-analysis-recipe',
     example: 'hot-spots',
@@ -216,6 +215,8 @@ export const WORKFLOWS: readonly Workflow[] = [
       hotSpotEdges,
       hotSpotResources
     ),
+    recordNote:
+      'This recording counts events on a study-area DGGS cover. The curated template uses a square lattice and its own inference settings; the recording is a related recipe, not the template execution.',
     stages: ['study-area', 'study-table', 'point-aggregation', 'weights', 'minimum-neighbors'],
     stagesSource: `${HOT_SPOTS}:509`,
     // Defaults: neighborRings 1 for Quadbin, 2 for H3 (hot-spot-analysis-recipe.ts:618),
@@ -225,9 +226,7 @@ export const WORKFLOWS: readonly Workflow[] = [
   },
   {
     id: 'rate-clusters',
-    title: 'Rates to a cluster map',
-    question: 'Which areas have rates that cluster high or low with their neighbours?',
-    start: 'Polygons with an event count and a population each.',
+    templateId: 'rate-cluster-map',
     recipe: 'addRateClusterMapRecipe',
     recipeEntry: 'rate-cluster-map-recipe',
     example: 'rate-clusters',
@@ -286,9 +285,7 @@ export const WORKFLOWS: readonly Workflow[] = [
   },
   {
     id: 'emerging',
-    title: 'Emerging hot spots',
-    question: 'Which places are becoming hot spots, and which are cooling?',
-    start: 'Timestamped event points on a lattice of cells.',
+    templateId: 'emerging-hot-spots',
     recipe: 'addSpaceTimeHotSpotsRecipe',
     recipeEntry: 'space-time-hot-spots-recipe',
     example: 'space-time',
@@ -341,9 +338,7 @@ export const WORKFLOWS: readonly Workflow[] = [
   },
   {
     id: 'drive-time',
-    title: 'Drive-time catchments',
-    question: 'How much demand lies within each drive-time band of the nearest facility?',
-    start: 'A road network with travel costs, facility points and demand points.',
+    templateId: 'drive-time-catchments',
     recipe: 'addDriveTimeCatchmentRecipe',
     recipeEntry: 'drive-time-catchment',
     example: 'drive-time',
@@ -404,14 +399,14 @@ export const WORKFLOWS: readonly Workflow[] = [
     ),
     stages: ['service-areas', 'band-statistics'],
     stagesSource: `${DRIVE_TIME}:783`,
+    recordNote:
+      'This recording runs the drive-time band recipe. The curated template computes one demand total per facility, without bands or isochrones; its method and binding are listed above.',
     choice:
       'maximumIterations bounds the cost search at compile time; if service-areas reports not converged, raise it or set a cost limit.'
   },
   {
     id: 'drainage',
-    title: 'Terrain to a drainage network',
-    question: 'Where does water flow, and which streams and catchments does it form?',
-    start: 'An elevation raster.',
+    templateId: 'drainage-network',
     recipe: 'addDrainageNetworkRecipe',
     recipeEntry: 'drainage-network-recipe',
     example: 'drainage',
@@ -479,3 +474,29 @@ export const WORKFLOWS: readonly Workflow[] = [
       'The stream threshold, the upstream area at which a cell counts as a stream, sets how dense the network is; filling depressions first keeps pits from ending streams early.'
   }
 ];
+
+/** All workflow descriptions are the shared records, including honest availability and typed slots. */
+export const WORKFLOW_TEMPLATES = KEPLER_CURATED_ANALYSES;
+
+export type Workflow = WorkflowRecording & {
+  template: KeplerCuratedAnalysis;
+  title: string;
+  question: string;
+  start: string;
+};
+
+/** Attach only website evidence to the shared template; never author its question or method here. */
+export const WORKFLOWS: readonly Workflow[] = WORKFLOW_TEMPLATES.flatMap(template => {
+  const recording = WORKFLOW_RECORDINGS.find(candidate => candidate.templateId === template.id);
+  return recording
+    ? [
+        {
+          ...recording,
+          template,
+          title: template.name,
+          question: template.title,
+          start: template.slots.map(slot => slot.label).join('; ')
+        }
+      ]
+    : [];
+});

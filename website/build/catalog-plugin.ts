@@ -9,12 +9,20 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {transform} from 'esbuild';
 import type {Plugin} from 'vite';
+import {attachCatalogAnalysisMetadata} from '../src/catalog/analysis-metadata';
 
 const SUMMARIES_ID = 'virtual:catalog-summaries';
 const RESOLVED_SUMMARIES_ID = `\0${SUMMARIES_ID}`;
 
 /** Fields kept out of the summaries; they are only needed on the function page. */
-const DETAIL_FIELDS = ['explanation', 'params', 'moreRequired', 'outputs', 'example'] as const;
+const DETAIL_FIELDS = [
+  'explanation',
+  'params',
+  'moreRequired',
+  'outputs',
+  'example',
+  'interpretation'
+] as const;
 
 export function catalogPlugin({entriesDirectory}: {entriesDirectory: string}): Plugin {
   return {
@@ -36,7 +44,10 @@ export function catalogPlugin({entriesDirectory}: {entriesDirectory: string}): P
         this.addWatchFile(filePath);
         const group = fileName.replace(/\.ts$/, '');
         for (const entry of await loadEntries(filePath)) {
-          const summary: Record<string, unknown> = {...entry, group};
+          const summary: Record<string, unknown> = {
+            ...attachCatalogAnalysisMetadata(entry as {symbol: string}),
+            group
+          };
           for (const field of DETAIL_FIELDS) {
             delete summary[field];
           }
