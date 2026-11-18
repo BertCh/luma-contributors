@@ -6,6 +6,18 @@ caller-owned float32 outputs, and a separate uint32 validity output. They do not
 submit, read back, resample, choose sensor bands, or decode cloud/quality bits.
 `GPURasterNDVI` remains the existing vegetation normalized-difference contributor.
 
+Add these producers with `graph.add(new GPURasterNBR(props))` (likewise NDWI, EVI and SAVI).
+`getCommandNodes(graph)` returns their ordered passes without scheduling them; `addToGraph` has
+been removed. EVI returns six band-math passes, SAVI three, and NDWI/NBR one each.
+Repeated inspection on the same graph reuses those passes. It is safe to inspect with
+`getCommandNodes(graph)` and then schedule once with `graph.add(producer)`.
+The returned list is frozen and readonly; attempts to remove or reorder inspected passes cannot
+change what a subsequent add schedules.
+
+Each producer is implemented in its own file under `raster-analysis/spectral-indices`, sharing the
+band-math adapter. The established `gpu-raster-spectral-indices` source module forwards the same
+four classes and props types; package imports, pass IDs and pass order are preserved.
+
 ## Formula and band contracts
 
 All symbols below denote calibrated, dimensionless reflectance. Outputs are dimensionless
@@ -91,7 +103,7 @@ function addVegetationIndex(
   output: GraphDataView<'float32'>,
   outputValidity: GraphDataView<'uint32'>
 ): void {
-  new GPURasterEVI({
+  graph.add(new GPURasterEVI({
     width,
     height,
     nearInfrared,
@@ -100,15 +112,20 @@ function addVegetationIndex(
     output,
     outputValidity,
     epsilon: 0.000001
-  }).addToGraph(graph);
+  }));
 }
 ```
 
 Inputs and outputs must belong to the same graph and contain one packed sample per pixel.
 Outputs must use separate buffers from all input samples, masks, and each other. Shared
-read-only source buffers and masks are allowed. Supply distinct `id` values for multiple
+read-only source buffers and masks are allowed. Separation uses the underlying physical buffer,
+including separate graph imports: reimporting the same bytes cannot make an output independent
+of a source. Supply distinct `id` values for multiple
 recipes in one graph. Re-encoding a compiled graph consumes current input values and masks;
 format, dimensions, calibration, methods, and scalar options are fixed at construction.
+Each producer captures those fields, output views and nested source-band/storage descriptors once,
+including inherited getters. Later caller-map mutation cannot replace a validated output with a
+physical source alias or change the declared band bindings. Input buffer contents remain live per run.
 All imported buffers remain caller-owned. Intermediate buffers belong to the graph.
 
 ## Composition and verification

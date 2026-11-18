@@ -19,6 +19,9 @@ Contributors implement `GPUCommandNodeProducer`. `graph.add(contributor)` declar
 caller-owned `GPUCommandGraph`; it does not compile the graph, submit commands, or read results
 back.
 
+Source implementations live in the `datum-grid-transform`, `point-buffer` and `viewport-bounds`
+family folders; the package entry re-exports each family index.
+
 ## `GPUDatumGridTransform`
 
 Shifts longitude, latitude and height with ordered regular grids. The first grid covering a

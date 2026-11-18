@@ -84,11 +84,25 @@ concurrent writes to the same word. Omitting `output.validity` allocates a pixel
 
 ## Limits and verification
 
-Both classes accept positive integer pixel counts and 1–128 dimensions; the component count is at most
-2^32 - 1 for u32 addressing. Views are single packed buffers. Each binding, including encoder scratch,
-is checked against the device's storage binding limit before nodes are created. A 262,144-pixel,
-128-component float32 raster occupies 128 MiB. Tile larger arrays on default devices. Decode takes
-one dispatch and encode takes two. Shapes, formats, normalization and optional view presence are
+Both classes accept positive integer pixel counts and 1–1,024 dimensions; total pixelCount is at most 4,294,967,295
+across all chunks. Chunking cannot bypass this total uint32 row limit. The flattened component
+count is at most 2^32 - 1 per chunk for uint32 addressing; the total across chunks may exceed it.
+All supplied pixel fields must have matching chunk counts and complete-pixel boundaries. Packed
+int8/binary16 words cannot cross a chunk boundary; only the final nonempty chunk may have word padding.
+Each chunk binding, including encoder scratch, is checked against the device's storage binding limit
+before nodes are created. A 262,144-pixel, 128-component float32 chunk occupies 128 MiB; split larger
+arrays into aligned chunks on default devices. Widths 192, 256, 384 and 1,024 are covered by the
+declaration and shader-audit scale spec; the 128-dimension limit belongs to reference covariance
+operators, not these codecs. Decode takes one dispatch and encode takes two per nonempty chunk.
+The per-contributor command budget is `1 + dispatchesPerChunk × nonemptyChunks ≤ 32,768`:
+
+| Codec | Dispatches per chunk | Maximum nonempty chunks | First rejected chunk count |
+| --- | --- | --- | --- |
+| Encode | 2 | 16,383 | 16,384 |
+| Decode | 1 | 32,767 | 32,768 |
+
+Empty chunks do not consume dispatches; every binding and native packed-word boundary must still fit.
+Shapes, chunk topology, formats, normalization and optional view presence are
 compile-time; all view contents are per-frame. No parameter packer is needed. These raster operations
 remain GPU-only, as recommended by the CPU suitability survey.
 

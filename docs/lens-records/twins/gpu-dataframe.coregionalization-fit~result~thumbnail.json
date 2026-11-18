@@ -1,0 +1,33 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-dataframe.coregionalization-fit",
+  "rung": "result",
+  "size": "thumbnail",
+  "scenarioId": "gpu-dataframe.coregionalization-fit",
+  "viewId": "result-view",
+  "caption": "Result of gpu-dataframe.coregionalization-fit: distances, semivariances, pairCo…",
+  "description": "Result of gpu-dataframe.coregionalization-fit: distances, semivariances, pairCounts, parameters → invalidCount. rows: 1. values read back from the GPU run. input distances: 4 rows.",
+  "llms": "Result of gpu-dataframe.coregionalization-fit: distances, semivariances, pairCounts, parameters → invalidCount\n\n- rows: 1\n- input distances: 4 rows\n- input semivariances: 12 rows\n- input pairCounts: 4 rows\n- input parameters: 5 rows\n- Coordinate model unknown: drawn as planar x, y.\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "rows",
+    "value": "1"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><svg class=\"cv-figure\" width=\"160\" height=\"96\" viewBox=\"0 0 160 96\" preserveAspectRatio=\"xMidYMid meet\" data-extent=\"[[-1,-1],[1,1]]\" role=\"img\" aria-label=\"Result: invalidCount\"><defs><pattern id=\"lens-gpu-dataframe-coregionalization-fit-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"3\" height=\"3\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-dataframe-coregionalization-fit-result-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-dataframe-coregionalization-fit-result-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g><rect class=\"cv-mark cv-mark--output cv-cell\" data-role=\"output\" stroke-width=\"0.6\" fill=\"#0072b2\" stroke=\"#ffffff\" x=\"6\" y=\"6\" width=\"24.666666666666668\" height=\"14\" data-provenance=\"readback\"></rect><rect class=\"cv-mark cv-mark--output cv-cell\" data-role=\"output\" stroke-width=\"0.6\" fill=\"#0072b2\" stroke=\"#ffffff\" x=\"30.666666666666668\" y=\"6\" width=\"24.666666666666668\" height=\"14\" data-provenance=\"readback\"></rect><rect class=\"cv-mark cv-mark--output cv-cell\" data-role=\"output\" stroke-width=\"0.6\" fill=\"#0072b2\" stroke=\"#ffffff\" x=\"55.333333333333336\" y=\"6\" width=\"24.666666666666668\" height=\"14\" data-provenance=\"readback\"></rect><rect class=\"cv-mark cv-mark--output cv-cell\" data-role=\"output\" stroke-width=\"0.6\" fill=\"#0072b2\" stroke=\"#ffffff\" x=\"80\" y=\"6\" width=\"24.666666666666668\" height=\"14\" data-provenance=\"readback\"></rect><rect class=\"cv-mark cv-mark--output cv-cell\" data-role=\"output\" stroke-width=\"0.6\" fill=\"#0072b2\" stroke=\"#ffffff\" x=\"104.66666666666667\" y=\"6\" width=\"24.666666666666668\" height=\"14\" data-provenance=\"readback\"></rect><rect class=\"cv-mark cv-mark--output cv-cell\" data-role=\"output\" stroke-width=\"0.6\" fill=\"#0072b2\" stroke=\"#ffffff\" x=\"129.33333333333331\" y=\"6\" width=\"24.666666666666668\" height=\"14\" data-provenance=\"readback\"></rect></g></svg></section>",
+    "width": 160,
+    "height": 96
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-11-18T16:33:02.743Z",
+    "runId": "run-7691add7",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-7691add7",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

@@ -77,8 +77,8 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-11T15:21:19.115Z",
-    "runId": "run-730d2709",
+    "date": "2026-11-18T16:33:49.024Z",
+    "runId": "run-dcfdcc74",
     "observerEffects": [
       "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
@@ -86,7 +86,7 @@
     ]
   },
   "state": {
-    "runId": "run-730d2709",
+    "runId": "run-dcfdcc74",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

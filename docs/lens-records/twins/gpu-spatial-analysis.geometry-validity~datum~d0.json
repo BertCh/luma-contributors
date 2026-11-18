@@ -6,15 +6,15 @@
   "size": "full",
   "scenarioId": "gpu-spatial-analysis.geometry-validity",
   "viewId": "datum-receipt",
-  "caption": "Receipt of parks 0. mask: 0. values read back from the GPU run. result: 3 quantities.",
-  "description": "Receipt of parks 0. mask: 0. values read back from the GPU run. result: 3 quantities.",
-  "llms": "Receipt of parks 0\n\n- mask: 0\n- result: 3 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "caption": "Receipt of parks 0. issueCode: 0. values read back from the GPU run. result: 1 quantities.",
+  "description": "Receipt of parks 0. issueCode: 0. values read back from the GPU run. result: 1 quantities.",
+  "llms": "Receipt of parks 0\n\n- issueCode: 0\n- result: 1 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
-    "label": "mask",
+    "label": "issueCode",
     "value": "0"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of parks 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"result\"><tr><th scope=\"rowgroup\" colspan=\"5\">result</th></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-geometry-validity-snapshots-parks-0\" title=\"gpu-spatial-analysis-geometry-validity-snapshot-tap\">parks</button></td><td>3615.923095703125, 1492.0489501953125</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-geometry-validity-snapshots-resultParks-0\" title=\"gpu-spatial-analysis-geometry-validity-snapshot-tap\">resultParks</button></td><td>3615.923095703125, 1492.0489501953125</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-geometry-validity-snapshots-mask-0\" title=\"validity bitmask per park; 0 means none of the checked problems\">mask</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of parks 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"result\"><tr><th scope=\"rowgroup\" colspan=\"5\">result</th></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-geometry-validity-snapshots-issueCode-0\" title=\"diagnostic issue code per park; zero means no observed issue, not a filter mask\">issueCode</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,29 +29,13 @@
     "rows": [
       [
         "result",
-        "parks",
-        "3615.923095703125, 1492.0489501953125",
-        "0",
-        "readback"
-      ],
-      [
-        "result",
-        "resultParks",
-        "3615.923095703125, 1492.0489501953125",
-        "0",
-        "readback"
-      ],
-      [
-        "result",
-        "mask",
+        "issueCode",
         "0",
         "0",
         "readback"
       ]
     ],
     "provenance": [
-      "readback",
-      "readback",
       "readback"
     ]
   },
@@ -70,12 +54,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-11T15:20:44.684Z",
-    "runId": "run-8a094a8d",
+    "date": "2026-11-18T16:33:27.015Z",
+    "runId": "run-9963334c",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-8a094a8d",
+    "runId": "run-9963334c",
     "rung": "datum",
     "bindings": {
       "entity": 0

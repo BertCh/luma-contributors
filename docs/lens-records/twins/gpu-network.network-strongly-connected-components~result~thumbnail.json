@@ -1,0 +1,37 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-network.network-strongly-connected-components",
+  "rung": "result",
+  "size": "thumbnail",
+  "scenarioId": "gpu-network.network-strongly-connected-components",
+  "viewId": "result-view",
+  "caption": "Result of gpu-network.network-strongly-connected-components: offsets, neighbors…",
+  "description": "Result of gpu-network.network-strongly-connected-components: offsets, neighbors → strongComponents. rows: 4. values read back from the GPU run. input offsets: 5 rows.",
+  "llms": "Result of gpu-network.network-strongly-connected-components: offsets, neighbors → strongComponents\n\n- rows: 4\n- input offsets: 5 rows\n- input neighbors: 5 rows\n- Coordinate model unknown: drawn as planar x, y.\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "rows",
+    "value": "4"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><svg class=\"cv-figure\" width=\"160\" height=\"96\" viewBox=\"0 0 160 96\" preserveAspectRatio=\"xMidYMid meet\" data-extent=\"[[-1,-1],[1,1]]\" role=\"img\" aria-label=\"Result: strongComponents\"><defs><pattern id=\"lens-gpu-network-network-strongly-connected-components-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"3\" height=\"3\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-network-network-strongly-connected-components-result-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-network-network-strongly-connected-components-result-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g><rect class=\"cv-mark cv-mark--output cv-cell\" data-role=\"output\" stroke-width=\"0.6\" fill=\"#0072b2\" stroke=\"#ffffff\" x=\"6\" y=\"6\" width=\"148\" height=\"14\" data-provenance=\"readback\"></rect></g><g><rect class=\"cv-mark cv-mark--output cv-cell\" data-role=\"output\" stroke-width=\"0.6\" fill=\"#0072b2\" stroke=\"#ffffff\" x=\"6\" y=\"20\" width=\"148\" height=\"14\" data-provenance=\"readback\"></rect></g><g><rect class=\"cv-mark cv-mark--output cv-cell\" data-role=\"output\" stroke-width=\"0.6\" fill=\"#0072b2\" stroke=\"#ffffff\" x=\"6\" y=\"34\" width=\"148\" height=\"14\" data-provenance=\"readback\"></rect></g><g><rect class=\"cv-mark cv-mark--output cv-cell\" data-role=\"output\" stroke-width=\"0.6\" fill=\"#0072b2\" stroke=\"#ffffff\" x=\"6\" y=\"48\" width=\"148\" height=\"14\" data-provenance=\"readback\"></rect></g></svg></section>",
+    "width": 160,
+    "height": 96
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-11-18T16:33:06.257Z",
+    "runId": "run-52f1aa16",
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-52f1aa16",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

@@ -21,7 +21,7 @@ graph-owned transient view, as before. The `outputs` of the result are the views
 | `addRasterResistanceConnectivityRecipe` | required `potentials`, `vertexCurrents`, `diagnostics`, `solverStatus`; optional `currents`, `edges`, `conductances` and the `status` scalars |
 | `addSegregationDecompositionRecipe` | `indices`, `validity`, `decomposition`, and with `randomization` `distribution`, `inference` |
 | `addSegregationCounterfactualRecipe` | the decomposition entries, `compositionOnly`, `spatialOnly` |
-| `addPopulationSupportAlignmentRecipe` | `populations`, `validity`, `status` |
+| `addPopulationSupportAlignmentRecipe` | `populations`, `alignmentCode`, `matchedMask`, `status` (packed certificate, returned as `packedStatus`) |
 
 Limits are named constants and are rejected with a message that starts with the recipe ID and names
 the prop: 256 classes (landscape metrics), 256 vertices, 65,536 edges and 4,096 iterations (dense
@@ -54,6 +54,11 @@ Tile IDs must be globally unique before this operation; tile-local ID collisions
 The returned provenance retains both the input and reconciled labels and the parent mapping.
 Merged-away patch rows have zero area. Halos must be removed before assembling the complete grid;
 there is no implicit out-of-core fetch or independently normalized per-tile summary.
+Every supplied `output` view is checked for packed format, exact logical length, ownership and
+aliases before allocating default outputs or scheduling reconciliation. Patch metrics/parents have
+one row per patch; class metrics/aggregation one per class; adjacency has `classCount` squared rows;
+reconciled labels have one row per cell; landscape metrics have one row. Correct a rejected view and
+retry with the same recipe ID on the unchanged graph.
 
 - `patchMetrics`: `[area, perimeter, cellCount, sameClassDirectedSideCount]`.
 - `classMetrics`: `[area, sumPatchPerimeters, effectiveMeshSize, cohesionPercent]`.
@@ -351,8 +356,15 @@ segregation statistics remain separately named analyses.
 
 `addPopulationSupportAlignmentRecipe` joins `sourceIds` and `targetIds` on GPU, reordering focal and
 complement counts onto a caller-chosen support. Duplicate or missing IDs produce NaN rows.
-`status` is `[complete, missingTargetRows, ambiguousTargetRows, excludedSourceRows]`; completeness
-requires a one-to-one support match with no excluded mass. This is exact ID alignment, not implicit
+The recipe returns the canonical `{contributors, outputs, intermediates, status}` shape, plus
+provenance and `packedStatus`. Its three diagnostic substages are `missing-targets`,
+`ambiguous-targets` and `excluded-sources`; each exposes a scalar `status.invalidCount` for that
+reason. They are views of the corresponding packed words, with no readback or extra GPU commands.
+`intermediates` is empty because this recipe adds one contributor.
+`packedStatus` retains `[complete, missingTargetRows, ambiguousTargetRows, excludedSourceRows]`;
+the contributor, CPU twin and operation forms keep their existing packed `output.status` layout.
+Recipe consumers formerly reading `result.status` as a view now read `result.packedStatus`.
+Completeness requires a one-to-one support match with no excluded mass. This is exact ID alignment, not implicit
 polygon overlay or areal interpolation across changed boundaries. Use the existing conservative
 areal redistribution before this join when geographic supports differ.
 
@@ -367,21 +379,36 @@ areal redistribution before this join when geographic supports differ.
 ::lens{scenario=gpu-spatial-analysis.population-support-alignment rung=graph caption="Follow indexed joins and parallel status reductions."}
 
 The synthetic fixture includes a unique reordered match, duplicate source and target IDs, a missing
-target, an excluded source, and a valid `0xffffffff` ID. Its target validity codes are
-`[0, 2, 1, 2, 2, 0]` and its packed status is `[0, 1, 3, 1]`.
+target, an excluded source, and a valid `0xffffffff` ID. Its target alignment codes are
+`[0, 2, 1, 2, 2, 0]`, its matched mask is `[1, 0, 0, 0, 0, 1]`, and its packed status is
+`[0, 1, 3, 1]`.
 
 The recipe now delegates to this contributor with caller-owned `output.populations` (`float32x2`,
-one row per target), `output.validity` (`uint32`, one row per target), and `output.status`
-(`uint32x4`, one row). The recipe's existing optional output overrides and return keys are unchanged.
+one row per target), `output.alignmentCode` and `output.matchedMask` (`uint32`, one row per target),
+and `output.status` (`uint32x4`, one row). The recipe accepts optional caller-owned overrides for
+each view, returns the row outputs under `outputs`, and returns whole-operation `status` separately.
 Two indexed `GPUKeyJoin` operations replace exhaustive source/target scans: one matches targets to
 sources and reports excluded sources, and one detects repeated target IDs. Counts use parallel
 reductions. Work is sorting plus indexed lookups; no invocation scans an entire support table.
 Population values are copied without checking whether they are finite or nonnegative. This stage
 aligns identifiers; downstream segregation statistics validate population counts.
 
-The legacy validity codes remain `0` for a unique match, `1` for no source, and `2` for an ambiguous
-source or target. A missing source takes precedence over a repeated target. Status remains
-`[aligned, missingTargetRows, ambiguousTargetRows, excludedSourceRows]`; excluded rows are counted
+The diagnostic `alignmentCode` is `0` for a unique match, `1` for no source, and `2` for an ambiguous
+source or target. `POPULATION_SUPPORT_ALIGNMENT_CODES` exports `MATCHED`, `MISSING` and `AMBIGUOUS`;
+`decodePopulationSupportAlignmentCode(code)` returns `'matched'`, `'missing'`, `'ambiguous'`, or
+`'unknown'` for an unrecognized code. A missing source takes precedence over a repeated target.
+`matchedMask` is `1` only for a unique match and `0` otherwise. Pass it as a downstream `mask`
+(for example, to column quantiles); diagnostic codes must not select rows. The old `validity`
+output has been removed. A matched row certifies its IDs only, not finite population values.
+The recipe rejects any supplied `output.validity` override with migration guidance. The contributor
+requires all four output views and rejects outputs sharing a graph handle or a known imported
+physical buffer, naming both conflicting ports. Distinct imports of one buffer do not isolate writes.
+Alignment recipes validate input layouts and all supplied output layouts, graph ownership and
+aliases before allocating transient outputs, so a corrected override can retry with the same ID
+on the same graph after a validation error.
+Only the four declared output keys participate in layout, ownership and alias validation;
+metadata on an override variable is ignored. The retired `validity` key is still rejected.
+Status remains `[aligned, missingTargetRows, ambiguousTargetRows, excludedSourceRows]`; excluded rows are counted
 individually even if they share an ID. Every uint32 identifier, including `0xffffffff`, remains a
 valid support ID. Internally, a zero high word widens keys to uint32x2 so the key join's missing-key
 sentinel cannot discard that legacy ID.
@@ -393,8 +420,8 @@ sort scratch must fit device storage bindings. There are no coordinates or numer
 ## `CPUPopulationSupportAlignmentOperation`
 
 Prefer this CPU stage when support data is already on the host. It uses maps in expected
-O(sourceCount + targetCount) time, then publishes exactly the same populations, validity codes and
-packed status as the GPU contributor. `computePopulationSupportAlignmentOnCPU` exposes the pure
+O(sourceCount + targetCount) time, then publishes exactly the same populations, alignment codes,
+matched mask and packed status as the GPU contributor. `computePopulationSupportAlignmentOnCPU` exposes the pure
 typed-array calculation without a device. The CPU implementation has no GPU scratch or binding
 limit. Both paths require nonempty source/target support and exactly two population components per
 source ID. Nonfinite or negative population values are copied unchanged. No arithmetic or additional
@@ -404,18 +431,27 @@ rounding is applied to populations.
 
 Both operation classes accept the same `PopulationSupportAlignmentOperationProps`: logical graph
 names for `populations`, `sourceIds` and `targetIds`, a positive `targetCount`, and output names for
-`populations`, `validity` and `status`. Use these stages beside other CPU/GPU operations in the
-published `GPUGraph`, compiling GPU stages with `GPU_CONTRIBUTOR_OPERATION_LOWERING`. The executor
+`populations`, `alignmentCode`, `matchedMask` and `status`. Use these stages beside other CPU/GPU
+operations in the published `GPUGraph`, compiling GPU stages with `GPU_CONTRIBUTOR_OPERATION_LOWERING`. The executor
 handles transfers at CPU/GPU boundaries. The output populations can feed the next GPU contributor
 without application-managed readback/upload glue.
 
 ```ts
+import {GPUGraph} from '@luma.gl/graph/gpu-core';
+import {CPUPopulationSupportAlignmentOperation} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+const graph = new GPUGraph({id: 'population-alignment'});
 graph.add(new CPUPopulationSupportAlignmentOperation({
   populations: 'sourcePopulation',
   sourceIds: 'sourceIds',
   targetIds: 'analysisIds',
   targetCount: analysisUnitCount,
-  output: {populations: 'alignedPopulation', validity: 'alignmentCodes', status: 'alignmentStatus'}
+  output: {
+    populations: 'alignedPopulation',
+    alignmentCode: 'alignmentCodes',
+    matchedMask: 'matchedRows',
+    status: 'alignmentStatus'
+  }
 }));
 // Later GPU operations consume the logical value 'alignedPopulation'.
 ```
@@ -436,6 +472,17 @@ composition. Both replacement-order tables are returned and passed to the existi
 The current implementation supports 2,048 units, with bounded GPU sorting/ranking; inputs are not
 silently sampled. The package's baseline-minus-final decomposition sign is reversed to this API's
 explicit final-minus-baseline convention.
+
+Caller-owned outputs must have disjoint logical byte ranges from the baseline/final inputs and
+from other results. To share an allocation between `compositionOnly` and `spatialOnly`, create both
+disjoint subviews on **one graph buffer handle**. Separate imports of the same physical buffer are
+rejected when either handle is written, even with disjoint ranges. Views bound together in one
+dispatch additionally need disjoint aligned binding ranges. A read-only and a writable binding in
+the same dispatch must use **different physical buffers**: for example, `indices` and
+`decomposition` cannot share a buffer even at bytes 0 and 256. All supplied output formats, lengths,
+graph ownership and these alias rules are checked before declaring transient views or adding
+commands. After correcting a rejected override, the recipe can be retried with the same ID on the
+same graph.
 
 ## References and measured scaling
 

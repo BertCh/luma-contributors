@@ -1,0 +1,93 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-raster.scalar-field-ridges",
+  "rung": "datum",
+  "datum": 24,
+  "size": "full",
+  "scenarioId": "gpu-raster.scalar-field-ridges",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of grid cells 24. ridgeStrength: 2. values read back from the GPU run. result: 5 quantities.",
+  "description": "Receipt of grid cells 24. ridgeStrength: 2. values read back from the GPU run. result: 5 quantities.",
+  "llms": "Receipt of grid cells 24\n\n- ridgeStrength: 2\n- result: 5 quantities\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "ridgeStrength",
+    "value": "2"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of grid cells 24</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"result\"><tr><th scope=\"rowgroup\" colspan=\"5\">result</th></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-scalar-field-ridges-snapshots-scalarFieldValues-0\" title=\"quadratic field, maximum between columns 2 and 3\">scalarFieldValues</button></td><td>19.75</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-scalar-field-ridges-snapshots-scalarFieldValidity-0\" title=\"input validity: cell 40 is missing\">scalarFieldValidity</button></td><td>1</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-scalar-field-ridges-snapshots-ridgeMask-0\" title=\"ridge cells: column 3 in interior rows 1 through 5\">ridgeMask</button></td><td>1</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-scalar-field-ridges-snapshots-ridgeValidity-0\" title=\"finite interior stencils without a missing sample\">ridgeValidity</button></td><td>1</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-scalar-field-ridges-snapshots-ridgeStrength-0\" title=\"downward normal curvature: 2 at every valid stencil\">ridgeStrength</button></td><td>2</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><svg class=\"lens-neighbourhood lens-stencil-3x3\" width=\"230\" height=\"230\" viewBox=\"0 0 230 230\" role=\"img\" aria-label=\"stencil-3x3 neighbourhood\"><defs><pattern id=\"lens-gpu-raster-scalar-field-ridges-datum-neighbourhood-0-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-raster-scalar-field-ridges-datum-neighbourhood-0-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-raster-scalar-field-ridges-datum-neighbourhood-0-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"16\"><rect x=\"1\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>16: 19.75</title><text x=\"6\" y=\"25\" fill=\"currentColor\">16</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"17\"><rect x=\"71\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>17: 19.75</title><text x=\"76\" y=\"25\" fill=\"currentColor\">17</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"18\"><rect x=\"141\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#3787c0\"></rect><title>18: 17.75</title><text x=\"146\" y=\"25\" fill=\"currentColor\">18</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"23\"><rect x=\"1\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>23: 19.75</title><text x=\"6\" y=\"95\" fill=\"currentColor\">23</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"24\"><rect x=\"71\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>24: 19.75</title><text x=\"76\" y=\"95\" fill=\"currentColor\">24</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"25\"><rect x=\"141\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#3787c0\"></rect><title>25: 17.75</title><text x=\"146\" y=\"95\" fill=\"currentColor\">25</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"30\"><rect x=\"1\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>30: 19.75</title><text x=\"6\" y=\"165\" fill=\"currentColor\">30</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"31\"><rect x=\"71\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>31: 19.75</title><text x=\"76\" y=\"165\" fill=\"currentColor\">31</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"32\"><rect x=\"141\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#3787c0\"></rect><title>32: 17.75</title><text x=\"146\" y=\"165\" fill=\"currentColor\">32</text></g></g></svg><p>apple</p></section>",
+    "width": 230,
+    "height": 230
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "result",
+        "scalarFieldValues",
+        "19.75",
+        "0",
+        "readback"
+      ],
+      [
+        "result",
+        "scalarFieldValidity",
+        "1",
+        "0",
+        "readback"
+      ],
+      [
+        "result",
+        "ridgeMask",
+        "1",
+        "0",
+        "readback"
+      ],
+      [
+        "result",
+        "ridgeValidity",
+        "1",
+        "0",
+        "readback"
+      ],
+      [
+        "result",
+        "ridgeStrength",
+        "2",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-11-18T16:33:09.658Z",
+    "runId": "run-42a32b13",
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-42a32b13",
+    "rung": "datum",
+    "bindings": {
+      "entity": 24
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

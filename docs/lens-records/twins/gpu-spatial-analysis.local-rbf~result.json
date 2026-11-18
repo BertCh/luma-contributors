@@ -18,7 +18,7 @@
     "value": "4"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-result-view\"><table class=\"cv-table\"><thead><tr><th scope=\"col\">sampleValues</th><th class=\"cv-col--output\" scope=\"col\">results</th><th class=\"cv-col--output\" scope=\"col\">statuses</th><th class=\"cv-col--output\" scope=\"col\">predictions</th></tr></thead><tbody><tr><td data-provenance=\"readback\">2</td><td class=\"cv-col--output\" data-provenance=\"readback\">2.13</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">2.13</td></tr><tr><td data-provenance=\"readback\">3</td><td class=\"cv-col--output\" data-provenance=\"readback\">2.45</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">2.45</td></tr><tr><td data-provenance=\"readback\">2.5</td><td class=\"cv-col--output\" data-provenance=\"readback\">2.12</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">2.12</td></tr><tr><td data-provenance=\"readback\">1.5</td><td class=\"cv-col--output\" data-provenance=\"readback\">2.45</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">2.45</td></tr><tr><td data-provenance=\"readback\">2.13</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td></tr><tr><td data-provenance=\"readback\">2.4</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td></tr><tr><td colspan=\"4\">… 10 more rows</td></tr></tbody></table><p class=\"cv-legend\">grey: input sampleValues · blue: output queries, results, statuses, predictions</p><p class=\"cv-note\">6 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames) · 4 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)</p></section>",
+    "html": "<section class=\"lens-view lens-result-view\"><div class=\"cv-result-tables\"><table class=\"cv-table\" data-key-space=\"sample\"><caption>Synthetic observation (sample) · 6 rows</caption><thead><tr><th scope=\"col\">sampleValues</th></tr></thead><tbody><tr><td data-provenance=\"readback\">2</td></tr><tr><td data-provenance=\"readback\">3</td></tr><tr><td data-provenance=\"readback\">2.5</td></tr><tr><td data-provenance=\"readback\">1.5</td></tr><tr><td data-provenance=\"readback\">2.13</td></tr><tr><td data-provenance=\"readback\">2.4</td></tr></tbody></table><table class=\"cv-table\" data-key-space=\"query\"><caption>Prediction site (query) · 4 rows</caption><thead><tr><th class=\"cv-col--output\" scope=\"col\">results</th><th class=\"cv-col--output\" scope=\"col\">statuses</th><th class=\"cv-col--output\" scope=\"col\">predictions</th></tr></thead><tbody><tr><td class=\"cv-col--output\" data-provenance=\"readback\">2.13, 0.267, 6, 0</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">2.13</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">2.45, 0.265, 6, 0</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">2.45</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">2.12, 0.188, 6, 0</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">2.12</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">2.45, 0.103, 6, 0</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">2.45</td></tr></tbody></table></div><p class=\"cv-legend\">grey: input sampleValues · blue: output queries, results, statuses, predictions</p><p class=\"cv-note\">6 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames) · 4 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)</p></section>",
     "width": 640,
     "height": 0
   },
@@ -37,12 +37,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-11T15:20:55.598Z",
-    "runId": "run-8035fbb1",
+    "date": "2026-11-18T16:33:33.789Z",
+    "runId": "run-dbca283d",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-8035fbb1",
+    "runId": "run-dbca283d",
     "rung": "result",
     "bindings": {},
     "clauses": [],

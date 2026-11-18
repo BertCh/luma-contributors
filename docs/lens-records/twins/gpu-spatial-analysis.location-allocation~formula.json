@@ -13,7 +13,7 @@
     "value": "3/3"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>p-median-objective</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{objective}{Z}=\\sum_{j\\ \\text{reachable}}\\term{weight}{w_j}\\,\\term{assignedCost}{\\min_{i\\in S}c_{ji}},\\qquad |S|\\le p</pre><p class=\"lens-ascii\">Objective of the p-median operation, not the greedy and swap procedure: Z = sum over reachable demand rows j of w_j * min over selected facilities i in S of c_ji, with |S| &lt;= p. Unreachable rows (infinite cost to every selected facility) are left out of Z and counted in the uncovered status word. Maximum coverage instead sums the weight of rows within coverageDistance, and set covering counts selected facilities.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.location-allocation-compiled:location-allocation-initialize\" data-value=\"objective\">objective · output · objective</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.location-allocation-compiled:location-allocation-score-0\" data-value=\"weight\">weight · intermediate · weight</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.location-allocation-compiled:location-allocation-assign\" data-value=\"assignedCost\">assignedCost · intermediate · assignedCost</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>p-median-objective</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{objective}{Z}=\\sum_{j\\ \\text{reachable}}\\term{weight}{w_j}\\,\\term{assignedCost}{\\min_{i\\in S}c_{ji}},\\qquad |S|\\le p</pre><p class=\"lens-ascii\">Objective of the p-median operation, not the greedy and swap procedure: Z = sum over reachable demand rows j of w_j * min over selected facilities i in S of c_ji, with |S| &lt;= p. Unreachable rows (infinite cost to every selected facility) are left out of Z and counted in the uncovered status word. Maximum coverage instead sums the weight of rows within coverageDistance, and set covering counts selected facilities.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.location-allocation-compiled:location-allocation-initialize\" data-value=\"objective\">objective · output · objective</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.location-allocation-compiled:location-allocation-initialize\" data-value=\"weight\">weight · intermediate · weight</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.location-allocation-compiled:location-allocation-assign\" data-value=\"assignedCost\">assignedCost · intermediate · assignedCost</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -61,8 +61,8 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-11T15:20:55.856Z",
-    "runId": "run-ef0be055",
+    "date": "2026-11-18T16:33:34.026Z",
+    "runId": "run-d7997602",
     "observerEffects": [
       "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
@@ -70,7 +70,7 @@
     ]
   },
   "state": {
-    "runId": "run-ef0be055",
+    "runId": "run-d7997602",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

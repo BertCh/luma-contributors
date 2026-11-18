@@ -29,6 +29,12 @@ limits; do not write unchecked raw settings. Destroy the compiled graph before d
 Constructor threshold/orientation props remain available for existing callers; a supplied parameter
 view takes precedence. This does not change output layouts or status values.
 
+Constructors capture declared props and caller-owned `output` fields, including inherited and
+non-enumerable getters. The captured bindings remain fixed after construction; buffer contents
+remain per-frame data. This includes voxel-merge output attribute fields and a statistical-filter
+`standardDeviations` value of zero, which retains the global-mean threshold instead of the default
+two-deviation threshold.
+
 ## Grid-index compatibility
 
 The local point-cloud index remains necessary with published luma.gl `10.0.0-alpha.13`:
@@ -45,7 +51,71 @@ Published caller-owned `cellOffsets` and `objectIds` already provide the needed 
 output access is not a blocker. Replacing the local helper would require the four semantic
 contracts above to match. Existing half-open, ordering and raster-direction specs pin them.
 
+## Quick start
+
+Follow the [complete GPU walkthrough](./operation-forms-and-cpu-twins.md#point-density-from-device-to-readback)
+for device creation, allocation, imports, submission, typed readback and cleanup. Statistical
+filtering consumes neighborhoods rather than raw positions: first run `GPUPointCloudNeighborhoods`
+for your `float32x3` points, or supply equivalent packed squared distances and counts.
+
+| Input | Format and rows | Meaning |
+| --- | --- | --- |
+| `squaredDistances` | `float32`, pointCount × capacity | Row-major retained neighbor distances squared, with `capacity` slots per point. |
+| `counts` | `uint32`, pointCount | Radius support per point; may exceed `capacity`. The filter uses `min(count, capacity)` retained slots. |
+| `capacity` | constructor number, 1–64 | Slots per point, matching the neighborhood producer. |
+
+Add `GPUPointCloudStatisticalFilter` with these inputs, `standardDeviations: 2`, and separate
+output buffers passed as `output: {meanDistances, validity}`:
+
+| Output | Format and rows | Meaning |
+| --- | --- | --- |
+| `meanDistances` | `float32`, pointCount | Mean retained neighbor distance; -1 when no neighbors exist. |
+| `validity` | `uint32`, pointCount | 1 for inliers, 0 for outliers or rows without neighbors. |
+
+For a small filter-only fixture, set `capacity: 1`, squared distances `[1, 1, 100, 0]`, and
+counts `[1, 1, 1, 0]`. Mean distances are `[1, 1, 10, -1]`; the last row is excluded from
+the global mean and population standard deviation and has validity 0. With multiplier 2,
+the first three rows are inliers, giving validity `[1, 1, 1, 0]`. Read both outputs using the
+walkthrough's lifecycle, then destroy the compiled graph before the imported buffers. A
+neighborhood producer's candidate/overflow conditions must be handled before interpreting the
+filter as a complete spatial-neighborhood analysis; the filter operates on the supplied slots.
+
 ## Ownership and batching
+
+Every contributor takes its caller-owned result views in `output`, typed as
+`GPUPointCloud<Name>Output`. Inputs stay at the top level. For example, neighborhood `counts`
+is `output.counts` on the producer and becomes the top-level `counts` input of features:
+
+```ts
+import {
+  GPUPointCloudNeighborhoods,
+  GPUPointCloudFeatures
+} from '@luma-contributors/analysis/pointcloud-analysis';
+
+// All views are allocated by the caller on graph.
+graph.add(new GPUPointCloudNeighborhoods({
+  positions, radius: 1, capacity: 4,
+  output: {indices, squaredDistances, counts, status: neighborhoodStatus}
+}));
+graph.add(new GPUPointCloudFeatures({
+  positions, indices, counts, capacity: 4,
+  output: {normals, eigenvalues, shapes, status: featureStatus}
+}));
+```
+
+The `Outputs` lists below name fields inside `output`; formats, lengths and status values are
+unchanged. Update an output override as `{...props, output: {...props.output, normals}}` so the
+other result views remain present. Ground filtering still receives `minimumSurface` and `coverage`
+as inputs, and height sampling still receives `terrain` and `coverage` as inputs. Voxel merge
+keeps each part's statistics in `parts`, and writes merged statistics to `output`, including
+`output.attribute` when requested. Statistical filtering publishes flags at `output.validity`
+(also available through `contributor.props.output.validity`); the former top-level props and
+`contributor.validity` access have been removed.
+Authored catalog and showcase examples use the same nested `output` contract; the catalog examples
+are typechecked against the public point-cloud package entry point, separately from its generated
+inventory. Their parameter lists expose the output object instead of repeating writable fields as inputs.
+Status views keep their producer's row domain: SMRF's `smrfStatus` has one word per point, while
+voxel merge's separate `mergedStatus` has one word per voxel, even when both run on the same graph.
 
 Inputs and outputs are non-owning `GraphDataView`s with support for nonzero byte offsets. Output
 buffers must be separate from input buffers. Writable output storage bindings must remain disjoint
@@ -60,14 +130,15 @@ limits. They never concatenate streaming chunks. `GPUPointCloudVoxelMerge` expli
 
 ## Contributor reference
 
-One heading per class. All ten implement `GPUCommandNodeProducer`, take non-owning packed
+One heading per class. All eleven implement `GPUCommandNodeProducer`, take non-owning packed
 `GraphDataView`s, and refuse bad props at construction with a message that starts with the
 contributor ID (default `gpu-pointcloud-<name>`) and names the prop and its accepted range. Numeric
 props use the per-frame parameter views described below where available. Constructor numeric
 props remain compatible defaults when no parameter view is supplied; those defaults are compiled
-into the shader. Capacities, view shapes, grid geometry and morphology windows are compile-time. The limits are exported
-from `pointcloud-limits.ts` as `GPU_POINT_CLOUD_MAXIMUM_*`. Status bit and code values are exported
-as `GPU_POINT_CLOUD_<NAME>_STATUS_*`.
+into the shader. Capacities, view shapes, grid geometry and morphology windows are compile-time.
+The limits are exported from `pointcloud-analysis/operations/pointcloud-limits.ts` as
+`GPU_POINT_CLOUD_MAXIMUM_*`. Status bit and code values are exported as
+`GPU_POINT_CLOUD_<NAME>_STATUS_*`.
 
 ### GPUPointCloudNeighborhoods
 
@@ -82,6 +153,30 @@ as `GPU_POINT_CLOUD_<NAME>_STATUS_*`.
 - Limits: `grid` axes at most 2^24 cells (`GPU_POINT_CLOUD_MAXIMUM_GRID_AXIS_CELLS`, exact float32 cell
   coordinates), total cells below 2^32, offsets within one storage binding. Without `grid`,
   queries × positions at most 2^27 (`GPU_POINT_CLOUD_MAXIMUM_UNINDEXED_WORK`).
+
+{/* parameters: GPUPointCloudNeighborhoods generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
+
+#### `GPUPointCloudNeighborhoods` parameters
+
+- Packer: `getGPUPointCloudGridParameterValues(settings)`, writes `GPU_POINT_CLOUD_GRID_PARAMETER_LENGTH` (4) `float32` values.
+  - Input port: `gridParameters`.
+- Packer: `getGPUPointCloudNeighborhoodsParameterValues(settings)`, writes `GPU_POINT_CLOUD_NEIGHBORHOODS_PARAMETER_LENGTH` (9) `float32` values.
+
+Settings of `getGPUPointCloudGridParameterValues`:
+
+| Field | Type | Description |
+|---|---|---|
+| `origin` | `readonly [number, number] \| readonly [number, number, number]` | - |
+| `cellSize` | `number` | - |
+
+Settings of `getGPUPointCloudNeighborhoodsParameterValues`:
+
+| Field | Type | Description |
+|---|---|---|
+| `radius` | `number` | - |
+| `supportBounds` (optional) | `GPUPointCloudNeighborhoodsProps['supportBounds']` | - |
+
+{/* /parameters */}
 
 ### `GPUPointCloudFeatures`
 
@@ -144,27 +239,20 @@ Settings of `getGPUPointCloudStatisticalFilterParameterValues`:
 - Limits: grid cells below 2^32 (`GPU_POINT_CLOUD_MAXIMUM_GRID_CELLS`), 
 - Row order: `grid.rowDirection` is `'south'` by default (row 0 at the maximum y, rows run toward decreasing y), the order of the raster and terrain families (GDAL and image order, `GPURasterMetadata`, D8 flow codes), so these rasters feed `GPUTerrainFlow`, the derivatives and the illumination contributors without flipping rows. Pass `'north'` for row 0 at the minimum y. Unlike the terrain classes, `PointCloudRasterGrid` has no affine or signed cell height, so the direction cannot be derived from the grid and a contradiction cannot be detected: give every point-cloud contributor that shares the grid the same direction. `GPUPointCloudSurfaces`, `GPUPointCloudHeight`, `GPUPointCloudGround` and `GPUPointCloudSMRF` honour it; a point on a cell boundary belongs to the cell above in either order. Membership is the same half-open test in both orders, on `o = (y - origin.y) / cellSize`: the point is inside when `0 <= o < height`, in north row `floor(o)` or south row `height - 1 - floor(o)`. Before this change the default was `'north'`, so a caller that left the prop out now gets the rows mirrored.
 
-{/* parameters: GPUPointCloudHeight generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
-
-#### `GPUPointCloudHeight` parameters
-
-- Packer: `getGPUPointCloudHeightParameterValues(settings, grid)`, writes `GPU_POINT_CLOUD_HEIGHT_PARAMETER_LENGTH` (5) `uint32` values.
-  - `grid` (`PointCloudRasterGrid`)
-
-Settings of `getGPUPointCloudHeightParameterValues`:
-
-| Field | Type | Description |
-|---|---|---|
-| `coverageBit` (optional) | `number` | - |
-| `interpolation` (optional) | `GPUPointCloudHeightProps['interpolation']` | - |
-
-{/* /parameters */}
-
 {/* parameters: GPUPointCloudSurfaces generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 #### `GPUPointCloudSurfaces` parameters
 
+- Packer: `getGPUPointCloudGridParameterValues(settings)`, writes `GPU_POINT_CLOUD_GRID_PARAMETER_LENGTH` (4) `float32` values.
+  - Input port: `gridParameters`.
 - Packer: `getGPUPointCloudSurfacesParameterValues(settings?)`, writes `GPU_POINT_CLOUD_SURFACES_PARAMETER_LENGTH` (1) `uint32` values.
+
+Settings of `getGPUPointCloudGridParameterValues`:
+
+| Field | Type | Description |
+|---|---|---|
+| `origin` | `readonly [number, number] \| readonly [number, number, number]` | - |
+| `cellSize` | `number` | - |
 
 Settings of `getGPUPointCloudSurfacesParameterValues`:
 
@@ -187,6 +275,31 @@ are runtime inputs; grid axes and float32 support bounds are validated at constr
 - Limits: IDW radius at most 64 cells (`GPU_POINT_CLOUD_MAXIMUM_IDW_REACH_CELLS`, each point visits that many cells squared),
   power in (0, 8] (`GPU_POINT_CLOUD_MAXIMUM_IDW_POWER`, higher powers underflow the normalized weights).
 
+{/* parameters: GPUPointCloudHeight generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
+
+#### `GPUPointCloudHeight` parameters
+
+- Packer: `getGPUPointCloudGridParameterValues(settings)`, writes `GPU_POINT_CLOUD_GRID_PARAMETER_LENGTH` (4) `float32` values.
+  - Input port: `gridParameters`.
+- Packer: `getGPUPointCloudHeightParameterValues(settings, grid)`, writes `GPU_POINT_CLOUD_HEIGHT_PARAMETER_LENGTH` (5) `uint32` values.
+  - `grid` (`PointCloudRasterGrid`)
+
+Settings of `getGPUPointCloudGridParameterValues`:
+
+| Field | Type | Description |
+|---|---|---|
+| `origin` | `readonly [number, number] \| readonly [number, number, number]` | - |
+| `cellSize` | `number` | - |
+
+Settings of `getGPUPointCloudHeightParameterValues`:
+
+| Field | Type | Description |
+|---|---|---|
+| `coverageBit` (optional) | `number` | - |
+| `interpolation` (optional) | `GPUPointCloudHeightProps['interpolation']` | - |
+
+{/* /parameters */}
+
 ### `GPUPointCloudGround`
 
 - Props: `positions`, `classifications`, `grid`, `minimumSurface`, `coverage`, `radii`,
@@ -206,9 +319,18 @@ are runtime inputs; grid axes and float32 support bounds are validated at constr
 
 #### `GPUPointCloudGround` parameters
 
+- Packer: `getGPUPointCloudGridParameterValues(settings)`, writes `GPU_POINT_CLOUD_GRID_PARAMETER_LENGTH` (4) `float32` values.
+  - Input port: `gridParameters`.
 - Packer: `getGPUPointCloudGroundParameterValues(settings, grid, radii)`, writes `getGPUPointCloudGroundParameterLength(...)` `float32` values.
   - `grid` (`PointCloudRasterGrid`): The contributor's compile-time grid.
   - `radii` (`readonly number[]`): The contributor's compile-time radii, in cells.
+
+Settings of `getGPUPointCloudGridParameterValues`:
+
+| Field | Type | Description |
+|---|---|---|
+| `origin` | `readonly [number, number] \| readonly [number, number, number]` | - |
+| `cellSize` | `number` | - |
 
 Settings of `getGPUPointCloudGroundParameterValues`:
 
@@ -347,21 +469,6 @@ Settings of `getGPUPointCloudChangeParameterValues`:
 
 {/* /parameters */}
 
-{/* parameters: GPUPointCloudNeighborhoods generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
-
-#### `GPUPointCloudNeighborhoods` parameters
-
-- Packer: `getGPUPointCloudNeighborhoodsParameterValues(settings)`, writes `GPU_POINT_CLOUD_NEIGHBORHOODS_PARAMETER_LENGTH` (9) `float32` values.
-
-Settings of `getGPUPointCloudNeighborhoodsParameterValues`:
-
-| Field | Type | Description |
-|---|---|---|
-| `radius` | `number` | - |
-| `supportBounds` (optional) | `GPUPointCloudNeighborhoodsProps['supportBounds']` | - |
-
-{/* /parameters */}
-
 ### GPUPointCloudVoxelMerge
 
 - Props: `parts` (counts, centroids, representatives, `sourceRowOffset`, optional attribute),
@@ -452,6 +559,26 @@ representative points, which is not the centroid. Voxel centroids and attribute 
 neighborhood halos for tiled filtering; per-tile statistical thresholds are different from a
 global-cloud threshold.
 
+The website voxel-merge example and lidar support showcase compute each tile's arithmetic means
+with `computePointCloudVoxelMeans(ownedPositions, voxelSize, gridSize, origin)` from the public
+point-cloud entry point. This helper accepts CPU-owned float32 XYZ rows and returns dense float32
+voxel means in the same coordinate frame; empty voxels contain zero. The helper rejects trailing
+partial XYZ rows and voxel sizes that are not positive and finite after float32 rounding
+(including zero, underflow and overflow). The helper also requires three positive safe-integer
+grid dimensions, a safe-integer total cell
+count below 4,294,967,295, and three origin coordinates finite after float32 rounding, matching
+`GPUPointCloudVoxelDownsample`. Invalid grids and origins are rejected before allocation.
+Upload those means separately from the downsampler's selected positions. The merge
+consumes GPU counts and representative rows. Feature and change displays retain their status,
+suppress unusable measurements, and explicitly label truncated or insufficient support.
+
+Height displays accept status 0 only: unsupported terrain (status 2) is shown as unavailable,
+distinct from a supported height of zero. ICP displays show aligned geometry only for status 0
+(converged); an exhausted budget or failed fit is labelled and the alignment is hidden. Ground
+and SMRF displays exclude every nonzero-status classification from ground counts and colored
+point geometry, and report the number of incomplete or unsupported points. The SMRF raster is
+explicitly provisional, including its inpainted terrain.
+
 ## Terrain surfaces and height above ground
 
 `GPUPointCloudSurfaces` uses a caller-supplied planar grid (`origin: [x, y]`, `cellSize`, `width`,
@@ -464,11 +591,46 @@ bounds include the minimum and exclude the maximum. Each cell produces:
 - `coverage`: bit 1 has any point; bit 2 has classified ground.
 
 Outputs are zero where unsupported, so always consume coverage. A sorted cell index makes the reduction O(points + cells) after sorting.
+
+When using classified-ground Surfaces terrain to seed Ground, first derive a separate nonzero
+seed mask from `(coverage & GPU_POINT_CLOUD_COVERAGE_GROUND) != 0`; occupancy bit 1 alone is
+insufficient. The lidar-ground showcase uses this mask and suppresses class-2 classifications
+with any nonzero Ground status before the second Surfaces pass. Thus absent seeds and incomplete
+morphology support cannot become recovered terrain. A filter deliberately initialized from all
+returns can instead prepare an unclassified minimum surface with every point eligible.
+
+The showcase uses a radius-one window on its sparse class-2 seed grid so that some recovered
+terrain remains fully supported. Its ground colors and legend distinguish supported acceptance,
+supported rejection, provisional incomplete windows, and unsupported/invalid rows. In particular,
+`groundMask = 1` with status 2 is provisional, never accepted ground for the height pipeline.
+Surfaces, Ground and Height capture nested grid settings (including a copy of the origin) at construction;
+Ground also copies the radii and Height captures interpolation settings. Mutating caller settings
+later does not change the declared passes or sampling frame. Buffer contents and explicit runtime
+parameter buffers remain the per-frame inputs.
+
+```ts
+import {GPUPointCloudSurfaces, GPUPointCloudHeight, GPU_POINT_CLOUD_COVERAGE_GROUND}
+  from '@luma-contributors/analysis/pointcloud-analysis';
+
+graph.add(new GPUPointCloudSurfaces({
+  positions, classifications, grid,
+  output: {terrain, surface, canopy, coverage}
+}));
+graph.add(new GPUPointCloudHeight({
+  positions, grid, terrain, coverage,
+  coverageBit: GPU_POINT_CLOUD_COVERAGE_GROUND,
+  output: {heights, status: heightStatus}
+}));
+```
+
 `GPUPointCloudHeight` samples the containing terrain cell and subtracts its elevation from each
-point's z. Pass `coverageBit: 2` when consuming `GPUPointCloudSurfaces.coverage`; otherwise any
+point's z. Pass the same caller-owned `coverage` view as Surfaces' `output.coverage` and Height's
+`coverage` input, with `coverageBit: 2` to require classified-ground support; otherwise any
 nonzero bit is accepted. Heights remain signed. Status is 0 for a supported sample, 1 for an invalid
 or outside point, 2 for unsupported terrain, and 3 for a nonfinite interpolated elevation or height
-difference. Every invalid result is zero and must be masked by status. The default is **cell-constant raster sampling**; optional bilinear and bounded IDW sampling are described below. Direct nearest-ground and Delaunay interpolation are not provided. Inputs and
+difference. The displayed lidar pipeline uses ground-only `groundSeedCoverage` for classification
+and `coverageBit: 2` for height sampling, matching the live scene: coverage word 1 alone cannot
+establish ground support. Every invalid result is zero and must be masked by status. The default is **cell-constant raster sampling**; optional bilinear and bounded IDW sampling are described below. Direct nearest-ground and Delaunay interpolation are not provided. Inputs and
 outputs retain the caller's units and vertical datum; no datum transform is performed.
 
 ## Progressive morphological ground classification
@@ -579,6 +741,13 @@ local frame: convert a readback with `icp.getAbsoluteTransform(transform)`
 (`getPointCloudAbsoluteTransform`, or `getPointCloudLocalTransform` for the inverse). Every cloud that is
 registered or compared together must use one origin; `GPUPointCloudChange` needs no origin option because it
 consumes local-frame clouds and an ICP transform in that same frame.
+
+The origin bounds use only points whose three coordinates are finite. For an audit count, call
+`getPointCloudLocalOriginSummary(positions)` to obtain `{origin, skippedPointCount}`; a point with
+any non-finite coordinate counts once and contributes none of its axes to the bounds. Empty or
+all-invalid clouds return `[0, 0, 0]`. Both origin helpers and `makePointCloudLocalPositions` reject
+a trailing partial XYZ triple. Recentering preserves invalid rows and row order; only originally
+invalid points remain invalid when finite local coordinates fit float32.
 
 Without `targetGrid`, `GPUPointCloudICP` refuses `sourceCount * targetCount` above
 `GPU_POINT_CLOUD_MAXIMUM_UNINDEXED_WORK` (2^27, about 11,585 by 11,585) and asks for `targetGrid`.
@@ -776,7 +945,16 @@ and cylinder means, sample variances and confidence intervals on planes with kno
 
 ### `GPUPointCloudNormalScale` parameters
 
+- Packer: `getGPUPointCloudGridParameterValues(settings)`, writes `GPU_POINT_CLOUD_GRID_PARAMETER_LENGTH` (4) `float32` values.
+  - Input port: `gridParameters`.
 - Packer: `getGPUPointCloudNormalScaleParameterValues(settings?)`, writes `GPU_POINT_CLOUD_NORMAL_SCALE_PARAMETER_LENGTH` (5) `float32` values.
+
+Settings of `getGPUPointCloudGridParameterValues`:
+
+| Field | Type | Description |
+|---|---|---|
+| `origin` | `readonly [number, number] \| readonly [number, number, number]` | - |
+| `cellSize` | `number` | - |
 
 Settings of `getGPUPointCloudNormalScaleParameterValues`:
 
@@ -828,8 +1006,9 @@ variance, and the executable test checks PDAL's convention directly.
 The Kepler contributor catalog binds all eleven classes on this page through
 `modules/kepler/src/analysis/catalog-pointcloud-bindings.ts`. Operation IDs use the `pointcloud-`
 prefix: `ground`, `smrf`, `surfaces`, `height`, `neighborhoods`, `features`, `statistical-filter`,
-`normal-scale`, `icp`, `change` and `voxel-merge`. `GPUPointCloudHeight` is exported from the
-surfaces implementation and computes height above explicit class-2 terrain support. The ground
+`normal-scale`, `icp`, `change` and `voxel-merge`. Import `GPUPointCloudHeight` from the public
+`@luma-contributors/analysis/pointcloud-analysis` entry point; it computes height above explicit
+class-2 terrain support. The ground
 binding first runs GPUPointCloudSurfaces with every point eligible to prepare the unclassified
 cell minima and coverage consumed by GPUPointCloudGround; original LAS classes are kept separate
 for the final classification pass. The catalog preserves finite covariance and converged

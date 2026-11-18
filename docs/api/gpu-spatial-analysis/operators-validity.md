@@ -28,7 +28,7 @@ zero-length segments and segments with non-finite coordinates are skipped.
 | --- | --- |
 | `left`, `right?` | Geometries. Omit `right` for self mode (`left < right`, adjacent segments skipped) |
 | `sameFeatureOnly?` | Self mode: only same-feature pairs (per-feature self-intersection and ring crossings) |
-| `output.pairs` | `{leftIds, rightIds, status: {count, overflow, requiredCount?}}`, sorted by `(left, right)`; capacity is `leftIds.length` |
+| `output.pairs` | `{leftRows, rightRows, status: {count, overflow, candidateOverflow?, requiredCount?}}`, sorted by `(left, right)`; capacity is `leftRows.length` |
 | `output.kinds?` | `GPU_SEGMENT_INTERSECTION_KIND`: proper 1, touch 2, collinearTouch 3, overlap 4, uncertain 5 |
 | `output.points?`, `output.endPoints?` | The intersection point; for an overlap, the two ends of the shared span |
 | `output.leftFeatures?`, `output.rightFeatures?`, `output.leftRings?`, `output.rightRings?` | Feature and ring (or line) rows of each segment |
@@ -43,11 +43,21 @@ counted and scanned probe, exact classification and a bounded sorted output; not
 On overflow the output keeps a sorted prefix (`status.count = min(total, capacity)`, `status.overflow = 1`, `status.requiredCount`
 unclamped), and the columns beyond `status.count` are unspecified. `status.uncertainCount` and the classification
 columns cover pairs within capacity only. A collinear chain of `n` segments lists all `n^2` overlap pairs.
+`output.pairs.status.overflow` describes final pair capacity only. BVH leaf loss is independent,
+reported in `output.pairs.status.candidateOverflow`. Both supplied words are rewritten on each
+encoding; `requiredCount` is a lower bound when BVH leaves were lost. On clean
+reuse both flags are zero. If `leafCapacity` is below the indexed geometry's vertex-slot
+count, `candidateOverflow` is required: actual segment counts are GPU data, so construction
+cannot guarantee those slots suffice. Nested consumers that omit the diagnostic must use
+enough BVH slots or construction refuses that configuration. `GPUPairGather` preserves both causes.
+Geometry descriptors, options, pair/column maps and nested status destinations are captured at
+construction. Removing or replacing a caller-map field later cannot change the validated bindings;
+the contents of the retained buffers remain dynamic.
 
 ```ts
 graph.add(new GPUSegmentIntersection({
   left: {kind: 'lines', positions, lineOffsets},
-  output: {pairs: {leftIds, rightIds, status: {count, overflow}}, kinds, points}
+  output: {pairs: {leftRows, rightRows, status: {count, overflow}}, kinds, points}
 }));
 ```
 
@@ -63,16 +73,39 @@ graph.add(new GPUSegmentIntersection({
 
 ### `GPUGeometryValidity`
 
-Computes a per-feature validity bitmask for polygons, lines or points from ring rules and same-feature segment intersections.
+Point and line inputs are single-part feature ports. Multipart point/line `featureOffsets` are
+rejected before output row validation; use feature-aware joins or measures when grouping is needed.
 
-::lens{scenario=gpu-spatial-analysis.geometry-validity rung=result caption="102 park polygons shaded by their validity mask; the orientation convention is ignored."}
+Computes per-feature diagnostic issue codes and optional nonzero-usable validity for polygons, lines or points.
+
+::lens{scenario=gpu-spatial-analysis.geometry-validity rung=result caption="102 park polygons shaded by their issue codes; the orientation convention is ignored."}
 
 Maximum: `polygons.positions` has at most `getGPUSegmentIntersectionMaximumVertexCount(device)` (4194304 on a default device: the 32-byte segment-table row per vertex must fit one storage binding) rows.
 
 Planar only: `spatialContext` defaults to native planar coordinates and a longitude-latitude context throws; project to a planar frame first (`createGPULocalFrame`, `GPULocalFrameProjection`). Orientation signs are exact.
 
 A per-feature validity bitmask for polygons and multipolygons (the four-level `GPUPolygonGeometryPort` layout), like
-PostGIS `ST_IsValidDetail` and Shapely `explain_validity` as a filterable mask. Repair stays on the CPU.
+PostGIS `ST_IsValidDetail` and Shapely `explain_validity`. `output.issueCode` holds diagnostic bits;
+`decodeGPUGeometryValidityIssueCode` returns named flags and `hasStructuralIssue`, which describes
+observed evidence only. A zero issue code cannot certify validity when checks are incomplete.
+Optional `output.validity` is 1 when the implemented structural checks pass, otherwise 0. Orientation
+and repeated-vertex advisories leave it 1. Polygon intersection overflow suppresses every validity row
+because the missing intersections cannot be assigned to particular features. This flag does not
+certify the unsupported checks listed below. **Breaking (2026-11-17):** rename `output.mask` to
+`output.issueCode`; feed `output.validity` to downstream input masks.
+Diagnostic and status output ranges must not overlap one another or retained geometry inputs.
+Supplied `status.overflow` and `status.intersectionCount` scalars are reset to zero on every
+point/line submission because those kinds do not perform intersection checks. Kepler marks
+zero-issue rows `incomplete` when polygon intersection overflow persists after retries. The
+explorer counts published `validity` rows, including advisory-only rows, and withholds its valid
+polygon count while checks are incomplete.
+The website hover and showcase map use the published usability rows too: an unobserved structural
+defect is not a pass. With zero issue code and usability zero they show an incomplete check;
+observed structural defects remain visible. The showcase withholds “all valid” on overflow.
+The website preserves issue bit 256 as `uncertain` in hover text and uses a separate “uncertain
+predicate” class. It does not label an uncertifiable predicate as a repeated vertex.
+The geometry-validity result view explicitly selects the `resultParks` polygon capture; full
+results retain `overflow` and `intersectionCount` as separate scalar diagnostics below the map.
 
 The bits of `GPU_GEOMETRY_VALIDITY_BIT` are `nonFinite` 1, `unclosedRing` 2 (explicit closure only),
 `shortRing` 4 (fewer than 3 vertices once a closing duplicate is dropped; rows are counted, so `A, B, B, A` does not set it and fails through `selfIntersection` instead), `repeatedVertex` 8, `selfIntersection` 16, `crossingRings`
@@ -83,7 +116,7 @@ vertices, so it is reported but does not make a geometry structurally invalid).
 
 | Prop | Meaning |
 | --- | --- |
-| `polygons`, `output.mask` | The input and the `featureCount` output rows |
+| `polygons`, `output.issueCode`, `output.validity?` | The input, diagnostic code and optional nonzero-usable flag (`featureCount` rows each) |
 | `intersectionCapacity` | Capacity of the internal same-feature intersection list; valid data produces almost none |
 | `output.status.overflow`, `output.status.intersectionCount?` | The overflow flag (the self-intersection and crossing bits may then be incomplete) and the unclamped count |
 | `ringClosure?` | `'implicit'` (default) or `'explicit'`, which sets `unclosedRing` |
@@ -100,25 +133,30 @@ although OGC accepts them. Hole containment tests one off-boundary vertex per ho
 ```ts
 graph.add(new GPUGeometryValidity({
   polygons,
-  output: {mask, status: {overflow}},
+  output: {issueCode, validity, status: {overflow}},
   intersectionCapacity: 1024
 }));
-// on the CPU: (mask[i] & GPU_GEOMETRY_VALIDITY_STRUCTURAL_MASK) === 0 means structurally valid
+// validity can be used as the next contributor's input mask.
+// Inspect issueCode with decodeGPUGeometryValidityIssueCode; inspect overflow for completeness.
 ```
 
 #### How it computes
 
 {/* lens:GPUGeometryValidity */}
 
-::lens{scenario=gpu-spatial-analysis.geometry-validity rung=datum datum=0 caption="Inspect park 0, Lincoln (Abraham) Park, and its validity mask."}
+::lens{scenario=gpu-spatial-analysis.geometry-validity rung=datum datum=0 caption="Inspect park 0, Lincoln (Abraham) Park, and its issue code."}
 
-::lens{scenario=gpu-spatial-analysis.geometry-validity rung=kernel caption="Read the per-ring checks that set the mask bits."}
+::lens{scenario=gpu-spatial-analysis.geometry-validity rung=kernel caption="Read the per-ring checks that set diagnostic issue bits."}
 
-::lens{scenario=gpu-spatial-analysis.geometry-validity rung=graph caption="Follow the segment table, BVH, same-feature intersections and mask assembly."}
+::lens{scenario=gpu-spatial-analysis.geometry-validity rung=graph caption="Follow the segment table, BVH, same-feature intersections and issue-code assembly."}
 
 ### `GPUGeometryPredicates`
 
 Evaluates per-feature predicates and counts such as simplicity, vertex count and hole count for points, lines or polygons.
+`geometry` and `other` use `GPUGeometryPredicatesGeometry`: one point or one linestring per row,
+or the polygon/multipolygon hierarchy. Multipart point/line `featureOffsets` are rejected at
+construction, including ports supplied through spreads or casts; this contributor does not yet
+reduce those parts into feature-level predicate/count columns.
 
 ::lens{scenario=gpu-spatial-analysis.geometry-predicates rung=result caption="102 park polygons shaded by stored vertex count; simplicity and hole counts are captured alongside."}
 
@@ -145,6 +183,16 @@ for booleans), all in the `output` bag: `isSimple`, `isRing`, `isClosed`, `isCcw
   self-mode look-ahead is 1024; an empty polygon gives 0 geometries where Shapely gives 1. Open:
   `equals_exact(normalize=True)`, multilinestring and multipoint layouts.
 
+#### How it computes
+
+{/* lens:GPUGeometryPredicates */}
+
+::lens{scenario=gpu-spatial-analysis.geometry-predicates rung=datum datum=0 caption="Inspect park 0, Lincoln (Abraham) Park: vertex count, simplicity and holes."}
+
+::lens{scenario=gpu-spatial-analysis.geometry-predicates rung=kernel caption="Read the per-feature column kernels."}
+
+::lens{scenario=gpu-spatial-analysis.geometry-predicates rung=graph caption="Follow the count columns and the same-feature segment intersection for simplicity."}
+
 {/* parameters: GPUGeometryPredicates generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 #### `GPUGeometryPredicates` parameters
@@ -158,16 +206,6 @@ Settings of `getGPUGeometryPredicatesParameterValues`:
 | `tolerance` (optional) | `number` | `equalsExact` tolerance: two vertices match when their distance is at most this value, in position units. Defaults to `0` (vertices must coincide). |
 
 {/* /parameters */}
-
-#### How it computes
-
-{/* lens:GPUGeometryPredicates */}
-
-::lens{scenario=gpu-spatial-analysis.geometry-predicates rung=datum datum=0 caption="Inspect park 0, Lincoln (Abraham) Park: vertex count, simplicity and holes."}
-
-::lens{scenario=gpu-spatial-analysis.geometry-predicates rung=kernel caption="Read the per-feature column kernels."}
-
-::lens{scenario=gpu-spatial-analysis.geometry-predicates rung=graph caption="Follow the count columns and the same-feature segment intersection for simplicity."}
 
 ### `GPUMinimumClearance`
 
@@ -244,6 +282,16 @@ endpoints), so a segment of a polygon thinner than one float32 step is not read 
 neighbor. A pair with no decidable orientation (non-finite input) sets the `uncertain` bit. The operator is planar: `spatialContext` defaults to native
 planar coordinates and `longitude-latitude` throws (project first).
 
+#### How it computes
+
+{/* lens:GPUCoverageValidity */}
+
+::lens{scenario=gpu-spatial-analysis.coverage-validity rung=datum datum=0 caption="Inspect tract 17031010100: its invalid edge count."}
+
+::lens{scenario=gpu-spatial-analysis.coverage-validity rung=kernel caption="Read the segment-pair kernel that sets the flag bits."}
+
+::lens{scenario=gpu-spatial-analysis.coverage-validity rung=graph caption="Follow the segment table, BVH probe and per-feature counts."}
+
 {/* parameters: GPUCoverageValidity generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 #### `GPUCoverageValidity` parameters
@@ -257,13 +305,3 @@ Settings of `getGPUCoverageValidityParameterValues`:
 | `gapWidth` | `number` | Largest gap, in position units, that counts as an error: Shapely `gap_width`. Two segments of different polygons that run nearly parallel within this distance are reported. `0` disables gap detection. Must be finite and non-negative. |
 
 {/* /parameters */}
-
-#### How it computes
-
-{/* lens:GPUCoverageValidity */}
-
-::lens{scenario=gpu-spatial-analysis.coverage-validity rung=datum datum=0 caption="Inspect tract 17031010100: its invalid edge count."}
-
-::lens{scenario=gpu-spatial-analysis.coverage-validity rung=kernel caption="Read the segment-pair kernel that sets the flag bits."}
-
-::lens{scenario=gpu-spatial-analysis.coverage-validity rung=graph caption="Follow the segment table, BVH probe and per-feature counts."}

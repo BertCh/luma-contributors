@@ -7,13 +7,20 @@
 `GPUQuantileLISA` is a spatial-autocorrelation contributor exported from
 `@luma-contributors/analysis/gpu-spatial-analysis`; the recipes barrel retains its compatibility
 export. It composes exact resident column quantiles, a selected-class indicator and
-conditional local join-count permutations for one scalar variable. Add it to a `GPUCommandGraph`
+conditional local join-count permutations for one or more scalar variables. Add it to a `GPUCommandGraph`
 and submit the compiled graph explicitly. It never submits work, reads buffers or transfers
 ownership of inputs.
 
 Supply packed `float32` `values`, optional packed `uint32` `mask`, square CSR spatial `weights`,
 a two-word resident `uint32` `quantileParameters` view `[k, q]`, the existing resident permutation
 `parameters` view (packed with `getGPUPermutationParameterValues`), and caller-owned outputs.
+For multivariate analysis, add `additionalVariables: [{values, quantileParameters}, ...]`.
+The primary pair comes first; every variable has the same row count and its own `[k, q]` controls.
+The common `mask` applies to every variable. Allocate `boundaries` with `2 * variableCount` words
+and `validCount` with `variableCount` words; all other outputs remain source-sized or scalar.
+For example, `additionalVariables: [{values: income, quantileParameters: incomeQuantiles}]`
+intersects the primary variable's selected class with income's independently selected class.
+
 `k` is the number of quantiles, `q` the selected class (one-based); `2 <= k < values.length` and
 `1 <= q <= k`. Values, weights, masks, quantile settings, seed, permutation count and significance
 level can change between submissions without rebuilding. `maximumPermutations`,
@@ -33,13 +40,21 @@ The desktop GeoDa dialog has a different upper-inclusive tie rule; this API foll
 The resident selector uses type-7 quantiles after GPU conversion of type-5 ranks to probabilities.
 Arithmetic and outputs are float32, so interpolated boundaries can differ from GeoDa's float64
 arithmetic by rounding. Values arbitrarily close to a rounded boundary can change membership.
-At most 2^24 packed source rows are supported. Chunked inputs require explicit caller packing.
+At most 2^24 - 1 packed source rows and 64 variables are supported. The shared eight-column
+inference matrix needs `32 * values.length` bytes in one storage binding (at most 4,194,304 rows
+on a device with a 128 MiB binding limit). `estimatedCommandNodeCount` bounds graph compilation
+cost and is checked against the shared command-node budget at construction. Chunked inputs
+require explicit caller packing.
 
 ## Missing values, islands and inference
 
-NaN, infinities and zero-masked rows are omitted before quantiling and inference. The pinned
+NaN, infinities and zero-masked rows are omitted independently from each variable before
+quantiling. Joint membership is the intersection of all selected-class indicators. Inference
+includes only rows finite in every variable and retained by the common mask. This does not
+quantile the complete-case subset: a finite value remains in its own marginal quantile
+distribution even when another variable is missing in that row. The pinned
 upstream `QuantileBreaks` implementation ignores its undefined mask when computing breaks;
-this API deliberately corrects that defect. `validCount` counts finite unmasked rows before
+this API deliberately corrects that defect. `validCount` counts finite unmasked rows per variable before
 island exclusion. The quantile distribution includes islands; inference excludes them using the
 shared noncascading island policy. Only finite positive-weight, nonself slots count as neighbors;
 join counts treat each such slot as a binary edge, regardless of the weight magnitude.
@@ -59,17 +74,19 @@ A constant final class illustrates the legacy defect: all draws tie, producing `
 
 ## Outputs and completeness
 
-- `membership`: selected-class binary indicator, zero for missing rows.
-- `boundaries`: two selected-class bounds, including exterior infinities.
-- `validCount`: one-word source count.
+- `membership`: joint selected-class binary indicator, zero when any variable is missing.
+- `boundaries`: `[lower, upper]` pairs in primary-then-additional variable order, including exterior infinities.
+- `validCount`: source count per variable in the same order.
 - `observed`, `significant`: optional shared inference outputs.
 - `exceedances`, `pseudoPValues`: required shared inference outputs.
 - `classes`: `GPU_QUANTILE_LISA_CLASS`: 0 not significant, 1 significant, 2 undefined/masked,
   3 isolated. Unlike upstream `GetClusterIndicators`, which collapses exceptional rows to zero,
   these retain the label distinctions declared by its join-count class.
-- `invalidQuantile`: one when resident k/q is invalid; membership is zero and no row is tested.
+- `invalidQuantile`: one when any variable's resident k/q is invalid; membership is zero and no row is tested.
 - `status.overflow`: shared inference invalid-count, neighbor-capacity or upstream weights-overflow
-  flag. Read both flags before presenting results. A capacity failure is not an isolated row.
+  flag. Optional `status.invalidCount` is forwarded by shared inference (zero for these binary
+  inputs). Read `invalidQuantile` and `status.overflow` before presenting results. A capacity
+  failure is not an isolated row.
 
 Every terminal output must be a distinct packed caller-owned view to permit readback. Internal
 scratch is graph-owned. Inputs and outputs must not alias. Destruction follows normal graph and
@@ -77,11 +94,21 @@ buffer ownership; the contributor does not destroy borrowed inputs.
 
 ## Scope and evidence
 
-This is the single-variable selected-quantile recipe. Multivariate joint membership is separate:
-pinned `gda_multiquantilelisa` quantiles each column then invokes `MultiJoinCount`, which multiplies memberships when joint membership exists but switches to a bivariate
-no-colocation statistic when the joint class is empty. Missing-mask merging also needs a separate
-reference audit. This API does not claim that
-multiplying independently computed memberships establishes multivariate parity.
+There is no existing CPU twin. Multivariate output implements the selected-quantile intersection
+and joint local join count. An empty joint class yields zero membership and observed counts on
+analysis rows, untested p-values and no significant classes. Pinned libgeoda's `MultiJoinCount`
+has an additional bivariate no-colocation fallback when the intersection is empty; this API keeps
+the explicit intersection definition and does not switch statistics. Missing-mask handling follows
+the per-variable omission and joint validity rule above.
+
+The independent NumPy fixture generator
+`modules/analysis/test/oracles/multivariate-quantile-lisa-numpy.py` uses `numpy.quantile` with
+`method='hazen'` and exhaustively enumerates conditional combinations. Its fixtures cover two
+and three variables, ties, empty intersections, empty marginal classes, different missing rows,
+common masking and islands. GPU tests compare joint observed counts with those fixtures and
+exact sampled exceedances with the established independent uniform Philox oracle; resident
+replay, invalid settings in the first and last variable, invalid permutation counts, padding slots
+and neighbor overflow are covered.
 
 Numerical GPU tests cover type-5 boundaries versus type 7, negative values, constant and tied
 columns, empty classes, missing values, islands, invalid controls, neighbor capacity and replay.
@@ -91,3 +118,21 @@ PyGeoDa 0.1.3 with 9,999 permutations. GPU observed counts match exactly; p-valu
 with a broad 0.2 absolute tolerance because both the random streams and endpoint sampling differ.
 Exact inference is asserted against the independent uniform Philox oracle, including the directed
 tail and its all-ties degeneracy.
+
+{/* parameters: GPUQuantileLISA generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
+
+## `GPUQuantileLISA` parameters
+
+- Packer: `getGPUPermutationParameterValues(settings, options?)`, writes `GPU_PERMUTATION_PARAMETER_LENGTH` (4) `uint32` values.
+  - Input port: `parameters`.
+  - `options` (`{maximumPermutations?: number}`)
+
+Settings of `getGPUPermutationParameterValues`:
+
+| Field | Type | Description |
+|---|---|---|
+| `seed` | `number` | Random seed, an integer in `[0, 2^53)`. Results are a pure function of the seed, the inputs and `permutationCount`, independent of the dispatch shape. Per frame. |
+| `permutationCount` | `number` | Number of permutations `P`, in `[1, maximumPermutations]` of the contributor. The count is never clamped: a value outside that range makes the kernels write NaN p-values (local: rows are not tested and `output.status.overflow` is set; global: the `permutationCount` field of `output.summary` is NaN). Validate on the CPU with the contributor's `getParameterValues` or the `maximumPermutations` option of `getGPUPermutationParameterValues`. |
+| `significanceLevel` (optional) | `number` | Significance level for the local `significant` mask. Defaults to 0.05. Ignored by the global test. |
+
+{/* /parameters */}

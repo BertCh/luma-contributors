@@ -19,12 +19,12 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-11T15:21:14.413Z",
-    "runId": "run-27cee6f7",
+    "date": "2026-11-18T16:33:45.767Z",
+    "runId": "run-f81cf56f",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-27cee6f7",
+    "runId": "run-f81cf56f",
     "rung": "graph",
     "bindings": {},
     "clauses": [],

@@ -1,0 +1,42 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-network.network-strongly-connected-components",
+  "rung": "result",
+  "size": "full",
+  "example": {
+    "code": "const contributor = new GPUNetworkStronglyConnectedComponents(properties);\ngraph.add(contributor);\nreturn properties.output;",
+    "language": "ts",
+    "lineCount": 3
+  },
+  "scenarioId": "gpu-network.network-strongly-connected-components",
+  "viewId": "result-view",
+  "caption": "Result of gpu-network.network-strongly-connected-components: offsets, neighbors → strongComponents. rows: 4. values read back from the GPU run. input offsets: 5 rows.",
+  "description": "Result of gpu-network.network-strongly-connected-components: offsets, neighbors → strongComponents. rows: 4. values read back from the GPU run. input offsets: 5 rows.",
+  "llms": "Result of gpu-network.network-strongly-connected-components: offsets, neighbors → strongComponents\n\n- rows: 4\n- input offsets: 5 rows\n- input neighbors: 5 rows\n- Coordinate model unknown: drawn as planar x, y.\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "rows",
+    "value": "4"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><div class=\"cv-result-tables\"><table class=\"cv-table\" data-key-space=\"node-offset\"><caption>CSR node boundary (node-offset) · 5 rows</caption><thead><tr><th scope=\"col\">offsets</th></tr></thead><tbody><tr><td data-provenance=\"readback\">0</td></tr><tr><td data-provenance=\"readback\">1</td></tr><tr><td data-provenance=\"readback\">3</td></tr><tr><td data-provenance=\"readback\">4</td></tr><tr><td data-provenance=\"readback\">4</td></tr></tbody></table><table class=\"cv-table\" data-key-space=\"edge\"><caption>Directed edge slot (edge) · 5 rows</caption><thead><tr><th scope=\"col\">neighbors</th></tr></thead><tbody><tr><td data-provenance=\"readback\">1</td></tr><tr><td data-provenance=\"readback\">0</td></tr><tr><td data-provenance=\"readback\">2</td></tr><tr><td data-provenance=\"readback\">2</td></tr><tr><td data-provenance=\"readback\">4294967295</td></tr></tbody></table><table class=\"cv-table\" data-key-space=\"node\"><caption>Synthetic node (node) · 4 rows</caption><thead><tr><th class=\"cv-col--output\" scope=\"col\">strongComponents</th></tr></thead><tbody><tr><td class=\"cv-col--output\" data-provenance=\"readback\">0</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">0</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">2</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">3</td></tr></tbody></table><table class=\"cv-table\" data-key-space=\"query\"><caption>Query (query) · 1 rows</caption><thead><tr><th class=\"cv-col--output\" scope=\"col\">converged</th><th class=\"cv-col--output\" scope=\"col\">iterationCount</th><th class=\"cv-col--output\" scope=\"col\">iterationLimitReached</th></tr></thead><tbody><tr><td class=\"cv-col--output\" data-provenance=\"readback\">1</td><td class=\"cv-col--output\" data-provenance=\"readback\">8</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td></tr></tbody></table></div><p class=\"cv-legend\">grey: input offsets, neighbors · blue: output strongComponents, converged, iterationCount, iterationLimitReached</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-11-18T16:33:06.257Z",
+    "runId": "run-52f1aa16",
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-52f1aa16",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

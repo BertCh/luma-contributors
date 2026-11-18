@@ -32,6 +32,21 @@ values are sorted and the `p`-th percentile is the value of rank `ceil(p / 100 *
 A departure that cannot reach the vertex counts as `+Infinity`. `output.reachedCounts` and
 `output.status` (`[valid, converged]` per departure) say how complete the numbers are.
 
+CPU and GPU ranks use the same host calculation, evaluated exactly for the supplied binary64
+percentile without an epsilon. For travel times `[5, 90]`, percentiles immediately below 50%, at
+50%, and immediately above 50% select `[5, 5, 90]`. Integer boundaries stay exact: 56% of 25
+departures selects rank 14, and the next representable percentile above 56% selects rank 15.
+
+Percentiles and output shapes are captured when a contributor or operation is constructed;
+later changes to the caller's percentile array do not change that computation. Every percentile
+slot must contain a finite number in `(0, 100]`; sparse lists are rejected with a named error.
+Declared properties are read by name, so inherited getters (including a zero routing budget)
+have the same meaning as own properties. Caller-owned GPU views retain their identities.
+Both backends honor `maximumRelaxations` for each departure (default: the number of states).
+At zero budget, only the origin is reached, destination travel times stay `+Infinity`, and each
+departure reports `[valid, converged] = [1, 0]`. A budget exit publishes incumbent travel times;
+inspect the status before treating unreached destinations as conclusive.
+
 The percentile rule is nearest rank. r5r's exact index rule was not checked against its source, so
 for small windows its percentiles may differ by one rank.
 

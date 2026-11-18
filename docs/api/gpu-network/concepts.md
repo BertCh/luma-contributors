@@ -64,6 +64,12 @@ kilometers alike.
   and formats of `GPUSpatialWeights`, so a topology can be passed wherever spatial weights are read.
   Contributors that write a network (line graph, noding, induced subgraph) emit the same shape, so
   their output feeds the next contributor's `topology` directly.
+- **Cost-table completeness.** When composing `GPUNetworkCostTable` with `GPUMapMatching`, forward
+  `output.status.complete` as `routeTable.status.complete`. This one word is nonzero only after all
+  searches converge without capacity overflow. The matcher uses A* when it is zero or omitted;
+  an absent entry in an unfinished table never establishes that a route is impossible. Size lanes
+  and rounds together: both the command count and the frontier storage binding must fit (see the
+  [cost-table limits](./operators.md#gpunetworkcosttable)).
 - **Outputs in one bag.** Every GPU-written view is a field of `output`, and every status word
   (`converged`, `iterationCount`, `overflow`, `count`, `requiredCount`, and prefixed forms such as
   `pairOverflow`) lives in the bag's `status` member (`output.status.overflow`). Graph start

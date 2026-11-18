@@ -21,6 +21,14 @@ Reach for the geospatial kernels when you need one primitive (a distance, a cont
 indexed query per frame). Reach for this entry point when the question is about every row at once,
 or about statistics over the neighborhood structure.
 
+For [global Moran](./operators-statistics.md#gpuglobalspatialstatistics),
+[local Moran and hot-spot analysis](./operators-statistics.md#gpuhotspotanalysis-and-gpulocalmoran),
+pass a neighbor search's `outputWeights` directly to the statistic. It carries completeness status
+with the CSR buffers. Final-capacity or candidate-capacity loss suppresses inference; the statistic's
+optional `output.status.overflow` and `candidateOverflow` forward the producer's flags separately.
+Overflow is final-slot loss; candidateOverflow is intermediate loss, including contiguity pair scratch.
+Chunk-local loss flags are rejected by these statistics; use aggregate status on the outer port.
+
 See [expansion computation lenses](./expansion-lenses.md) for executable examples of the new contributors and recipes. These cards expose actual command graphs and status outputs on explicit illustrative inputs.
 
 ## Overview
@@ -32,25 +40,23 @@ Core primitives (`GPUVisibilityWorkflow`, `GPUBVH`, `GPUGridBinning`, `GPUHistog
 `GPUAncestorProjection`, and others) and the raster operators; new WGSL is written only where no
 primitive fits.
 
-```ts
-import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
-import {GPUPointDensity} from '@luma-contributors/analysis/gpu-spatial-analysis';
+## Quick start
 
-const graph = new GPUCommandGraph(device, {id: 'map'});
-const viewport = new GPUParameterBuffer(device, {id: 'viewport', format: 'float32', length: 4});
+Run the complete [point-density walkthrough](../operation-forms-and-cpu-twins.md#point-density-from-device-to-readback).
+It creates its own device and five positions, then reads `[2, 0, 1, 1]` from a 2 × 2 grid and
+releases every resource. Use that program as the shared execution scaffold for the other families.
 
-// `positions`, `values`, `extent`, and `histogram` are graph views created on `graph`.
-graph.add(new GPUPointDensity({
-  positions, bounds: viewport.importToGraph(graph), gridSize: [256, 256],
-  output: {values, extent, histogram}
-}));
-const compiled = await graph.compileAsync(); // once, without blocking the page
+Point density's domain-specific ports are:
 
-// every frame: rewrite parameters, encode the same compiled graph
-viewport.write(new Float32Array([minX, minY, maxX, maxY]));
-compiled.encode(device.commandEncoder, {parameters: undefined});
-```
+| Port | Format and rows | Meaning |
+| --- | --- | --- |
+| `positions` | `float32x2`, one row per point | Planar XY positions; nonfinite and out-of-bounds points are excluded. |
+| `bounds` | `float32`, 4 rows | `[minimumX, minimumY, maximumX, maximumY]`; buffer contents can change each submission. |
+| `output.values` | `float32`, columns × rows | Per-cell statistic, X varying fastest; `'count'` is the default. |
+| `output.status.overflow` | optional `uint32`, 1 row | Grid mode writes 0; hexagon mode writes 1 if an in-bounds point missed the lattice. |
+
+The walkthrough requests count values only. Other statistics, weights, smoothing, extent,
+histogram and texture outputs are described in the [density reference](./operators-density.md).
 
 Read [GPU Spatial Analysis concepts](./concepts.md) for the ontology, shared ports, conventions,
 coordinate precision and the compile, encode and submit pattern. The operator pages group the

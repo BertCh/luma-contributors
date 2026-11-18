@@ -8,7 +8,7 @@
   "viewId": "datum-receipt",
   "caption": "Receipt of network node 648. road-context: -87.65442657470703, 41.88420104980469. values read back from the GPU run. search: 2 quantities.",
   "description": "Receipt of network node 648. road-context: -87.65442657470703, 41.88420104980469. values read back from the GPU run. search: 2 quantities.",
-  "llms": "Receipt of network node 648\n\n- road-context: -87.65442657470703, 41.88420104980469\n- search: 2 quantities\n- result: 1 quantities\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: transients costs, predecessors, converged, ids, lineOffsets, pathFound, count, overflow retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Receipt of network node 648\n\n- road-context: -87.65442657470703, 41.88420104980469\n- search: 2 quantities\n- result: 1 quantities\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: transients costs, predecessors, converged, ids, nodeRows, lineOffsets, pathFound, count, overflow, candidateOverflow retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "road-context",
     "value": "-87.65442657470703, 41.88420104980469"
@@ -57,16 +57,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-11T15:20:12.941Z",
-    "runId": "run-70cde4eb",
+    "date": "2026-11-18T16:33:05.795Z",
+    "runId": "run-30d8c168",
     "observerEffects": [
       "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
-      "lens twin: transients costs, predecessors, converged, ids, lineOffsets, pathFound, count, overflow retained instead of aliased"
+      "lens twin: transients costs, predecessors, converged, ids, nodeRows, lineOffsets, pathFound, count, overflow, candidateOverflow retained instead of aliased"
     ]
   },
   "state": {
-    "runId": "run-70cde4eb",
+    "runId": "run-30d8c168",
     "rung": "datum",
     "bindings": {
       "entity": 648

@@ -6,7 +6,15 @@
       "api/README",
       "api/operation-forms-and-cpu-twins",
       "api/analysis-catalog",
+      "api/reused-analysis-preparation",
       "api/gpu-spatial-analysis-cross-reference",
+      {
+        "type": "category",
+        "label": "Analysis core",
+        "items": [
+          "api/analysis-core/fitting-kernels"
+        ]
+      },
       {
         "type": "category",
         "label": "Spatial analysis",
@@ -14,6 +22,10 @@
           "api/gpu-spatial-analysis/README",
           "api/gpu-spatial-analysis/concepts",
           "api/gpu-spatial-analysis/analysis-experience",
+          "api/gpu-spatial-analysis/gpu-analysis-contiguity-statistics",
+          "api/gpu-spatial-analysis/chunked-spatial-weights-transpose",
+          "api/gpu-spatial-analysis/geodesic-precision",
+          "api/gpu-spatial-analysis/instrumental-variables-covariance",
           "api/gpu-spatial-analysis/temporal-context",
           "api/gpu-spatial-analysis/movement-semantics",
           "api/gpu-spatial-analysis/home-range-and-recursion-mob07",
@@ -62,6 +74,7 @@
           "api/gpu-spatial-analysis/global-coordinates",
           "api/gpu-spatial-analysis/interpolation-expansion",
           "api/gpu-spatial-analysis/vecchia-likelihood",
+          "api/gpu-spatial-analysis/gaussian-random-field",
           "api/gpu-spatial-analysis/coverage-statistics",
           "api/gpu-spatial-analysis/spatial-validation-advanced",
           "api/gpu-spatial-analysis/point-process",
@@ -81,7 +94,10 @@
           "api/gpu-network/README",
           "api/gpu-network/concepts",
           "api/gpu-network/operators",
+          "api/gpu-network/louvain",
           "api/gpu-network/alternative-routes",
+          "api/gpu-network/k-shortest-paths",
+          "api/gpu-network/visibility-graph",
           "api/gpu-network/flow-models-mob10",
           "api/gpu-network/map-matched-edge-volumes-mob05",
           "api/gpu-network/network-time-geography-mob09",
@@ -98,6 +114,7 @@
           "api/gpu-terrain/README",
           "api/gpu-terrain/concepts",
           "api/gpu-terrain/operators",
+          "api/gpu-terrain/height-above-drainage",
           "api/gpu-terrain/expansion-lenses",
           "api/gpu-terrain/terrain-processing"
         ]
@@ -108,6 +125,7 @@
         "items": [
           "api/gpu-raster/README",
           "api/gpu-raster/operations",
+          "api/gpu-raster/isolines-tiles",
           {
             "type": "category",
             "label": "Operation Families",
@@ -116,6 +134,10 @@
             ]
           },
           "api/gpu-raster/expansion",
+          "api/gpu-raster/contrast-equalization",
+          "api/gpu-raster/raster-embedding-codecs",
+          "api/gpu-raster/raster-patches",
+          "api/gpu-raster/spectral-filter",
           "api/gpu-raster/fill-nodata",
           "api/gpu-raster/tile-reprojection",
           "api/gpu-raster/fractional-zonal-distribution",
@@ -136,6 +158,8 @@
         "label": "Dataframe analysis",
         "items": [
           "api/gpu-dataframe-analysis",
+          "api/dataframe-analysis/coregionalization-fit",
+          "api/forest-inference",
           "api/variable-standardization"
         ]
       },

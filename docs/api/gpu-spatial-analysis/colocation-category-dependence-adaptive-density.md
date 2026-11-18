@@ -43,8 +43,6 @@ Reference: Abramson (1982), "On bandwidth variation in kernel estimates: a squar
 
 - Packer: `getGPUAdaptiveBandwidthKernelDensityParameterValues(settings, grid)`, writes `GPU_ADAPTIVE_BANDWIDTH_KERNEL_DENSITY_PARAMETER_LENGTH` `float32` values.
   - `grid` (`GPURasterMetadata`): The output grid: axis-aligned with a nonzero finite cell size.
-- Packer: `getGPUKernelDensityParameterValues(settings, grid)`, writes `GPU_KERNEL_DENSITY_PARAMETER_LENGTH` (9) `float32` values.
-  - `grid` (`GPURasterMetadata`): The output grid: axis-aligned, with a nonzero finite cell size; its width and height must match the contributor's.
 
 Settings of `getGPUAdaptiveBandwidthKernelDensityParameterValues`:
 
@@ -52,12 +50,5 @@ Settings of `getGPUAdaptiveBandwidthKernelDensityParameterValues`:
 |---|---|---|
 | `bandwidth` | `number` | Pilot and global bandwidth `h` in position units. Positive and finite. |
 | `sensitivity` (optional) | `number` | Abramson exponent `alpha` in `[0, 1]`; 0 is the fixed bandwidth. Defaults to 1/2. |
-
-Settings of `getGPUKernelDensityParameterValues`:
-
-| Field | Type | Description |
-|---|---|---|
-| `bandwidth` | `number` | Kernel bandwidth `h` in position units (ground units). Positive and finite. Ignored (the GPU computes it) when `GPUKernelDensityProps.bandwidthRule` is set; pass any positive value. |
-| `window` (optional) | `GPUKernelDensityWindow \| 'study-window'` | Study window `[minX, minY, maxX, maxY]` of the edge correction. Defaults to the ordered rectangle of the output grid. Ignored without edge correction. Use `'study-window'` with a polygon `studyWindow`; it writes NaN rectangle slots, so a rectangle-mode operator with edge correction yields NaN cells. |
 
 {/* /parameters */}

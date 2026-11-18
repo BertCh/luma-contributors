@@ -35,6 +35,9 @@ tie-rule predecessor, and `status.converged` is unchanged.
 `adaptReachabilityIterations()` grows or shrinks it from the last frame's `output.status.iterationCount` and
 `output.status.converged` readback. `startCount` is a number (compiled in) or a one-row view (per frame).
 Build CSR on the GPU with `GPUCOOToCSR`; a reverse CSR gives "cost to reach" isochrones.
+The contributor and both operation forms capture named constructor budgets and port/status maps
+once, including inherited getters. Later props mutation cannot raise the validated round limit;
+`activeIterations` remains a per-frame buffer control clamped to that limit.
 Each round reads its index from its own 256-byte dispatch slot (`[x, y, z, round]`), never from the
 WGSL text, so every round of a phase shares one pipeline: one reachability compiles one relax and one
 tie-level pipeline at any `maximumIterations`, and so do the label rounds of `GPUNetworkServiceAreas`.
@@ -200,6 +203,12 @@ Each batch must still converge within `maximumIterations`. `createNetworkCentral
 provides host-controlled continuation for longer paths. Do not interleave runs sharing output buffers;
 inspect the final accumulated status before consuming the result.
 
+Continuation accepts each planner descriptor directly: upload that step's pivots, then
+`await runner.runBatch(step)`. The planner emits `reset: 1` for the first batch and `reset: 0` for
+later batches. The runner also accepts booleans: `true`/`1` replaces totals and status (the default
+when reset is omitted); `false`/`0` adds node/edge totals, takes the minimum `converged`, and retains
+earlier failure and approximation flags. Its per-pivot outputs still describe only the current batch.
+
 #### How it computes
 
 {/* lens:GPUNetworkCentralityScheduleStep */}
@@ -216,7 +225,18 @@ inspect the final accumulated status before consuming the result.
 
 Network analysis over the same directed CSR road network as `GPUNetworkReachability`.
 
-- `GPUNetworkPathExtraction` walks a reachability predecessor array from per-frame targets. It publishes ordered (source to target) node lists and resolved CSR edge lists as `GPUCompactOutput`s, together with per-target offsets, costs, and found flags. Each walk is bounded by a compile-time `maximumPathLength`, so cyclic or garbage predecessors terminate and raise `output.status.overflow`. The per-target `lineOffsets`, `pathCosts` and `pathFound` are in `output`, and `targetCount` is a number or a one-row view. Pass the search's `output.status.converged` flag as `predecessorsComplete`: when it is 0 no target is reported found, because a chain may end at a node the truncated search never linked rather than at a source.
+- `GPUNetworkPathExtraction` walks a reachability predecessor array from per-frame targets. It publishes ordered (source to target) node lists and resolved CSR edge lists as `GPUCompactOutput`s, together with per-target offsets, costs, and found flags. Each walk is bounded by a compile-time `maximumPathLength`, so bounded or cyclic walks terminate and set optional `output.status.candidateOverflow` on both node and edge ports. Final `overflow` reports only the respective output capacity. The CPU twin and operation forms use the same explicit budget and separate flags; the default budget is 1024. The per-target `lineOffsets`, `pathCosts` and `pathFound` are in `output`, and `targetCount` is a number or a one-row view. Pass the search's `output.status.converged` flag as `predecessorsComplete`: when it is 0 no target is reported found, because a chain may end at a node the truncated search never linked rather than at a source.
+
+  Routing readouts must check search convergence and `candidateOverflow` before treating an empty
+  path as unreachable. After a converged search, each target with `pathFound=1` keeps its certified
+  cost even if another target loses its walk. Candidate and final capacity flags describe the
+  batch, so unfound targets are qualified as “incomplete batch” rather than assigned an individual
+  failure. The explorer and showcase distinguish walk-budget loss (4096 nodes per explorer path,
+  2048 per showcase path) from final output capacity loss; geometry statistics require complete
+  output. The showcase clears its turn-comparison chart whenever either route lacks a usable edge
+  sequence. Only a completed search without batch loss reports “no route found” for `pathFound=0`.
+  The path-extraction lens retains the candidate flag and refuses captures whose walk budget was
+  exhausted.
 - `GPUNetworkServiceAreas` assigns every node to its nearest per-frame facility. Ties go to the smallest facility row; optional `predecessors` follow only tight edges between nodes of the same assignment, so a path always ends at the facility that `assignments` names, also on cost ties. It also reports per-facility node counts and the total cost each facility serves, all in `output`. It composes `GPUNetworkReachability` with a frontier-based min-label pass over the tight shortest-path edges. `maximumLabelIterations` bounds the label rounds (default `min(maximumIterations, 32)`) and `localIterations` sets the hops chained per round in both phases (default 16), so large-diameter grids converge at the defaults.
 - `GPUNetworkNeighborhood` publishes k-hop ego networks around per-frame `startNodes` (`startCount` a number or a view), with per-frame `k` up to a compile-time `maximumHops`. `output` holds hop distances, masks, and compact node and induced-edge IDs.
 - `GPUNetworkAnalyticsColumns` publishes node-aligned `degree`, `inDegree` and weak `components` columns directly on the caller's `topology` (and optional `reverseTopology`) with analysis-owned kernels, so a transient CSR built in the same graph by `GPUCOOToCSR` works as well as imported buffers. A degree counts the live slots of a row (a slot whose neighbor is `>= nodeCount` is not an edge) and a self-loop slot once, the rule of `GPUGraphAlgorithmsDegree`; `GPUNetworkStatistics` counts an undirected self-loop twice. Each column can be normalized to `[0, 1]` with a GPU extent. PageRank, core number and label propagation are luma.gl `GPUGraphAlgorithms*` operations that accept only physical topology; run them from `@luma.gl/graph/gpu-graph-algorithms`.
@@ -235,9 +255,50 @@ graph.add(new GPUNetworkAnalyticsColumns({topology,
   degree: {output: degree, normalized: degreeSize}, components: {output: componentLabels}}));
 ```
 
+#### CPU network execution budgets
+
+`computeNetworkFlowOnCPU` and `CPUNetworkFlowOperation` resolve `solver` and costed `mode` before
+selecting an explicit budget. Reference and costed successive-shortest-path use
+`maximumAugmentations`; uncosted parallel uses `maximumRelabels`; costed primal-dual uses
+`maximumCostPhases`. The latter two modes ignore `maximumAugmentations`, including zero.
+`auto` selects the same route as the contributor (including topology, mode and size triggers).
+After selection, reference mode refuses `maximumRelaxationRounds`, `maximumRelabels`, `mode`
+and `maximumCostPhases` in both backends. In particular, `maximumRelabels` alone does not opt
+`auto` into parallel mode; select `solver: 'parallel'` to supply that budget. Both operation
+forms reject incompatible reference settings at construction, before lowering or execution.
+CPU parallel phases serially exhaust shortest residual paths of equal cost and hop count;
+GPU phases use parallel preflow discharges, so allocation and progress can differ. An explicit
+`maximumRelaxationRounds` binds each synchronous CPU search, including its final unchanged sweep.
+A budget exit retains feasible flow, reports the
+remaining finite demand in `unserved`, clears summary `complete` and status `converged`, and
+sets `iterationLimitReached`. A finite request already served or an exhausted residual network
+is complete even at the budget boundary. Omitted CPU budgets run to completion.
+
 #### `GPUNetworkPathExtraction`
 
 Convert reachability predecessors and target intersections into ordered start-to-target node paths with offsets, costs and found flags.
+
+For CPU reachability, explicit `maximumIterations` and per-frame `activeIterations` bind the
+search to at most `localIterations` hops per round (default 32); the active count is clamped to
+the compiled maximum (default 64). Explicit `maximumTieIterations` similarly bounds zero-cost
+predecessor tie levels. Budget exits retain current labels, clear `converged`, and set
+`iterationLimitReached`; path extraction suppresses paths when that certificate is clear.
+CPU frontier scheduling is synchronous and can advance further than GPU workgroups within a
+round. With no explicit CPU budgets, searches run to completion.
+Zero active rounds never certify a search, including an empty start set.
+
+`output.ids` contains caller node identities (`nodeIds[row]`, or the identity mapping when no
+map is supplied); optional `output.nodeRows` separately contains raw node rows for positional
+gathers. With edge extraction, `edges.output.ids` contains caller edge identities and optional
+`edges.output.edgeRows` contains CSR edge slots. Each row output must match its identity output's
+capacity and use a separate buffer. The CPU twin always returns `nodeRows` and, with edges,
+`edges.edgeRows`; graph operations declare those ports when requested. Use rows to gather
+positions or attributes, including when caller IDs happen to equal row indices.
+Operation props use `NetworkPathExtractionNodeOperationOutput` for the node bag and
+`NetworkPathExtractionEdgeOperationOutput` for the edge bag. Swapped row fields are rejected
+by TypeScript and at runtime before lowering. Both operation forms and the contributor capture
+their declared scalar fields, output/status maps and topology maps at construction; later caller
+mutation cannot change validated graph declarations. Input view contents remain per-frame.
 
 ::lens{scenario=gpu-network.network-path-extraction rung=result caption="Follow the highlighted 25-intersection path from the start to the West Loop library target."}
 
@@ -349,6 +410,18 @@ const stats = decodeGPUNetworkStatistics(
 );
 ```
 
+#### How it computes
+
+{/* lens:GPUNetworkStatistics */}
+
+::lens{scenario=gpu-network.network-statistics rung=datum bind=page datum=2 caption="Inspect the out-degree histogram: 527 intersections have degree 2."}
+
+::lens{scenario=gpu-network.network-statistics rung=formula}
+
+::lens{scenario=gpu-network.network-statistics rung=kernel}
+
+::lens{scenario=gpu-network.network-statistics rung=graph}
+
 {/* parameters: GPUNetworkStatistics generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 #### `GPUNetworkStatistics` parameters
@@ -363,18 +436,6 @@ Settings of `getGPUNetworkStatisticsParameterValues`:
 | `degreeBinWidth` (optional) | `number` | Linear degree bin width, floored and clamped to at least 1. Defaults to 1. |
 
 {/* /parameters */}
-
-#### How it computes
-
-{/* lens:GPUNetworkStatistics */}
-
-::lens{scenario=gpu-network.network-statistics rung=datum bind=page datum=2 caption="Inspect the out-degree histogram: 527 intersections have degree 2."}
-
-::lens{scenario=gpu-network.network-statistics rung=formula}
-
-::lens{scenario=gpu-network.network-statistics rung=kernel}
-
-::lens{scenario=gpu-network.network-statistics rung=graph}
 
 ### `GPUNetworkSubgraphFilter`
 
@@ -405,6 +466,18 @@ parameterBuffer.write(
 );
 ```
 
+#### How it computes
+
+{/* lens:GPUNetworkSubgraphFilter */}
+
+::lens{scenario=gpu-network.network-subgraph-filter rung=datum bind=page datum=100 caption="Inspect the rejected edge: its travel time is about 12.4 seconds."}
+
+::lens{scenario=gpu-network.network-subgraph-filter rung=formula}
+
+::lens{scenario=gpu-network.network-subgraph-filter rung=kernel}
+
+::lens{scenario=gpu-network.network-subgraph-filter rung=graph}
+
 {/* parameters: GPUNetworkSubgraphFilter generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 #### `GPUNetworkSubgraphFilter` parameters
@@ -422,21 +495,15 @@ Settings of `getGPUNetworkSubgraphFilterParameterValues`:
 
 {/* /parameters */}
 
-#### How it computes
-
-{/* lens:GPUNetworkSubgraphFilter */}
-
-::lens{scenario=gpu-network.network-subgraph-filter rung=datum bind=page datum=100 caption="Inspect the rejected edge: its travel time is about 12.4 seconds."}
-
-::lens{scenario=gpu-network.network-subgraph-filter rung=formula}
-
-::lens{scenario=gpu-network.network-subgraph-filter rung=kernel}
-
-::lens{scenario=gpu-network.network-subgraph-filter rung=graph}
-
 ### `GPUNetworkCoarsening`
 
 Aggregate road intersections by zone label into supernode counts, centroids and sorted weighted superedges.
+
+`output.edges.status.overflow` reports final superedge capacity loss. Optional
+`output.edges.status.candidateOverflow` reports excluded labels and edges; `requiredCount` counts
+retained superedges and is a lower bound on the full requirement when labels were excluded.
+The coarsening lens retains both overflow flags and refuses capture when either is nonzero;
+nonempty retained groups alone cannot certify that all live input labels were included.
 
 ::lens{scenario=gpu-network.network-coarsening rung=result caption="Compare 4 zones joined by 9 superedges; line colour counts directed road edges between zones."}
 
@@ -449,13 +516,20 @@ const coarsening = new GPUNetworkCoarsening({
   topology: {...topology, nodePositions}, labels, groupCapacity: 1024,
   output: {
     groupNodeCount, groupCentroid, groupBounds,
-    edges: {ids: sourceGroups, status: {count, overflow}}, edgeTargetGroups, edgeCounts, edgeWeights
+    edges: {ids: sourceGroups, status: {count, overflow, candidateOverflow}}, edgeTargetGroups, edgeCounts, edgeWeights
   }
 });
 graph.add(coarsening);
 ```
 
-Labels are dense group IDs below the compile-time `groupCapacity` (at most 65535); a live node above it is excluded and sets `edges.status.overflow`. Undirected CSRs list each edge in both directions and each edge counts once. Counts are integer exact. Weight, position and value sums use 64-bit fixed-point atomics, so they are bitwise reproducible. By default the unit of each sum follows the data (a power of two derived on the GPU from the largest term that is summed, the rule of the shared fixed-point accumulator), so 1,000 weights of 1e-4 sum to 0.1; pass `fixedPointScale` (a power of two, 65536 was the former default) only to pin a fixed rounding step of `1 / fixedPointScale` per addend; an addend larger than about `4e18` steps (6.1e13 at 65536) then saturates at that value. Superedges use a stable sort and segment, so order and the kept prefix on overflow are deterministic. CSR slots past `offsets[nodeCount]` take the sentinel key and never become superedges. Inputs must be finite.
+Labels are dense group IDs below the compile-time `groupCapacity`. Its exported addressing ceiling is
+`GPU_NETWORK_COARSENING_MAXIMUM_GROUP_CAPACITY = floor(0xffffffff / 10)` (429,496,729 groups),
+because the per-group accumulator uses ten uint32 words. Each per-group output and scratch binding
+must also fit the device storage-binding and buffer limits, which usually impose a lower capacity.
+The existing large-group headless regression uses 131,072 groups with separate source/target keys;
+the addressing ceiling alone is not an allocation guarantee.
+
+A live node with `label >= groupCapacity` is excluded and sets `edges.status.candidateOverflow`; final `edges.status.overflow` remains zero when the retained superedges fit. Undirected CSRs list each edge in both directions and each edge counts once. Counts are integer exact. Weight, position and value sums use 64-bit fixed-point atomics, so they are bitwise reproducible. By default the unit of each sum follows the data (a power of two derived on the GPU from the largest term that is summed, the rule of the shared fixed-point accumulator), so 1,000 weights of 1e-4 sum to 0.1; pass `fixedPointScale` (a power of two, 65536 was the former default) only to pin a fixed rounding step of `1 / fixedPointScale` per addend; an addend larger than about `4e18` steps (6.1e13 at 65536) then saturates at that value. Superedges use a stable sort and segment, so order and the kept prefix on overflow are deterministic. CSR slots past `offsets[nodeCount]` take the sentinel key and never become superedges. Inputs must be finite.
 
 #### How it computes
 
@@ -485,9 +559,15 @@ windowParameters.write(
 
 Undirected graphs follow the convention that the CSR lists both directions, so each slot is written once and the matrix is symmetric; pass `mirrorSlots: true` for an edge-list CSR that lists each edge once and each slot is also written transposed (self-loops once). Directed: row = source. Masks follow the `GPUNetworkStatistics` liveness rule. Counts are exact `u32` atomics. Weight sums are fixed-point `u32` atomics of `round(weight * weightScale)` (default scale 1024), so results are bit-identical regardless of thread order; the cost is half a step of quantization per edge and wraparound at 2^32. `GPUAdjacencyMatrixOrder` builds `order` from a `uint32` group label and an optional tie key with two stable `GPUSort` passes and matches `computeAdjacencyMatrixOrder` exactly.
 
+#### `GPUAdjacencyMatrix`
+
+Bin directed road connections into a small adjacency matrix of edge counts, in a chosen node order.
+
+::lens{scenario=gpu-network.adjacency-matrix rung=result caption="Look along the diagonal of the 8-by-8 matrix; the busiest cell contains 306 directed edges."}
+
 {/* parameters: GPUAdjacencyMatrix generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
-#### `GPUAdjacencyMatrix` parameters
+##### `GPUAdjacencyMatrix` parameters
 
 - Packer: `getGPUAdjacencyMatrixParameterValues(settings)`, writes `GPU_ADJACENCY_MATRIX_PARAMETER_LENGTH` (4) `uint32` values.
 
@@ -502,12 +582,6 @@ Settings of `getGPUAdjacencyMatrixParameterValues`:
 | `resolution` | `number` | Matrix resolution `R` of the `GPUAdjacencyMatrix`, used to bound the window extents. |
 
 {/* /parameters */}
-
-#### `GPUAdjacencyMatrix`
-
-Bin directed road connections into a small adjacency matrix of edge counts, in a chosen node order.
-
-::lens{scenario=gpu-network.adjacency-matrix rung=result caption="Look along the diagonal of the 8-by-8 matrix; the busiest cell contains 306 directed edges."}
 
 #### How it computes
 
@@ -614,23 +688,6 @@ scoreGraph.add(new GPUNetworkAccessibility({costs: matrixView, opportunityWeight
 scoring.write(getGPUNetworkAccessibilityParameterValues({threshold: 1800, decay: 'exponential', beta: 0.002}));
 ```
 
-{/* parameters: GPUNetworkAccessibility generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
-
-#### `GPUNetworkAccessibility` parameters
-
-- Packer: `getGPUNetworkAccessibilityParameterValues(settings)`, writes `GPU_NETWORK_ACCESSIBILITY_PARAMETER_LENGTH` (4) `float32` values.
-
-Settings of `getGPUNetworkAccessibilityParameterValues`:
-
-| Field | Type | Description |
-|---|---|---|
-| `threshold` | `number` | Cost cutoff: only matrix entries with a finite cost `<= threshold` contribute. `Infinity` keeps every reached entry. Must not exceed the `costLimit` the matrix was built with. |
-| `decay` (optional) | `GPUNetworkAccessibilityDecay` | Decay applied to the `gravity` and two-step floating catchment outputs. Defaults to `'none'`. |
-| `beta` (optional) | `number` | Decay rate, finite and non-negative. Defaults to 0. |
-| `minimumCost` (optional) | `number` | Power-decay floor so zero costs stay finite. Must be positive and finite. Defaults to 1. |
-
-{/* /parameters */}
-
 #### `GPUNetworkSnapping`
 
 Project point locations onto the nearest road edges and return edge rows, fractions, distances and search start costs.
@@ -672,6 +729,23 @@ Compute row-major travel costs from snapped facility starts to every road inters
 Reduce a facility-by-node cost matrix and opportunity weights into cumulative, gravity or floating-catchment accessibility scores.
 
 ::lens{scenario=gpu-network.network-accessibility rung=result caption="Find the highest gravity access score, about 2.373, among intersections near the facilities."}
+
+{/* parameters: GPUNetworkAccessibility generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
+
+##### `GPUNetworkAccessibility` parameters
+
+- Packer: `getGPUNetworkAccessibilityParameterValues(settings)`, writes `GPU_NETWORK_ACCESSIBILITY_PARAMETER_LENGTH` (4) `float32` values.
+
+Settings of `getGPUNetworkAccessibilityParameterValues`:
+
+| Field | Type | Description |
+|---|---|---|
+| `threshold` | `number` | Cost cutoff: only matrix entries with a finite cost `<= threshold` contribute. `Infinity` keeps every reached entry. Must not exceed the `costLimit` the matrix was built with. |
+| `decay` (optional) | `GPUNetworkAccessibilityDecay` | Decay applied to the `gravity` and two-step floating catchment outputs. Defaults to `'none'`. |
+| `beta` (optional) | `number` | Decay rate, finite and non-negative. Defaults to 0. |
+| `minimumCost` (optional) | `number` | Power-decay floor so zero costs stay finite. Must be positive and finite. Defaults to 1. |
+
+{/* /parameters */}
 
 #### How it computes
 
@@ -731,6 +805,18 @@ graph.add(new GPUCatchmentAccessibility({
 decay.write(getGPUNetworkCostWeightsParameterValues({costLimit: 1800, decay: 'gaussian'}));
 ```
 
+#### How it computes
+
+{/* lens:GPUNetworkCostWeights */}
+
+::lens{scenario=gpu-network.network-cost-weights rung=datum bind=page datum=0 caption="Inspect the first facility row: it retains 823 entries beginning at offset 0."}
+
+::lens{scenario=gpu-network.network-cost-weights rung=formula}
+
+::lens{scenario=gpu-network.network-cost-weights rung=kernel}
+
+::lens{scenario=gpu-network.network-cost-weights rung=graph}
+
 {/* parameters: GPUNetworkCostWeights generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 #### `GPUNetworkCostWeights` parameters
@@ -747,18 +833,6 @@ Settings of `getGPUNetworkCostWeightsParameterValues`:
 | `minimumCost` (optional) | `number` | Floor of the `'power'` decay so a zero cost stays finite, positive and finite. Defaults to 1. |
 
 {/* /parameters */}
-
-#### How it computes
-
-{/* lens:GPUNetworkCostWeights */}
-
-::lens{scenario=gpu-network.network-cost-weights rung=datum bind=page datum=0 caption="Inspect the first facility row: it retains 823 entries beginning at offset 0."}
-
-::lens{scenario=gpu-network.network-cost-weights rung=formula}
-
-::lens{scenario=gpu-network.network-cost-weights rung=kernel}
-
-::lens{scenario=gpu-network.network-cost-weights rung=graph}
 
 ### `GPUNetworkIsochrones`
 
@@ -779,6 +853,16 @@ omitting it accepts that truncation unchecked. The optional one-row `uint32`
 Both the plain reachability search and the facility-label search forward it; with assignments,
 label-round exhaustion also sets it. Both ports require `startNodes` and separate buffers from
 inputs, geometry outputs and each other. Budget exits still publish incumbent costs and geometry.
+
+Every published output must occupy a distinct logical byte range, including `costs` and
+`assignments` when `startNodes` is supplied. Construction rejects aliases and names the two output
+ports. Outputs written in separate passes may use disjoint ranges of one allocation; bindings
+used together must also satisfy their alignment and read/write separation requirements.
+The contributor snapshots declared option and port fields at construction, including inherited
+and non-enumerable getters on class-backed output maps; later caller mutations do not change
+validated bindings. GPU view identities are retained,
+so their contents remain per-frame inputs. The labelled decode, triangle-label and cell-label
+passes validate their co-bound ports at construction as well.
 
 - **Raster path.** Every edge is sampled at up to `raster.maximumSamplesPerEdge` points. The cost is
   interpolated linearly from the source node along the edge weight, and the minimum (default) or
@@ -824,7 +908,16 @@ inputs, geometry outputs and each other. Budget exits still publish incumbent co
   ([`GPUIsobandRings`](/docs/api/gpu-raster/operations-analysis#gpuisolines-and-gpuisobands)).
   On the cell path `cellOutline.byFacility` with `cellFacilities` gives each cell the facility of its
   cheapest node and outlines with groups, so rings never mix facilities (Quadbin is keyed through
-  `GPUPointToCell`).
+  `GPUPointToCell`). A supplied `cellOutline.table` determines the row capacity from
+  `table.cells.length`; `tableCapacity` applies only when the table is omitted (default: node
+  count). Caller-owned `cellFacilities` must have exactly that many rows; omitted facility and
+  minimum-cost buffers use the same capacity. With a supplied table, `tableCapacity` is ignored,
+  including zero. Without a supplied table, `tableCapacity` must be at least the node count: the
+  internal cell-loss flag is not published, so potentially lossy transient tables are refused.
+  With a smaller caller-owned table, check `table.status.overflow` before treating any derived
+  outline or rings as complete; `cellOutline.output.status.overflow` reports segment-capacity
+  loss only. The drive-time catchment recipe exposes the supplied table's status as the
+  `isochrone-cells` stage and enforces the same transient-capacity rule through this contributor.
 - **Coordinates.** The public `spatialContext` always holds a resolved context. Omitted means
   native planar for `raster`, or `{coordinateSpace: 'longitude-latitude', metric: 'none'}` for
   `cellOutline` alone. With both outputs and no context, the raster's planar default applies and
@@ -835,38 +928,16 @@ inputs, geometry outputs and each other. Budget exits still publish incumbent co
   rings follow the cell outline, so they have cell resolution. Three mid-latitude H3 pentagons (resolutions
   2, 3 and 5; alone, in disks, as holes and open rings) match h3-js `cellsToMultiPolygon`; the two polar
   pentagons enclose a pole and have no planar lng/lat orientation.
-
-{/* parameters: GPUNetworkIsochrones generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
-
-#### `GPUNetworkIsochrones` parameters
-
-- Packer: `getGPUIsobandsParameterValues(settings, grid)`, writes `GPU_ISOBANDS_PARAMETER_LENGTH` (12) `float32` values.
-  - `grid` (`GPURasterMetadata`): Frame raster grid; its width and height give the cell sizes and must match the contributor's.
-- Packer: `getGPUNetworkIsochronesParameterValues(settings)`, writes `GPU_NETWORK_ISOCHRONES_PARAMETER_LENGTH` (12) `float32` values.
-
-Settings of `getGPUIsobandsParameterValues`:
-
-| Field | Type | Description |
-|---|---|---|
-| `breakCount` | `number` | Number of active ascending breaks, at most the contributor's `maximumBreakCount` (larger values clamp on the GPU). `breakCount + 1` bands exist: band `k` covers `[b[k - 1], b[k])`. |
-| `extent` | `readonly [number, number, number, number]` | Outer world extent `[minX, minY, maxX, maxY]`. Sample `(column, row)` is centered at `(minX + (column + 0.5) * cellWidth, minY + (row + 0.5) * cellHeight)`, with cell sizes `(maxX - minX) / grid.width` and `(maxY - minY) / grid.height`. Geometry interpolates over the rectangle between the outermost sample centers, half a cell inside each extent edge. Row zero is at the minY side and rows advance toward larger y. grid.affine and pixelInterpretation do not change this placement. Ring output uses the same convention. |
-| `firstBand` (optional) | `number` | First band emitted as geometry. Defaults to 0. Does not affect `bandClasses`. |
-| `lastBand` (optional) | `number` | Last band (inclusive) emitted as geometry. Defaults to `breakCount` (every band). |
-| `localOrigin` (optional) | `readonly [number, number]` | Float64 point that triangle vertices (and `GPUIsobandRings` ring vertices) are written relative to; add it back on the CPU or as the layer's coordinate origin. Defaults to `[0, 0]` (absolute vertices). Pass the raster or tile corner `[minX, minY]` for projected rasters: absolute float32 vertices are quantized to 0.5 m at a UTM northing of 4.6e6 m, origin-relative ones to about `1.2e-7` of their distance from the origin (1.2 cm at 100 km). |
-
-Settings of `getGPUNetworkIsochronesParameterValues`:
-
-| Field | Type | Description |
-|---|---|---|
-| `breakCount` | `number` | Number of active ascending cost breaks, at most `costBreaks.length`. `breakCount + 1` bands exist: band `k` holds cost in `(costBreaks[k - 1], costBreaks[k]]`, band 0 everything at or below the first break and the last band everything above the last active break (including unreached pixels). A cost exactly on a break is within it, the rule of `GPUNetworkReachability` bands. |
-| `extent` | `readonly [number, number, number, number]` | Raster extent `[minX, minY, maxX, maxY]` in the context's length unit. Row 0 is at `minY`. |
-| `bufferRadius` (optional) | `number` | Walking buffer radius in the context's length unit. Pixels within it of an edge sample get that sample's cost plus `walkCostPerUnit` times the distance. The effective radius is at least half a pixel diagonal so every sample marks its own pixel. Defaults to 0. |
-| `walkCostPerUnit` (optional) | `number` | Cost per context length unit walked off the network inside the buffer. Defaults to 0. |
-| `firstBand` (optional) | `number` | First band emitted as geometry. Defaults to 0. |
-| `lastBand` (optional) | `number` | Last band (inclusive) emitted as geometry. Defaults to `breakCount - 1`, so unreached space has no triangles. |
-| `cellCostLimit` (optional) | `number` | Cost limit of the cell-outline path: nodes with cost `<=` it contribute their cell. Defaults to `Infinity`, every reached node. |
-
-{/* /parameters */}
+  Before declaring search nodes or allocating scratch, the contributor checks caller STORAGE
+  bindings, its direct raster/cell scratch bindings, and raster-ring edge/ring capacity limits.
+  Child contributors also validate their own intermediate allocations. In particular,
+  a raster needs `4 * width * height` bytes for its encoded pixels, and the same amount for values
+  when no values output is supplied. An 8,192 by 8,192 raster needs 256 MiB per such binding and is
+  rejected on a device with a 128 MiB storage binding limit. A transient cell table needs
+  `8 * tableCapacity` bytes for its cell keys; facility scratch uses four bytes per table row.
+  Raster rings use `getGPUIsobandRingsMaximumEdgeCapacity` and
+  `getGPUIsobandRingsMaximumRingCapacity` for the outer preflight, so on a 128 MiB binding device
+  `raster.rings.edgeCapacity` is at most 8,388,608.
 
 #### How it computes
 
@@ -918,6 +989,26 @@ snapped to that road. Band `k` holds the times in
 ::lens{scenario=gpu-network.drive-time-catchment-recipe rung=kernel}
 
 ::lens{scenario=gpu-network.drive-time-catchment-recipe rung=graph}
+
+{/* parameters: GPUNetworkIsochrones generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
+
+#### `GPUNetworkIsochrones` parameters
+
+- Packer: `getGPUNetworkIsochronesParameterValues(settings)`, writes `GPU_NETWORK_ISOCHRONES_PARAMETER_LENGTH` (12) `float32` values.
+
+Settings of `getGPUNetworkIsochronesParameterValues`:
+
+| Field | Type | Description |
+|---|---|---|
+| `breakCount` | `number` | Number of active ascending cost breaks, at most `costBreaks.length`. `breakCount + 1` bands exist: band `k` holds cost in `(costBreaks[k - 1], costBreaks[k]]`, band 0 everything at or below the first break and the last band everything above the last active break (including unreached pixels). A cost exactly on a break is within it, the rule of `GPUNetworkReachability` bands. |
+| `extent` | `readonly [number, number, number, number]` | Raster extent `[minX, minY, maxX, maxY]` in the context's length unit. Row 0 is at `minY`. |
+| `bufferRadius` (optional) | `number` | Walking buffer radius in the context's length unit. Pixels within it of an edge sample get that sample's cost plus `walkCostPerUnit` times the distance. The effective radius is at least half a pixel diagonal so every sample marks its own pixel. Defaults to 0. |
+| `walkCostPerUnit` (optional) | `number` | Cost per context length unit walked off the network inside the buffer. Defaults to 0. |
+| `firstBand` (optional) | `number` | First band emitted as geometry. Defaults to 0. |
+| `lastBand` (optional) | `number` | Last band (inclusive) emitted as geometry. Defaults to `breakCount - 1`, so unreached space has no triangles. |
+| `cellCostLimit` (optional) | `number` | Cost limit of the cell-outline path: nodes with cost `<=` it contribute their cell. Defaults to `Infinity`, every reached node. |
+
+{/* /parameters */}
 
 ### `GPUNetworkNoding`
 
@@ -993,6 +1084,24 @@ binary-searches them, so city-scale restriction sets cost `O(log bans)` per arc.
 zero dot product because Metal returns the wrong sign for `atan2(y, -0.0)`. Start helpers and node
 costs are not provided.
 
+Optional `output.turnPenalties` has one float32 row per arc-capacity slot, aligned with
+`output.topology.neighbors`; padding is -1. It publishes the turn cost before adding the following
+edge's base cost, preserving small penalties alongside large costs. Pass its read-back column to
+`prepareGPUNetworkPointRoutingTurns` for fractional-edge routing. All requested penalty rows are
+rewritten on each encoding, and the extra output requires its own disjoint buffer.
+
+#### How it computes
+
+{/* lens:GPUNetworkLineGraph */}
+
+::lens{scenario=gpu-network.network-line-graph rung=datum bind=page datum=5 caption="Inspect this turn: its next edge is 1836, with cost about 44.8 seconds."}
+
+::lens{scenario=gpu-network.network-line-graph rung=formula}
+
+::lens{scenario=gpu-network.network-line-graph rung=kernel}
+
+::lens{scenario=gpu-network.network-line-graph rung=graph}
+
 {/* parameters: GPUNetworkLineGraph generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 #### `GPUNetworkLineGraph` parameters
@@ -1013,18 +1122,6 @@ Settings of `getGPUNetworkLineGraphParameterValues`:
 
 {/* /parameters */}
 
-#### How it computes
-
-{/* lens:GPUNetworkLineGraph */}
-
-::lens{scenario=gpu-network.network-line-graph rung=datum bind=page datum=5 caption="Inspect this turn: its next edge is 1836, with cost about 44.8 seconds."}
-
-::lens{scenario=gpu-network.network-line-graph rung=formula}
-
-::lens{scenario=gpu-network.network-line-graph rung=kernel}
-
-::lens{scenario=gpu-network.network-line-graph rung=graph}
-
 ### `GPUNetworkCostTable`
 
 Search every node within a cost limit and store each reachable target and its cost in one sparse CSR table.
@@ -1035,39 +1132,63 @@ Precomputes a bounded all-pairs cost table of a static directed network, in the 
 of fast map matching (Yang and Gidofalvi 2018). Row `u` lists every node `v` whose shortest-path cost
 from `u` is finite and at most `costLimit`, `u` itself included at cost 0, as a CSR (`offsets`,
 `targets`, `costs`) with ascending `targets`, so a consumer finds a cost by binary search of the row.
-The table is exact up to its limit: a target missing from a row is farther than `costLimit`.
+When `status.complete` is nonzero, the table is exact up to its limit: a target missing from a row
+is farther than `costLimit` or unreachable.
 `GPUMapMatching.routeTable` is the first consumer.
+
+The contributor and both operation forms capture named budgets and port fields at construction.
+Later changes to the caller's props do not change the validated command graph; buffer contents
+remain per-frame inputs. Status words must occupy distinct storage even on class-instance bags.
 
 - Props: `topology` (with `weights` as the travel cost), `costLimit` (one row, per frame), `laneCount`,
   `maximumIterations`, `localIterations` (default 16) and `output`: `offsets` (`nodeCount + 1` rows),
   `targets` (its length is the entry capacity), `costs` (same length) and optional
-  `status.overflow`, `status.requiredCount` and `status.converged`.
+  `status.overflow`, `status.requiredCount`, `status.converged` and `status.complete`.
+  The one-word `status.complete` is 1 only when every batch converged without capacity overflow;
+  it can be requested alone and is the word to forward to map matching.
   Optional `status.iterationLimitReached` is `1 - converged` and can be requested alone. It reports
   round-budget exhaustion independently of capacity overflow. On a budget exit, retained CSR rows
   remain consistent, and `requiredCount` counts entries found so far; it is not a certificate of
-  the full table size. The exact CPU twin runs searches to completion and always returns
-  `iterationLimitReached = 0`, including when the output capacity overflows. All scalar ports reset
+  the full table size. The CPU twin searches to completion when `maximumIterations` is omitted;
+  an explicit round budget binds the CPU search too. Local hops default to 16. On a budget exit it
+  publishes its incumbents and sets `iterationLimitReached` when its frontier remains nonempty.
+  CPU scheduling is deterministic per source; GPU lane packing and scheduling can change partial
+  incumbents near the budget boundary. Both forms report convergence independently of capacity.
+  Completeness also requires no capacity overflow: on the nine-node unit chain, capacity 3 after
+  convergence gives `converged=1, overflow=1, complete=0`, while capacity 81 gives
+  `converged=1, overflow=0, complete=1`.
+  All scalar ports reset
   on each encoding and need separate physical buffers from inputs and other outputs.
 
 - Method: source nodes are searched `laneCount` at a time with one lane-expanded
   `GPUNetworkReachability` per batch into one scratch block, then a per-lane count, a single-workgroup
   scan of the batch's lane counts on top of a GPU running entry cursor (which writes the batch's
   `offsets` rows), and a per-lane ordered fill. The batch index never reaches the shader, so every
-  batch shares pipelines. Costs are the f32 fixpoint of reachability; the table is identical for every
-  `laneCount`. No float atomics, deterministic.
+  batch shares pipelines. Converged costs are the f32 fixpoint of reachability and are identical for
+  every `laneCount`. Partial incumbents can vary before convergence. The CPU table rounds every
+  path addition to float32 before the inclusive cutoff test, preserving membership when a CPU
+  table feeds GPU matching; for example, float32 `0.1 + 0.4` is admitted at cutoff `0.5`.
 - Capacity: entries past `output.targets.length` are dropped and `offsets` are clamped, so a reader
   always sees a consistent, possibly truncated CSR. `status.overflow` is 1 and `status.requiredCount`
   is the exact entry count (saturating at `0xffffffff`) for the grow loop. Do not use a table that
-  overflowed or did not converge (`GPUMapMatching` ignores an overflowed table when you pass its flag as `routeTable.status.overflow`).
+  overflowed or did not converge. Forward `status.complete` as `routeTable.status.complete`:
+  `GPUMapMatching` falls back to A* whenever this word is zero or omitted. It does not turn missing
+  entries from unfinished rows into track breaks; the fallback reports its own route-budget limits.
 - Scaling: each batch sweeps its `laneCount x nodeCount` scratch block, so work and memory traffic are
-  `O(nodeCount^2 / laneCount)` words per batch and `O(nodeCount^2)` words per build, plus the searches.
-  That targets static networks up to roughly 1e5 nodes, built once and reused across many encodings; the
-  table holds only the entries within `costLimit`. Rebuild only when weights change. The scratch block is
-  `laneCount x nodeCount` floats and must fit one storage binding, so lower `laneCount` for large networks.
+  `O(laneCount * nodeCount)` words per batch and
+  `O(ceil(nodeCount / laneCount) * laneCount * nodeCount)` words per build including padding,
+  plus the searches (quadratic overall because `laneCount <= nodeCount`).
+  Build once and reuse while weights are static; the table holds only entries within `costLimit`.
+  The largest scratch binding is the two frontier queues: `8 * laneCount * nodeCount` bytes.
+  Every topology and output view must also fit its storage binding.
 - Compile cost: every round of every batch is an unrolled command node, `2 + batchCount * (6 + maximumIterations)`
-  nodes, plus one per batch when `status.converged` or `status.iterationLimitReached` is requested. The exact count is the read-only property
-  `estimatedCommandNodeCount`, and the constructor throws above 32,768 nodes, so a 100,000-node network
-  at the default lane count needs a larger `laneCount` or fewer `maximumIterations` first.
+  nodes, plus one per batch when `status.converged`, `status.iterationLimitReached` or `status.complete`
+  is requested. The exact count is the read-only property `estimatedCommandNodeCount`; construction
+  rejects more than 32,768 commands. For example, 50,000 nodes with 128 lanes and 64 rounds
+  use 27,763 commands with completeness tracking and 51,200,000 frontier bytes, below a 128 MiB binding.
+  Lane count must be supplied explicitly for this example. At 100,000 nodes and 64 rounds, no lane count
+  fits both limits: at most 167 lanes fit the frontier, but at least 217 are needed for commands with
+  completeness tracking. Lowering the rounds may produce an incomplete table; check `status.complete`.
 
 ```ts
 // Build once for a static network. The weights must equal the edge lengths GPUMapMatching measures
@@ -1078,7 +1199,7 @@ const table = new GPUNetworkCostTable({
   costLimit: tableLimit,
   output: {
     offsets: tableOffsets, targets: tableTargets, costs: tableCosts,
-    status: {overflow: tableOverflow, requiredCount: tableRequired, converged: tableConverged}
+    status: {complete: tableComplete, overflow: tableOverflow, requiredCount: tableRequired, converged: tableConverged}
   }
 });
 graph.add(table);
@@ -1087,7 +1208,7 @@ graph.add(new GPUMapMatching({
   cellSize: 60, bounds, output: {matchedEdges},
   routeTable: {
     offsets: tableOffsets, targets: tableTargets, costs: tableCosts,
-    costLimit: tableLimit, status: {overflow: tableOverflow}
+    costLimit: tableLimit, status: {complete: tableComplete}
   }
 }));
 ```
@@ -1108,15 +1229,22 @@ graph.add(new GPUMapMatching({
 
 Rows are bounded by min(floor(bindingBytes / 12), 16,777,215). Optional
 output.status.candidateOverflow mirrors intermediate-table overflow; routeOverflow counts dropped
-route nodes. Check these before treating a route as complete.
+route nodes. Fixed matched-row output `overflow` is always zero. Check intermediate loss before
+treating a route as complete.
 
 Match noisy GPS tracks to directed road edges with candidate edges, bounded route searches and a Viterbi decode.
+
+In a great-circle context, both CPU and GPU matching project onto the same wrapped start-to-end
+longitude arc and compare the projected candidate with both endpoints. A rounded distance tie
+preserves an interior projection; ties between endpoint candidates select the start. The selected
+fraction and snap distance therefore describe the same point, including for remote antimeridian
+queries. Long edges still use the documented local projection approximation.
 
 ::lens{scenario=gpu-network.map-matching rung=result caption="Compare 3 simulated GPS tracks with their road-snapped runs; 137 of 139 fixes matched."}
 
 Pass optional `spatialContext` in the settings of `getGPUMapMatchingParameterValues` to warn when finite positive `sigma` or `searchRadius` is below `10·Q` (16.97 m with the default sphere); see [Precision of longitude/latitude positions](../gpu-spatial-analysis/concepts.md#precision-of-longitudelatitude-positions).
 
-Maximums: `topology` has at most `getGPUMapMatchingMaximumEdgeCount(device)` (11184810 on a default device) edges and `entryCapacity` is at most `getGPUMapMatchingMaximumEntryCapacity(device)` (33554432); the default `entryCapacity` is capped there and `status.overflow` reports lost entries. The per-point scratch (candidates 12 bytes per candidate, the route table `candidateCount * (candidateCount + 1) * 4` bytes) must fit one storage binding: `positions` has at most `getGPUMapMatchingMaximumPointCount(device, candidateCount, hasTraversedEdges)` rows (466033 at 8 candidates on a default device, with `output.traversedEdges` the 20-byte hop table per point binds only at one candidate), and `getCommandNodes` throws a `positions rows must be at most ...` error past it. Lower `candidateCount` or split the tracks into several `GPUMapMatching` instances.
+Maximums: `topology` has at most `getGPUMapMatchingMaximumEdgeCount(device)` (11184810 on a default device) edges and `entryCapacity` is at most `getGPUMapMatchingMaximumEntryCapacity(device)` (33554432); the default `entryCapacity` is capped there and `status.candidateOverflow` reports lost entries. The per-point scratch (candidates 12 bytes per candidate, the route table `candidateCount * (candidateCount + 1) * 4` bytes) must fit one storage binding: `positions` has at most `getGPUMapMatchingMaximumPointCount(device, candidateCount, hasTraversedEdges)` rows (466033 at 8 candidates on a default device, with `output.traversedEdges` the 20-byte hop table per point binds only at one candidate), and `getCommandNodes` throws a `positions rows must be at most ...` error past it. Lower `candidateCount` or split the tracks into several `GPUMapMatching` instances.
 
 Hidden Markov model map matching of GPS tracks to a directed network (Newson and Krumm 2009). Per point,
 up to `candidateCount` (at most 8, default 8: a directed edge row is one candidate, so the default keeps the
@@ -1132,6 +1260,13 @@ infeasible. Viterbi runs one thread per track.
   weights unused), `parameters` (`getGPUMapMatchingParameterValues`: `sigma`, `beta`, `searchRadius`, `routeFactor`, `routeSlack`, per
   frame), `candidateCount`, `cellSize`, `bounds`, `entryCapacity`, `routeNodeBudget`,
   `minimumFixSpacingSigmas`, `traversedEdgeCapacity` and `spatialContext`.
+  The contributor, both operation forms and the track-quality recipe capture named model fields,
+  bounds and port/status maps once, including inherited getters. Later props mutation does not
+  alter compiled budgets; input buffer contents remain per-frame values.
+- Local geographic snaps retain an interior projection when its haversine term ties the endpoint terms
+  in float32. Local candidates are compared before converting those terms to distances, so inverse
+  trigonometric rounding does not move a midpoint snap onto an endpoint. Distant queries retain
+  central-angle comparisons to preserve resolution near antipodes.
 - Fix spacing (`minimumFixSpacingSigmas`, compile-time, off by default): Newson and Krumm drop a fix
   within 2 `sigma` of the previous retained fix, so stationary or backward jitter does not look like a
   move. Pass 2 to do the same, measured with the frame's `sigma` and the context's distance. Without it
@@ -1156,32 +1291,39 @@ infeasible. Viterbi runs one thread per track.
   180.1) for a network that crosses it.
 - Outputs (`output`): `matchedEdges` (a CSR row per point; `GPU_MAP_MATCHING_NONE` when unmatched),
   `matchedFractions`, `matchedOffsets`, `snapDistances`, `snappedPositions`, `breaks`,
-  `trackLogLikelihoods`, `matchedCount`, `breakCount`, `traversedEdges`, `status.overflow` and `status.routeOverflow`. A break restarts
+  `trackLogLikelihoods`, `matchedCount`, `breakCount`, `traversedEdges`, `status.candidateOverflow`, `status.overflow` and `status.routeOverflow`. A break restarts
   the model where no transition is feasible or a point has no candidate (`breaks` value 1). A break
   where a route search into the point dropped nodes is a budget break (value 2): the route may exist
-  but did not fit the table. `status.overflow` is 1 when the edge grid or any route table dropped entries, and
+  but did not fit the table. `status.candidateOverflow` is 1 when the edge grid, route search or traversal recovery lost candidates; fixed matched rows fit, so `status.overflow` is zero, and
   `status.routeOverflow` counts the dropped route nodes (saturating at `0xffffffff`).
 - Traversed route (`output.traversedEdges`, needs `traversedEdgeCapacity`): `matchedEdges` is the edge each
   fix snaps to; the route is the edges passed between fixes, including edges that no fix lands on. The
-  caller owns `{edges, counts, status?: {overflow?}}`: `edges` has `trackCount * traversedEdgeCapacity` rows and track
+  caller owns `{edges, counts, status?: {overflow?, candidateOverflow?}}`: `edges` has `trackCount * traversedEdgeCapacity` rows and track
   `t` writes its list, in travel order, from row `t * traversedEdgeCapacity`; `counts[t]` is the number of
   entries the track needs, so a value above `traversedEdgeCapacity` tells how much capacity to allocate and
-  rows past the capacity are not stored; `status.overflow` is a one-row flag, 1 when any track was truncated or a hop's intermediate
-  edges could not be recovered because its bounded search dropped nodes (the hop then lists only its end
-  edge). The list holds the first matched edge, then for each hop the shortest-route edges followed by the
+  rows past the capacity are not stored; traversal `status.overflow` is 1 only when a track's list
+  exceeds capacity. Traversal `status.candidateOverflow` inherits grid/scoring loss and is also 1
+  when recovery drops nodes or cannot reconstruct a hop; an unrecovered hop writes a
+  `GPU_MAP_MATCHING_NONE` separator before its end
+  edge. The list holds the first matched edge, then for each recovered hop the shortest-route edges followed by the
   next fix's edge, and nothing for a fix that stays on its edge ahead of the previous fix. One
   `GPU_MAP_MATCHING_NONE` entry separates sub-tracks after a break or an unmatched fix, so counting
   traversals skips it and invents no adjacency across the break. Each hop repeats the bounded search of the
   route kernel for the chosen candidates only, one thread per track in sequence, so it costs about one more
   route pass over the matched hops; it needs 20 bytes per point of scratch.
   [`GPUMapMatchedEdgeVolumes`](/docs/api/gpu-network/map-matched-edge-volumes-mob05) counts edge volumes over
-  these lists. Without `traversedEdges` nothing changes.
+  these lists. Forward both traversal status words; its required `output.status.candidateOverflow`
+  marks retained volumes/movements as incomplete, and a requested nested transition candidate flag
+  includes that loss. Missing matching completeness is refused; only fixed external sequences may
+  assert `completeness: 'known-complete'`. With grid/scoring loss the counts are conditional on the
+  retained match, not lower bounds on an exact match's per-edge counts. Without `traversedEdges`
+  nothing changes.
 - `routeTable` (optional): a `GPUNetworkCostTable` of the same network, built with `weights` equal to the
-  edge lengths this contributor measures from the node positions (in the context's length unit), passed as `{offsets, targets, costs, costLimit, status?: {overflow}}`. A route search whose
+  edge lengths this contributor measures from the node positions (in the context's length unit), passed as `{offsets, targets, costs, costLimit, status?: {complete}}`. A route search whose
   allowance (`routeFactor * straight + routeSlack` minus the tail of the source edge) is within the table's
   `costLimit` reads its network costs by binary search of the source node's row, with no search and no node
   budget, so it is exact and never counted in `status.routeOverflow`. Searches above the limit, or all of
-  them while the table's `overflow` flag is 1, run the bounded A* search as before, so there is no cliff and
+  them while the table's `complete` flag is zero or omitted, run the bounded A* search as before, so there is no cliff and
   no extra flag. Matched edges equal the A*-only results where A* is exact; route lengths differ only by f32
   rounding of the summed costs (about `2^-24` relative per hop). The table is built once and reused, which
   pays off for large track batches. Without `routeTable` nothing changes.
@@ -1189,8 +1331,14 @@ infeasible. Viterbi runs one thread per track.
   search needs about as many nodes as the street blocks between two samples. On a 100 m street grid the
   default 64 covers samples up to about 800 m apart and 128 up to about 1.1 km. At 1 km and 64 it still
   misses routes (80 of 227 in a mimic, 171 under the old drop-in-discovery-order policy, which reported
-  nothing). Each miss is reported, so sample more densely or raise `routeNodeBudget` when `status.overflow` is
+  nothing). Each miss is reported, so sample more densely or raise `routeNodeBudget` when `status.candidateOverflow` is
   set. CSR rows past `offsets[nodeCount]` are not part of the network.
+- CPU twin: an explicitly supplied `routeNodeBudget` binds fallback and traversal-recovery searches,
+  including dropped-node counts, budget breaks and traversal separators. Certified-table lookups
+  binary-search only the source CSR row, independent of spare capacity. Without a budget CPU searches
+  remain uncapped. A complete cost table within the hop allowance bypasses fallback search in
+  both backends; traversal reconstruction still needs its own bounded search. CPU arithmetic is
+  float64 outside the precomputed table, so boundary and tie differences remain documented.
 - The route passes run per `(point, previous candidate)` work item, so Viterbi is a cheap recursion: on a
   New York scene the matching graph went from 923 to 30 ms at a budget of 64 (20 ms at 40), with identical
   results.
@@ -1199,6 +1347,16 @@ infeasible. Viterbi runs one thread per track.
   an approximation that can overestimate or miss routes when samples are far apart for the budget
   (always reported, see above), and the route table is `pointCount * k * (k + 1)` floats (checked against the storage binding limit, see Maximums). A two-way road needs both directions, and each takes a candidate slot.
   Exact routes and time-aware transitions are not provided.
+
+#### How it computes
+
+{/* lens:GPUMapMatching */}
+
+::lens{scenario=gpu-network.map-matching rung=datum bind=page datum=40 caption="Inspect this GPS fix: it snaps about 25.05 metres to edge 418 without a break."}
+
+::lens{scenario=gpu-network.map-matching rung=kernel}
+
+::lens{scenario=gpu-network.map-matching rung=graph}
 
 {/* parameters: GPUMapMatching generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
@@ -1218,16 +1376,6 @@ Settings of `getGPUMapMatchingParameterValues`:
 | `routeSlack` (optional) | `number` | Additive route allowance in the context's length unit, see `routeFactor`. Defaults to 50 (50 m in meters; pass for example 0.05 with a kilometer context). |
 
 {/* /parameters */}
-
-#### How it computes
-
-{/* lens:GPUMapMatching */}
-
-::lens{scenario=gpu-network.map-matching rung=datum bind=page datum=40 caption="Inspect this GPS fix: it snaps about 25.05 metres to edge 418 without a break."}
-
-::lens{scenario=gpu-network.map-matching rung=kernel}
-
-::lens{scenario=gpu-network.map-matching rung=graph}
 
 ### `GPUNetworkKFunction`
 
@@ -1278,6 +1426,18 @@ shares one set of pipelines.
   `rowsPerBlock` near the 128 MB lane budget of `recommendLaneCount`), and snap-candidate overflow is
   reported only through `status.overflow`.
 
+#### How it computes
+
+{/* lens:GPUNetworkKFunction */}
+
+::lens{scenario=gpu-network.network-k-function rung=datum bind=page datum=7 caption="Inspect the 1,000-metre threshold: 278 unordered crash pairs give K of about 35,210.9 metres."}
+
+::lens{scenario=gpu-network.network-k-function rung=formula}
+
+::lens{scenario=gpu-network.network-k-function rung=kernel}
+
+::lens{scenario=gpu-network.network-k-function rung=graph}
+
 {/* parameters: GPUNetworkKFunction generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 #### `GPUNetworkKFunction` parameters
@@ -1292,18 +1452,6 @@ Settings of `getGPUNetworkKFunctionParameterValues`:
 | `activeSimulations` | `number` | Number of simulated patterns evaluated, at most the compile-time `simulationCount`. The remaining patterns are skipped (their K values and counts are 0). |
 
 {/* /parameters */}
-
-#### How it computes
-
-{/* lens:GPUNetworkKFunction */}
-
-::lens{scenario=gpu-network.network-k-function rung=datum bind=page datum=7 caption="Inspect the 1,000-metre threshold: 278 unordered crash pairs give K of about 35,210.9 metres."}
-
-::lens{scenario=gpu-network.network-k-function rung=formula}
-
-::lens{scenario=gpu-network.network-k-function rung=kernel}
-
-::lens{scenario=gpu-network.network-k-function rung=graph}
 
 ### Rendering network contributor outputs
 
@@ -1367,6 +1515,18 @@ The normalized-gradient schedule is chaotic in f32. The f32 CPU oracle matches b
 box after one iteration, and only statistically after that. Gradients below four fixed-point
 quanta are treated as zero so a lone edge does not drift.
 
+#### How it computes
+
+{/* lens:GPUEdgeBundling */}
+
+::lens{scenario=gpu-network.edge-bundling rung=datum bind=page datum=10 caption="Inspect this flow: origin zone 5 connects to destination zone 2; its path starts at vertex 160."}
+
+::lens{scenario=gpu-network.edge-bundling rung=iterations caption="Step through 5 key frames: the straight start, rounds 1, 2, 4, and the final output."}
+
+::lens{scenario=gpu-network.edge-bundling rung=kernel}
+
+::lens{scenario=gpu-network.edge-bundling rung=graph}
+
 {/* parameters: GPUEdgeBundling generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 #### `GPUEdgeBundling` parameters
@@ -1386,21 +1546,14 @@ Settings of `getGPUEdgeBundlingParameterValues`:
 
 {/* /parameters */}
 
-#### How it computes
-
-{/* lens:GPUEdgeBundling */}
-
-::lens{scenario=gpu-network.edge-bundling rung=datum bind=page datum=10 caption="Inspect this flow: origin zone 5 connects to destination zone 2; its path starts at vertex 160."}
-
-::lens{scenario=gpu-network.edge-bundling rung=iterations caption="Step through 5 key frames: the straight start, rounds 1, 2, 4, and the final output."}
-
-::lens{scenario=gpu-network.edge-bundling rung=kernel}
-
-::lens{scenario=gpu-network.edge-bundling rung=graph}
-
 ### `GPUFlowAggregation`
 
 Group origin-destination records by zone pair and rank the pairs by summed trips, with record counts per pair.
+
+Use `getCommandNodes(graph)` to build the contributor. Binding and scratch preflight runs before
+it declares resources. The former internal `validateBindings` class method is no longer exposed;
+map-matched transition composition uses a private module helper with the same allocation-free
+checks. Output layouts and command nodes are unchanged.
 
 ::lens{scenario=gpu-network.flow-aggregation rung=result caption="Compare 450 taxi records with the top 32 of 150 zone pairs; the highlight is the busiest pair."}
 
@@ -1414,7 +1567,17 @@ origin then destination zone) with zone columns, counts, and weights for an `Arc
 per-zone outgoing and incoming totals. An optional caller mask and per-frame time window
 (`getGPUTimeWindowFilterParameterValues`) gate rows without recompiling. All results are in
 `output` (a `GPUCompactOutput` plus the flow and zone columns). `output.status.pairOverflow` reports a full
-pair table, while `status.requiredCount > ids.length` only means the list was truncated to the top K.
+pair table, also published as optional `status.candidateOverflow`. `status.overflow` reports only
+top-K truncation (`requiredCount > ids.length`). `requiredCount` counts pairs retained in the table,
+so it is a lower bound on the full requirement after pair-table loss.
+
+Filter source rows with `mask`; a zero weight still contributes an accepted row and can create a
+zero-weight pair. The commute-flow website applies its minimum-workers threshold through this
+mask. Its hover count describes retained pairs as “displayed flows” when the 160-pair display
+capacity truncates the top list; the outgoing jobs total still covers all accepted rows. Pair-table
+loss is reported separately as incomplete aggregation, and no rejected input creates a displayed
+arrow. The hover shows “pending aggregation” until its count, both loss flags and displayed columns
+have arrived; an unread status is never interpreted as loss or a zero flow count.
 
 For grid and hexagon zones, `zones.activeGridSize` is a per-frame packed `uint32` `[columns, rows]`
 clamped to `1..gridSize`, so `gridSize` becomes the compile-time capacity: zone IDs are row-major in the
@@ -1446,12 +1609,26 @@ graph.add(new GPUFlowAggregation({
 }));
 ```
 
+#### How it computes
+
+{/* lens:GPUFlowAggregation */}
+
+::lens{scenario=gpu-network.flow-aggregation rung=datum bind=page datum=0 caption="Inspect the busiest pair: 3 records sum to 54,331 trips."}
+
+::lens{scenario=gpu-network.flow-aggregation rung=formula}
+
+::lens{scenario=gpu-network.flow-aggregation rung=kernel}
+
+::lens{scenario=gpu-network.flow-aggregation rung=graph}
+
 {/* parameters: GPUFlowAggregation generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 #### `GPUFlowAggregation` parameters
 
 - Packer: `getGPUTimeWindowFilterParameterValues(settings)`, writes `GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH` (8) `float32` values.
+  - Input port: `timeWindow.window`.
 - Packer: `getGPUTimeWindowFilterWordParameterValues(settings)`, writes `GPU_TIME_WINDOW_FILTER_WORD_PARAMETER_LENGTH` (8) `uint32` values.
+  - Input port: `timeWindow.window`.
 
 Settings of `getGPUTimeWindowFilterParameterValues`:
 
@@ -1472,15 +1649,3 @@ Settings of `getGPUTimeWindowFilterWordParameterValues`:
 | `endFadeDuration` (optional) | `number` | Fade weight ramps 1 to 0 over `[end - endFadeDuration, end]`. 0 (default) disables the ramp. |
 
 {/* /parameters */}
-
-#### How it computes
-
-{/* lens:GPUFlowAggregation */}
-
-::lens{scenario=gpu-network.flow-aggregation rung=datum bind=page datum=0 caption="Inspect the busiest pair: 3 records sum to 54,331 trips."}
-
-::lens{scenario=gpu-network.flow-aggregation rung=formula}
-
-::lens{scenario=gpu-network.flow-aggregation rung=kernel}
-
-::lens{scenario=gpu-network.flow-aggregation rung=graph}

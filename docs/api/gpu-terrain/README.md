@@ -45,39 +45,56 @@ different kernel:
 
 ## Quick start
 
+Start with the [complete GPU walkthrough](../operation-forms-and-cpu-twins.md#point-density-from-device-to-readback)
+for the device, buffer import, submission, typed readback and cleanup sequence. Terrain derivatives
+add a raster grid, a raster-band input and a packed parameter view:
+
+The elevation input is a nine-row `float32` view containing zeros. The following checked function
+wraps it as a raster band and adds derivatives to the graph from the shared walkthrough.
+Allocate `slope` and `hillshade` as separate nine-row `float32` views.
+
 ```ts
-import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import type {Device} from '@luma.gl/core';
+import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph';
+import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
+import {makeGPURasterBand, makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 import {
-  GPUTerrainDerivatives,
-  getGPUTerrainDerivativesParameterValues,
+  GPUTerrainDerivatives, getGPUTerrainDerivativesParameterValues,
   GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH
 } from '@luma-contributors/analysis/gpu-terrain';
-import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
-import {makeGPURasterMetadata} from '@luma-contributors/analysis/raster-analysis';
 
-const graph = new GPUCommandGraph(device, {id: 'terrain'});
-const parameters = new GPUParameterBuffer(device, {
-  id: 'derivatives-parameters',
-  format: 'float32',
-  length: GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH
-});
-// 30 m cells, top-left corner at (originX, originY), rows advancing south.
-const grid = makeGPURasterMetadata({width, height, cellSize: 30, origin: [originX, originY]});
-
-// `elevation`, `slope`, and `hillshade` are graph views created on `graph`.
-graph.add(new GPUTerrainDerivatives({
-  grid, elevation, parameters: parameters.importToGraph(graph), output: {slope, hillshade}
-}));
-const compiled = await graph.compileAsync(); // once
-
-// every frame: rewrite parameters (cell size and latitude band come from `grid`)
-parameters.write(getGPUTerrainDerivativesParameterValues({azimuthDegrees: 315}, grid));
-compiled.encode(device.commandEncoder, {parameters: undefined});
+export function addTerrainExample(
+  device: Device, graph: GPUCommandGraph, elevationView: GraphDataView<'float32'>,
+  slope: GraphDataView<'float32'>, hillshade: GraphDataView<'float32'>
+) {
+  const grid = makeGPURasterMetadata({width: 3, height: 3, cellSize: 30, origin: [0, 90]});
+  const elevation = makeGPURasterBand(elevationView, grid, {id: 'elevation'});
+  const parameters = new GPUParameterBuffer(device, {
+    id: 'terrain-example-parameters',
+    format: 'float32',
+    length: GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH,
+    values: getGPUTerrainDerivativesParameterValues({azimuthDegrees: 315}, grid)
+  });
+  graph.add(new GPUTerrainDerivatives({
+    grid, elevation, parameters: parameters.importToGraph(graph), output: {slope, hillshade}
+  }));
+  return parameters;
+}
 ```
 
-The application compiles, encodes, submits, and decides whether any bounded result is read back.
-[Running contributors](../gpu-spatial-analysis/concepts.md#running-contributors) covers `compileAsync()`,
-rebuilding without a stall, submission and why `parameters` is `undefined`.
+This north-up planar grid has 30 m cells. With no validity view, all nine finite elevations are
+usable. Keep the returned parameter buffer until the compiled graph has been destroyed.
+
+| Output port | Format and rows | Meaning |
+| --- | --- | --- |
+| `slope` | `float32`, width × height (9 here) | Slope in degrees (the default); the center of this flat fixture is 0. |
+| `hillshade` | `float32`, width × height (9 here) | Analytic illumination in [0, 1]. |
+
+Use separate output buffers, follow the walkthrough through readback, and destroy the compiled
+graph before the parameter buffer and imported buffers. The packer takes cell size and latitude
+settings from `grid`; rewrite its values before another submission to change lighting.
+See [derivative boundaries and units](./operators.md#gputerrainderivatives) before interpreting
+edge cells or using geographic elevation grids.
 
 ## Concepts and operators
 

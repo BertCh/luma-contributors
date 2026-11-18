@@ -6,8 +6,8 @@
   "scenarioId": "gpu-terrain.terrain-branching-flow",
   "viewId": "result-view",
   "caption": "Result of gpu-terrain.terrain-branching-flow: fractions, injection → transport.",
-  "description": "Result of gpu-terrain.terrain-branching-flow: fractions, injection → transport. cells: 9. values read back from the GPU run. input fractions: 72 values.",
-  "llms": "Result of gpu-terrain.terrain-branching-flow: fractions, injection → transport\n\n- cells: 9\n- input fractions: 72 values\n- input injection: 9 cells\n- Planar coordinates (m); uniform scale.\n- 72 values, 16 shown\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "description": "Result of gpu-terrain.terrain-branching-flow: fractions, injection → transport. cells: 9. values read back from the GPU run. input fractions: 9 rows.",
+  "llms": "Result of gpu-terrain.terrain-branching-flow: fractions, injection → transport\n\n- cells: 9\n- input fractions: 9 rows\n- input injection: 9 cells\n- Planar coordinates (m); uniform scale.\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "cells",
     "value": "9"
@@ -19,8 +19,8 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-11T15:21:34.010Z",
-    "runId": "run-b68cd7e4",
+    "date": "2026-11-18T16:33:59.903Z",
+    "runId": "run-52de36a2",
     "observerEffects": [
       "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
@@ -28,7 +28,7 @@
     ]
   },
   "state": {
-    "runId": "run-b68cd7e4",
+    "runId": "run-52de36a2",
     "rung": "result",
     "bindings": {},
     "clauses": [],

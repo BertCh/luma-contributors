@@ -34,6 +34,13 @@ The input band, fractions, IDs, probabilities, counts, validity and overflow wor
 every encoding. There is no prepared cache to invalidate. Sizes, calibration and the grid affine
 are construction-time settings, except the cell area when `parameters` is supplied (see above):
 pass it whenever the coverage georeference is rewritten between encodings.
+Prepared coverage may also supply `status.candidateOverflow`; both operation forms preserve this
+optional input and suppress dependent results when it is nonzero. `requiredCount` must equal
+`count`, which must fit the tuple capacity. Coverage status inputs (`count`, `requiredCount`,
+`overflow` and optional `candidateOverflow`) must each contain at least one word. Only the first
+logical word is read, including for offset views; spare words do not affect completeness.
+Ground modes check both packed cross-axis words on every run, suppressing all affected results
+when nonzero; a later aligned frame restores validity.
 
 ## Outputs and definitions
 
@@ -79,7 +86,7 @@ calls the external library directly rather than reimplementing its quantile algo
 
 | Bit | Name | Meaning |
 | --- | --- | --- |
-| 1 | `INCOMPLETE_COVERAGE` | Upstream overflow, inconsistent active/required count, or failed source-zone validity. |
+| 1 | `INCOMPLETE_COVERAGE` | Upstream tuple or candidate overflow, inconsistent active/required count, failed source-zone validity, or a non-axis-aligned effective ground-area frame. |
 | 2 | `INVALID_TUPLE` | Invalid fraction, cell or zone ID, or duplicate cell within a zone. |
 | 4 | `NO_VALID_SUPPORT` | No positive-weight finite observations. |
 | 8 | `INSUFFICIENT_SAMPLE_SUPPORT` | Fewer than two observed source cells or a nonpositive sample-variance denominator. A valid singleton still has valid population results. |

@@ -1,5 +1,30 @@
 # Source topology and wide numeric profiling
 
+### `prepareArrowTableForGPUAnalytics`
+
+Import from `@luma-contributors/analysis/analysis-core`. Float64, Int64, Uint64 and wide Decimal
+columns (`bitWidth >= 64`, including Decimal64, Decimal128 and Decimal256) require an explicit
+`float64` precision policy before narrowing to Float32. Decimal32 is unsupported. For wide
+integers and decimals, preparation rounds the original signed coefficient and decimal scale
+directly to nearest-even Float32. `mode: 'exact'` rejects any changed value, including
+`9007199254740993` and Decimal128 `1.0000000000000001`.
+
+Round mode compares the error of a finite candidate with
+`maximumAbsoluteError + maximumRelativeError * abs(original)`. Int64, Uint64 and supported Decimal
+columns compare budgets with exact rational arithmetic. Float64 columns compute the error and
+budget expression with JavaScript binary64 arithmetic. For example, with relative budget
+`1 / 16777281` and absolute budget `0`, Float64 `16777281` accepts candidate `16777280`, while
+Decimal128 rejects it because the binary64 relative budget is slightly too small.
+
+Wide integer and Decimal error reports round each exact rational error once to nearest-even
+binary64, including subnormals. An Int64 value of `9007199254740993` accepts an absolute budget
+of `1` and reports an error of `1`. Extreme Decimal scales do not require constructing an enormous
+power of ten: zero remains exact, definite overflow rejects, and definite underflow respects the
+budget and preserves the sign of zero. An absolute error below half `Number.MIN_VALUE` reports
+zero while its relative error is still `1`. Nulls and record-batch topology are preserved.
+The standalone `convertWideNumericValue` / `convertWideNumericVector` helpers convert through JavaScript numbers;
+they do not establish an exact Float32 precision policy for Decimal values.
+
 ### `preparePolygonContiguityTopology`
 
 Import from `@luma-contributors/analysis/gpu-spatial-analysis`. Accepts source-aligned Arrow
@@ -32,6 +57,14 @@ null counts and bigint sums (44-byte summaries). `aggregateDecimal128OnGpu` /
 scale-normalized comparisons (76-byte summaries). Optional selection skips unselected nulls.
 `summarizeInteger64Reference` and `summarizeDecimal128Reference` are pure CPU reference routes.
 Integer reference inputs are normalized to the declared word width, as resident storage is.
+
+`makeDecimal128WordVectors(device, column)` accepts an Arrow `Vector<Decimal>` only when its
+physical `bitWidth` is 128. Every chunk must also be Decimal128 and have the column's scale;
+mixed-width or mixed-scale concatenations reject before any device allocation. The upload rejects
+other types and widths, including Decimal256. It retains each source chunk, including empty chunks.
+When any chunk has nulls, `validity` has the same topology as `words`; otherwise it is absent and consumes no
+device memory. Call the returned `destroy()` to free all uploaded vectors.
+`aggregateDecimal128Column` owns and frees its upload.
 
 ### Narrowing diagnostics
 

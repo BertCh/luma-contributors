@@ -304,10 +304,9 @@ radians (default `1e-5`). It deliberately expands exterior covers and shrinks in
 
 The benchmark spec is
 `modules/analysis/test/gpu-spatial-analysis/global-coordinates/global-coordinates-benchmark.spec.ts`.
-Run it in the isolated browser benchmark project with
-`LUMA_TEST_BROWSER_BENCHMARKS=true VITE_GLOBAL_COORDINATES_BENCHMARK=true`, and set optional
+Run `yarn test-benchmarks modules/analysis/test/gpu-spatial-analysis/global-coordinates/global-coordinates-benchmark.spec.ts`.
+The launcher selects benchmark files and enables their workload flags. Set optional
 `VITE_BENCHMARK_REVISION` / `VITE_BENCHMARK_SOURCE_STATE` metadata to identify the tested tree.
-The root runner selects the benchmark through the normal Vitest command.
 
 Eight deterministic workloads compare small and larger batches: 166/16,384 S2 neighbor rows
 cycling through the exact-key corpus, 256/16,384 datum positions, 1/32 level-4 spherical caps

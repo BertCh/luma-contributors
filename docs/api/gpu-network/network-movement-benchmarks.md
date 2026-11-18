@@ -35,7 +35,7 @@ One native Chromium WebGPU run on Apple Metal3. Times below are median wall-cloc
 | similarity | 4096 | 5.20 |
 | similarity (95% pruned) | 4096 | 1.10 |
 
-Run `yarn test-browser-benchmarks --silent=false modules/analysis/test/gpu-network/network-optimization/network-movement-benchmark.spec.ts` after selecting the repository Node version.
+Run `yarn test-benchmarks modules/analysis/test/gpu-network/network-optimization/network-movement-benchmark.spec.ts` after selecting the repository Node version. The launcher enables benchmark flags and forwards the selected file.
 
 These fixtures use chain flow/routes, disconnected dense community blocks, p-dispersion over a distance grid, balanced accessibility, and 16-observation tracks. They establish a measured bounded envelope, not worst-case complexity, end-to-end production scale or CPU acceleration. Louvain objective reevaluation and exhaustive facility enumeration remain expensive. The similarity comparison changes survivor selectivity; it does not compare equivalent workloads to a CPU baseline.
 

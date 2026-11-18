@@ -1,0 +1,37 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-raster.scalar-field-ridges",
+  "rung": "result",
+  "size": "thumbnail",
+  "scenarioId": "gpu-raster.scalar-field-ridges",
+  "viewId": "result-view",
+  "caption": "Result of gpu-raster.scalar-field-ridges: scalarFieldValues → ridgeMask.",
+  "description": "Result of gpu-raster.scalar-field-ridges: scalarFieldValues → ridgeMask. cells: 49. values read back from the GPU run. input scalarFieldValues: 49 cells.",
+  "llms": "Result of gpu-raster.scalar-field-ridges: scalarFieldValues → ridgeMask\n\n- cells: 49\n- input scalarFieldValues: 49 cells\n- Planar coordinates (m); uniform scale.\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- cell size 1 m\n- Raster pixel grid; origin not recorded\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "cells",
+    "value": "49"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><svg class=\"cv-figure\" width=\"160\" height=\"96\" viewBox=\"0 0 160 96\" preserveAspectRatio=\"xMidYMid meet\" data-extent=\"[[0,0],[7,7]]\" role=\"img\" aria-label=\"Result: ridgeMask\"><defs><pattern id=\"lens-gpu-raster-scalar-field-ridges-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"3\" height=\"3\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-raster-scalar-field-ridges-result-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-raster-scalar-field-ridges-result-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g data-role=\"context\"><image width=\"84\" height=\"84\" preserveAspectRatio=\"none\" image-rendering=\"pixelated\" class=\"cv-mark cv-mark--context cv-cell\" data-role=\"context\" stroke-width=\"0.6\" fill=\"#f1f1ef\" stroke=\"#ffffff\" aria-hidden=\"true\" x=\"38\" y=\"6\" data-provenance=\"readback\" data-raster-width=\"7\" data-raster-height=\"7\" data-sampling=\"nearest\" href=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAcAAAAHCAMAAADzjKfhAAAAA1BMVEXx8e8ubgsoAAAAQ0lEQVR4AQE4AMf/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOAABgZVToQAAAABJRU5ErkJggg==\"></image></g><g data-role=\"output\"><image width=\"84\" height=\"84\" preserveAspectRatio=\"none\" image-rendering=\"pixelated\" class=\"cv-mark cv-mark--output cv-cell cv-v cv-nom-1\" data-role=\"output\" stroke-width=\"0.6\" fill=\"#e69f00\" stroke=\"#ffffff\" x=\"38\" y=\"6\" data-provenance=\"readback\" data-raster-width=\"7\" data-raster-height=\"7\" data-sampling=\"nearest\" href=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAcAAAAHCAMAAADzjKfhAAAABlBMVEXmnwBWtOkHYpLzAAAAQ0lEQVR4AQE4AMf/AAAAAAAAAAAAAAAAAQAAAAAAAAABAAAAAAAAAAEAAAAAAAAAAQAAAAAAAAABAAAAAAAAAAAAAAAAxAAG703DMQAAAABJRU5ErkJggg==\"></image></g><g data-role=\"highlight\"><rect class=\"cv-mark cv-mark--highlight cv-cell\" data-role=\"highlight\" stroke-width=\"0.6\" fill=\"none\" stroke=\"#ffffff\" x=\"74\" y=\"42\" width=\"12\" height=\"12\" data-provenance=\"readback\"></rect></g></svg></section>",
+    "width": 160,
+    "height": 96
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-11-18T16:33:09.658Z",
+    "runId": "run-42a32b13",
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-42a32b13",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

@@ -1,0 +1,76 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.gaussian-random-field",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.gaussian-random-field",
+  "viewId": "formula-card",
+  "caption": "Formula Spectral mode sum with Gaussian amplitudes and independent nugget; finite modes set status.approximation. FFT instead inverts a random spectrum from a doubled covariance torus, clipping negative eigenvalues and reporting their mass. Optional…",
+  "description": "Formula Spectral mode sum with Gaussian amplitudes and independent nugget; finite modes set status.approximation. FFT instead inverts a random spectrum from a doubled covariance torus, clipping negative eigenvalues and reporting their mass. Optional…",
+  "llms": "Formula Spectral mode sum with Gaussian amplitudes and independent nugget; finite modes set status.approximation. FFT instead inverts a random spectrum from a doubled covariance torus, clipping negative eigenvalues and reporting their mass. Optional local kriged residuals condition the field.\n\n- bound symbols: 1/1\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "1/1"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.gaussian-random-field</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{values}{Z(x)}=\\mu+\\sqrt{s/M}\\sum_{j=1}^{M}(a_j\\cos(k_j\\cdot x)+b_j\\sin(k_j\\cdot x))+\\epsilon_x</pre><p class=\"lens-ascii\">Spectral mode sum with Gaussian amplitudes and independent nugget; finite modes set status.approximation. FFT instead inverts a random spectrum from a doubled covariance torus, clipping negative eigenvalues and reporting their mass. Optional local kriged residuals condition the field.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-gaussian-random-field-compiled:GPUGaussianRandomField-publish\" data-value=\"values\">values · output · values</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "values",
+        "output",
+        "values",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{values}{Z(x)}=\\mu+\\sqrt{s/M}\\sum_{j=1}^{M}(a_j\\cos(k_j\\cdot x)+b_j\\sin(k_j\\cdot x))+\\epsilon_x",
+    "ascii": "Spectral mode sum with Gaussian amplitudes and independent nugget; finite modes set status.approximation. FFT instead inverts a random spectrum from a doubled covariance torus, clipping negative eigenvalues and reporting their mass. Optional local kriged residuals condition the field.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "unknown",
+      "reason": "missing or invalid coordinateModel"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-11-18T16:33:25.093Z",
+    "runId": "run-81b2c6de",
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-81b2c6de",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

@@ -7,7 +7,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-spatial-analysis.line-density: roads → lengths.",
   "description": "Result of gpu-spatial-analysis.line-density: roads → lengths. cells: 195. values read back from the GPU run. input roads: 223 lines.",
-  "llms": "Result of gpu-spatial-analysis.line-density: roads → lengths\n\n- cells: 195\n- input roads: 223 lines\n- Planar coordinates (m); uniform scale.\n- 513 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- cell size 100 m\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-spatial-analysis.line-density: roads → lengths\n\n- cells: 195\n- input roads: 223 lines\n- Planar coordinates (m); uniform scale.\n- roads: 10 of 223 lines shown; evenly sampled features and vertices; line endpoints retained\n- cell size 100 m\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "cells",
     "value": "195"
@@ -19,12 +19,12 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-11T15:20:52.134Z",
-    "runId": "run-f6d4f8b7",
+    "date": "2026-11-18T16:33:31.465Z",
+    "runId": "run-6c1f5a7e",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-f6d4f8b7",
+    "runId": "run-6c1f5a7e",
     "rung": "result",
     "bindings": {},
     "clauses": [],

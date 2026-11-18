@@ -1,0 +1,84 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.analysis-spacing",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.analysis-spacing",
+  "viewId": "formula-card",
+  "caption": "Formula The connectivity floor is the maximum nearest-other-row distance. Repeated locations have zero nearest distance; a separate distinct-location search preserves nonzero spacing. The bounded summary also retains extent, centre, spread and rank-…",
+  "description": "Formula The connectivity floor is the maximum nearest-other-row distance. Repeated locations have zero nearest distance; a separate distinct-location search preserves nonzero spacing. The bounded summary also retains extent, centre, spread and rank-…",
+  "llms": "Formula The connectivity floor is the maximum nearest-other-row distance. Repeated locations have zero nearest distance; a separate distinct-location search preserves nonzero spacing. The bounded summary also retains extent, centre, spread and rank-distance quantiles. This fixture uses all five planar locations, including one duplicate.\n\n- bound symbols: 2/2\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "2/2"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>analysis-spacing</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{floor}{r}=\\max_i\\min_{j\\ne i}\\term{distance}{d(p_i,p_j)}</pre><p class=\"lens-ascii\">The connectivity floor is the maximum nearest-other-row distance. Repeated locations have zero nearest distance; a separate distinct-location search preserves nonzero spacing. The bounded summary also retains extent, centre, spread and rank-distance quantiles. This fixture uses all five planar locations, including one duplicate.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.analysis-spacing-compiled:analysis-spacing-location-offsets\" data-value=\"floor\">floor · output · last</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.analysis-spacing-compiled:analysis-spacing-multiplicities\" data-value=\"distance\">distance · intermediate · distance</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "floor",
+        "output",
+        "last",
+        "—",
+        "metadata"
+      ],
+      [
+        "distance",
+        "intermediate",
+        "distance",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{floor}{r}=\\max_i\\min_{j\\ne i}\\term{distance}{d(p_i,p_j)}",
+    "ascii": "The connectivity floor is the maximum nearest-other-row distance. Repeated locations have zero nearest distance; a separate distinct-location search preserves nonzero spacing. The bounded summary also retains extent, centre, spread and rank-distance quantiles. This fixture uses all five planar locations, including one duplicate.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "unknown",
+      "reason": "missing or invalid coordinateModel"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-11-18T16:33:10.165Z",
+    "runId": "run-7c107b55",
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-7c107b55",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

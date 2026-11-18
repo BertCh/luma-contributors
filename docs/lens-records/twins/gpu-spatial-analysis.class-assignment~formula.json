@@ -13,7 +13,7 @@
     "value": "4/4"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.class-assignment</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{class}{c(x)} = \\#\\{\\, k \\in \\{1,\\dots,\\term{count}{K}-1\\} : \\term{edge}{b_k} \\le \\term{value}{x} \\,\\}</pre><p class=\"lens-ascii\">class(x) = #{ k in 1..K-1 : b_k &lt;= x }. Ties go to the upper class (the comparison is &lt;=). A NaN or masked value gets class 0xffffffff (no class).</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-class-assignment-compiled:class-breaks-quantiles-finish\" data-value=\"class\">class · output · below</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-class-assignment-compiled:class-breaks-quantiles-histogram-0\" data-value=\"count\">K · parameter · count</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-class-assignment-compiled:class-assignment-assign\" data-value=\"edge\">b_k · input · breaks</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-class-assignment-compiled:class-breaks-extremes\" data-value=\"value\">x · input · value</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.class-assignment</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{class}{c(x)} = \\#\\{\\, k \\in \\{1,\\dots,\\term{count}{K}-1\\} : \\term{edge}{b_k} \\le \\term{value}{x} \\,\\}</pre><p class=\"lens-ascii\">class(x) = #{ k in 1..K-1 : b_k &lt;= x }. Ties go to the upper class (the comparison is &lt;=). A NaN or masked value gets class 0xffffffff (no class).</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-class-assignment-compiled:class-breaks-quantiles-finish\" data-value=\"class\">class · output · below</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-class-assignment-compiled:class-breaks-quantiles-histogram-0\" data-value=\"count\">K · parameter · count</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-class-assignment-compiled:class-assignment-assign-chunk-0\" data-value=\"edge\">b_k · input · breaks</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-class-assignment-compiled:class-breaks-extremes\" data-value=\"value\">x · input · value</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -80,12 +80,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-11T15:20:30.123Z",
-    "runId": "run-dd0bccc7",
+    "date": "2026-11-18T16:33:18.388Z",
+    "runId": "run-3547993c",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-dd0bccc7",
+    "runId": "run-3547993c",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

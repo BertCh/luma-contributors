@@ -13,6 +13,24 @@ Shared cell operators support S2 topology, compaction, grid paths, center coveri
 The separate S2 compatibility API retains its own status words and unit-sphere units
 (steradians and radians, little-endian keys only). Aggregation/rollup still support H3 and Quadbin.
 
+Use `GPUCellAggregationFamily` (`'quadbin' | 'h3'`) for aggregation, rollup and pyramid inputs,
+and `GPUCellTopologyFamily` (`'quadbin' | 'h3' | 's2'`) for topology, compaction, grid paths,
+covering and outlines. Both types are exported from `@luma-contributors/analysis/gpu-spatial-analysis`.
+`GPUCellIndexFamily` additionally includes `'quadkey'` and `'geohash'` for indexing.
+These capability types replace the two different types formerly named `GPUCellFamily`.
+
+| Family | Indexing / topology resolution | `GPUCellCover` resolution and containment | `GPUCellCompaction` expansion depth | `GPUCellSetOutline` condition |
+| --- | --- | --- | --- | --- |
+| H3 | 0–15 | 0–15, center only | At most 11 levels per input cell | Sorted distinct keys |
+| Quadbin | 0–26 | 0–26, center, full or intersects | At most 15 levels per input cell | Sorted distinct keys |
+| S2 | 0–30 | 0–15, center only | At most 15 levels per input cell | Sorted distinct keys, all at one level |
+| quadkey / geohash | Indexing only: zoom 1–29 / length 1–12 | Unsupported | Unsupported | Unsupported |
+
+Topology children are additionally bounded by a 4096-cell output stride; disks and rings accept
+a radius at most 8. The expansion depth is `target resolution - input cell resolution`, bounded
+by `maximumDepth` (default 8) during uncompaction. S2 aggregation and non-center shared covering
+remain unsupported.
+
 | Operation | H3 | Quadbin | S2 | quadkey / geohash | A5 |
 | --- | --- | --- | --- | --- | --- |
 | Point to cell | `GPUPointToCell`; extended precision exact | `GPUPointToCell`, also inside `GPUCellAggregation` | `GPUPointToCell`, f32 only, exact to about level 20 | `GPUPointToCell` | none |
@@ -77,32 +95,62 @@ table therefore feeds the projection directly.
   and NaN extremes. Columns: `counts`, fixed-point `sums` (signed 64-bit words of
   `roundHalfEven(fround(value * sumScale))`, default scale 65536), `sumValues` (f32
   `sums / sumScale`), `minimums` and `maximums`. On overflow the table keeps the smallest keys
-  and sets `status.overflow`.
+  and sets `status.overflow`. That flag describes only this destination. Optional
+  `status.candidateOverflow` reports source-table loss and is cleared to zero by raw aggregation.
+  Rollup destinations and every coarser pyramid level must provide that scalar; a missing scalar
+  is rejected at construction. Forward the whole status when reusing a table as input.
+  Final `overflow` and `candidateOverflow` publish in separate dispatches, so their one-word
+  views may occupy adjacent words (for example byte offsets 0 and 4) in one buffer. All output
+  logical byte ranges must remain disjoint. Fields bound together, such as `count`, `overflow`
+  and `requiredCount`, also need disjoint storage binding ranges after device-offset alignment.
+  Rollup accumulation also binds `counts` and `sums` writable together: their aligned ranges
+  must be disjoint, including at every coarser pyramid level. For one count at byte 0 and one
+  sum at byte 8, the logical ranges are disjoint but a 256-byte device alignment makes the
+  sum binding start at 0, overlapping the count binding; construction rejects that layout.
+  Raw aggregation writes these columns in separate dispatches and accepts that layout.
+  Aggregation, rollup, pyramid and comparison constructors capture declared props, table ports
+  and status ports once, including inherited or getter-backed fields; unrelated metadata is
+  ignored. Replacing caller fields afterwards
+  does not change the declared graph. Buffer contents remain per-frame inputs.
 - **Accuracy of sums.** The integer sum is exact, order independent and equal under roll-up; the
   values are not: each row is rounded to the nearest multiple of `1 / sumScale` before it is added.
   With the default 65536 that is an absolute error of up to `2^-17` (7.6e-6) per row, a value
   below it adds 0, and a column of constant `1e-4` sums 6.8% high (`7 / 65536` per row). The
   default suits values of about 0.01 and above. For small or very large values pass
   `sumScale: getGPUCellSumScale(maximumMagnitude, maximumRowCount)` (exported beside
-  `GPU_CELL_DEFAULT_SUM_SCALE`): the largest power of two that keeps `maximumRowCount` rows of
-  that magnitude below `2^61`, so rows within a factor of 32 of the maximum are added without
-  rounding at the default row count of `2^31`. Use one `sumScale` for every table that is rolled
+  `GPU_CELL_DEFAULT_SUM_SCALE`): the largest normal float32 power of two, clamped to
+  `[2^-126, 2^127]`, that keeps `maximumRowCount` rows of that magnitude at most `2^61` when
+  that bound is representable. Positive finite magnitudes, including `Number.MIN_VALUE`, are
+  accepted; tiny magnitudes select `2^127`. When that upper cap does not constrain the scale,
+  float32 rows within a factor of 32 of the maximum are added without rounding at the default
+  row count of `2^31`. When it does, even the maximum can be quantized: the normal float32 value
+  `1.25 * 2^-126` scales to 2.5, rounds to even at 2, and decodes as `2^-126` (20% low).
+  Use one `sumScale` for every table that is rolled
   up or compared together (`GPUCellAggregation`, `GPUCellRollup`, `GPUCellPyramid`,
   `GPUCellTableCompare`).
 - **Roll-up.** `GPUCellRollup` reduces a table to a coarser resolution without re-reading rows
   or sorting. Parent keys truncate the cell path (`cellToParent`), which preserves key order.
   Counts and sums are integer sums, so a roll-up equals direct aggregation bit for bit. The
-  source table's `status.overflow` carries through.
+  source table's `overflow` and inherited `candidateOverflow` are combined into the parent's
+  `candidateOverflow`; its own `overflow` is set only when parent rows exceed its capacity.
+  `requiredCount` counts parents formed from retained source cells, so it is a lower bound on
+  the full parent requirement after source loss. Growing only the parent destination cannot
+  recover cells already dropped by a finer stage.
 - **Pyramid.** `GPUCellPyramid` aggregates once at the finest of `resolutions` (listed finest first),
   rolls each level into the next, writes one table per level to `output.levels` and can write
   per-level counts to `output.levelCounts`. Intermediate
-  sums and extremes that a coarser level needs become transients.
+  sums and extremes that a coarser level needs become transients. Each level keeps final and
+  inherited loss separate, and inherited loss propagates through all remaining coarser levels.
+  Read both loss flags for every displayed level. Either flag means that level is incomplete;
+  its `levelCounts` entry still reports the number of retained rows.
 - **Level selection.** `GPUCellLevelSelection` reads a per-frame `activeLevel` (one `uint32`) and
   writes that level's `status.count`, first row, and the `instanceCount`/`firstInstance` words of indirect
   draw arguments. Keep it in a small per-frame graph: switching levels rewrites one word and never
   re-runs the pyramid.
 
 ```ts
+// Allocate every table with status: {count, overflow, candidateOverflow}.
+// Read both loss flags after execution; either makes that level incomplete.
 graph.add(new GPUCellPyramid({
   family: 'quadbin',
   positions, values, mask,                    // mask and values can change every frame
@@ -780,10 +828,10 @@ These contributors form the bounded planar geometry-topology substrate:
 - `GPULineNoding` splits arbitrary finite linework at crossings, touches, both ends of collinear
   overlaps, and repeated vertices. Each atomic `GPUNodedSegmentPort` row carries source feature,
   line/ring, original edge, and normalized start/end parameter provenance. Segment pairs the exact
-  predicates cannot certify (no split is made for them) and non-finite input vertices set `overflow`
-  whether or not `output.status.uncertainCount` is wired; `overflow` with `candidateOverflow` clear and
-  `requiredCount` within capacity means such input, which no capacity fixes. `GPULineSplit` reports
-  the same in `pieces.status.overflow`.
+  predicates cannot certify (no split is made for them) and non-finite input vertices set `candidateOverflow`
+  whether or not `output.status.uncertainCount` is wired. Such input sets `candidateOverflow`;
+  increasing final segment capacity cannot repair it. `GPULineSplit` reports the same incomplete
+  split input in `pieces.status.overflow`.
 - `GPUPolygonize` expands each noded segment into two directed edges, assigns deterministic left-face
   ownership, omits the unbounded and zero-area faces, and emits canonical polygon features. It
   emits every bounded face (shapely `polygonize` semantics): the hole of a holed ring comes back as
@@ -813,12 +861,23 @@ These contributors form the bounded planar geometry-topology substrate:
 All three require an explicit `GPUTopologyPrecisionPolicy`. The current policy uses the shared exact
 orientation predicates with an uncertainty counter, float32 coordinate storage, and a caller-chosen
 Chebyshev vertex tolerance. For `GPULineNoding`, `requiredCount` is exact when `candidateOverflow` is
-zero. For `GPUPolygonize` and `GPUMakeValid`, `status.requiredCount` is the unclamped ring-assembly
-requirement (every face ring, including holes), the ring capacity to allocate, not the number of
-polygons written (`count`). `candidateOverflow` is the noding flag only: when the intersection
-substrate is incomplete, both `candidateOverflow` and `overflow` are set and callers must grow
-`intersectionCapacity` and rerun; ring or segment capacity loss sets `overflow` alone. No CPU readback
-or compatibility adapter is involved.
+zero. For `GPUPolygonize` and `GPUMakeValid`, `status.requiredRingCount` is the unclamped ring-assembly
+requirement (every directed face ring, including holes and unbounded walks), for sizing ring capacity
+when noding is complete. `status.count` counts written features, after parity filtering for make-valid.
+There is no `status.requiredCount`: an exact feature requirement is unknown after ring loss.
+**Breaking (2026-11-17):** rename the former ring-valued `status.requiredCount` to `requiredRingCount`.
+Every supplied final status view is packed `uint32` with at least one row; final status ranges
+must be disjoint, including `count` and `requiredRingCount`.
+`overflow` always describes the current port's final capacity: segments for noding, directed edges
+for the directed port, and rings/vertices for polygon publication. Directed requirements are twice
+the noded segment requirement, so a full directed buffer can still overflow. `candidateOverflow`
+reports intermediate loss or uncertainty separately. At polygon publication it includes noded
+segment truncation as well as incomplete intersection/snap-rounding candidates. Check both flags
+before using geometry or trusting requirements. Every supplied `uncertainCount` destination
+(top-level, noded and directed) receives the same count on every submission, including zero.
+Make-valid groups internally by feature row and maps retained rows to caller `sourceIds` only at
+publication; all uint32 identities, including `0xffffffff`, are accepted in the active prefix.
+No CPU readback or compatibility adapter is involved.
 
 Maximum: `positions` has at most `getGPUSegmentIntersectionMaximumVertexCount(device)` (4194304 on a default device: the 32-byte segment-table row per vertex must fit one storage binding) rows, and the line (or ring) count plus four times `intersectionCapacity` is at most `getGPULineSplitMaximumPieceBound(device)` (4194304 on a default device, the 32-byte piece-table row). Each contributor validates both under its own ID.
 
@@ -864,16 +923,19 @@ It compares tables keyed by cell, so it takes no `spatialContext`.
 graph.add(new GPUCellTableCompare({
   before: lastMonth, after: thisMonth,
   measure: 'sum', sumScale: 65536,
-  output: {cells, presence, before, after, delta, ratio, percentChange, zScore, status: {count, overflow}}
+  output: {cells, presence, before, after, delta, ratio, percentChange, zScore, status: {count, overflow, candidateOverflow}}
 }));
 ```
 
-- `output.cells` holds the union keys ascending (`uint32x2`, little-endian `(low, high)`); its length is the capacity. When the union is larger, the smallest keys are kept, `status.count` is clamped and `status.overflow` is 1. `status.overflow` also becomes 1 when either input table overflowed. Optional `status.requiredCount` receives the unclamped union size.
+- `output.cells` holds the union keys ascending (`uint32x2`, little-endian `(low, high)`); its length is the capacity. When the retained-input union is larger, the smallest keys are kept, `status.count` is clamped and `status.overflow` is 1. Required `status.candidateOverflow` receives the OR of both inputs' final and inherited loss; it is separate from destination overflow and is rewritten on every submission. Optional `status.requiredCount` receives the retained-input union requirement, a lower bound on the full union when input cells were lost. For one retained before-cell, an empty after-table and four union slots, source loss gives `count = requiredCount = 1`, `overflow = 0`, `candidateOverflow = 1`. Increase the source capacity to recover the missing cell.
 - `presence`: bit 1 (`GPU_CELL_COMPARE_PRESENT_BEFORE`) when the cell is in `before`, bit 2 (`GPU_CELL_COMPARE_PRESENT_AFTER`) when in `after`.
+- The two loss flags publish separately and may share a buffer at adjacent word offsets.
+  Mapping both flags to the same word is rejected. `count`, `overflow` and `requiredCount`
+  publish together and must have nonoverlapping aligned storage binding ranges.
 - `before` / `after`: the measure (`'count'`, or `'sum'` decoded from the fixed-point `sums`), 0 when absent.
-- `delta = after - before`, computed exactly as a 64-bit integer difference (counts and fixed-point sums) and only then rounded to f32, so large sums with small differences are not lost to f32 cancellation.
+- `delta = after - before`, computed with an exact sign and unsigned 64-bit magnitude from the signed integer measures, then rounded once to nearest f32 (ties to even) and divided by `sumScale` for sums. Guard and sticky bits from both integer words decide rounding. Differences outside the signed 64-bit range retain their sign, and large sums with small differences are not lost to f32 cancellation. For example, sums of `-2^62` and `+2^62` at scale 1 produce `+2^63`.
 - `ratio = after / before` and `percentChange = 100 * (after - before) / before`, NaN when `before` is 0.
-- `zScore`: `'poisson'` (default for counts) is `delta / sqrt(before + after)`, 0 when both are 0. It is a statistic of counts: with `measure: 'sum'` use it only for sums of non-negative values, and a row where `before + after` is negative, or is 0 while the sums differ, gets NaN. `'standardized'` (default for sums) is `(delta - mean) / sd` over the union rows with the population standard deviation, 0 when sd is 0. The mean and sd are reduced in three fixed-order stages (per-workgroup partial sums, per-workgroup partial squares around the combined mean, then one combining workgroup), so a re-encode is bitwise identical.
+- `zScore`: `'poisson'` (default for counts) is `delta / sqrt(before + after)`, 0 when both are 0. It is a statistic of counts: with `measure: 'sum'` use it only for sums of non-negative values, and a row where `before + after` is negative, or is 0 while the sums differ, gets NaN. `'standardized'` (default for sums) is `(delta - mean) / sd` over the union rows with the population standard deviation, 0 when sd is 0. A published extent reduction supplies one common power-of-two normalization for all finite deltas before computing mean, squared deviations and scores. This prevents squared-delta overflow and preserves scores across sum scales. The three subsequent fixed-order stages compute partial sums, partial squared deviations and the combined statistics, so a re-encode is bitwise identical.
 - Rows past `status.count` hold the empty key (all ones), presence 0, `before`/`after` 0, and NaN in `delta`, `ratio`, `percentChange` and `zScore`.
 
 The merge is a binary-search merge path with an exclusive scan of matched rows, so every union row is written by exactly one invocation and no atomics are used. Cost is O((n + m) log(n + m)). Table contents are per-frame (re-encode without recompiling); capacities, columns, `measure` and `zScore` are topology.

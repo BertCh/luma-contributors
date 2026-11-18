@@ -14,7 +14,7 @@ A street sample faces walls two and three units away, with building heights six 
 
 ## `addBuildingAdjacencyRecipe`
 
-Two buildings share a wall of length two. Their axial orientations straddle the half-turn boundary and differ by 0.02π radians. A third building has no positive-length shared wall. The completeness flag preserves the supplied shared-path evidence.
+Two buildings share a wall of length two. Their axial orientations straddle the half-turn boundary and differ by 0.02π radians. The docs-sized fixture contains only this adjacent pair; their dissolved structure has exterior perimeter eight. The pair table, component labels, morphology and completeness evidence are all captured.
 
 {/* lens:addBuildingAdjacencyRecipe */}
 
@@ -78,6 +78,10 @@ simple nonconvex or holed enclosures (at most 32 rings). Reference mode retains 
 buildings and 128 samples. Device bindings and certification/overflow status still apply.
 
 Eight boundary samples from two rectangular buildings are clipped to a rectangular enclosure and dissolved by building. The two complementary cells each have area twelve. Sampling, overlay counts and completeness accompany the variable-length geometry.
+
+For these four rectangular fragments per building, the recording uses capacities of 64 intersections,
+32 noded segments, 16 output vertices and four rings per dissolve. These are fixture-specific
+capacities, not recipe limits. Every output geometry, boundary, count and loss flag remains captured.
 
 {/* lens:addBuildingTessellationRecipe */}
 

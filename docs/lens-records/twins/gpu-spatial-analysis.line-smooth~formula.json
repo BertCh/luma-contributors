@@ -13,7 +13,7 @@
     "value": "5/5"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.line-smooth</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{first}{q}=(1-\\term{ratio}{r})\\term{start}{a}+\\term{ratio}{r}\\term{end}{b},\\qquad \\term{second}{s}=\\term{ratio}{r}\\term{start}{a}+(1-\\term{ratio}{r})\\term{end}{b}</pre><p class=\"lens-ascii\">Each Chaikin pass replaces edge (a,b) by q=(1-r)*a+r*b and s=r*a+(1-r)*b. Open endpoints are copied; closed rings ignore a repeated input endpoint and repeat the first output vertex. Degenerate short lines are copied.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-line-smooth-compiled:line-smooth-level-0\" data-value=\"first\">first · output · destination</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-line-smooth-compiled:line-smooth-level-0\" data-value=\"second\">second · output · destination</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-line-smooth-compiled:line-smooth-prepare\" data-value=\"start\">start · input · start</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-line-smooth-compiled:line-smooth-prepare\" data-value=\"end\">end · input · end</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-line-smooth-compiled:line-smooth-level-0\" data-value=\"ratio\">ratio · parameter · ratio</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.line-smooth</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{first}{q}=(1-\\term{ratio}{r})\\term{start}{a}+\\term{ratio}{r}\\term{end}{b},\\qquad \\term{second}{s}=\\term{ratio}{r}\\term{start}{a}+(1-\\term{ratio}{r})\\term{end}{b}</pre><p class=\"lens-ascii\">Each Chaikin pass replaces edge (a,b) by q=(1-r)*a+r*b and s=r*a+(1-r)*b. Open endpoints are copied; closed rings ignore a repeated input endpoint and repeat the first output vertex. Degenerate short lines are copied.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-line-smooth-compiled:line-smooth-copy-input\" data-value=\"first\">first · output · destination</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-line-smooth-compiled:line-smooth-copy-input\" data-value=\"second\">second · output · destination</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-line-smooth-compiled:line-smooth-prepare\" data-value=\"start\">start · input · start</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-line-smooth-compiled:line-smooth-prepare\" data-value=\"end\">end · input · end</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-line-smooth-compiled:line-smooth-level-0\" data-value=\"ratio\">ratio · parameter · ratio</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -77,12 +77,12 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-11T15:20:54.459Z",
-    "runId": "run-0245a0fa",
+    "date": "2026-11-18T16:33:32.743Z",
+    "runId": "run-ab08ac79",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-0245a0fa",
+    "runId": "run-ab08ac79",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

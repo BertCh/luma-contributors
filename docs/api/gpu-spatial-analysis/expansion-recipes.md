@@ -1,5 +1,9 @@
 # Geospatial workflow recipes
 
+All recipes exported from the spatial and network recipes entry points use the
+[shared preparation and retry contract](./recipes.md): validation and expansion failures leave the
+caller graph unchanged, including when a raster wrapper composes another recipe.
+
 These recipes add nodes to a caller-owned `GPUCommandGraph`. They never submit work, read back a
 result, fit a model on the CPU, or silently change coordinate systems. Import spatial, raster and
 terrain workflows from `@luma-contributors/analysis/gpu-spatial-analysis`; import network scenarios and the track-quality/map-matching composite from
@@ -10,6 +14,15 @@ stage status as well as the numerical output: a partial routing result or an inc
 is not a completed analysis. Graph-owned transient outputs can feed another contributor or renderer.
 Use a caller-owned output override where exposed, or an explicit graph copy to a caller-owned
 readback buffer. Destroy the compiled graph after its last submission has completed.
+
+Catalog kinds describe each recipe's actual ports. Local variability consumes CSR spatial weights,
+values and parameters and returns per-row attributes; it has no raster input or network output.
+Zonal distribution returns attributes and summaries from values with zones or a point/polygon join;
+its raster adapter accepts a surface. Exposure returns zone summaries, regional raster change also
+returns a difference surface, and interpolation produces a surface plus sample diagnostics from
+point observations. Drainage is a surface-to-network workflow. Cell-flow topology takes H3 cells
+and an OD pair table and returns cell/edge attributes, topology and boundary geometry. Surface
+preparation returns the repaired surface, provenance attributes and an unresolved count.
 
 ## Zonal distributions
 
@@ -22,10 +35,21 @@ quantiles use linear interpolation. Probabilities are supplied in a live float32
 The point path assigns each observation to the join's single deterministic owning feature. Supply
 explicitly expanded zone/value rows when one observation should count in multiple overlapping zones.
 Source feature IDs are retained in the input; output zone IDs are feature row indices.
+The point branch accepts `source.join.prepared` when that `GPUSpatialJoinPrepared` has already been
+added to the caller graph. Preparation mirrors its geometry and storage for validation; the
+committed join retains the original handle. An undeclared handle is rejected before any recipe
+nodes or resources are registered.
 
 `addRasterZonalDistributionRecipe` additionally accepts `grid`, `input`, `zones` and `zoneCount`.
 It resolves native-format nodata and validity before applying scale/offset. These are unweighted
 whole-cell quantiles. Fractional coverage does not turn them into weighted quantiles.
+Caller outputs must not alias the original raster band, its validity storage, zone IDs or
+probabilities, even though the nested distribution reads a calibrated intermediate. Distinct
+outputs also require separate buffers; disjoint offset views of one buffer still alias.
+Only declared zonal fields are forwarded to the nested recipe; auxiliary metadata such as `preview`
+is ignored. A genuinely foreign raster input still fails graph ownership validation. The ordered
+`contributors` list includes calibration before the zonal statistics stage (and both calibration
+stages before exposure statistics in `addExposureByZoneRecipe`).
 
 ```ts
 import {addRasterZonalDistributionRecipe} from '@luma-contributors/analysis/gpu-spatial-analysis';
@@ -79,6 +103,10 @@ scan. Separate invalid/uncertain raster statuses and invalid validation counts r
 variogram fitting, automatic model selection or residual significance is implied.
 
 ## Facility scenario evaluation
+
+Independent output buffers must be physically distinct, including when different graph handles
+import one buffer. In particular, `nearestCosts` cannot alias `accessibility`; correcting the outputs
+allows a retry with the same recipe ID before any caller nodes or resources have been added.
 
 `addFacilityScenarioRecipe` reads a complete, reusable facility-major cost matrix, demand, supply,
 a live facility mask and network-accessibility parameters. Outputs are gravity accessibility,
@@ -157,14 +185,19 @@ D-infinity/MFD flow as D8. Lengths/distances use the planar grid affine's units.
 
 `addTrackQualityRecipe` is exported by `@luma-contributors/analysis/gpu-network`, since its optional map-matching stage consumes network topology. It preserves the trajectory's raw observation order and timestamp representation,
 including double-single and Int64 words. Its live two-row threshold view holds maximum speed and
-maximum gap in trajectory units. Raw flags use bits 1 invalid position, 2 nonpositive/nonfinite time
-step, 4 excessive/nonfinite step speed, 8 time gap and 16 invalid threshold. First observations
+maximum gap in trajectory units. The recipe forwards `trajectory.temporalContext` to trajectory
+metrics, preserving the declared unit, epoch and encoding; a declaration inconsistent with the
+timestamp views is rejected before graph resources or nodes are declared, allowing a corrected
+retry on the same graph. Raw flags use bits 1 invalid position, 2 nonpositive/nonfinite time step,
+4 excessive/nonfinite step speed, 8 time gap and 16 invalid threshold. First observations
 have no step checks but still report an invalid timestamp;
 rows outside the track-offset domain carry `0xffffffff`. Per-track counts count flagged observations.
 
 Optional `similarity` compares the raw tracks to explicit reference pairs using Hausdorff, Frechet,
 DTW and LCSS. Its densification and dynamic-programming limits remain explicit, and `pairStatus`
-retains failure evidence. Supplying `frechetEpsilon` also returns `frechetWithin`. Optional `mapMatching` returns matched edge IDs, snap distances, breaks
+retains failure evidence. `pairA` and `pairB` must have equal logical lengths. Invalid pair shapes
+leave the graph unchanged, and corrected pairs can retry with the same recipe ID. Supplying
+`frechetEpsilon` also returns `frechetWithin`. Optional `mapMatching` returns matched edge IDs, snap distances, breaks
 and matched count, plus candidate and route-overflow stages. Route-search overflow must not be
 interpreted as a reliable off-route result. Resampling is a separate upstream choice; raw flags do
 not silently become flags on a resampled track.
@@ -192,6 +225,14 @@ boundary precision.
 ## Surface preparation with provenance
 
 `addSurfacePreparationRecipe` applies bounded continuous nodata filling and an optional rank filter.
+Its independent outputs must use separate physical buffers, including through separate graph imports;
+read-only input sharing remains legal. The recipe captures declared output fields once, including
+inherited getters, and checks the caller-provided boundary before allocating default outputs or
+scheduling nodes. Each supplied output is also checked for packed scalar storage, its expected
+format and exact row count before any defaults are registered. `values` is float32; the other
+five outputs are uint32. Each output has `grid.width * grid.height` rows except `unresolvedCount`,
+which has exactly one row. After a boundary or layout rejection, correct the supplied views and
+retry on the same graph with the same recipe ID.
 It returns a float32 buffer band, original validity, filled and filtered masks, downstream validity,
 and unresolved-gap counts before and after filtering. Original valid calibrated observations are
 preserved in fill-only mode; interpolated values never become donors during that fill pass.

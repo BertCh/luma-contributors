@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula s_i = [p_i in R]; N = sum_i s_i [v_i finite]; S = sum_i s_i [v_i finite] v_i; mean = S / N, reported as 0 when N = 0 (not NaN), as are the sum, minimum and maximum. R is the rectangle, lasso polygon (even-odd), circle, pick result or caller…",
   "description": "Formula s_i = [p_i in R]; N = sum_i s_i [v_i finite]; S = sum_i s_i [v_i finite] v_i; mean = S / N, reported as 0 when N = 0 (not NaN), as are the sum, minimum and maximum. R is the rectangle, lasso polygon (even-odd), circle, pick result or caller…",
-  "llms": "Formula s_i = [p_i in R]; N = sum_i s_i [v_i finite]; S = sum_i s_i [v_i finite] v_i; mean = S / N, reported as 0 when N = 0 (not NaN), as are the sum, minimum and maximum. R is the rectangle, lasso polygon (even-odd), circle, pick result or caller mask. Points with a non-finite position are never selected. Counts are exact; the sum is a GPU reduction.\n\n- bound symbols: 4/4\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula s_i = [p_i in R]; N = sum_i s_i [v_i finite]; S = sum_i s_i [v_i finite] v_i; mean = S / N, reported as 0 when N = 0 (not NaN), as are the sum, minimum and maximum. R is the rectangle, lasso polygon (even-odd), circle, pick result or caller mask. Points with a non-finite position are never selected. Counts are exact; the sum is a GPU reduction.\n\n- bound symbols: 3/4\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "4/4"
+    "value": "3/4"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>region-statistics</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{selected}{s_i}&amp;=[\\,p_i\\in R\\,],\n&amp;\\term{valueCount}{N}&amp;=\\sum_i s_i\\,[\\,v_i\\ \\text{finite}\\,]\\\\\n\\term{sum}{S}&amp;=\\sum_i s_i\\,[\\,v_i\\ \\text{finite}\\,]\\,v_i,\n&amp;\\term{mean}{\\bar{v}}&amp;=\\frac{S}{N}\n\\end{aligned}</pre><p class=\"lens-ascii\">s_i = [p_i in R]; N = sum_i s_i [v_i finite]; S = sum_i s_i [v_i finite] v_i; mean = S / N, reported as 0 when N = 0 (not NaN), as are the sum, minimum and maximum. R is the rectangle, lasso polygon (even-odd), circle, pick result or caller mask. Points with a non-finite position are never selected. Counts are exact; the sum is a GPU reduction.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.region-statistics-compiled:region-statistics-region\" data-value=\"selected\">selected · intermediate · selected</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.region-statistics-compiled:region-statistics-summary\" data-value=\"valueCount\">valueCount · intermediate · valueCount</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.region-statistics-compiled:region-statistics-region\" data-value=\"sum\">sum · output · sum</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.region-statistics-compiled:region-statistics-summary\" data-value=\"mean\">mean · output · mean</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>region-statistics</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{selected}{s_i}&amp;=[\\,p_i\\in R\\,],\n&amp;\\term{valueCount}{N}&amp;=\\sum_i s_i\\,[\\,v_i\\ \\text{finite}\\,]\\\\\n\\term{sum}{S}&amp;=\\sum_i s_i\\,[\\,v_i\\ \\text{finite}\\,]\\,v_i,\n&amp;\\term{mean}{\\bar{v}}&amp;=\\frac{S}{N}\n\\end{aligned}</pre><p class=\"lens-ascii\">s_i = [p_i in R]; N = sum_i s_i [v_i finite]; S = sum_i s_i [v_i finite] v_i; mean = S / N, reported as 0 when N = 0 (not NaN), as are the sum, minimum and maximum. R is the rectangle, lasso polygon (even-odd), circle, pick result or caller mask. Points with a non-finite position are never selected. Counts are exact; the sum is a GPU reduction.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"selected\">selected · intermediate · unknown — wgsl selected not found in this record</span><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.region-statistics-compiled:region-statistics-summary\" data-value=\"valueCount\">valueCount · intermediate · valueCount</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.region-statistics-compiled:region-statistics-summary\" data-value=\"sum\">sum · output · sum</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.region-statistics-compiled:region-statistics-summary\" data-value=\"mean\">mean · output · mean</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,7 +29,7 @@
       [
         "selected",
         "intermediate",
-        "selected",
+        "unknown",
         "—",
         "metadata"
       ],
@@ -82,8 +82,8 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-11T15:21:15.600Z",
-    "runId": "run-8a069cf6",
+    "date": "2026-11-18T16:33:46.765Z",
+    "runId": "run-3be051d6",
     "observerEffects": [
       "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
@@ -91,7 +91,7 @@
     ]
   },
   "state": {
-    "runId": "run-8a069cf6",
+    "runId": "run-3be051d6",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

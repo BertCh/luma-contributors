@@ -14,7 +14,7 @@
     "value": "561.85986328125"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of anchorage 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"result\"><tr><th scope=\"rowgroup\" colspan=\"5\">result</th></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-fleet-dwell-zone-events-recipe-snapshots-anchorages-0\" title=\"gpu-spatial-analysis-fleet-dwell-zone-events-recipe-snapshot-tap\">anchorages</button></td><td>10991.349609375, 15329.3095703125</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-fleet-dwell-zone-events-recipe-snapshots-zoneVisits-0\" title=\"tracks that visited the anchorage\">zoneVisits</button></td><td>5</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-fleet-dwell-zone-events-recipe-snapshots-zoneDwell-0\" title=\"total dwell in s, summed over tracks\">zoneDwell</button></td><td>561.85986328125</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of anchorage 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"result\"><tr><th scope=\"rowgroup\" colspan=\"5\">result</th></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-fleet-dwell-zone-events-recipe-snapshots-anchorages-0\" title=\"gpu-spatial-analysis-fleet-dwell-zone-events-recipe-snapshot-tap\">anchorages</button></td><td>10991.349609375, 15329.3095703125</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-fleet-dwell-zone-events-recipe-snapshots-zoneVisits-0\" title=\"tracks that visited the anchorage\">zoneVisits</button></td><td>5</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-fleet-dwell-zone-events-recipe-snapshots-zoneDwell-0\" title=\"total dwell in s, summed over tracks; incomplete when candidateScratchOverflow is nonzero\">zoneDwell</button></td><td>561.85986328125</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -68,12 +68,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-11T15:20:41.601Z",
-    "runId": "run-59931603",
+    "date": "2026-11-18T16:33:24.868Z",
+    "runId": "run-36509ceb",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-59931603",
+    "runId": "run-36509ceb",
     "rung": "datum",
     "bindings": {
       "entity": 0

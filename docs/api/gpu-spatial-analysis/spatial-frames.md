@@ -43,8 +43,10 @@ mixed. Datum or area-of-use differences that do not change execution are not ref
 ## Units and precision
 
 `unit` is math.gl's `CRSUnit`. The library checks declared units and never converts them.
-`GPUSpatialContext.units` is derived from the frame unit: `'meters'` for `metersPerUnit === 1`,
-`'kilometers'` for `1000`, otherwise undeclared (native).
+`getGPUSpatialFrameContextUnits` returns `'meters'` for `metersPerUnit === 1` and otherwise leaves
+`GPUSpatialContext.units` undeclared (native), as required by the native planar context validator.
+Kilometers and other units remain in `frame.unit`; coordinates and thresholds continue to use
+those native frame units without conversion.
 
 Local frames are in meters, centered on their origin and held origin-relative in float32
 (`precision: 'float32-origin-relative'`). The origin is subtracted in binary64 on the CPU, so float32
@@ -136,31 +138,15 @@ centre of the projection, and its coordinates are already relative to it: pass n
 `destinationOrigin` for such a frame. Without a `destinationOrigin` the compiled plan keeps the
 origin the projection compiler chooses.
 
-## deck.gl adapter
+## Rendering frames
 
-```ts
-import {getDeckCoordinatePropsFromSpatialFrame} from '@deck.gl-community/gpu-layers';
+Configure the renderer's coordinate frame, projection and origin explicitly from the stored data
+coordinates. This package exports frame descriptors and projection helpers; it does not export a
+deck.gl layer adapter. The former `@deck.gl-community/gpu-layers` import is not a published
+dependency of this workspace. The [Kepler example](https://github.com/visgl/luma-contributors/blob/master/examples/deck/kepler-compute/README.md)
+describes its local rendering integration and pinned deck.gl version.
 
-const {coordinateSystem, coordinateOrigin} = getDeckCoordinatePropsFromSpatialFrame(frame);
-```
-
-Maps a planar frame to deck.gl layer coordinate props:
-
-- Local frames (AEQD and LAEA) become `COORDINATE_SYSTEM.METER_OFFSETS` with
-  `coordinateOrigin: [longitude, latitude, 0]` at the frame origin. It throws if the frame has no
-  origin.
-- `'crs'` frames become `COORDINATE_SYSTEM.CARTESIAN`, treating coordinates as unprojected scene
-  units; the caller owns the projection.
-
-deck's `METER_OFFSETS` is a local east/north/up tangent approximation, not an exact AEQD or LAEA
-projection. The two agree at the origin and diverge by roughly `d^3 / (6 R^2)`:
-
-| Distance from origin | Approximate error |
-| --- | --- |
-| 1 km | under 1 mm |
-| 10 km | under 0.1 m |
-| 100 km | a few meters (about 4 m) |
-
-The unit test asserts bounds of 1 mm, 0.1 m and (loosely) 100 m at these distances, against exact
-spherical AEQD at 45 degrees azimuth; the 4 m figure is the analytic estimate, not a test bound.
-Use the adapter for neighborhood-scale scenes only.
+A local AEQD or LAEA projection is distinct from an east/north/up tangent offset approximation.
+Reusing the same longitude/latitude origin alone does not make their coordinates interchangeable.
+Project the data into the renderer's frame, or choose a rendering projection that preserves the
+analysis frame; keep the declared origin and units consistent in both paths.

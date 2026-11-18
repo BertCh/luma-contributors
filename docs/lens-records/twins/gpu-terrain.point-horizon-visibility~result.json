@@ -12,13 +12,13 @@
   "viewId": "result-view",
   "caption": "Result of gpu-terrain.point-horizon-visibility: dem, horizonObservers, horizonTargets → pointHorizonVisibility. rows: 12. values read back from the GPU run. input dem: 4096 cells.",
   "description": "Result of gpu-terrain.point-horizon-visibility: dem, horizonObservers, horizonTargets → pointHorizonVisibility. rows: 12. values read back from the GPU run. input dem: 4096 cells.",
-  "llms": "Result of gpu-terrain.point-horizon-visibility: dem, horizonObservers, horizonTargets → pointHorizonVisibility\n\n- rows: 12\n- input dem: 4096 cells\n- input horizonObservers: 12 rows\n- input horizonTargets: 48 rows\n- Planar coordinates (m); uniform scale.\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-terrain.point-horizon-visibility: dem, horizonObservers, horizonTargets → pointHorizonVisibility\n\n- rows: 12\n- input dem: 4096 cells\n- input horizonObservers: 3 rows\n- input horizonTargets: 12 rows\n- Planar coordinates (m); uniform scale.\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "rows",
     "value": "12"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-result-view\"><table class=\"cv-table\"><thead><tr><th scope=\"col\">horizonObservers</th><th scope=\"col\">horizonTargets</th><th class=\"cv-col--output\" scope=\"col\">pointHorizonVisibility</th></tr></thead><tbody><tr><td data-provenance=\"readback\">45</td><td data-provenance=\"readback\">16</td><td class=\"cv-col--output\" data-provenance=\"readback\">1</td></tr><tr><td data-provenance=\"readback\">19</td><td data-provenance=\"readback\">52</td><td class=\"cv-col--output\" data-provenance=\"readback\">1</td></tr><tr><td data-provenance=\"readback\">4</td><td data-provenance=\"readback\">52</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td></tr><tr><td data-provenance=\"readback\">—</td><td data-provenance=\"readback\">16</td><td class=\"cv-col--output\" data-provenance=\"readback\">1</td></tr><tr><td data-provenance=\"readback\">—</td><td data-provenance=\"readback\">16</td><td class=\"cv-col--output\" data-provenance=\"readback\">1</td></tr><tr><td data-provenance=\"readback\">—</td><td data-provenance=\"readback\">52</td><td class=\"cv-col--output\" data-provenance=\"readback\">1</td></tr><tr><td colspan=\"3\">… 42 more rows</td></tr></tbody></table><p class=\"cv-legend\">grey: input dem, horizonObservers, horizonTargets · blue: output pointHorizonVisibility</p><p class=\"cv-note\">cell size 120 m · Raster pixel grid; origin not recorded</p></section>",
+    "html": "<section class=\"lens-view lens-result-view\"><div class=\"cv-result-tables\"><table class=\"cv-table\" data-key-space=\"horizon-observers\"><caption>ridge observers (horizon-observers) · 3 rows</caption><thead><tr><th scope=\"col\">horizonObservers</th></tr></thead><tbody><tr><td data-provenance=\"readback\">45, 49, 1.7, 0</td></tr><tr><td data-provenance=\"readback\">19, 43, 1.7, 0</td></tr><tr><td data-provenance=\"readback\">4, 10, 1.7, 0</td></tr></tbody></table><table class=\"cv-table\" data-key-space=\"horizon-targets\"><caption>four targets per observer (horizon-targets) · 12 rows</caption><thead><tr><th scope=\"col\">horizonTargets</th><th class=\"cv-col--output\" scope=\"col\">pointHorizonVisibility</th></tr></thead><tbody><tr><td data-provenance=\"readback\">16, 16, 0, 0</td><td class=\"cv-col--output\" data-provenance=\"readback\">1</td></tr><tr><td data-provenance=\"readback\">52, 16, 0, 0</td><td class=\"cv-col--output\" data-provenance=\"readback\">1</td></tr><tr><td data-provenance=\"readback\">52, 55, 0, 0</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td></tr><tr><td data-provenance=\"readback\">16, 55, 0, 0</td><td class=\"cv-col--output\" data-provenance=\"readback\">1</td></tr><tr><td data-provenance=\"readback\">16, 16, 0, 1</td><td class=\"cv-col--output\" data-provenance=\"readback\">1</td></tr><tr><td data-provenance=\"readback\">52, 16, 0, 1</td><td class=\"cv-col--output\" data-provenance=\"readback\">1</td></tr><tr><td colspan=\"2\">… 6 more rows</td></tr></tbody></table></div><p class=\"cv-legend\">grey: input dem, horizonObservers, horizonTargets · blue: output pointHorizonVisibility</p><p class=\"cv-note\">cell size 120 m · Raster pixel grid; origin not recorded</p></section>",
     "width": 640,
     "height": 0
   },
@@ -36,8 +36,8 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-11T15:21:33.622Z",
-    "runId": "run-9405a787",
+    "date": "2026-11-18T16:33:59.505Z",
+    "runId": "run-686067cd",
     "observerEffects": [
       "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
@@ -45,7 +45,7 @@
     ]
   },
   "state": {
-    "runId": "run-9405a787",
+    "runId": "run-686067cd",
     "rung": "result",
     "bindings": {},
     "clauses": [],

@@ -38,7 +38,9 @@ Both require per-row `output.status`:
 `addLocalVariabilityRecipe` composes LOSH and local Moran on the same weights, values and mask. The
 returned outputs keep LOSH and its status separate from Moran's statistic, z-score, raw and adjusted
 p-values, quadrants, and inference status. Multiple-testing correction applies only to the Moran
-family. The recipe preserves upstream overflow and the invalid count from each statistical stage.
+family. The recipe preserves both upstream loss flags and the invalid count from each statistical
+stage. Candidate-only loss suppresses both LOSH (including normalized residuals) and Moran, with
+INCOMPLETE LOSH status; both recover on resubmission when the loss flags clear.
 It does not create a joint significance score or inferential LOSH classification.
 
 ## Marked and cross-type point patterns
@@ -176,9 +178,23 @@ observation anchors centering even when the leading or trailing rows are exclude
 coefficient system is solved in one invocation; singular or insufficient global designs start at zero.
 A sweep converges when the largest relative change in any fitted component
 is within tolerance. The row selection is complete-case. Singular component fits invalidate the
-whole coupled backfit. Non-converged coefficient surfaces are not published as completed results.
+whole coupled backfit. `maximumIterations` bounds completed sweeps on both GPU and CPU (default
+32; GPU maximum 128). An exhausted finite fit publishes its last coefficients and fitted values
+with code 3. Excluded, singular, and numerically failed fits publish NaNs. Conditional and full
+inference require convergence and remain NaN at the iteration limit; full inference status is 1.
 `output.status.codes` has one row per observation; `output.status.iterationCount` is one scalar
-containing the number of completed backfit sweeps.
+containing the number of completed backfit sweeps. The CPU twin computes in float64 and accepts
+budgets above the GPU maximum, while honoring every explicit budget and the shared default.
+Both operation constructors snapshot their validated sweep budgets and selection settings;
+mutating the caller's props later does not change subsequent executions. Code 0 and code 3 carry
+finite float32 coefficients and fitted values on every included row. A coefficient or prediction
+that would overflow the public float32 output invalidates the coupled fit with code 4, suppresses
+all included coefficients/predictions to NaN, and leaves inference unavailable (status 1).
+
+Planar bisquare and truncated Gaussian kernels can prune candidates through a grid, with at most
+1,048,576 rows on that route. Dense traversal permits at most 65,536 rows, including untruncated
+Gaussian fits even when an explicit `indexGridSize` is supplied. Great-circle fits also use dense
+traversal. An indexing option cannot lift the bound when the kernel still visits every row.
 
 For automatic bounded selection, supply column-major `bandwidthCandidates` and
 `bandwidthCandidateCount` (1–32). The default is finite-grid leave-one-out partial-response
@@ -190,6 +206,14 @@ distance bounds. Its `maximumSearchIterations` is 1–64 and all selection work 
 node budget. Invalid candidates lose to valid ones; no valid candidate invalidates the fit.
 Selection runs during every component update. `output.selectedBandwidths` exposes final choices.
 Omitting candidates preserves fixed per-component bandwidths, as in the displayed lens.
+Optional `output.status.componentSearchIterationLimitReached` has one uint32 flag per design
+column, intercept first. A flag is one if any golden-section search for that component exhausted
+its search budget during this submission. Flags accumulate across backfit sweeps and reset on
+every execution. Fixed bandwidths and finite-grid selection produce zero flags. Both operation
+forms accept graph value names for this port; the CPU function always returns the corresponding
+`componentSearchIterationLimitReached` array. A finite selected bandwidth remains available at
+the search limit. Backfit convergence and bandwidth-history-conditioned inference remain
+independently valid: backfit code 0 and inference status 0 may coexist with a search-limit flag 1.
 
 Optional `output.conditionalStandardErrors` requires a scalar `noiseVariance`. It computes
 `sqrt(noiseVariance * sum(linearSmootherWeights²))` for each local univariate coefficient, holding
@@ -215,7 +239,9 @@ a bounded continuous search, not a global-optimum certificate for a non-unimodal
 explicit finite-grid LOO policy composed from actual mgwr local fits. The latter is not advertised
 as parity with Sel_BW's different default AICc selection policy.
 
-Both iterative regressions use `GPU_ITERATIVE_REGRESSION_STATUS`:
+MGWR exports `GPU_MULTISCALE_GEOGRAPHICALLY_WEIGHTED_REGRESSION_STATUS` and
+`decodeGPUMultiscaleGeographicallyWeightedRegressionStatus`. Its codes retain the existing numbers
+shared with the first five `GPU_ITERATIVE_REGRESSION_STATUS` values used by generalized GWR:
 
 | Code | Meaning |
 | --- | --- |
@@ -224,6 +250,14 @@ Both iterative regressions use `GPU_ITERATIVE_REGRESSION_STATUS`:
 | 2 | Singular or insufficient local design |
 | 3 | Iteration limit reached |
 | 4 | Numerical failure or invalid numerical parameters |
+
+For MGWR, the code on each included row describes the entire coupled backfit; one failed component
+invalidates all included rows. An excluded row always receives code 1. These codes do not report
+whether a component bandwidth search reached its own search tolerance. GWR `localStatus`, MGWR
+backfit convergence, and bandwidth-search convergence describe separate facts. In particular,
+GWR code 1 means singular, and must be decoded with the GWR decoder rather than the MGWR decoder.
+The website readout uses the MGWR decoder to distinguish converged rows, excluded rows, displayed
+finite iteration-limit estimates, and failed rows.
 
 ## Pooled spatial panels and regimes
 
@@ -239,7 +273,15 @@ Its classical pooled covariance is not clustered by entity or robust to serial c
 spatial regime. `regimes` contains integer IDs in `[0, regimeCount)`; other IDs and masked/nonfinite
 rows are excluded. It publishes regime-major `coefficients`, row-level `fitted`, regime `counts`,
 and regime `status` (0 fitted, 1 insufficient observations, 2 singular/nonfinite design). Predictors
-are centered within each regime before solving. This is fully varying regime OLS, with no lag/error
+are centered within each regime before solving. Cross-products and predictions carry the correction
+for rounded float32 means; fitted values use centered predictors rather than the rounded raw
+intercept. Means are accumulated as differences from the first complete row of each regime,
+preserving variance in nearly constant projected-coordinate predictors. The raw intercept is
+formed from stored means before adding its separate mean correction; corrections are divided
+by the row count before multiplying deviation sums, preserving finite large-scale moments.
+Prediction fixes the combined centered contribution and mean correction with an integer bit
+cast before adding the response mean, preserving representable fitted levels on Metal.
+This is fully varying regime OLS, with no lag/error
 coefficient, cross-regime equality restriction, covariance output or Chow test. The per-regime
 moments are accumulated in parallel and in a fixed order (a stable regime sort, then one workgroup
 per regime), so results are reproducible; rows are limited to 2^24 and the device's binding size.

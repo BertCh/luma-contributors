@@ -1,0 +1,77 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-network.network-centrality-schedule-step",
+  "rung": "datum",
+  "datum": 3,
+  "size": "full",
+  "scenarioId": "gpu-network.network-centrality-schedule-step",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of pivot intersection 3. pivotNodes: 449. values read back from the GPU run. summary: 2 quantities.",
+  "description": "Receipt of pivot intersection 3. pivotNodes: 449. values read back from the GPU run. summary: 2 quantities.",
+  "llms": "Receipt of pivot intersection 3\n\n- pivotNodes: 449\n- summary: 2 quantities\n- result: 1 quantities\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: transients closeness, reachedCounts, converged retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "pivotNodes",
+    "value": "449"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of pivot intersection 3</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"summary\"><tr><th scope=\"rowgroup\" colspan=\"5\">summary</th></tr><tr data-provenance=\"readback\"><td>summary</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"closeness\" title=\"GPU outward closeness per pivot, (reached - 1) / total cost, in 1/s\">closeness</button></td><td>0.006148284766823053</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>summary</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"reachedCounts\" title=\"GPU count of nodes reached from each pivot, the pivot included\">reachedCounts</button></td><td>1199</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody><tbody data-stage=\"result\"><tr><th scope=\"rowgroup\" colspan=\"5\">result</th></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"pivotNodes\" title=\"input: network node id of each pivot (a fixed even sample)\">pivotNodes</button></td><td>449</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "summary",
+        "closeness",
+        "0.006148284766823053",
+        "0",
+        "readback"
+      ],
+      [
+        "summary",
+        "reachedCounts",
+        "1199",
+        "0",
+        "readback"
+      ],
+      [
+        "result",
+        "pivotNodes",
+        "449",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-11-18T16:33:04.881Z",
+    "runId": "run-6b83909b",
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: transients closeness, reachedCounts, converged retained instead of aliased"
+    ]
+  },
+  "state": {
+    "runId": "run-6b83909b",
+    "rung": "datum",
+    "bindings": {
+      "entity": 3
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

@@ -1,0 +1,82 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.analysis-contiguity-statistics",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.analysis-contiguity-statistics",
+  "viewId": "formula-card",
+  "caption": "Formula Reduce binary queen or rook cardinalities over every feature, including zero-neighbor islands. The linear median averages the two middle cardinalities for even populations. Candidate or final CSR overflow invalidates the entire profile. This…",
+  "description": "Formula Reduce binary queen or rook cardinalities over every feature, including zero-neighbor islands. The linear median averages the two middle cardinalities for even populations. Candidate or final CSR overflow invalidates the entire profile. This…",
+  "llms": "Formula Reduce binary queen or rook cardinalities over every feature, including zero-neighbor islands. The linear median averages the two middle cardinalities for even populations. Candidate or final CSR overflow invalidates the entire profile. This fixture has two edge-adjacent squares and one island: cardinalities [1,1,0], median 1.\n\n- bound symbols: 2/2\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "2/2"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>analysis-contiguity-statistics</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{median}{m}=\\operatorname{median}_i\\term{cardinality}{c_i},\\quad\\term{cardinality}{c_i}=\\sum_j\\mathbf{1}[w_{ij}&gt;0]</pre><p class=\"lens-ascii\">Reduce binary queen or rook cardinalities over every feature, including zero-neighbor islands. The linear median averages the two middle cardinalities for even populations. Candidate or final CSR overflow invalidates the entire profile. This fixture has two edge-adjacent squares and one island: cardinalities [1,1,0], median 1.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.analysis-contiguity-statistics-compiled:analysis-contiguity-statistics-validity\" data-value=\"median\">median · output · median</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.analysis-contiguity-statistics-compiled:analysis-contiguity-statistics-summary-rows\" data-value=\"cardinality\">cardinality · intermediate · cardinality</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "median",
+        "output",
+        "median",
+        "—",
+        "metadata"
+      ],
+      [
+        "cardinality",
+        "intermediate",
+        "cardinality",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{median}{m}=\\operatorname{median}_i\\term{cardinality}{c_i},\\quad\\term{cardinality}{c_i}=\\sum_j\\mathbf{1}[w_{ij}>0]",
+    "ascii": "Reduce binary queen or rook cardinalities over every feature, including zero-neighbor islands. The linear median averages the two middle cardinalities for even populations. Candidate or final CSR overflow invalidates the entire profile. This fixture has two edge-adjacent squares and one island: cardinalities [1,1,0], median 1.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "islands-disclosed",
+      "label": "Islands disclosed",
+      "blocks": [
+        "neighbourhood-map"
+      ],
+      "status": "unknown",
+      "reason": "missing or invalid islandCount"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-11-18T16:33:09.919Z",
+    "runId": "run-98eafc28",
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-98eafc28",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

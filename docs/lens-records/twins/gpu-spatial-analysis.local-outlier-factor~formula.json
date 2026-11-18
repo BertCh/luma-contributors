@@ -90,12 +90,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-11T15:20:55.342Z",
-    "runId": "run-55baca90",
+    "date": "2026-11-18T16:33:33.501Z",
+    "runId": "run-d899c3ab",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-55baca90",
+    "runId": "run-d899c3ab",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

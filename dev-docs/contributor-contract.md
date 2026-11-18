@@ -4,17 +4,62 @@ Status date: 2026-11-09. The rules every contributor in `@luma-contributors/anal
 
 Import the contract from `@luma-contributors/analysis/analysis-core`: the contract types, `validateCapacity`, `validateMaximumCount`, `validateRequirement`, `validateFiniteNumber`, `validateViewLength`, `validateCommandNodeBudget`, `validateCompactOutput`, `validateGPUStorageBindingByteLength`, `createWGSLKernelNode`, `getWGSLKernelBinding`, `createPublishNode`, `createFillNode`, `createWGSLDispatchGate`, `GPUParameterBuffer`.
 
+Checker allowances use a version-2 baseline with one file/site signature, stable description and
+nonempty reason per departure. Removing a loop does not permit a replacement loop in that file.
+Run `node scripts/check-contributor-contract.mjs --check-stale` for a read-only expired-site audit.
+New allowances require review and `--update-baseline --reason '<reviewed justification>'`; strict-zero
+rules cannot be baselined. See [script gates](./script-gates.md) for signature stability, migration,
+shared typecheck ownership and oracle execution requirements.
+
 ## 1. Shape
 
 - A contributor is a class that declares `implements GPUCommandNodeProducer`. One class per file; the file is named after the class (`GPUTerrainBreach` in `gpu-terrain-breach.ts`). Props are a `GPU<Name>Props` type; outputs are a `GPU<Name>Output` type.
 - A recipe is an `add<Name>Recipe` function that composes contributors through `RecipeBuilder`, takes caller-owned outputs and returns a `GPURecipeResult` with per-stage status. A function made of raw kernels is a contributor and is written as a class.
 - Package roots hold only `index.ts`. Helpers shared inside a family live in that family's directory; helpers shared across families live in `analysis-core`.
 
+The root-file checker derives its directories from every published analysis entry in
+`modules/analysis/package.json`, including `analysis-core` and nested entries. Named infrastructure
+exceptions are the package forwarding barrel, `computation-record` and
+`gpu-spatial-analysis/ontology`; a new family entry is checked automatically. Core device-request
+helpers live in `analysis-core/graph-support`, shared network/raster contracts in
+`analysis-core/contracts`, and cell/ring/area shader helpers in `analysis-core/kernels`.
+Point-cloud contributors and their shared helpers live in `pointcloud-analysis/operations`.
+Geospatial implementations live in `geospatial-analysis/datum-grid-transform`, `point-buffer`
+and `viewport-bounds`. The entry barrels re-export their family indexes whole; public names are
+unchanged.
+
+Export resolution accepts emitted source files under `./dist/`, including non-index entry files
+and native ESM/CommonJS suffixes, and expands wildcard targets against concrete source files.
+Unsupported targets and patterns with no source matches fail with an explicit diagnostic (exit 2).
+An independent immediate-file scan checks `.ts`, `.tsx`, `.mts`, `.cts`, `.js`, `.jsx`, `.mjs` and
+`.cjs` implementations in each resolved directory; index barrels and declaration files are exempt.
+Infrastructure exceptions apply only to the exact entry, so a published child entry under
+`computation-record` is still checked. The other contract rules retain their existing traversal.
+
+Recipe implementation form and result compatibility are separate acceptance checks. Moving raw
+kernels into a contributor or adopting `RecipeBuilder` completes only the implementation check.
+Before declaring result compatibility complete, verify every overload and optional-stage branch
+returns typed `contributors`, `outputs`, `intermediates` and a `status` with named `stages`.
+Retain any legacy packed status as an explicitly named view when adapting a result.
+`addPopulationSupportAlignmentRecipe`, for example, supplies `intermediates: {}`, named diagnostic
+stages under `status.stages`, and its original four words under `packedStatus`. The scalar stage
+views alias those words, so callers can inspect the canonical contract without extra GPU commands.
+
 ## 2. Parallel by construction
 
 - No kernel loops over a data-sized range (rows, cells, pairs, points) in a single invocation. Totals, counts, minima, argmax, convergence tests and compaction use the published primitives (`GPUReduction`, `GPUScan`, `GPUCompaction`, `GPUSort`) or the core helpers built on them (`scan-total`, `sorted-segment-sums`, `load-balanced-for-each`).
 - A loop inside one invocation may run over a bounded neighbourhood, a capacity, or a small dense system.
 - A contributor that cannot meet this rule (an exact exhaustive search, a small dense factorization) is registered with `tier: 'reference'` and a documented maximum size, says so in its class documentation, and enforces the maximum at construction.
+
+The `single-invocation-data-loop` checker is a heuristic: its count does not distinguish a small
+coefficient solve from a row scan or tile merge. Review the loop axis, its construction-time bound,
+and the selected execution route; the [regression loop inventory](./regression-loop-inventory.md)
+records examples. The checker follows one local function/arrow layer forwarding invocation count
+and shader body, resolving each call's arguments separately. Put a reviewed
+`contract-allow: single-invocation` comment immediately before the `invocationCount` property of a
+direct kernel, or immediately before a wrapper call, with the axis and enforced bound in the reason.
+Multiple invocations can still each perform a serial row scan, so this check is not a complete
+inventory of data-dependent work.
 
 ## 3. Candidates through an index
 
@@ -30,12 +75,15 @@ Import the contract from `@luma-contributors/analysis/analysis-core`: the contra
 
 - A numeric prop that does not change a buffer shape or a loop bound is read from a parameters view filled by a `getGPU<Name>ParameterValues` packer (hosted in a `GPUParameterBuffer`), so changing it does not recompile.
 - Row counts, capacities, slice counts, and which optional views exist are compile-time. The class documentation lists each prop under "per-frame" or "compile-time".
+- Snapshot compile-time scalars, options and nested port maps before validating them at construction. Keep the identities of GPU views and buffers so their contents remain per-frame inputs; later mutation of the caller's props must not change validated shapes or bindings. The chunk-contributor authoring fixture in `modules/analysis/test/analysis-core/graph-chunk-dispatch.test-utils.ts` demonstrates this for options.
 
 ## 6. Declared context
 
 - A contributor that reads coordinates takes `spatialContext` and resolves it with `resolveGPUSpatialContext`. A contributor that only supports one coordinate space says which and rejects the others at construction.
 - Raster and terrain contributors take the published `GPURasterBand` and the raster grid, honour `cellSizeMode` wherever a ground distance, slope or area is computed, and read the affine from parameters, not from shader literals.
-- Time follows the temporal context (roadmap TC-01).
+- Time follows `GPUTemporalContext`, resolved with `resolveGPUTemporalContext` and a
+  `GPUTemporalContextSupport` declaration. The [temporal-context guide](../docs/api/gpu-spatial-analysis/temporal-context.md#resolving-and-checking)
+  describes the supported encodings, units and axis checks.
 
 ## 7. One no-data rule
 
@@ -53,6 +101,7 @@ Import the contract from `@luma-contributors/analysis/analysis-core`: the contra
 
 - Scalar status uses the port types in `analysis-core/contracts/status.ts`. Use the existing field names; do not invent synonyms (`candidateCount`, `truncated`, `complete`).
 - An intermediate capacity that was too small is `candidateOverflow`. It is not folded into `overflow`.
+- A consumer of a supplied incomplete-result status propagates it in its own status, suppresses dependent results, or refuses/falls back; it never ignores the flag. Compact `requiredCount` counts accepted rows reaching the final stage, before output truncation; it is a lower bound after candidate loss or uint32 saturation.
 - A deliberate approximation sets `approximation`.
 - Per-row status words document every bit in the output type.
 - Status is never read back inside a contributor.
@@ -68,9 +117,21 @@ Import the contract from `@luma-contributors/analysis/analysis-core`: the contra
 
 - Random numbers come from the Philox stream with a registered purpose.
 - Sums that must not depend on thread order use the fixed-point accumulator or a fixed-order tree.
-- Float compensated summation does not survive the shader compiler. Kahan's `(next - sum) - term`, Neumaier's `(sum - next) + term` and the float two-sum are algebraically zero, and a compiler that reassociates floating point (Metal fast math) removes them: on the test GPU such a sum of a million terms is bit for bit the plain float32 sum, and a plain running sum is not even the IEEE serial sum (`test/utils/addition-rounding-error-wgsl.spec.ts`). The accepted cures: the fixed-point accumulator or `sorted-segment-sums.ts` for a sum over a data-sized range; for a bounded serial walk (a prefix along one line), `getAdditionRoundingError(first, second, sum)` from `ADDITION_ROUNDING_ERROR_WGSL` in `analysis-core/kernels/addition-rounding-error-wgsl.ts`, which reads the exact error of an f32 addition off the integer significands (finite operands of either sign); or the direct form of the quantity, so that no large sums are differenced.
-- The same holds for any float error-free transformation (two-product, `fma` residuals): use the exact integer WGSL, not a float identity the compiler can simplify. Do not expect a GPU float32 loop sum to equal a CPU twin bit for bit unless the kernel fixes the order with integer or bit operations. Fast math is the measured cause of all of this and of the inexact division: the Metal source the browser generates gives the IEEE result when compiled with fast math off, and Chromium 151 has no switch for it (`test/analysis-core/shader-compiler-fast-math.spec.ts`).
-- A local `var table: array<u32, N>` or `array<i32, N>` can read back as zeros on the test GPU when its only stores are those of loops with a constant trip count and it is read at an index the compiler cannot resolve. Local means function scope and also `var<private>` at module scope, which the browser emits as the same zero-initialised local. Any stored value is lost (the index, a constant, a sentinel, values copied from a buffer), not only an identity fill. The cause is the Apple GPU back end, which loses the stores of an unrolled constant-count loop (3 to 96 iterations) into a zero-initialised integer array; fast math plays no part (`dev-docs/research/math-correctness-review-2026-11-10/shader-compiler-findings.md`). No size is safe: a kernel that does nothing else loses the table at 33 to about 250 entries, and the Louvain kernel as it was lost a table from 12 entries up. The cures, in this order: give the table a literal initializer or make it a module-scope `const` when its contents are known when the shader is built; otherwise bound the fill loop by a value the compiler cannot know (a kernel without a uniform can write `N * min(arrayLength(&binding), 1u)`, which equals `N`); or do without the table when the index is the value. `var<private>` with a fill loop is not a cure. Read right at every size tried, for a reason that is not known, so do not build new code on it: float and vector tables; a table that later receives a store at a data-dependent index (an insertion, a hash table, a stack); a fill loop that also writes storage or stores under a data condition. Pinned by `test/analysis-core/shader-compiler-table-fill.spec.ts` (plain WebGPU), `test/analysis-core/shader-compiler-table-shapes.spec.ts` (the shapes kernels use, and the old Louvain kernel with its cures), `test/utils/function-scope-table-readback.spec.ts` and `test/gpu-network/network-optimization/gpu-network-louvain-visit-order.spec.ts`. The library audit of 2026-11-11 (the specs in `test/analysis-core/table-audit/`; findings report, "Library audit") ran the kernels that hold such a table and found none that loses it today.
+- Do not rely on float compensated summation or float error-free transformations (`two-sum`,
+  `two-product`, `fma` residuals): shader compilers can reassociate away the correction. Use the
+  fixed-point accumulator or `sorted-segment-sums.ts` for data-sized sums. For a bounded serial
+  walk, use `getAdditionRoundingError(first, second, sum)` from `ADDITION_ROUNDING_ERROR_WGSL`
+  in `analysis-core/kernels/addition-rounding-error-wgsl.ts`, or a direct formula that avoids
+  differencing large sums. Do not promise bitwise CPU/GPU loop-sum parity without a fixed order
+  enforced by integer or bit operations.
+- Do not fill a local integer lookup table solely with a constant-trip-count loop before a
+  dynamic-index read. This includes module-scope `var<private>` arrays. Prefer a literal initializer
+  or module-scope `const`; otherwise use a runtime-bounded fill, or eliminate the table when the
+  index is the value. Do not assume another array size or a float/vector table is a general cure.
+  The compiler investigations, reproductions and measured exceptions are retained in
+  [shader-compiler-findings.md](./research/math-correctness-review-2026-11-10/shader-compiler-findings.md);
+  [the workaround register](./upstream-workarounds.md#6-shader-compiler-behaviour-that-kernels-work-around)
+  names the focused regression specs to rerun after browser, OS or luma.gl upgrades.
 - Orientation and intersection tests on lattice coordinates use the exact WGSL in `analysis-core/kernels`.
 - An `atan2` whose second argument can be exactly zero (a negation, difference or product can be -0.0) calls `guardedAtan2` (`GUARDED_ATAN2_WGSL` in `analysis-core/kernels/wgsl-common.ts`), because some GPUs return `-sign(y)·π/2` for `atan2(y, -0.0)` and NaN for `atan2(0, 0)`.
 - Do not copy a small dense solver, a float test, a binary search or a distance function into a contributor when `analysis-core` has one. Add the missing one to `analysis-core`.
@@ -78,12 +139,20 @@ Import the contract from `@luma-contributors/analysis/analysis-core`: the contra
 ## 12. Registry
 
 - Every exported contributor has an entry in the operator catalog (`gpu-spatial-analysis/ontology`) with its package, tier, limits, coordinate model and reference.
+- Catalog registration identifies both the public package entry point and export name, including barrel aliases. Same-name exports in different entry points require separate records.
 - A new contributor adds its catalog entry, a docs heading and a kernel-audit case in the same change.
 
 ## 13. Public surface
 
 - `analysis-core` is the public home of the contract. Domain entry points export contributors.
 - Symbols marked `@internal` are not exported from an entry barrel.
+- The `internal-export` checker also follows public props aliases, inheritance and nested object
+  members, public instance members of class-typed props, callback return types, and visible constructor
+  and method signatures. Static members are excluded when following an instance type. Imported
+  aliases, namespace imports,
+  generic arguments and literal-key `Pick`/`Omit` are resolved without typechecking. Private and
+  protected members and implementation signatures hidden by overloads are excluded. Keep composition
+  switches in non-barrel factories; an `@internal` comment on a public prop does not hide it.
 - Never re-export a luma.gl symbol (AGENTS.md, upstream-first).
 
 ## 14. Operation form and CPU twins
@@ -98,5 +167,16 @@ Contributors can run in a published luma.gl `GPUGraph` beside CPU stages (`GPUCP
 - **Limits and input checks.** A twin validates its props at construction with the helpers of section 10. `compute<Name>OnCPU` also checks the arrays it is given as it reads them (lengths that must agree, offsets that must be nondecreasing and in range) and throws an `Error` that names the argument. This is not the per-row CPU validation that AGENTS.md rules out for contributors: the rows are already on the CPU. Where the GPU contributor defines a result for such input (a clamp, a status), the twin returns that result instead of throwing. It keeps a limit of the contributor only where the output layout needs it; a limit that existed for the GPU's sake (a per-thread array, a command node budget) is dropped, and the class documentation says so.
 - **Differences are documented.** The documentation of `compute<Name>OnCPU` has a list headed "What differs from the GPU contributor": tolerance, tie-breaking, statuses the twin never sets, inputs the GPU refuses and the twin accepts. An empty list is stated as "Nothing".
 - **Two specs.** A `.node.spec.ts` checks `compute<Name>OnCPU` against an oracle that is not the same code: a committed fixture, a closed form, a hand-computed case or a different algorithm. A test reference that was promoted into the twin no longer counts as its oracle. A headless spec runs both operations on the same inputs through `runOperationGraph` (`test/utils/mixed-execution-test-utils.ts`) and compares every output with a stated tolerance, on ordinary input and on one edge case (empty, overflow or invalid input).
-- **Executor limits (luma.gl 10.0.0-alpha.12).** In a graph that has a CPU stage or a CPU output: values are `float32`, `sint32` or `uint32` vectors of one to four components, one packed chunk each; no textures; no state vectors; every GPU operation is its own submission. A contributor that needs anything else has no operation form yet.
+- **Current execution support.** The workspace integration target is luma.gl **10.0.0-alpha.14**;
+  see [the package contract](./release-package.md#tested-dependencies-and-accepted-peers) for the
+  accepted peer range. Mixed execution and the local adapters have different boundaries:
+
+  | Layer | Supported values and layout | Copies and submission boundaries |
+  | --- | --- | --- |
+  | Published mixed CPU/GPU executor | Numeric `float32`, `sint32` and `uint32` vectors with one to four components, including multiple chunks and declared `chunkLengths`; scalar inputs are supported. CPU callback results may contain multiple chunks matching the declared shape. Textures, state vectors, list offsets and validity bitmaps are unsupported. | GPU-to-CPU transitions read back; CPU-to-GPU transitions upload. CPU-only stages also materialize callback chunk snapshots from caller-owned CPU buffers; one packed CPU input therefore still incurs this executor copy. Each GPU operation is a separate stage/submission. |
+  | Local `GPU_CONTRIBUTOR_OPERATION_LOWERING` | Every resolved contributor port must be exactly one packed chunk (`gpu-contributor-operation.ts`). This adapter restriction applies even when the underlying contributor accepts chunked views. | Rejects multiple chunks instead of packing them. A chunk-capable contributor can still be used directly through `getCommandNodes(graph)`. |
+  | Local `getCPUOperation<Type>Rows` helpers | Numeric vector inputs of the requested format; scalars are rejected by these row helpers. | Borrows the callback snapshot for one chunk; calls `input.pack()` for multiple chunks, allocating an additional packed copy after the executor's chunk materialization. Borrowing here does not promise the caller's original buffer identity. Treat the returned rows as read-only. |
+
+  These are source-verified boundaries, not a new GPU measurement. The transfer timings above remain
+  dated measurements of the older release, not performance claims for the integration target.
 - **Reference tier.** A contributor registered with `tier: 'reference'` (section 2) should have a twin, and its documentation should name the twin as the path to prefer.

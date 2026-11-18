@@ -1,0 +1,71 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-dataframe.forest-inference",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-dataframe.forest-inference",
+  "viewId": "formula-card",
+  "caption": "Formula Accumulate weighted leaf values in tree order from base scores; identity for regression, sigmoid/softmax for boosted classification, first-class argmax for classification ties. Random forests average through tree weights. bound symbols: 2/2.…",
+  "description": "Formula Accumulate weighted leaf values in tree order from base scores; identity for regression, sigmoid/softmax for boosted classification, first-class argmax for classification ties. Random forests average through tree weights. bound symbols: 2/2.…",
+  "llms": "Formula Accumulate weighted leaf values in tree order from base scores; identity for regression, sigmoid/softmax for boosted classification, first-class argmax for classification ties. Random forests average through tree weights.\n\n- bound symbols: 2/2\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "2/2"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-dataframe:GPUForestInference</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{scores}{s_c}=b_c+\\sum_t w_t v_{t,c}(x),\\quad \\term{predictions}{y}=\\operatorname{link}(s)</pre><p class=\"lens-ascii\">Accumulate weighted leaf values in tree order from base scores; identity for regression, sigmoid/softmax for boosted classification, first-class argmax for classification ties. Random forests average through tree weights.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe-forest-inference-compiled:GPUForestInference-infer-chunk-0\" data-value=\"scores\">scores · output · scores</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe-forest-inference-compiled:GPUForestInference-publish-chunk-0\" data-value=\"predictions\">predictions · output · predictions</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "scores",
+        "output",
+        "scores",
+        "—",
+        "metadata"
+      ],
+      [
+        "predictions",
+        "output",
+        "predictions",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{scores}{s_c}=b_c+\\sum_t w_t v_{t,c}(x),\\quad \\term{predictions}{y}=\\operatorname{link}(s)",
+    "ascii": "Accumulate weighted leaf values in tree order from base scores; identity for regression, sigmoid/softmax for boosted classification, first-class argmax for classification ties. Random forests average through tree weights.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-11-18T16:33:03.044Z",
+    "runId": "run-d5894fcb",
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-d5894fcb",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

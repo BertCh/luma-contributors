@@ -333,7 +333,8 @@ The baseline performs exact all-pairs checks and is not an indexed large-domain 
 
 `GPUSpatialCrossValidatedOLS` composes those masks with a separate OLS fit for each fold. OLS
 centering and all estimation statistics use training rows only. It predicts held-out rows using
-that fold's coefficients and reports `[scoredRows, missingTestRows, MSE, MAE, bias, R²]`.
+that fold's centered slopes and mean correction, preserving precision at large predictor origins,
+and reports `[scoredRows, missingTestRows, MSE, MAE, bias, R²]`.
 Bias is prediction minus observation. Metric status bits report no scored rows, missing coverage
 and undefined R² for constant test outcomes. Changing held-out responses cannot change that fold's
 fit. Generalized GWR supplies a training-only `bandwidthSelection` graph as described above; [`GPUNestedInterpolationValidation`](./spatial-validation-advanced.md) supplies reusable inner-fold covariance/variogram and RBF bandwidth selection, outer refitting and held-out metrics using those masks.
@@ -541,6 +542,35 @@ unit effects use within-entity demeaning. The reference capacity is 2–32 entit
 and 16,777,216 total rows, subject to device bindings. Weights must be nonnegative, row-standardized, zero-diagonal CSR with sorted
 unique neighbors and no islands. Missing observations invalidate the complete fit.
 
+Both GPU routes and the CPU twin refuse incomplete weights: nonzero
+`weights.status.overflow[0]` (final capacity loss) or
+`weights.status.candidateOverflow[0]` (candidate loss) returns status 1 with NaN coefficients,
+covariance, summary, fitted values and residuals. Clearing the input flags permits a subsequent
+submission to fit normally; the two input flags retain their distinct meanings.
+
+`CPUSpatialPanelLagMaximumLikelihoodOperation` uses the same `fitMode` and `eigenvalues` ports.
+Auto selects the supplied spectrum only for unit effects; `reference` rejects a spectrum and
+`tiled` requires one. Supply exactly one eigenvalue per entity: a length mismatch throws, while
+a nonfinite value or an absolute value above float32(1.00001) returns status 1 and NaN outputs.
+The CPU objective and determinant derivatives use the supplied spectrum; the caller must ensure
+it belongs to the entity weights matrix. The pure `computeSpatialPanelLagMaximumLikelihoodOnCPU`
+accepts the spectrum as `input.eigenvalues` and the mode as `options.fitMode`; with no spectrum
+it evaluates the dense CSR determinant. GPU-specific size caps do not limit the CPU fit.
+Explicit `maximumSearchIterations` and `maximumIterations` budgets bind the CPU fit: exhausting
+a search budget with a rho bracket wider than `tolerance`, or an outer budget before convergence,
+returns status 3 with the current coefficients, fitted values and residuals; covariance is withheld.
+One golden-section step on `[-0.999, 0.999]` leaves a bracket about 1.23483 wide. When budgets are
+omitted, the CPU search continues to binary64 resolution and alternation continues to convergence
+or a repeated state. Residual-square sums use compensated float64 accumulation so repeating
+periods preserves the estimate and scales covariance by the inverse repetition count.
+
+The contributor and both operation forms capture declared fit options, spectrum presence and
+graph port/status maps by property read at construction, including inherited or non-enumerable
+getters. Each getter is read once; changing its return value later cannot remove a loss flag.
+Mutating the original props cannot change the declared spectrum dependency; the spectrum's
+values are read anew on each execution. A graph spectrum-length error starts with the configured
+operation ID; the standalone CPU function uses its own function name.
+
 The fit runs on centered data: the pooled mean of each predictor and of the response is removed
 before quasi-demeaning, so a predictor with a large mean (a year, an elevation, an income) costs
 no precision. Only the intercept depends on the shift; it is mapped back as
@@ -561,6 +591,11 @@ was 10 to 241 times too large with status 0 in 9 of the 16 fits, negative with s
 and status 3 in six, and is now within 1.7e-3 with status 0 in all 16, where the float32 rounding
 of the fitted values (0.6% of a residual per row) is what remains. The lag of the response is summed from differences rounded as written, with the
 row sums of the float32 weights carried exactly.
+
+During the `rho` search, the tiled GPU route removes the rho-independent log-variance constant and
+evaluate small relative variance increments with a series. Otherwise float32 can round nearby
+variances to the same value, so a narrow search bracket can still surround a biased estimate.
+The published log-likelihood retains the full log variance and its existing constants.
 
 Entity effects survive the pooled centering. Each column is stored as its within deviation
 (centered value less its entity mean) and its entity mean, and the quasi-demeaned value

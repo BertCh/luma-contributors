@@ -10,12 +10,16 @@ description: "Prebuilt GPU spatial analysis recipes, documented by the contribut
 See [Geospatial workflow recipes](./expansion-recipes.md) for zonal distributions, network and facility scenarios, interpolation diagnostics, exposure, raster change, drainage, track quality, local variability, cell flows and surface preparation.
 
 
+The local-variability recipe retains every declared bounded-status view on its intermediate
+weights port and named weights stage, including approximation, uncertainty and iteration diagnostics.
+
 Recipes are plain functions, not classes: `addXRecipe(graph, props)` constructs the contributors, calls
 `graph.add` in chain order, wires outputs to inputs and returns a `GPURecipeResult`: `{contributors, outputs,
 intermediates, status}`. `outputs` holds the named terminal views, `intermediates` the named ports between stages and
 `status` the GPU-resident completeness and convergence views, grouped by stage. `contributors`
 lists every stage the recipe added, in order: composed contributors, and each raw glue kernel as one named
-stage (registered with `RecipeBuilder.addGlue(stage, nodes)`). Status counts over rows or cells (invalid
+stage. Published calibration stages and drive-time road/time/band adapters are included in that
+same declaration-order list. Status counts over rows or cells (invalid
 rows, unresolved cells) run as a row-parallel kernel plus a published `GPUReduction` sum, never as one
 invocation looping over the rows. Views you
 pass in (`zScores`, `bins`, `colors`, ...) are caller-owned and readable; every other intermediate is a
@@ -25,6 +29,51 @@ object and repack it with `result.setSettings(settings)`; the other recipes pass
 (`getGPU...ParameterValues`) through. Neither rebuilds the graph. Geometry inputs are the shared ports:
 `GPUPointGeometryPort`, `GPUPolygonGeometryPort` (four-level layout, one row per feature) and
 `GPUPackedGeometryPort<GPUTrajectoryGeometryPort>`.
+
+All 24 `add…Recipe` functions exported by the spatial recipes entry point and all four exported by
+the network recipes entry point prepare their complete graph
+declaration before changing the caller's graph. Contributor constructors and cross-stage checks
+finish before the builders expand and schedule contributors. Preparation uses a separate,
+uncompiled graph with the same device limits, preserving buffer aliases, view offsets, texture
+subresources and vector chunks. Nested recipes share their enclosing preparation. If validation
+or contributor expansion fails, the caller's nodes, resources and parameter-buffer contents stay
+unchanged: correct the configuration and retry with the same recipe ID. Temporary contributors
+that own resources are destroyed even when a later stage fails. Parameter writes are validated
+without upload and applied only after successful scheduling; frozen `GPUParameterBuffer` wrappers
+are supported. Later `setSettings` calls still write immediately. Contributors and interleaved
+adapter kernels retain their declaration order when scheduling is deferred.
+
+Auxiliary luma resources and devices carried alongside a recipe's ports keep their identities and
+ownership. Preparation treats them as opaque references and does not inspect their native state;
+graph views are mirrored separately. Each consumed configuration field, including inherited getters
+and JavaScript Proxy reads, is captured once and shared by both declarations. Unrelated fields are
+not evaluated. Configuration records returned in metadata are captured facades; caller graph views,
+parameter buffers and declared prepared-join handles retain their original identities.
+Retained committed metadata is detached from the temporary preparation graph after preflight.
+The every-stage rollback matrix covers the 28 functions in the two recipes barrels; the public
+family inventory also lists 13 domain recipes outside that matrix, with their own family contracts.
+
+Preparation repeats host declaration work once and never compiles, encodes, submits or reads data.
+Use unused recipe/resource IDs on a mutable graph. The published graph has no mutable node-ID
+inspection or transaction API, so this configuration guarantee cannot cover collisions with
+pre-existing caller node IDs, externally overridden scheduling methods, a graph already frozen by
+compilation, or allocation/device failure during final declaration. Successful recipes retain the
+same concrete command nodes, outputs and status meanings.
+
+Recipe implementation form and result compatibility are checked separately. Population support
+alignment returns an empty `intermediates` map and three named diagnostic substages under
+`status.stages`; their scalar `invalidCount` views alias its missing-target, ambiguous-target and
+excluded-source words. Use `result.packedStatus` for the original four-word certificate. The
+contributor and both operation forms retain their packed `output.status` contract.
+
+The hot-spot, rate-cluster, space-time, fleet (both variants), period-comparison, change-of-support,
+cluster-and-outline, spatial-regression, points-in-polygons and straight-line-catchment results type
+their `outputs` and `intermediates` maps. The exported
+`GPU<Name>RecipeOutputs` and, where present, `GPU<Name>RecipeIntermediates` types describe those
+maps; the top-level convenience fields remain available. For example, `spaceTime.outputs.cube`
+feeds `GPUEmergingHotSpotsProps.values`, and `fleet.outputs.stops.centroids` is a typed
+`float32x2` view. Optional stages remain optional in both paths, so check for
+`hotSpots.outputs.permutation` or `spaceTime.outputs.colors` before using them.
 
 ```ts
 const hotSpots = addHotSpotAnalysisRecipe(graph, {
@@ -44,23 +93,69 @@ const hotSpots = addHotSpotAnalysisRecipe(graph, {
 | `addHotSpotAnalysisRecipe` | GPUCellCover study area -> GPUCellAggregation (sorted unique study cells) + (GPUPointToCell) -> GPUCellAggregation (points) -> join (zeros kept) -> area density (GPUCellMeasures for H3) -> GPUCellTopology disk -> CSR weights (or GPULatticeWeights for raster source) -> GPUHotSpotAnalysis -> GPULocalPermutationTest -> GPUClassBreaks -> GPUColorScale |
 | `addRateClusterMapRecipe` | GPUEmpiricalBayesRates -> GPUContiguityWeights -> GPUSpatialWeightsTransform(row) -> GPULocalMoran (`quadrantGating: 'none'` with permutation) -> GPULocalPermutationTest -> quadrant colors |
 | `addPointsInPolygonsChoroplethRecipe` | backend 'zonal' (GPUZonalStatistics) or 'group' (GPUPointInPolygonJoin -> dense GPUGroupStatistics) -> GPUClassBreaks -> GPUColorScale |
-| `addSpaceTimeHotSpotsRecipe` | GPUCalendarBuckets (absolute time-step slices) -> atomic count into the dense cube (sorted GPUGroupStatistics path when its scratch or overflow outputs are passed) -> GPUEmergingHotSpots -> ordinal GPUColorScale |
+| `addSpaceTimeHotSpotsRecipe` | GPUCalendarBuckets -> GPUPeriodIndex (absolute time-step slices) -> atomic count into the dense cube (sorted GPUGroupStatistics path when its scratch or overflow outputs are passed) -> GPUEmergingHotSpots -> ordinal GPUColorScale |
 | `addClusterAndOutlineRecipe` | GPUSpatialClustering -> GPUGroupGeometry + GPUGroupConvexHull -> GPUGeometryMeasures |
 | `addSpatialRegressionRecipe` | GPUOrdinaryLeastSquares -> GPUSpatialRegressionDiagnostics -> GPU specification decision (Anselin's rule: 0 OLS, 1 lag, 2 error, 3 both robust, 4 undetermined) + residual GPULocalMoran (+ optional GPUGeographicallyWeightedRegression); `mask` and `restandardizeRows` flow through OLS and diagnostics |
 | `addDriveTimeCatchmentRecipe` (from `gpu-network`) | GPUNetworkSnapping -> GPUNetworkServiceAreas -> (GPUNetworkIsochrones raster and/or cell outline with rings -> GPUPointInPolygonJoin demand join) -> snap demand -> band adapters -> GPUGroupStatistics |
 | `addStraightLineCatchmentsRecipe` | GPUDistanceField allocation -> GPURasterZonalStatistics |
 | `addChangeOfSupportRecipe` | 2x GPUPolygonRasterization -> GPUArealInterpolation (with source conservation diagnostics) -> GPUSpatialLag |
-| `addFleetDwellRecipe` | GPUTrajectoryMetrics stops -> GPUPointInPolygonJoin -> stop mask -> GPUGroupStatistics (dense, one row per zone) |
+| `addFleetDwellRecipe` | GPUTrajectoryMetrics stops -> active-stop mask and join positions -> GPUPointInPolygonJoin -> GPUGroupStatistics (dense, one row per zone) |
 | `addFleetDwellZoneEventsRecipe` | GPUZoneEvents -> GPUGroupStatistics (dense, one row per zone; zone-event variant of the fleet dwell recipe) |
 | `addPeriodComparisonRecipe` | 2x GPUCellAggregation -> GPUCellTableCompare (with mask) -> GPUClassBreaks -> GPUColorScale |
 
 Notes:
 
+- Rate-cluster weights publish `weightsCandidateOverflow` for `pairCapacity` loss and
+  `weightsOverflow` for final `neighborCapacity` loss. Inspect both flags. Grow `pairCapacity` first
+  when the candidate flag is set; `weightsRequiredCount` is then only a lower bound for neighbor slots.
+  The Kepler rate-cluster binding refuses either loss flag and uses its CPU fallback. Explorer and
+  showcase readouts distinguish pair loss from final neighbor loss and mark dependent results unavailable.
+- Spatial regression diagnostics suppress statistics and p-values with status code 3 on either
+  weights-loss flag; specification selection returns 4 (undetermined). Clean reuse restores inference.
+  Caller-provided regression writes cannot alias either weights-loss input; rejection precedes all
+  resource registration so correcting the output permits a same-ID retry.
+- All caller-provided fleet stop outputs, including durations, row indices and status words, must
+  have logical byte ranges disjoint from `scratch.stopMask`. Adjacent views
+  that share an aligned storage binding remain supported through separate adapter dispatches.
+- Fleet zone-event lenses and website readouts distinguish final event overflow, combined event
+  candidate loss (scratch or per-track), and scratch-only loss. Either event-loss flag makes crossing
+  counts incomplete; only scratch loss makes dense dwell totals incomplete. Pending readbacks are
+  labelled pending. Truncated per-track event lists can retain complete dwell totals.
+  Crossing counts require the count and zone-column readbacks; positions are needed only for drawing
+  dots. Missing numeric readbacks are pending or unavailable, including missing dwell totals, never zero.
+
 - The space-time recipe counts events into a dense `cell * sliceCount + slice` cube with integer atomics,
   because `GPUCellAggregation` keys must be valid Quadbin or H3 cells. Passing the sorted-path scratch
   views or `outputs.status.groupOverflow` selects the `GPUGroupStatistics` path instead.
+  Group status views need at least one packed uint32 word; spare words are untouched.
+  On the supplied-cell-ID route, the `weights` status stage preserves both `overflow` and
+  `candidateOverflow`; a nonzero flag means neighborhood inference is incomplete. These input
+  words cannot alias recipe writes. The slice interval, including seven days per week, must fit
+  the period index's signed divisor limit of 2^31 - 1 before recipe resources are registered.
+  The origin's whole calendar-step index must fit [-2^31, 2^31 - 1] too; hourly indices count hours
+  from the Unix epoch. This check also precedes allocation. Every declared writable port and every
+  published weights status word (including invalidCount) participates in alias validation. Declared
+  fields, including inherited/getter-backed status fields, are captured once for validation and scheduling.
+  `slices.count` is at most 256; trend autocorrelation correction has the lower limit documented by
+  `GPUEmergingHotSpots`. Every contributor, settings object and glue binding is validated before any
+  recipe command nodes are scheduled. `contributors` includes `GPUPeriodIndex` and every glue stage
+  in execution order on both counting paths.
+  Event positions must be packed `float32x2`, and event cell IDs packed `uint32`, with exactly one
+  row per timestamp. Strided positions are rejected; pack them before construction. Caller-view
+  ownership, shape and binding conflicts, parameter length, settings and palette preconditions are
+  checked before registering recipe resources, so correcting those props permits retry on the same
+  graph and recipe ID. Settings are packed on the host first and written to the caller's parameter
+  buffer only after scheduling succeeds; a rejected second recipe cannot change an existing
+  recipe's settings through a shared parameter buffer.
+  Initial packing preserves all classification settings, including `persistentFraction`,
+  `minimumTrendSliceCount` and `sporadicRequiresFinalSlice`; an identical `setSettings` call writes
+  identical parameter words. A six-slice series can carry a trend when its requested minimum is three.
 - The drive-time catchment recipe classifies demand in network space (the minimum over the snapped edge
   ends) and also returns the isochrone triangles for drawing. It assumes both directions are in the CSR.
+  Supplied `demandTimes` and `demandBands` must each have exactly one logical row per demand point,
+  regardless of backing-buffer capacity or byte offset. Caller output/scratch buffers must be distinct
+  from original routing inputs and independently retained results, including separate imports of the
+  same physical buffer. Rejection leaves the graph unchanged for a corrected same-ID retry.
   `isochrones` takes `raster` and/or `cellOutline` (at least one). `cellOutline.rings` returns closed
   isochrone rings in `result.isochroneRings`. `isochrones.joinDemand` (`candidateCapacity` and the
   optional `pointFeatureIds`, `overflow`, `uncertainCount`) joins the demand points to the ring polygon (it needs
@@ -115,6 +210,10 @@ Notes:
   `GPUZoneEvents` directly (no edge lists) with `trackEventCapacity` events kept per track. The
   straight-line catchments recipe takes `grid`, `parameters` and `facilities` (`GPUPointGeometryPort`,
   `sourceIds` as zone IDs); the cluster recipe takes `points` (`GPUPointGeometryPort`).
+- For `addFleetDwellZoneEventsRecipe`, inspect both `events.status.overflow` (final capacity) and
+  `events.status.candidateOverflow` (scratch or per-track loss) before treating the crossing list as
+  complete. The separate recipe `status.candidateOverflow` identifies scratch loss affecting zone
+  dwell totals and visits; per-track event-list truncation alone leaves those totals intact.
 - The cluster recipe's optional `spatialContext` defaults to native planar and is returned as
   `result.spatialContext`. It is planar only because group summaries and convex hulls are planar:
   longitude/latitude throws, so project first. Clustering measures distance and rejects
@@ -123,6 +222,42 @@ Notes:
   geometry parameters. The change-of-support recipe's `status.overflow` covers the overlap list only; the raster
   flags are returned as `status.rasterOverflow` and `status.rasterRequiredCount` (stages `source-rasterization` and
   `target-rasterization`).
+
+### Drive-time contributor inventory
+
+The basic drive-time recipe returns 12 contributors. With raster isochrones and no polygon-demand
+join (the drive-time GPU fixture), it returns the following 15 in execution order: five analysis
+contributors and ten adapters. Preparation instances are never included. A single declaration with
+preparation bypassed returns the same list. Previously the result omitted the ten adapters and
+reported only five; the larger list completes the documented stage inventory.
+
+Prefix each suffix below with `${id}-`; the default `id` is `drive-time-catchment`. Native classes
+have an own `id`. Adapter producers have class `Object` and no own `id`; their stable emitted-stage
+ID is shown instead. The oriented-fraction adapter also contains the facility-road sort nodes.
+
+| Order | Contributor ID / emitted-stage suffix | Class |
+| --- | --- | --- |
+| 1 | `edge-sources-kernel-clear` | `Object` adapter |
+| 2 | `edge-sources-kernel` | `Object` adapter |
+| 3 | `snap-facilities` | `GPUNetworkSnapping` |
+| 4 | `facility-roads-kernel` | `Object` adapter |
+| 5 | `facility-starts-kernel` | `Object` adapter |
+| 6 | `facility-oriented-fractions-kernel` | `Object` adapter |
+| 7 | `service-areas` | `GPUNetworkServiceAreas` |
+| 8 | `source-path-geometry` | `Object` adapter |
+| 9 | `source-path-topology` | `Object` adapter |
+| 10 | `isochrones` | `GPUNetworkIsochrones` |
+| 11 | `snap-demand` | `GPUNetworkSnapping` |
+| 12 | `demand-roads-kernel` | `Object` adapter |
+| 13 | `demand-times-kernel` | `Object` adapter |
+| 14 | `demand-bands-kernel` | `Object` adapter |
+| 15 | `band-statistics` | `GPUGroupStatistics` |
+
+The basic form omits rows 8–10. The result audit checks all public recipe names, including both
+visibility entry points: contributor instances/IDs are unique, returned ports belong to the caller
+graph, and contributor counts, node IDs and port layouts match a single-declaration baseline.
+Intentional aliases between named output/intermediate ports remain valid. Legacy family results
+without a `contributors` property are identified separately rather than counted as empty analyses.
 
 ### `addHotSpotAnalysisRecipe`
 
@@ -173,7 +308,7 @@ Points source (breaking change from the occupied-cells design):
 
 Statistics and legend (both sources):
 
-- `minimumNeighbors` defaults to 8 (ArcGIS guidance for Gi*). Rows with fewer neighbors other than themselves
+- `minimumNeighbors` defaults to 8 (ArcGIS guidance for analytic Gi*). Rows with fewer neighbors other than themselves
   get NaN `zScores` and `pValues`, bin 0, and are outside the multiple-testing family;
   `status` stage `minimum-neighbors` reports `invalidCount`. Quadbin with one ring has exactly 8 neighbors at
   most, so the cells on the study-area border are NaN; use `neighborRings: 2` or a lower minimum for them.
@@ -181,13 +316,21 @@ Statistics and legend (both sources):
   stable under any setting: bins `+-1`, `+-2`, `+-3` are 90%, 95% and 99% confidence hot (`+`) or cold (`-`)
   spots; without correction that is `|z| >= 1.645, 1.960, 2.576`, with Benjamini-Hochberg the step-up test at
   q = 0.10, 0.05, 0.01. `result.inference` is a `GPUInferenceMetadata` (alternative `'two-sided'`, analytic so
-  `permutationCount: 0`, the method, and `testedRowsDefinition`, for example `'study-area cells with at least 8
-  neighbors'`); `result.permutationInference` describes the optional permutation confirmation. Both come from
+  `permutationCount: 0`, the method, and `testedRowsDefinition`, for example
+  `'included rows with at least 8 active neighbors (islands excluded) and a defined z-score'`);
+  `result.permutationInference` describes the optional permutation confirmation. Both come from
   the contributors' `getInferenceMetadata` of the one `settings` object (`GPUHotSpotAnalysisRecipeSettings`:
   `significanceLevel`, optional fixed moments, `seed`, `permutationCount`) that the recipe packs into its
   `parameters` and `permutation.parameters` `GPUParameterBuffer`s; `result.setSettings` repacks them per frame.
 - The lattice source keeps its queen/rook weights and gets the same guard and metadata.
-- Permutation confirmation tests every study row; it does not apply `minimumNeighbors`.
+  Values 0 and 1 of `minimumNeighbors` both use an effective minimum of one: masked rows, islands
+  and undefined scores stay outside the analytic family. The contributor's full eligibility
+  description is preserved when settings change.
+- Permutation confirmation does not apply `minimumNeighbors`. Its family contains included finite-value
+  rows with 1 to `permutation.maximumNeighbors` positive-weight neighbors (default maximum 32), as stated
+  by `result.permutationInference.testedRowsDefinition`. The analytic family has its own description in
+  `result.inference.testedRowsDefinition`; on a 5×5 queen lattice at the default minimum these families
+  contain 25 and 9 rows respectively. Multiple-testing correction uses each stage's actual family.
 - The permutation confirms the statistic the Gi stage maps. `GPULocalPermutationTest` has a fixed focal
   weight (1 for `'localGStar'`, none for `'localG'`), so `permutation.statistic` defaults to `'localGStar'`,
   or to `'localG'` when `selfWeight` is 0. `'localGStar'` with a `selfWeight` other than 1, or `'localG'` with
@@ -227,6 +370,13 @@ Event counts and populations per polygon to significant local Moran clusters of 
   outside the test family, not counted as tested but not significant.
 - Legend contract, stable under any setting: palette index 0 is "not significant" and 1, 2, 3, 4 are high-high,
   low-high, low-low, high-low. The correction changes which polygons reach significance, never what a color means.
+- `palette` must contain at least five packed `uint32` entries. Supplied `outputs.colors` and
+  `outputs.quadrants` must each have exactly one logical row per polygon feature, even when their
+  backing buffers have spare capacity. Independent outputs must use separate buffers and must not
+  alias any original input, including the palette and parameter buffers. Active scratch is checked
+  with the retained outputs too: for example, `scratch.spatialLag` cannot overwrite `smoothedRates`.
+  Invalid ports are rejected
+  before scheduling, so corrected views can reuse the same recipe ID.
 - `events` and `populations` accept `float32` or `uint32` (for example the `counts` of
   `addPointsInPolygonsChoroplethRecipe`); `uint32` columns are converted by one node (exact below 2^24).
 - Rows are features: `polygons` is a `GPUPolygonGeometryPort` (four-level layout, one packed `positions`
@@ -256,6 +406,16 @@ Counts two periods of observations per Quadbin cell and returns the classified, 
 ::lens{scenario=gpu-spatial-analysis.period-comparison-recipe rung=result caption="655 spring and 566 autumn observations compared per cell; classes diverge from no change."}
 
 Two periods of events to a classified, colored change map.
+
+For `measure: 'sum'`, pass one `sumScale` (default 65536) for both aggregation stages and the
+comparison. For example, `sumScale: 2 ** 18` preserves a one-cell change from 0 to `2 ** -18`;
+the default scale rounds that value to zero. Choose a scale with `getGPUCellSumScale` using the
+largest magnitude and group row count across both periods.
+
+The comparison stage separates destination `overflow` from `candidateOverflow` inherited from
+either aggregation table. Its `requiredCount` is the retained-input union requirement and becomes
+a lower bound after source loss. Inspect `status.stages` to find the capacity that needs growing;
+adding union slots cannot recover an earlier aggregation's dropped cells.
 
 - `delta` (after minus before) is always defined. `ratio` and `percentChange` are NaN, not 0, for cells whose earlier
   value is 0; NaN rows are skipped by `GPUClassBreaks` and take the palette no-data color.
@@ -326,6 +486,9 @@ Points to a per-polygon statistic to class breaks to colors, with `backend: 'zon
 `GPUZonalStatistics`) or `'group'` (`GPUPointInPolygonJoin` then dense `GPUGroupStatistics`). `statistic`
 is `'count'` (default), `'sum'`, `'mean'`, `'minimum'` or `'maximum'`; features with no points keep NaN (mean,
 minimum, maximum) or 0 (count, sum).
+Both backends require individual point rows. A point port with `featureOffsets` groups multipart
+features and is rejected before declaration, rather than counting its parts as independent features.
+Expand part rows with explicit ownership or aggregate through a feature-level join first.
 
 - Coordinates: `spatialContext` omitted is native planar. `longitude-latitude` is accepted because the
   mapped statistics are topological: containment uses straight polygon edges in degrees (not geodesics) and
@@ -366,6 +529,26 @@ The chain of this recipe is listed in the chain table above.
 ### `addFleetDwellRecipe`
 
 Finds where vessels stop and totals the dwell time per anchorage zone.
+
+The stops variant forwards `trajectories.temporalContext`, `timestamps` and optional `timestampsLow`
+to `GPUTrajectoryMetrics`. Float32-relative, Int64 words and double-single times are supported; the
+declared encoding must match the bound views. Durations use the declared tick unit. The zone-events
+variant takes `GPUFleetDwellZoneEventsTrajectories`: float32-relative or Int64 words only. It rejects
+`timestampsLow` and incompatible declarations before scheduling nodes, and forwards supported contexts
+to `GPUZoneEvents`.
+Both variants reject incompatible time declarations before registering their recipe outputs, so
+the caller can correct the declaration and retry on the same graph with the same recipe ID.
+
+Only the GPU-written `stops.status.count` prefix enters the zone join. A private adapter view gives
+unused slots nonfinite coordinates, which the join excludes before counting candidates; the public
+centroids keep the metrics contributor's zero-filled padding. An empty stop list therefore cannot
+consume `zones.candidateCapacity` or set `status.joinOverflow` because of spare stop slots.
+`joinOverflow` still reports capacity loss among real stop candidates, and `joinUncertainCount`
+reports unresolved containment among them. Check those words and the metrics stage's overflow before
+using a per-zone summary as complete.
+When caller-owned centroids and a stop mask occupy disjoint subviews whose aligned storage bindings
+overlap, the recipe produces the mask and private join positions in separate dispatches. For example,
+two centroids at bytes 0–15 and two mask values at bytes 16–23 of one buffer remain supported.
 
 ::lens{scenario=gpu-spatial-analysis.fleet-dwell-recipe rung=result caption="12 vessel tracks over 13 anchorage zones; zones are shaded by total stop time."}
 

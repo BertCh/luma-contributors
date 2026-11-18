@@ -49,41 +49,49 @@ on them rather than replace them:
 
 ## Quick start
 
+Use the [complete GPU walkthrough](../operation-forms-and-cpu-twins.md#point-density-from-device-to-readback)
+for device creation, buffer imports, submission, typed readback and cleanup. For reachability,
+replace its point-density inputs with this complete three-node directed CSR fixture.
+The only edge is 1 → 2 with cost 2; node 0 is isolated.
+
 ```ts
-import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {
-  GPUNetworkReachability,
-  type GPUNetworkTopology
-} from '@luma-contributors/analysis/gpu-network';
-import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
-
-const graph = new GPUCommandGraph(device, {id: 'network'});
-const startNodes = new GPUParameterBuffer(device, {id: 'starts', format: 'uint32', length: 4});
-const costLimit = new GPUParameterBuffer(device, {id: 'cost-limit', format: 'float32', length: 1});
-const costBreaks = new GPUParameterBuffer(device, {id: 'cost-breaks', format: 'float32', length: 4});
-
-// `offsets`, `neighbors`, `weights`, `costs`, `bands`, `bandCounts`, and `status.converged` are graph
-// views created on `graph`. Build the CSR on the GPU with `GPUCOOToCSR`. One topology object
-// feeds every network contributor.
-const topology: GPUNetworkTopology = {offsets, neighbors, weights};
-graph.add(new GPUNetworkReachability({
-  topology,
-  startNodes: startNodes.importToGraph(graph),
-  costLimit: costLimit.importToGraph(graph),
-  costBreaks: costBreaks.importToGraph(graph),
-  maximumIterations: 48,
-  output: {costs, bands, bandCounts, status: {converged}}
-}));
-const compiled = await graph.compileAsync(); // once
-
-// every frame: rewrite the start node and cost limit, encode the same compiled graph
-startNodes.write(new Uint32Array([startNode, 0, 0, 0]));
-costLimit.write(new Float32Array([1800]));
-compiled.encode(device.commandEncoder, {parameters: undefined});
+export const reachabilityInputs = {
+  topology: {
+    offsets: Uint32Array.of(0, 0, 1, 1),
+    neighbors: Uint32Array.of(2),
+    weights: Float32Array.of(2)
+  },
+  startNodes: Uint32Array.of(1),
+  costLimit: Float32Array.of(10),
+  costBreaks: Float32Array.of(0, 2, 5, 10)
+};
 ```
 
-`encode()` only records; submit with `device.submit()`. [Running contributors](../gpu-spatial-analysis/concepts.md#running-contributors)
-covers `compileAsync()`, rebuilding without a stall, submission and why `parameters` is `undefined`.
+Import every array once, then create scalar `uint32` views for offsets, neighbors and start nodes,
+and scalar `float32` views for weights, cost limit and cost breaks, with lengths equal to their
+array lengths. Pass the three topology views together as `topology` to `GPUNetworkReachability`,
+and the remaining views as `startNodes`, `costLimit` and `costBreaks`. Set
+`maximumIterations: 4` for this fixture.
+
+Allocate the following outputs in separate buffers and pass their views as `output`:
+
+| Port | Format and rows | Expected readback |
+| --- | --- | --- |
+| `costs` | `float32`, 3 | `[Infinity, 0, 2]` |
+| `bands` | `uint32`, 3 | `[0xffffffff, 0, 1]` |
+| `bandCounts` | `uint32`, 4 | `[1, 1, 0, 0]` |
+| `status.converged` | `uint32`, 1 | `[1]` |
+| `status.iterationLimitReached` | `uint32`, 1 | `[0]` |
+
+There is exactly **one start slot**. Every slot is active when `startCount` is omitted; if reserving
+spare slots, supply a one-row `uint32` `startCount` view containing 1. Spare zero-filled slots
+would seed node 0 too. Cost breaks must be initialized in ascending order in the edge-weight units;
+a node belongs to the first break greater than or equal to its cost, or `0xffffffff` beyond
+the final break. Node 0 stays unreachable and contributes to no band.
+
+Compile, encode, submit and read these buffers with the walkthrough's lifecycle. Check
+`iterationLimitReached` with the costs: when it is 1, propagate incompleteness, suppress dependent
+results, or continue/fall back rather than treating unreached nodes as proof of no route.
 
 ## Concepts and operators
 

@@ -34,11 +34,37 @@ skipped initialization cannot reuse stale dispatch arguments from an earlier enc
 is read back inside the contributor. All input view contents are per-frame, including topology weights and
 query endpoints; capacities and view lengths are compile-time.
 
-`output.vertices` and `output.edges` have `queryCount * routeCount * maximumPathLength` rows.
-They are padded with `0xffffffff`; the last vertex of a route has no edge.
-`output.lengths` and `output.costs` have `queryCount * routeCount` rows: empty slots have length
-zero and cost positive infinity. `output.counts` has `queryCount` rows and counts the retained
-routes of each query. The fixed requested top-k layout does not promise to count all simple paths.
+Use `getGPUKShortestPathsOutputLayout(options)` from the same entry point to obtain the scalar
+format and required row count of every output before allocating caller-owned buffers. The
+constructor, operation form and CPU twin use this function too. `queryCount` and `routeCount`
+are required; `maximumPathLength` defaults to 64. Named dimensions are resolved explicitly,
+including inherited getters, so validation and output slicing use the same values.
+Dimensions and their products must be positive
+integers fitting uint32 row counts. GPU execution limits in the table above and device binding
+limits still apply to the contributor; the layout function also describes larger CPU budgets.
+
+```typescript
+import {getGPUKShortestPathsOutputLayout} from '@luma-contributors/analysis/gpu-network';
+
+const options = {queryCount: 2, routeCount: 3, maximumPathLength: 4};
+const layout = getGPUKShortestPathsOutputLayout(options);
+// Allocate each output with its descriptor's format and length.
+// layout.vertices = {format: 'uint32', length: 24}
+// layout.costs = {format: 'float32', length: 6}
+```
+
+| Output | Descriptor | Order and meaning |
+| --- | --- | --- |
+| `vertices` | `layout.vertices` | Query, route, vertex slot; `uint32` |
+| `edges` | `layout.edges` | Query, route, edge slot, same capacity as vertices; `uint32` |
+| `lengths` | `layout.lengths` | Query, route; vertex count, `uint32` |
+| `costs` | `layout.costs` | Query, route; `float32` |
+| `counts` | `layout.counts` | Accepted route count per query, `uint32` |
+| `status.<name>` | `layout.status.<name>` | One `uint32` row per batch for each status below |
+
+Vertices and edges have query × route × maximumPathLength slots, padded with `0xffffffff`;
+the last vertex has no edge. Lengths and costs have query × route slots: empty slots have length
+zero and cost positive infinity. The fixed requested top-k layout does not promise to count all simple paths.
 Every output uses its own buffer, separate from inputs.
 
 `output.status` contains four required one-row uint32 views:
@@ -55,6 +81,26 @@ budget interruption, **not** enumeration restricted to paths of at most that len
 an overlong spur could skip a cheaper path. A shortest-search interruption conservatively stops
 all queries still active in that batch. Candidate overflow affects only its own query. Status
 flags aggregate across queries, so both interruption flags can be set by different queries.
+
+`decodeGPUKShortestPaths(readback, options)` converts typed-array readbacks into
+`{queries, status}`. Each query has `{count, routes}`; each retained route has
+`{vertices, edges, length, cost}` with padding removed. Query and route array order matches the
+output layout. A zero-edge route has one vertex and an empty edge array; a query without routes
+has `count: 0` and `routes: []`. The decoder checks array formats and minimum required lengths,
+accepted counts and path lengths, nonnegative retained costs, and batch status scalars. Positive
+infinity is allowed for a retained CPU route whose finite float64 cost overflowed on publication
+as float32; counts and lengths distinguish it from padding. NaN and negative costs are rejected.
+Typed arrays from other JavaScript realms are accepted when their scalar format matches.
+Typed-array byte offsets are respected and spare capacity beyond the layout is ignored. Returned
+route arrays are copies. The existing output has no version header; supply the dimensions used
+for the computation.
+
+Pass the five data arrays plus the four status arrays nested under `readback.status`. For the
+direct CPU result, whose status fields are flat, use
+`decodeGPUKShortestPaths({...result, status: result}, options)`. The decoder returns all three
+flags as booleans and `iterationCount` as a number. It retains certified routes from incomplete
+batches: inspect `status.converged`, `status.iterationLimitReached` and `status.candidateOverflow`
+before treating decoded routes as a complete enumeration.
 
 For Q queries, P spur slots, V vertices, E edge slots, C candidates and path length L, scratch is
 `O(Q * P * (V + E) + Q * (C + k + P) * L)`. P is `min(L - 1, V - 1)`, at least one, and is one
@@ -87,11 +133,19 @@ nested under `output.status`. Compile with `GPU_CONTRIBUTOR_OPERATION_LOWERING`.
 The CPU twin accepts the same operation props and publishes every output port with the same layout.
 For direct calls, `computeKShortestPathsOnCPU({topology, sources, targets}, options)` takes typed arrays
 and returns typed arrays; the four status fields are flattened on its result. It uses Yen's algorithm
-with the shared float64 Dijkstra and acyclic predecessor helpers. Prefer it for small networks,
+with the shared float64 routing and acyclic predecessor helpers. Prefer it for small networks,
 where GPU submission costs dominate.
 
-The CPU version drops GPU-only node, route, device, command and shortest-search round limits;
-`maximumIterations` is ignored. Path length and candidate budgets retain the GPU's meaning.
+The CPU version drops GPU-only node, route, device and command limits. An explicit
+`maximumIterations` binds every shortest-search and zero-cost tie phase to at most 64 hops per
+round. A synchronous CPU frontier stops before exceeding that allowance and publishes only
+previously certified routes, with `converged = 0` and `iterationLimitReached = 1` on interruption.
+Queries advance together: if any shortest-search lane interrupts, the entire still-active batch
+stops before accepting that round's proposals. Routes from earlier completed rounds remain published.
+Every active spur contributes its search certificate before a query-local path-length or
+candidate-capacity stop is applied; a locally overlong path cannot hide another spur's interruption.
+GPU workgroup scheduling can make progress through fewer hops per round. Without an explicit
+CPU round budget, searches run to completion. Path length and candidate budgets retain the GPU's meaning.
 It computes costs in float64 and rounds once at output, so near ties, overflow and predecessor
 tightness may differ. Packed array lengths and CSR offset values are checked on the CPU.
 The existing `CPUAlternativeRoutesOperation` and its reference GPU contributor remain available.

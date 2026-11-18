@@ -1,6 +1,6 @@
 ---
 title: Operation forms and CPU twins
-description: Choose a GPU contributor, a named-value graph operation or its CPU twin, with a complete variogram fitting example.
+description: Run a CPU variogram fit or a complete GPU point-density computation, then choose a contributor, graph operation or CPU twin.
 ---
 
 # Operation forms and CPU twins
@@ -24,6 +24,11 @@ When an existing class already uses the operation name, the wrapper is named
 
 ## Choosing CPU or GPU
 
+The coregionalization and variogram fit operations capture shape, options, model order and
+port names at construction. Reusing an operation preserves that contract even if the caller
+later edits its props, model array or nested output maps. Input graph values still change
+per run; construct a new operation when changing its configuration or names.
+
 A CPU twin computes in float64 and rounds once to the declared output format. Its exported pure
 `compute<Name>OnCPU` function also works with arrays outside a graph. Prefer that function when
 the data is already on the CPU and there are no GPU stages to compose. A reference-tier contributor
@@ -44,6 +49,14 @@ its own submission. Use asynchronous `compiled.run()`, rather than `prepare()`/`
 Mixed outputs belong to the invocation; caller-provided output targets are unsupported.
 
 ## Variogram fitting without a graph
+
+In this checkout, after the repository's `nvm use` and `yarn install` setup, run
+`node_modules/.bin/vitest run --project node --maxWorkers=2 modules/analysis/test/analysis-core/first-run-docs.node.spec.ts -t 'CPU variogram walkthrough'`.
+This executes the first block below against workspace sources and checks the expected parameters,
+without a GPU or a package build. The package is currently unpublished; until an alpha is released,
+use the workspace for this first run.
+In an installed alpha, use the same imports from your TypeScript application with the required
+`apache-arrow` peer and luma.gl peers installed.
 
 The empirical variogram step, [`GPUVariogram`](./gpu-dataframe-analysis.md), produces
 mean lag distances, semivariances and pair counts. Once those bins have been read back, pass them
@@ -188,7 +201,7 @@ diagnostic rows in both forms.
 | --- | --- | --- |
 | `parameters` | `float32x4`, one row per model | Nugget, partial sill, effective range, weighted squared residual. |
 | `diagnostics` | `float32x4`, one row per model | Usable bins, unweighted squared residual, residual AIC, final relative log-range bracket. |
-| `status` | `uint32`, one row per model | 0: interior fit; 1: insufficient bins; 2: numerical failure; 3: search boundary or GPU budget result. |
+| `status` | `uint32`, one row per model | 0: interior fit; 1: insufficient bins; 2: numerical failure; 3: search boundary or budget result in either form. |
 
 Both classes default to spherical, exponential and Gaussian rows, in that order; the example
 explicitly changes their order. They also accept `matern-3/2` and `matern-5/2`, with one to five
@@ -201,16 +214,20 @@ same bins and weighting for each family.
 
 The interchangeable props and layouts do not promise bit identity:
 
-- The GPU uses float32 reductions and a configurable search: `rangeSteps` is 3–1024 (default 200),
-  and `maximumIterations` is 0–64 (default 32). The CPU twin ignores these two GPU budgets and uses
-  the CPU fitter's fixed 200-point ladder and 60 refinement steps in float64, rounding its output
-  once to float32.
+- Both forms honor explicit `rangeSteps` (3–1024) and `maximumIterations` (0–64) for every
+  weighting pass, including zero refinements. Both default to 200 ladder points; GPU defaults
+  to 32 refinements and CPU retains its 60-step default when omitted. The pure CPU fitter and
+  `computeVariogramModelFitOnCPU` accept the same search options. CPU uses float64 internally
+  and rounds once to the output format.
 - The CPU can fit some bins that the GPU refuses because its float32 objective cannot be evaluated.
   It still returns status 2 and NaN rows when fitted outputs cannot be represented as finite float32.
-- Both search `[minimum positive lag / 10, 3 * maximum lag]`. The CPU assigns status 3 when the
-  fitted range lies in the first or last ladder interval. The GPU also uses status 3 for a search
-  budget exit. Treat that row as a candidate needing review, rather than an identified interior fit.
-- The CPU bracket diagnostic is an upper bound after its fixed 60 steps. Cressie weights use the
+- Both search `[minimum positive lag / 10, 3 * maximum lag]` and assign status 3 when the best
+  ladder point is an endpoint or the final log-range bracket is wider than `1e-5`. With the
+  walkthrough's bins and 200 ladder points, `maximumIterations: 0` leaves a bracket of about
+  `0.06429` and status 3 in either form. The selection stage above suppresses such rows.
+  Treat a budget result as a candidate needing review, rather than an identified interior fit.
+- The CPU bracket diagnostic measures the work actually performed. GPU may stop refinement at
+  bracket `1e-5`; CPU continues up to its budget in float64. Cressie weights use the
   smallest float64 denominator floor on CPU versus `1e-20` on GPU, so very small semivariances
   can give different fits.
 
@@ -225,3 +242,115 @@ For repeated GPU runs, reuse a compiled graph sequentially. A contributor operat
 resource-owning contributor and releases it when the next run replaces it. Keep each operation
 instance with one compiled graph and one prepared execution at a time. Destroy the compiled graph
 first, then call the GPU operation's `destroy()` to release its final contributor.
+
+## Point density from device to readback
+
+Run this in a browser TypeScript entry point served on localhost or HTTPS with WebGPU enabled
+(for example, a Vite application in this workspace). It imports only published luma.gl and analysis
+entry points; the WebGPU adapter comes from the public `@luma.gl/core/webgpu` entry.
+Paste both blocks into that entry point. No existing device, buffers, graph or dataset is required.
+
+For a minimal workspace browser page, save both blocks as `first-density.ts` in the repository
+root, add an `index.html` containing `<script type="module" src="/first-density.ts"></script>`,
+and run `node_modules/.bin/vite --host localhost`. Open the printed localhost URL and the browser
+console. Package-name imports use the package build in this setup; run `yarn build` first if
+`modules/analysis/dist` is absent or stale. The source-backed headless regression runs the same
+program without relying on a package build.
+
+Five positions are binned into a 2 × 2 grid over `[0, 0, 2, 2]`. Four are inside the bounds;
+`[3, 3]` is outside. Each output row is one cell, with X varying fastest, starting at the minimum Y.
+The expected counts are `[2, 0, 1, 1]`, and the grid overflow flag is `0`.
+
+```ts
+import {Buffer, luma} from '@luma.gl/core';
+import {webgpuAdapter} from '@luma.gl/core/webgpu';
+import {GPUCommandGraph} from '@luma.gl/graph';
+import {GPUPointDensity} from '@luma-contributors/analysis/gpu-spatial-analysis';
+
+export async function runPointDensityExample() {
+  const device = await luma.createDevice({
+    type: 'webgpu',
+    adapters: [webgpuAdapter]
+  });
+  const buffers: Buffer[] = [];
+  let compiled: Awaited<ReturnType<GPUCommandGraph['compileAsync']>> | undefined;
+  try {
+    const graph = new GPUCommandGraph(device, {id: 'first-density'});
+    const createBuffer = (id: string, data: Float32Array | Uint32Array) => {
+      const buffer = device.createBuffer({
+        id,
+        data,
+        usage: Buffer.STORAGE | Buffer.COPY_SRC | Buffer.COPY_DST
+      });
+      buffers.push(buffer);
+      return graph.importBuffer({id, byteLength: buffer.byteLength, usage: buffer.usage}, buffer);
+    };
+    const positions = graph.createDataView(
+      createBuffer(
+        'positions',
+        Float32Array.of(0.25, 0.25, 0.75, 0.75, 0.25, 1.25, 1.25, 1.25, 3, 3)
+      ),
+      {format: 'float32x2', length: 5}
+    );
+    const bounds = graph.createDataView(createBuffer('bounds', Float32Array.of(0, 0, 2, 2)), {
+      format: 'float32',
+      length: 4
+    });
+    const valuesHandle = createBuffer('values', new Float32Array(4));
+    const overflowHandle = createBuffer('overflow', new Uint32Array(1));
+    const values = graph.createDataView(valuesHandle, {format: 'float32', length: 4});
+    const overflow = graph.createDataView(overflowHandle, {format: 'uint32', length: 1});
+    graph.add(
+      new GPUPointDensity({
+        positions,
+        bounds,
+        gridSize: [2, 2],
+        statistic: 'count',
+        output: {values, status: {overflow}}
+      })
+    );
+    compiled = await graph.compileAsync();
+    const commandEncoder = device.createCommandEncoder();
+    compiled.encode(commandEncoder, {parameters: undefined});
+    device.submit(commandEncoder.finish());
+    const valueBytes = await buffers[2].readAsync();
+    const overflowBytes = await buffers[3].readAsync();
+    const result = {
+      values: new Float32Array(valueBytes.buffer, valueBytes.byteOffset, 4).slice(),
+      overflow: new Uint32Array(overflowBytes.buffer, overflowBytes.byteOffset, 1)[0]
+    };
+    if (result.overflow !== 0) throw new Error('Point density output is incomplete');
+    return result;
+  } finally {
+    compiled?.destroy();
+    for (const buffer of buffers) buffer.destroy();
+    device.destroy();
+  }
+}
+```
+
+```ts
+const density = await runPointDensityExample();
+console.log(Array.from(density.values), density.overflow);
+// [2, 0, 1, 1] 0
+```
+
+Each raw buffer is imported exactly once and then given a typed view. `float32x2` length counts
+positions, so five positions occupy ten floats. `values` contains four `float32` rows, while
+`output.status.overflow` is a separate one-row `uint32` view. Storage, upload and readback need
+`STORAGE | COPY_DST | COPY_SRC` usage here. If your application already owns `GPUData`, use
+`graph.importGPUData(id, data)` instead of importing its underlying buffer again.
+
+`compileAsync()` creates the executable graph. `encode()` records commands; `device.submit()`
+executes them. `readAsync()` waits for the copied result. Typed views honor the readback's
+`byteOffset`; the returned values are copied so they survive cleanup. Imported buffers remain
+caller-owned: destroy the compiled graph before the buffers, then release a device you created.
+In an application that keeps its device, keep that device alive and release only this computation's
+resources. Updating bounds or positions with `buffer.write()` before another submission does not
+require recompilation; changing view lengths or grid dimensions does.
+
+For other families, keep this allocation/import/compile/submit/readback/cleanup sequence and use
+the family quick start's input formats, parameter packer and output layout. Allocate separate
+buffers for writable outputs, including status scalars. Read completeness status together with
+the result: propagate incomplete work, suppress dependent results, or refuse/fall back.
+

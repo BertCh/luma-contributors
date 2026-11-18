@@ -182,6 +182,30 @@ Even-odd supports nested holes, while nonzero uses directed shell/hole winding. 
 and topologically valid. `viewpointClassifications` reports 0 free, 1 blocked, 2 boundary, or 3
 nonfinite input. Both isovists and visibility graphs consume this shared GPU classification.
 
+Size each per-ray output with
+`positions.length * getGPUIsovistRayCount(rayCount, segments.length, sampling)` (import the helper
+from `@luma-contributors/analysis/gpu-spatial-analysis`). This applies to `endpoints`, `distances`,
+hit `segments`, `validity` and `angles`; `measures` and `viewpointClassifications` each have
+`positions.length` rows. The helper and recipe require a base `rayCount` integer in [3, 65,536]
+and a segment count integer in [1, 16,777,216]. With vertex sampling, the expanded count must
+also be at most 4,096. All caller output lengths are checked before classification or BVH nodes
+are added. For one viewpoint, `rayCount: 3` and one segment, vertex sampling needs nine rows in
+each per-ray output. Provenance records `baseRayCount` for the uniform rays and `rayCount` for
+the total; `angularSpacing` is `2π / baseRayCount`, the spacing of the uniform subset. Use the
+returned `angles` for the actual, nonuniform vertex-sampled angles.
+
+Every output must have disjoint logical byte ranges from inputs and other outputs; for example,
+`angles` and `measures` cannot alias the same 16 bytes even when both view lengths are correct.
+Views bound together in a dispatch also need disjoint aligned binding ranges, and a physical buffer
+cannot be both a read-only and a writable binding in that dispatch. When disjoint outputs share an
+allocation, create their subviews on one graph buffer handle; separate imports of a physical buffer
+are rejected when either handle is written. All supplied output layouts, graph ownership and alias
+rules are checked before reserving transient resource IDs or adding commands. Correcting a rejected
+override permits retrying with the same recipe ID on the same graph. Inputs must be single packed
+views: `positions` uses `float32x2` and `segments` uses `float32x4`. Both formats and packed layouts
+are checked before any output is resolved, so correcting an invalid input also permits a retry
+with the same recipe ID on the same graph.
+
 The visibility graph evaluates all pairs among at most 256 supplied free-space viewpoints. An
 obstacle contact, including a tangent or endpoint contact, blocks a pair. Coincident viewpoints do
 not create an edge. `adjacency` is the complete dense visibility matrix; `edges` contains the bounded

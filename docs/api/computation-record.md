@@ -4,7 +4,8 @@
 
 A `GPUComputationRecord` describes one recorded real execution. It identifies the adapter,
 implementation variant, run, and creation time. Graphs and semantic metadata describe structure.
-Metrics and captures are separate sidecars joined by `runId`, graph id, and node or resource id.
+Metrics and captures are separate sidecars joined by `runId`, `executionId`, graph id, and node or
+resource id.
 This lets measurements from two runs share a structural comparison without mixing their timings.
 
 The schema belongs to `@luma-contributors/analysis/computation-record` and does not promise external
@@ -29,8 +30,33 @@ an unrolled copy by loop id and zero-based iteration. `dedupName` names the oper
 those copies. Consumers do not need to infer loops from node names.
 
 Compiled resources carry ownership, byte size, allocation identity, and scheduled lifetimes.
+Ownership is `imported` (caller-owned), `transient` (graph-owned), or `unknown` when no handle was
+recorded. `bytesKind: 'logical'` identifies a buffer handle's size; `'lower-bound'` identifies the
+largest observed `byteOffset + byteLength` without a handle; `'estimated'` identifies a texture
+estimate. Recorded texture handles estimate all declared mips, layers/depth and samples using the
+published texture-format decoder; preflight-only texture ranges supply a lower bound.
+`unavailable` marks opaque storage (including external images); its numeric `bytes: 0` is a
+placeholder, not a zero-byte estimate. A recorded external-image handle is imported even though
+its storage size is unavailable. A lower bound may omit unused trailing storage. Text exports prefix lower bounds with
+`>=` and estimates with `~`.
 Transient resources may share allocations when their inclusive lifetimes do not overlap.
 Retained resources describe observation runs that preserve intermediate storage.
+Existing `/1` resources without `bytesKind` have unspecified size precision. Older unannotated
+records could incorrectly say `imported`; use newly recorded handles to establish ownership.
+Lens and website views conservatively display legacy imported resources without size precision as
+unknown ownership. Unknown resources are listed separately from transient allocations; their sizes
+cannot establish aliasing savings or a complete transient peak. Website summaries carry precision
+through totals, lifetimes and dependency sizes and keep equal sizes with different precision or
+ownership in separate rows.
+Physical allocation totals use recorded `allocationBytes` for exact sizes. Without that size,
+the largest logical member of a known shared allocation supplies a lower bound, independent of
+resource order. Unknown ownership or allocation identity makes the total's precision unspecified.
+Website lower-bound labels show exact byte counts (`≥1040 B`) so rounding never overstates a bound.
+Text exports mark legacy imported resources as unknown ownership and label their size precision
+unknown; explicitly logical imported resources retain their known ownership and size.
+An omitted `graph.resources` inventory means unavailable counts and sizes. An explicitly empty
+array establishes exact zero. Website summaries retain inventory presence and label unavailable
+totals rather than presenting placeholder zeros as observations.
 
 ## Axes, key spaces and relations
 
@@ -39,6 +65,20 @@ name a coarser `parent` and a `keySpace`. Relations map one key space to another
 cardinality. Function relations describe known arithmetic mappings. Buffer relations identify
 stored mappings. A mapping that was not captured is `unknown`; consumers must never guess it.
 A node's `datum` binds its invocations to a key space and an optional relation.
+
+Line and polygon geometry can declare `featureKeySpace`: the domain of feature rows in the offsets
+capture. This is separate from the
+coordinate capture's `keySpace` (vertex rows); for example, a vessel track belongs to `track`, while
+its positions belong to `fix`. Feature picking and linked selection are unavailable when this
+domain is omitted. When supplied, it must name a declared key space.
+
+For point geometry, `countCapture` names the captured scalar active count (by capture id or name).
+It bounds the active prefix of the coordinate allocation; result figures use it for the headline,
+projection and point sampling. The declared point key-space size, or otherwise the source buffer's
+`logical` byte size, bounds the count when known; a capture-window end or resource lower bound does
+not. Only the intersection of the active prefix and captured window is drawn. Missing, nonintegral,
+sentinel or over-capacity bound counts make the panel unavailable. Point and raster capture windows
+retain their absolute entity keys.
 
 ## Refs, decisions, choices and workflow
 
@@ -82,6 +122,8 @@ const record = createGPUComputationRecord({
   domains: ['gpu-core'],
   graphs: [description],
   datasetVersion: 'example-v1',
+  parameters: {relaxation: 0.5},
+  implementationRevision: 'relaxation-v2',
   seed: 42
 });
 const report = validateGPUComputationRecord(record);
@@ -103,6 +145,11 @@ kernels get their real `transient` or `imported` ownership, and the graph gets t
 transient allocation totals as `attrs` (`physicalTransientBufferCount`, `reusedTransientBytes`, ...).
 Annotations passed to `recorder.recordNode` win field by field, so packs add formulas, loops and
 `derivedFrom` on top. `getWGSLKernelNodeRecord(graph, nodeId)` returns the raw facts.
+
+The custom point-cloud chunk, shared row-chunk and classification collective factories also
+register their actual modules, storage bindings and dispatch layouts when recording is enabled.
+They retain their runtime parameter bindings and pipeline sharing; recording does not change
+the shader or dispatch. Other hand-built kernels need an explicit registration to carry facts.
 
 ```ts
 import {recordWGSLKernelNodes} from '@luma-contributors/analysis/analysis-core';
@@ -130,19 +177,42 @@ its own pass and the graph is marked `passGrouping: 'unknown'`.
 empty axes, refs, decisions, and choices. Sources with the same id are merged; different retained
 text for one id throws. An entry without text does not erase retained text.
 
-`getGPUComputationRunId` returns `run-<8 hex>` from ordered graph and node ids, adapter backend and
-variant, dataset version, and seed. Pass `runId` to override it. `createdAt` defaults to the current
-ISO timestamp; pass it explicitly for reproducible fixtures. The id hashes those identity inputs,
-not every field of the record.
+`getGPUComputationRunId` returns deterministic `run-<8 hex>` comparison/permalink identity from
+ordered graph and node ids, all adapter fields, dataset version, seed, `parameters`, choice
+stage/name/value triples, and `implementationRevision`. Parameter key insertion order does not
+matter. Supply all per-frame scalar settings in `parameters` and identify changed input data with
+`datasetVersion`; buffers are not read or hashed. The default implementation revision is
+`analysis-2026-11-18-review-1`; callers should pass their application/source revision and change it after
+correctness fixes. The library default must advance when library fixes invalidate old comparisons.
+These expanded hash inputs change default IDs from earlier records. Pass `runId` explicitly to
+retain an existing permalink when appropriate; the id does not hash every field of the record.
+
+Parameter and choice values accept strings, booleans and finite numbers only. Nested values,
+NaN and infinities are rejected before hashing (even with an explicit runId) and when loading a
+record. Numeric seeds must also be finite. Construction copies adapter fields, choices (including
+alternatives), parameter maps and graph/node identities so editing caller inputs for a later run
+cannot change an earlier execution's identity data. S2 lenses retain the full scalar choice map as
+parameters, including settings omitted from display templates.
+S3 declared guard metadata is supplied as presentation choices before record construction.
+Readback observations, including conservation sums and island counts, are stored in graph attributes
+and do not mutate identity-bearing choices. Spatial guards read both sources. The public lens
+decoder validates identity values at its decoded-envelope boundary, like the core validator.
+
+`createGPUComputationRecord` also assigns a fresh UUID `executionId` for each call. Repeated
+executions with identical comparison inputs have the same `runId` and different `executionId`s.
+`createdAt` defaults to the current ISO timestamp. Supply both `createdAt` and `executionId`
+explicitly for reproducible fixtures; creation time is not the execution join key.
 
 `validateGPUComputationRecord` accepts unknown JSON data and returns `{valid, issues}` without
 throwing. Issues contain a level, field path, and message. It checks references, loop bounds,
 resource lifetimes, and required structure. Missing compiled resources, unbound formula symbols,
 and mappings attached to unknown relations produce warnings.
+An omitted compiled resource inventory produces a warning; when an inventory is supplied, every
+node `reads` and `writes` reference must name a resource in it. An unlisted resource is an error.
 
 ## Sidecars and observer effects
 
-`createGPUComputationMetrics({runId, graph, timing, encoding})` converts a timing report to
+`createGPUComputationMetrics({runId, executionId, graph, timing, encoding})` converts a timing report to
 nanosecond metrics. GPU timestamps are relative to the earliest begin timestamp in that report.
 Nodes without timestamps keep their CPU encode time. Conditional outcomes distinguish executed,
 skipped, and GPU-gated indirect work. The helper does not read timestamps from the GPU.
@@ -167,13 +237,23 @@ The required `encoding` flags describe observer effects: `coalesced`, `timestamp
 coalescing. Retention and taps can also change memory use and scheduling. Compare measurements
 with these differences visible.
 
-`createGPUComputationCaptures({runId, snapshots, stamps, replays})` fills omitted arrays with empty
-arrays. Captures contain caller-supplied values, component counts, key spaces, and readback or
+`createGPUComputationCaptures({runId, executionId, snapshots, stamps, replays})` fills omitted arrays
+with empty arrays. Captures contain caller-supplied values, component counts, key spaces, and readback or
 replay provenance. This helper performs no readback or replay.
 
 `validateGPUComputationSidecars(record, {metrics, captures})` checks schemas, run identity, graph
 and resource references, timestamp order, and whole component counts. If a capture omits its graph,
 resource and node references are resolved across the record's graphs.
+Copy both `runId: record.runId` and `executionId: record.executionId` into every sidecar for a new
+record. A missing execution id on only one side, or different execution ids, is an error even when
+run, graph and node ids match. Legacy `/1` pairs with both execution ids absent remain accepted
+using structural identity only; this cannot establish that they came from the same execution.
+The `/1` schema identifiers remain unchanged for these additive fields and the `unknown` ownership
+value. Old readers must accept the extended ownership union before consuming new descriptions.
+Lens scenario harnesses copy both ids into captures and timings. Lens serialization, loading and
+pure view contexts, plus website extraction, also reject mismatched execution identity before
+displaying results. Scalar settings in spatial scenario choice maps are passed as `parameters`;
+other harnesses include their declared choice values in the deterministic run hash.
 
 ## Snapshots
 
@@ -187,7 +267,15 @@ naming the arena. The default byte budget is 64 MiB; decimate map-scale historie
 
 A `GPUSnapshotTap` is an ordinary copy node of the published `GPUCommandGraph`. Add it right after
 the node it observes, because resource hazards follow authoring order. The observed buffers need
-`Buffer.COPY_SRC` usage. Taps end compute-pass coalescing, so state them in
+`Buffer.COPY_SRC` usage. At construction, `views` keys must equal the arena slot names. Each data
+view must be packed (`byteStride === rowByteLength`) with a four-byte-aligned offset, and the
+slot's byte length must not exceed `view.length * view.rowByteLength`. A smaller slot captures a
+packed prefix; it never extends into neighbouring storage. Whole-buffer handles start at zero and
+must have at least the slot's byte length. The tap snapshots the props and view map at construction;
+The tap retains each validated buffer handle and byte offset independently of the caller's view
+object; later in-place edits to that object's shape cannot change a copy range. GPU buffer contents
+remain live inputs. Direct arena calls still check
+copy ranges against their backing buffers. Taps end compute-pass coalescing, so state them in
 `GPUComputationEncodingFlags.taps` and do not present timings of a tapped run as production timings.
 
 ```ts
@@ -229,11 +317,13 @@ refs; `GPUComputationRecorder({sourceText: true})` additionally retains shader t
 ## Exports
 
 - `toChromeTraceEvents(record, metrics, {flows})` returns Chrome Trace Event JSON for Perfetto.
+  It rejects mismatched run/execution ids before joining timings, including missing-vs-present
+  execution identity; matching legacy pairs remain supported.
   Events use microseconds even though `displayTimeUnit` is `ns`. Namespace depth selects a thread.
   RAW dependencies become flow pairs by default. Counter series use the earliest timestamp of a
   matching loop iteration when the series axis is `iteration` or the loop id. If no such timestamp
-  exists, the counter event uses timestamp zero. Metadata includes the schema, run id, adapter,
-  and encoding flags. With several metrics sidecars, adapter and encoding metadata are arrays in
+  exists, the counter event uses timestamp zero. Metadata includes the schema, run id, execution id
+  when present, adapter, and encoding flags. With several metrics sidecars, adapter and encoding metadata are arrays in
   input order, and each sidecar retains its relative time origin.
 - `toModelExplorerGraph(record)` returns one Model Explorer graph per form, with namespaces,
   incoming dependencies, and string attributes.

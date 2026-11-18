@@ -104,7 +104,9 @@ per world area of its row (row edges from `grid.affine`, evaluated at the row ce
 `coverageSums` holds weighted coverage and `proportions` are area proportions). The row edges are
 read from `parameters` (origin y and row step y, slots 1 and 5) on every encoding when it is given,
 so the ground scale follows a repacked georeference together with the cell area; without
-`parameters` they are baked from `grid.affine`. The grid must be axis-aligned. The default `'uniform'` keeps planar coordinate units. Missing area describes nodata inside the supplied raster footprint; it
+`parameters` they are baked from `grid.affine`. The grid must be axis-aligned. Nonzero packed
+cross-axis terms suppress every dependent result for that frame (NaN areas/proportions and
+validity zero), and an aligned later submission restores validity. The default `'uniform'` keeps planar coordinate units. Missing area describes nodata inside the supplied raster footprint; it
 does not estimate a polygon's area outside that footprint. This API does not add observation
 weights, spherical areas, category dictionary discovery, or implicit tile stitching.
 

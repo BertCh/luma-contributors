@@ -7,7 +7,7 @@
   "viewId": "result-view",
   "caption": "Result of gpu-terrain.terrain-cumulative-viewshed: dem, cumulativeObservers → v…",
   "description": "Result of gpu-terrain.terrain-cumulative-viewshed: dem, cumulativeObservers → visibleCount. cells: 4,096. values read back from the GPU run. input dem: 4096 cells.",
-  "llms": "Result of gpu-terrain.terrain-cumulative-viewshed: dem, cumulativeObservers → visibleCount\n\n- cells: 4,096\n- input dem: 4096 cells\n- input cumulativeObservers: 6 points\n- Planar coordinates (unit unknown); uniform scale.\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- 6 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-terrain.terrain-cumulative-viewshed: dem, cumulativeObservers → visibleCount\n\n- cells: 4,096\n- input dem: 4096 cells\n- input cumulativeObservers: 6 points\n- Planar coordinates (m); uniform scale.\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- 6 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "cells",
     "value": "4,096"
@@ -19,8 +19,8 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-11T15:21:34.431Z",
-    "runId": "run-5f9ba49e",
+    "date": "2026-11-18T16:34:00.363Z",
+    "runId": "run-cbc30c8b",
     "observerEffects": [
       "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
@@ -28,7 +28,7 @@
     ]
   },
   "state": {
-    "runId": "run-5f9ba49e",
+    "runId": "run-cbc30c8b",
     "rung": "result",
     "bindings": {},
     "clauses": [],

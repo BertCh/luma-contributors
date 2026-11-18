@@ -1,0 +1,71 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-raster.raster-embedding-quantize",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-raster.raster-embedding-quantize",
+  "viewId": "formula-card",
+  "caption": "Formula Nearest-even signed square-root encoding, saturated to [-127,127], four bytes per uint32 low byte first. Masked or nonfinite pixels write -128 in every component; unused final lanes are zero. bound symbols: 0/2. structure metadata only.",
+  "description": "Formula Nearest-even signed square-root encoding, saturated to [-127,127], four bytes per uint32 low byte first. Masked or nonfinite pixels write -128 in every component; unused final lanes are zero. bound symbols: 0/2. structure metadata only.",
+  "llms": "Formula Nearest-even signed square-root encoding, saturated to [-127,127], four bytes per uint32 low byte first. Masked or nonfinite pixels write -128 in every component; unused final lanes are zero.\n\n- bound symbols: 0/2\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "0/2"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-raster.embedding-quantize</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{code}{q}=\\operatorname{clip}(\\operatorname{roundEven}(127.5\\operatorname{sign}(\\term{value}{v})\\sqrt{|\\term{value}{v}|}),-127,127)</pre><p class=\"lens-ascii\">Nearest-even signed square-root encoding, saturated to [-127,127], four bytes per uint32 low byte first. Masked or nonfinite pixels write -128 in every component; unused final lanes are zero.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"code\">code · intermediate · unknown — wgsl code not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"value\">value · input · unknown — wgsl value not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "code",
+        "intermediate",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "value",
+        "input",
+        "unknown",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{code}{q}=\\operatorname{clip}(\\operatorname{roundEven}(127.5\\operatorname{sign}(\\term{value}{v})\\sqrt{|\\term{value}{v}|}),-127,127)",
+    "ascii": "Nearest-even signed square-root encoding, saturated to [-127,127], four bytes per uint32 low byte first. Masked or nonfinite pixels write -128 in every component; unused final lanes are zero.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-11-18T16:33:07.544Z",
+    "runId": "run-3282b989",
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-3282b989",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

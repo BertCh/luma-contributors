@@ -26,6 +26,80 @@ longitude/latitude `spatialContext` selects great-circle `dwithin` in meters (se
 feature) or `{kind: 'polygons', positions, featureOffsets, polygonOffsets, ringOffsets}`
 (multipolygons, holes as later rings, GeoArrow layout); all nine combinations are supported.
 
+Multipart points and lines use `GPUMultipartPointGeometryPort` and
+`GPUMultipartLineGeometryPort` from `@luma-contributors/analysis/analysis-core`.
+Their `featureOffsets` map feature rows to point or linestring parts; a line part's
+`lineOffsets` then map to vertices. Offsets start at zero, are nondecreasing and terminate at
+the child count. `sourceIds` has one row per feature. Repeated IDs do not merge features.
+Measures, affine transform, prepared join indices and the following joins share that hierarchy.
+
+For `GPUSpatialPredicateJoin`, multipart operands support `intersects`, `within` and `coveredBy`
+with `engine: 'auto'` or `'fast'`, without a `relate` output. Both sides may be multipart.
+`leftRows` and `rightRows` always identify FEATURE rows, with one pair per matching feature pair:
+
+- `intersects` accepts any matching part pair, including a match in a later part.
+- `within` requires all usable input parts to lie in the target's closure and at least one
+  interior intersection. A feature with all parts on the target boundary is not within it.
+- `coveredBy` requires all usable parts to lie in the target's closure, allowing boundary-only
+  contact. Containment is against the complete target feature, including the union of line parts.
+
+Empty features never match. Empty line parts contribute no edges; short line parts with fewer
+than two vertices are empty. Multipart line boundary points follow the mod-2 endpoint rule:
+an endpoint shared by two open line parts belongs to the feature interior.
+Line coverage merges intervals on a supplied coordinate axis, preserving distinct endpoints
+even when projecting them onto a long query would round them to the same fraction.
+The BVH indexes feature bounds spanning all parts, so separate parts do not occupy separate leaf
+slots. Bounds may overlap across a gap, but exact refinement never draws a line across that gap.
+`candidateCapacity` budgets logical feature pairs, including bounding-box false positives.
+If a feature loses a candidate reached through any of its parts, its `candidateTruncated` row
+and `status.candidateOverflow` are set. A short BVH `leafCapacity` also sets candidate loss.
+Final pair capacity loss stays in `overflow`; increasing final capacity cannot recover candidates.
+
+`GPUNearestFeatureJoin` supports multipart queries and targets in neighbors mode (`neighborIds`
+and `neighborCounts`), with minimum distance over every usable part pair. Query and target rows
+are feature rows; `neighborRows` retains the target row separately from `neighborIds`.
+Containment of any later part in a polygon gives distance zero. The existing `k`, tie, radius,
+attribute and exclusion rules apply to feature rows. Each topology and output binding must fit
+the device's storage-binding limit; sorted multipart line queries pack their topology into one
+binding to stay within the eight-buffer traversal budget.
+Ranking and pruning use the same normalized squared-distance significand and biased exponent
+on CPU and GPU, including squares outside float32 range. Normal small distances therefore remain
+distinct from an exact hit without reducing ordinary squared-distance precision. Subnormal
+coordinates or distances are outside the GPU precision contract and may flush or clamp. At the
+largest finite distances, the final two squared-rank bins coalesce with their predecessor and
+publish the maximum float32 distance; row order breaks those ties. For normal distances or exact hits, a radius of either positive or negative zero
+admits exact hits only, including great-circle searches. Endpoint distances use the endpoint
+directly, and cancellation-prone segment determinants retain integer product residuals before
+distance conversion.
+Targets whose published distances round alike may still have different ranks. Finite linear
+distances are supported when their squares exceed the float32 range. Combined sorted-query
+topology binding sizes are checked before graph resources are declared when query sorting actually
+packs metadata (at least two query features), permitting an unsorted retry after a metadata-size
+rejection. Prepared consumers require identical position and
+topology views, including the presence or absence of feature grouping.
+
+Other multipart predicates, DE-9IM output/`engine: 'relate'`, and nearest-feature mode remain
+rejected with explicit messages. `GPUPointInPolygonJoin` and `GPUBufferSelection` still reject
+multipart point query ports; ordinary point ports have one query per position row.
+
+`GPUPointInPolygonJoin` and `GPUBufferSelection` infer the point input when a helper returns
+the broader `GPUSpatialJoinGeometry` union and the caller narrows it with `kind === 'points'`.
+This preserves valid single-point callers without a cast. A known multipart point port remains
+a type error; if grouping arrives through a broader union, construction rejects `featureOffsets`
+before flattening or declaring graph resources. Their props types keep single-point defaults
+and expose an optional point-geometry type parameter for explicitly typed union inputs.
+
+Pure `computeSpatialPredicateJoinOnCPU` and `computeNearestFeatureJoinOnCPU` take packed typed
+arrays with the same hierarchy. The CPU predicate supports the three predicates above, excluding
+polygon/polygon containment, and takes explicit `candidateCapacity` and `pairCapacity` limits.
+CPU predicate candidates use a sorted bounds index and obey the explicit candidate budget;
+`requiredCount` is a lower bound after candidate loss. CPU nearest selects one unbounded planar
+neighbor per query feature, breaks distance ties by lowest target row, uses a sorted bounds index
+with range pruning and emits float32 distances. Empty queries produce empty per-query columns;
+queries with no targets produce count 0, row/ID `0xffffffff` and distance -1.
+The CPU predicate result's `candidateBoundsTestCount` counts index bounds tested, separately
+from result status; entire ranges ending before or starting after a query are pruned together.
+
 `predicate` is `'intersects'`, `'contains'`, `'within'`, `'dwithin'` (with an inclusive
 `distance`: planar in coordinate units, or meters with a great-circle `spatialContext`), `'covers'`, `'coveredBy'`, `'touches'`, `'crosses'`, `'overlaps'`, `'equals'`,
 `'containsProperly'` or `'relate'` (with a DE-9IM `pattern`). Boundaries follow OGC / DE-9IM: a point has no boundary, a linestring's boundary is its
@@ -47,10 +121,10 @@ endpoints unless it is closed, and a polygon's boundary is its rings.
 
 The pipeline is upstream primitives end to end: per-feature bounds into a `GPUBVH` over the right
 side, a count pass, `GPUScan` and an ordered write of candidate pairs, the exact predicate per
-candidate (point-polygon pairs use `GPUPairwisePointInPolygon`; points on an edge it reports as
+candidate (single-point/polygon pairs use `GPUPairwisePointInPolygon`; points on an edge it reports as
 uncertain are decided by the f32 kernel and counted in `uncertainCount`), then a scan and a
-capacity-bounded scatter. Outputs go in `output`; `output.pairs` (a `GPUCompactPairPort`: `leftIds`,
-`rightIds`, `status` with `count`, `overflow`, optional `requiredCount`) are unique and sorted by `(left, right)`, and
+capacity-bounded scatter. Outputs go in `output`; `output.pairs` (a `GPUCompactPairPort`: `leftRows`,
+`rightRows`, `status` with `count`, `overflow`, optional `requiredCount`) are unique and sorted by `(left, right)`, and
 scalars go in `output.status` (`overflow`, `candidateCount`, `uncertainCount`). The sides are geometry
 ports (`GPUPackedGeometryPort` of the point, line or four-level polygon port). On overflow the output is a
 sorted subset; `join.getCapacityPlan({candidateCount, requiredCount})` turns the read-back counts into the
@@ -73,6 +147,17 @@ Distance output requires a metric (`native` or `great-circle`); longitude/latitu
 pair output is requested. `overflow` reports final pair capacity, and `candidateOverflow` reports
 an incomplete candidate or BVH stage. Distance evaluation adds one packed pair scratch buffer
 (eight bytes per output slot), included by the instance's `getCapacityPlan()`.
+
+Declared status destinations, including inherited and non-enumerable `requiredCount` getters,
+are captured at construction and retained when implicit completeness destinations are added.
+The pair-gather example preserves the caller's pair requirement destination in the same way.
+Geometry descriptors, options and the nested pair, unmatched and weights maps are captured too.
+Replacing `unmatched.ids` after construction cannot bypass the original output-alias checks.
+
+For downstream statistics, pass `join.outputWeights`, which always includes both overflow and
+candidateOverflow. Missing caller scalar views are allocated in the graph and written on every
+submission. The caller's `output.weights` is an allocation description; rebuilding an input from
+only that description can omit completeness signals.
 
 The new predicates are masks over one DE-9IM matrix per candidate pair, computed from structure (vertex
 locations, edge crossings, collinear overlaps, and edge pieces located against the other geometry, with
@@ -97,12 +182,12 @@ graph.add(new GPUSpatialPredicateJoin({
   right: {kind: 'polygons', positions, featureOffsets, polygonOffsets, ringOffsets},
   predicate: 'within',
   candidateCapacity: 1 << 20,
-  output: {pairs: {leftIds, rightIds, status: {count, overflow}}}
+  output: {pairs: {leftRows, rightRows, status: {count, overflow}}}
 }));
 ```
 
-**`relate` output.** `output.relate` is an optional `GraphDataView<'uint32'>` as long as `pairs.leftIds`; slot `k`
-holds the matrix of `(leftIds[k], rightIds[k])`. Each of the nine cells (order II IB IE BI BB BE EI EB EE,
+**`relate` output.** `output.relate` is an optional `GraphDataView<'uint32'>` as long as `pairs.leftRows`; slot `k`
+holds the matrix of `(leftRows[k], rightRows[k])`. Each of the nine cells (order II IB IE BI BB BE EI EB EE,
 row-major, left parts then right parts) takes 2 bits at `[2k, 2k + 1]` with value `dimension + 1` (0
 empty, 1 point, 2 line, 3 area). `formatGPUSpatialRelate(value)` decodes it on the CPU to a string such as
 `'FF2F11212'`. Bit 31 (`GPU_SPATIAL_RELATE_UNCERTAIN_BIT`) of a slot is set when an orientation of that pair
@@ -112,7 +197,7 @@ It is not available for `dwithin`.
 ```ts
 graph.add(new GPUSpatialPredicateJoin({
   left, right, predicate: 'touches', candidateCapacity: 1 << 16,
-  output: {pairs: {leftIds, rightIds, status: {count, overflow}}, relate, status: {uncertainCount}}
+  output: {pairs: {leftRows, rightRows, status: {count, overflow}}, relate, status: {uncertainCount}}
 }));
 ```
 
@@ -160,9 +245,10 @@ treated as collinear (sign 0) and the predicate is evaluated with that value, so
 wrong in either direction, and it is counted in `uncertainCount` (zero means every decision is certified).
 Matched uncertain pairs are identifiable per pair through bit 31 of the `relate` output. Point/polygon
 pairs use the robust double-single classifier (they do not get the exact re-decision of
-`GPUPointInPolygonJoin`); pairs it cannot certify are decided by the f32 kernel and counted. Not tracked
-(reported as 0): the workgroup `dwithin` kernel, and the short-circuiting kernel of a polygon/polygon pair,
-whose eight storage bindings leave no room for the counter.
+`GPUPointInPolygonJoin`); pairs it cannot certify are decided by the f32 kernel and counted.
+Scalar exact kernels with eight bindings carry uncertainty in candidate flags and count it in a
+later pass, so adding an identity multipart grouping preserves the diagnostic. The workgroup
+`dwithin` kernel still does not track uncertainty (reported as 0).
 
 **Per-frame distance and pattern.** `distance` is a `number` or a `GraphDataView<'float32'>`, and `pattern`
 is a `GPUSpatialRelatePattern` or a `GraphDataView<'uint32'>`. A view is read from a parameter buffer, so
@@ -262,45 +348,64 @@ with `metric: 'none'` throws, so the intent is explicit. `GPUSpatialJoinCandidat
 
 ### `GPUSpatialJoinPrepared`
 
-Builds a reusable bounds index for one side of a join, so repeated joins against it skip the rebuild.
+Retains a static geometry snapshot for one side of a join.
 
-::lens{scenario=gpu-spatial-analysis.spatial-join-prepared rung=result caption="One tract index, built once, serves both the candidate and the exact park join."}
+::lens{scenario=gpu-spatial-analysis.spatial-join-prepared rung=result caption="One retained tract snapshot serves both the candidate and the exact park join."}
 
-A static right-hand side for repeated joins. It builds the right-side bounds and `GPUBVH` once and skips
-those nodes on later encodings (CPU-conditioned, so no GPU work) until `invalidate()` is called or
-`rebuildWhen(parameters)` returns true.
+A static right-hand side for repeated joins. Geometry refresh is gated on the GPU by requested
+and applied generations. The applied generation changes only after the complete build executes,
+so discarded encodings and abandoned execution prefixes retry automatically.
+
+The published bounds/BVH/sort stages replay against the retained geometry every encoding. This
+conservative implementation repeats build work because published nested nodes lack the dispatch
+metadata needed for whole-build gating. Resident overhead is one copy of every geometry view plus
+24 generation-control bytes; the snapshot uses the same view lengths and binding limits.
+
+The first encoding and first encoding after explicit invalidation bypass `rebuildWhen`; other
+encodings call it once. Public join props preserve the handle's frame type: use
+`GPUSpatialJoinCandidatesProps<Frame>` or `GPUSpatialPredicateJoinProps<Frame>` when a helper
+registers `props.prepared` on a `GPUCommandGraph<Frame>`. Point-in-polygon and nearest-feature
+props take the frame type after their existing row/geometry type parameters.
+
+The props and handle accept a frame type parameter, for example
+`GPUSpatialJoinPrepared<{geometryChanged: boolean}>`; use the same type on `GPUCommandGraph`.
+The default is `unknown`, suitable for `invalidate()` without a frame predicate. See the
+[execution guide](./concepts.md) for a typed predicate example. A recorded refresh request remains
+pending until its complete preparation executes. `encodedBuildCount` counts CPU refresh-request
+encodings, including discarded requests, and excludes automatic GPU retries and replayed builds.
 
 ```ts
 const prepared = new GPUSpatialJoinPrepared({geometry: polygons});
 graph.add(prepared); // before the joins that use it
 graph.add(new GPUSpatialPredicateJoin({
   left: movingPoints, right: polygons, prepared, predicate: 'within', candidateCapacity: 1 << 20,
-  output: {pairs: {leftIds, rightIds, status: {count, overflow}}}
+  output: {pairs: {leftRows, rightRows, status: {count, overflow}}}
 }));
 graph.add(new GPUPointInPolygonJoin({
   points: movingPoints, polygons, prepared, candidateCapacity: 1 << 20,
   output: {pointFeatureIds, status: {overflow: pointOverflow}}
 }));
-prepared.invalidate(); // polygons changed: the next encoding rebuilds, later ones reuse
+prepared.invalidate(); // request a fresh geometry snapshot; discarded encodings retry it
 ```
 
-It reuses a build, not a result: every join still evaluates all candidates against the current left and
+It reuses geometry: every join still evaluates all candidates against the current left and
 right geometry each encoding. A right side that changed without `invalidate()` keeps the old tree, so
 candidates come from the old boxes and a feature that moved outside its old box is missed. Storage is
 persistent buffers, allocated by the handle and freed by `destroy()`, or passed as `storage`. One handle
-belongs to one graph, and several joins may share it. `spatialSort` is allowed only for
-`GPUPointInPolygonJoin`. `GPUPointInPolygonJoin`, `GPUNearestFeatureJoin` (points, lines and polygons, not
-segments) and `GPUSpatialJoinCandidates` accept `prepared`. `encodedBuildCount` counts the rebuilds.
+belongs to one graph, and several joins may share it. A sorted prepared handle is accepted by
+`GPUPointInPolygonJoin`, `GPUSpatialPredicateJoin`, `GPUSpatialJoinCandidates` and
+`GPUNearestFeatureJoin` (points, lines and polygons, not segments). Sorting preserves logical
+feature rows, including multipart grouping.
 
 #### How it computes
 
 {/* lens:GPUSpatialJoinPrepared */}
 
-::lens{scenario=gpu-spatial-analysis.spatial-join-prepared rung=datum datum=46 caption="Tract 17031031400 (row 46): matched through the prepared index, not a rebuilt one."}
+::lens{scenario=gpu-spatial-analysis.spatial-join-prepared rung=datum datum=46 caption="Tract 17031031400 (row 46): matched through the retained geometry snapshot."}
 
-::lens{scenario=gpu-spatial-analysis.spatial-join-prepared rung=kernel caption="Prepare kernels copy tract bounds and edges once; the joins only read those buffers."}
+::lens{scenario=gpu-spatial-analysis.spatial-join-prepared rung=kernel caption="Geometry refresh is GPU-gated; bounds and edge builders replay against the snapshot."}
 
-::lens{scenario=gpu-spatial-analysis.spatial-join-prepared rung=graph caption="Prepared nodes sit behind a rebuild condition; both joins read the same prepared buffers."}
+::lens{scenario=gpu-spatial-analysis.spatial-join-prepared rung=graph caption="Refresh the geometry, replay public builders, then commit the applied generation on the GPU."}
 
 ### `GPUSpatialJoinCandidates`
 
@@ -308,12 +413,22 @@ Lists feature pairs whose bounding boxes overlap: the filter step before exact p
 
 ::lens{scenario=gpu-spatial-analysis.spatial-join-candidates rung=result caption="Park and tract pairs with overlapping boxes; boxes can overlap where polygons do not."}
 
-Maximum: `output.leftIds.length` is at most `getGPUSpatialJoinCandidatesMaximumPairCapacity(device)` (2^24 on a default device).
+Maximum: `output.leftRows.length` is at most `getGPUSpatialJoinCandidatesMaximumPairCapacity(device)` (2^24 on a default device).
 
 The bounding-box candidate stage on its own: `(left, right)` pairs sorted by `(left, right)` whose bounding
 boxes overlap, with the left box optionally expanded by `distance`. The `output` is a `GPUCompactPairPort`
-(capacity `output.leftIds.length`, `status.count`, `status.overflow`, `status.requiredCount`); slots past `status.count` hold `0xffffffff`.
-It is conservative: no intersecting pair is missed, and some candidates do not intersect. It has no
+(capacity `output.leftRows.length`, `status.count`, `status.overflow`, `status.candidateOverflow?`, `status.requiredCount`); slots past `status.count` hold `0xffffffff`.
+`overflow` reports final pair-capacity loss only; `candidateOverflow` independently reports BVH
+leaf loss. Both supplied words are overwritten with 0 or 1 on every encoding, including clean
+reuse. When BVH leaves are lost, `requiredCount` counts only enumerated pairs and is a lower bound.
+A `leafCapacity` below the right feature count requires `candidateOverflow`, including
+when using a prepared index. Consumers that omit that diagnostic must use enough BVH slots;
+otherwise construction rejects the configuration. `GPUPairGather` propagates the two causes separately.
+The constructor captures geometry descriptors, options, pair views and nested status destinations;
+editing the caller's maps later cannot retarget a declared binding. Buffer contents remain dynamic.
+The separate flag passes permit adjacent `overflow` and `candidateOverflow` words in one buffer;
+the words must not logically overlap. Outputs bound together must also have disjoint aligned ranges.
+With both flags zero it is conservative: no intersecting pair is missed, and some candidates do not intersect. It has no
 `excludeSameRow`.
 
 `distance` is planar in coordinate units (`spatialContext` defaults to native planar coordinates and a
@@ -334,7 +449,7 @@ graph.add(new GPUSpatialJoinCandidates({
   left,
   right,
   distance: candidateDistance.importToGraph(graph),
-  output: {leftIds, rightIds, status: {count, overflow, requiredCount}}
+  output: {leftRows, rightRows, status: {count, overflow, requiredCount}}
 }));
 
 const compiled = await graph.compileAsync();
@@ -475,15 +590,27 @@ the current `k`-th distance, which is exact and deterministic.
 - `queries` are points (possibly chunked), lines or polygons (one packed view each); features are `points`,
   `segments`, `lines` or `polygons` (multipolygons, holes, even-odd). Distance is the minimum planar
   distance between the geometries and 0 when a polygon contains the other geometry. Polygons must be valid.
-- `k` is 1 to 32. `ties` is `'lowest-id'` (default) or `'all'`, which keeps every feature tied with the
-  `k`-th. `neighborCapacity` (slots per query, `>= k`, `<= 64`) can exceed `k` only with `ties: 'all'`.
-  `radius` (per-frame, inclusive; omitted means unbounded) bounds the search.
+- `k` and `neighborCapacity` are positive integers, bounded by the packed-index maximum
+  `0x7ffffffe` (2147483646); actual usable capacity is lower when device storage bindings cannot
+  hold the scratch/output views. `neighborCapacity >= k`. The 64-slot private-storage threshold
+  is not the public maximum: 65 and larger capacities use storage-backed lists. The interleaved
+  top-k scratch needs `3 + 2 * neighborCapacity` uint32 words per scratch query plus three shared
+  control words; each output column needs `queryCount * neighborCapacity` rows in one binding.
+  Foot-point scratch adds five words per slot. Each must fit `maxStorageBufferBindingSize`, and
+  all packed indices must fit uint32. `ties` is `'lowest-id'` (default) or `'all'`, which keeps every feature tied with the
+  `k`-th. `neighborCapacity` can exceed `k` only with `ties: 'all'`.
+  `radius` (per-frame, inclusive; omitted means unbounded) bounds the search. Negative, NaN and
+  infinite radius values yield no neighbors for that encoding; a later finite nonnegative radius
+  resumes matching on the same compiled graph.
 - Outputs are dense, `query * neighborCapacity + slot`, ordered by distance and then feature row:
-  `neighborIds` (remapped by `features.sourceIds`), `neighborCounts`, optional `neighborDistances`,
+  `neighborIds` (remapped by `features.sourceIds`), `neighborCounts`, optional `neighborRows`
+  (the original feature rows for attribute lookup), optional `neighborDistances`,
   `neighborFootPoints` (the nearest point on the feature, or the crossing point when geometries cross)
   and `neighborSegmentIndices` (the start-vertex index of the nearest edge; `GPU_NEAREST_NO_SEGMENT` for
   points and containment). Unused slots hold `GPU_SPATIAL_JOIN_NO_FEATURE`, -1, NaN and
-  `GPU_NEAREST_NO_SEGMENT`.
+  `GPU_NEAREST_NO_SEGMENT`. `neighborRows` uses `GPU_SPATIAL_JOIN_NO_FEATURE` in unused slots,
+  requires `neighborIds`, and has the same length. Allocate disjoint views for IDs and rows even
+  when no `sourceIds` are supplied.
 - `output.status.overflow` is 1 when `ties: 'all'` had more ties than `neighborCapacity` or the BVH leaf capacity was
   exceeded. Distances are f32, so near-equal distances can order differently from a double reference, and
   tie order and the foot point at exact vertex ties depend on evaluation order.
@@ -524,17 +651,29 @@ spatially coherent in row order.
 
 Adapter from the k-nearest output of `GPUNearestFeatureJoin` to a `GPUSpatialWeights` CSR (libpysal 4.15 `KNN`
 and `Graph.build_knn`, for points, lines or polygons, using the join's exact geometry distances). Pass the
-join's `neighborIds`, `neighborCounts`, optional `neighborDistances` and its `neighborCapacity` as
+join's `neighborRows`, `neighborCounts`, optional `neighborDistances` and its `neighborCapacity` as
 `slotCapacity`. Pass the join's resolved `spatialContext` to the adapter (omitted means native planar);
 `distanceFloor` uses its length unit and `outputWeights.spatialContext` carries it to consumers. Per row it keeps the first `k` valid slots in the join's distance order, drops padding and
-(with `excludeSelf`, for self-joins run with `k + 1`) the row's own ID, then sorts the IDs ascending. Short rows
+(with `excludeSelf`, for self-joins run with `k + 1`) the query's own feature row, then sorts the feature rows ascending. Short rows
 stay short. `weightType` is `'binary'` (default) or `'inverse-distance'` (`1 / max(d, distanceFloor)^power`;
 `distanceFloor` defaults to `1e-6`, the same default as `GPUNeighborSearch`, so coincident or touching features weigh `1e6^power`
 and dominate a row once it is standardized; pass a floor on the scale of the data when that is not wanted),
 and `output.distances` is filled when present (in the join's context length unit, also used by `distanceFloor`). The output is directed, so for `'symmetrize'` or symmetric
-statistics take the union of the weights and their `GPUSpatialWeightsTranspose`. `excludeSelf` compares IDs to
-the query row, so do not use feature `sourceIds` in the join with it. `output` is a
-`GPUSpatialWeightsOutput` (the CSR views plus `status.overflow`).
+statistics take the union of the weights and their `GPUSpatialWeightsTranspose`. `excludeSelf` compares feature rows to
+the query row. Request the join's `neighborRows` alongside its `neighborIds`; application IDs may
+repeat across segment rows and must never become CSR column indices. Two winning segments with
+source IDs `[7, 7]` produce columns `[0, 1]` when their distinct rows are used. The adapter's old
+`neighborIds` input is rejected; precomputed input must likewise contain distinct feature rows per
+query. `output` is a
+`GPUSpatialWeightsOutput`. Pass the producing join's status as `neighborStatus` and provide
+`output.status.candidateOverflow`: it carries any upstream search loss, including truncated tie
+slots. `output.status.overflow` reports only the adapter's final CSR capacity loss. Both flags
+are rewritten on each submission. Downstream statistics such as local Moran suppress inference
+when either is nonzero. For precomputed complete slots, omit `neighborStatus`; an optional
+candidate flag then receives zero.
+The adapter likewise captures its input/output maps at construction. Its final and candidate flags
+are written in separate passes and may occupy adjacent words of one buffer; using the same word
+for both is rejected.
 
 The spec pins libpysal on 24 random points with `k = 4` (identical neighbor sets). Deviations: ties at the
 `k`-th distance keep the lowest feature rows (libpysal breaks them in KDTree order, and `KNN` and
@@ -543,8 +682,9 @@ dividing by zero.
 
 ```ts
 graph.add(new GPUNearestFeatureWeights({
-  neighborIds, neighborCounts, neighborDistances, slotCapacity: 5, k: 4, excludeSelf: true,
-  output: {...knnWeights, status: {overflow}}
+  neighborRows, neighborCounts, neighborDistances, neighborStatus: joinStatus,
+  slotCapacity: 5, k: 4, excludeSelf: true,
+  output: {...knnWeights, status: {overflow, candidateOverflow}}
 }));
 ```
 
@@ -552,8 +692,9 @@ graph.add(new GPUNearestFeatureWeights({
 
 `spatialSort` of `GPUPointInPolygonJoin`, `GPUNearestFeatureJoin` and `GPUBufferSelection` defaults to `true`
 from 256 features and `false` below; pass `false` to turn it off. With shuffled features each encoding is
-50–125x faster; with spatially coherent features it is about 1 ms slower. `GPUSpatialJoinPrepared` still
-defaults to `false`.
+50–125x faster; with spatially coherent features it is about 1 ms slower. `GPUSpatialJoinPrepared`
+uses the same threshold: sorting defaults on from 256 logical feature rows and off below it
+(255 logical features: `false`; 256: `true`), including multipart points and lines.
 
 `spatialSort` orders the features along a Hilbert curve (the default) or a Morton curve
 (`spatialSortCurve: 'morton'`, a prop of the three joins above, type `SpatialSortCurve`) before the BVH build.
@@ -626,6 +767,12 @@ device.
 
 **`GPUPairGather`**: Copies attributes from the source rows of matched pairs onto the pair rows.
 
+The reusable pair-gather example allocates a producer `candidateOverflow` word when the caller omits
+it and passes that completed pair port to both join and gather. Final `overflow` reports final output
+capacity loss; `candidateOverflow` independently reports lost intermediate candidates. The pair-gather,
+predicate-join and prepared-join examples mask histogram membership by `pairs.status.count` on every
+submission, so unused allocation slots and stale IDs cannot contribute to tract bins after reuse.
+
 ::lens{scenario=gpu-spatial-analysis.pair-gather rung=result caption="Park area copied onto each park and tract pair, without clipping or apportioning."}
 
 **`GPUOffsetExpansion`**: Expands CSR offsets into one row per member, with its owner index and local index.
@@ -642,13 +789,43 @@ Dataframe joints around the joins. `GPUPairGather` consumes join row indices and
 - **`GPUPairGather`** merges join output with attribute columns (GeoPandas `sjoin` and `sjoin_nearest`
   merges, `distance_col`). The input is `pairs` (a `GPUSpatialPredicateJoin` pair output) or `neighbors`
   (the dense `[query, slot]` lists of `GPUNearestFeatureJoin`, flattened by stable compaction).
+  Compact pair ports use `pairs.leftRows` and `pairs.rightRows` as input row offsets. The old
+  `leftIds` and `rightIds` keys are rejected: application identities belong in attribute columns.
+  With rows `[0, 1]`, attributes `[10, 20]` and caller IDs `[1, 0]`, gathering returns attributes
+  `[10, 20]` and IDs `[1, 0]`; caller identity never chooses an attribute row.
+  For nearest joins request `output.neighborRows` alongside `neighborIds` and wire
+  `neighbors: {rows: neighborRows, counts: neighborCounts, capacity: neighborCapacity}`. Gather's
+  `rows` are feature row indices, while `neighborIds` may contain application IDs. For feature
+  attributes `[10, 20]`, a winning row 0 must gather 10 with either source IDs `[1, 0]` or
+  `[100, 200]`. Using IDs as rows would instead gather 20 or a missing-value fill. The old
+  `neighbors.ids` spelling is rejected, including in cast objects and spreads; use `neighbors.rows`
+  for precomputed row-valued lists too. View types cannot detect an application-ID buffer
+  deliberately assigned to `rows`, so preserve the producer's named row output when composing.
   `how: 'inner'` emits matched rows, and `'left'` appends the unmatched left rows (`unmatchedLeft`, the
   anti-join output, derived automatically for neighbors) with `rightRows = GPU_PAIR_GATHER_NO_ROW` and
   NaN or `0xffffffff` in the right and slot columns. `leftColumns` and `rightColumns` gather `float32` or
   `uint32` columns by row, and `slotColumns` carry slot-aligned columns such as `neighborDistances`. The
   output order is matched pairs then unmatched, which is not GeoPandas' left order (sort by
-  `(left, right)` to compare). It is bounded by `output.leftRows.length`, and `output.status.overflow` ORs the
-  input flags and `overflowSources`. Chunked `GraphVectorView` inputs are unsupported.
+  `(left, right)` to compare). It is bounded by `output.leftRows.length`. `output.status.overflow`
+  reports final row capacity loss, including input final-output flags and `overflowSources`.
+  Supplied `pairs.status.candidateOverflow`, `unmatchedLeft.status.candidateOverflow` and
+  `candidateOverflowSources` propagate separately to `output.status.candidateOverflow`; that
+  destination is required when any candidate flag is supplied. Both flags are rewritten on every
+  submission. Growing the gathered output cannot recover candidate loss.
+  Gather captures the declared mode, port maps, columns and status fields once at construction,
+  including inherited getters. Later caller mutations cannot change graph declarations; GPU
+  buffer contents remain per-frame inputs. The recorded pair example preserves optional
+  `requiredCount` and candidate status views when completing its pair port. The catalog example
+  allocates separate final-overflow and candidate-overflow destinations for this composition.
+  When consuming nearest lists, pass the join's aggregate `output.status.overflow` through
+  `candidateOverflowSources` and request gather's candidate flag: that aggregate includes tie
+  truncation and BVH loss, which a larger gathered output cannot recover.
+  Predicate anti-join `unmatched` ports and point-in-polygon/nearest compact `matches` ports use
+  the same split: compact `overflow` is final capacity only, and `candidateOverflow` reports
+  candidate/BVH loss and clears on every submission. Their separate whole-join aggregate diagnostic
+  retains its documented meaning. Gather permits adjacent status words written by separate passes;
+  outputs written in one pass must have disjoint aligned binding ranges.
+  Chunked `GraphVectorView` inputs are unsupported.
 - **`GPUOffsetExpansion`** gives the owner index and local index of every child row from an offsets view
   (`explode`, `get_coordinates(return_index=True)`, `get_parts(return_index=True)`) by binary search per row.
   Empty ranges yield no rows, `ownerMap` chains levels (vertex to ring to polygon to feature), and the
@@ -660,27 +837,17 @@ Dataframe joints around the joins. `GPUPairGather` consumes join row indices and
   `'contains'`, with closed comparisons and non-finite bounds rejected. It is bounds-level only, and OGC
   `envelope.within(box)` rejects bounds that only touch the border where this accepts them, so refine
   with `GPUSpatialPredicateJoin`.
+  `GPUGeometryMeasures` planar bounds can be connected directly. Its geographic bounds unwrap
+  longitude from each feature's first vertex, so normalize features and query to a common branch
+  or test all relevant query intervals shifted by whole turns and union their masks. For example,
+  bounds `[179,181]`, reversed-line bounds `[-181,-179]`, and one-turn-shifted bounds `[539,541]`
+  need equivalent viewport intervals `[180.25,180.75]`, `[-179.75,-179.25]`, and `[540.25,540.75]`.
+  Testing only `[-179.75,-179.25]` retains only the reversed line. `wrapX` splits a wrapped query
+  into two rays; it does not move feature bounds onto the query's longitude branch. Use the
+  filter's supported metric `'none'`, rather than passing a geographic measures metric context.
 
 Matched GeoPandas 1.2.0 `sjoin` (inner 11 pairs, left 32 rows) and `sjoin_nearest` with ties and
 `distance_col`, and `explode` and `get_coordinates` indices, exactly.
-
-{/* parameters: GPUBoundsFilter generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
-
-#### `GPUBoundsFilter` parameters
-
-- Packer: `getGPUBoundsFilterParameterValues(settings)`, writes `GPU_BOUNDS_FILTER_PARAMETER_LENGTH` (4) `float32` values.
-
-Settings of `getGPUBoundsFilterParameterValues`:
-
-| Field | Type | Description |
-|---|---|---|
-| `minX` | `number` | Left edge. |
-| `minY` | `number` | Bottom edge. |
-| `maxX` | `number` | Right edge, at least `minX` unless `wrapX` is set. |
-| `maxY` | `number` | Top edge, at least `minY`. |
-| `wrapX` (optional) | `boolean` | Allows `minX > maxX`, meaning the box wraps through the longitude seam: it covers `x >= minX` and `x <= maxX` (for example `minX = 170, maxX = -170`). Intended for longitude/latitude contexts. Feature bounds must not wrap themselves. A wrapped box never satisfies `'contains'`, because a finite feature box cannot cover both sides of the seam. |
-
-{/* /parameters */}
 
 #### How it computes
 
@@ -712,9 +879,38 @@ Settings of `getGPUBoundsFilterParameterValues`:
 
 ::lens{scenario=gpu-spatial-analysis.bounds-filter rung=graph caption="One mask pass, then a visibility workflow compacts and publishes the selected rows."}
 
+{/* parameters: GPUBoundsFilter generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
+
+#### `GPUBoundsFilter` parameters
+
+- Packer: `getGPUBoundsFilterParameterValues(settings)`, writes `GPU_BOUNDS_FILTER_PARAMETER_LENGTH` (4) `float32` values.
+
+Settings of `getGPUBoundsFilterParameterValues`:
+
+| Field | Type | Description |
+|---|---|---|
+| `minX` | `number` | Left edge. |
+| `minY` | `number` | Bottom edge. |
+| `maxX` | `number` | Right edge, at least `minX` unless `wrapX` is set. |
+| `maxY` | `number` | Top edge, at least `minY`. |
+| `wrapX` (optional) | `boolean` | Allows `minX > maxX`, meaning the box wraps through the longitude seam: it covers `x >= minX` and `x <= maxX` (for example `minX = 170, maxX = -170`). Intended for longitude/latitude contexts. Feature bounds must not wrap themselves. A wrapped box never satisfies `'contains'`, because a finite feature box cannot cover both sides of the seam. |
+
+{/* /parameters */}
+
 ### `GPUBufferSelection`
 
+Keep the observation and reference views distinct: `points.positions` contains rows to select;
+`features.positions` contains station or bus-stop rows. For example, an observation at `(0, 0)`
+is outside a 400 m buffer around a station at `(1000, 0)`. Binding the observation view to both
+sides would create a self-match at zero distance. Size candidate capacity from the query view's
+row count. The Near Transit snippet uses `observationPositions`, `stationPositions` or
+`busPositions`, and separate `transitStarts`/`transitEnds` for line features.
+
 Selects features within a distance of any reference feature, without building buffer polygons.
+
+The compact `output.matches.status.overflow` reports final selection capacity loss. Optional
+`output.matches.status.candidateOverflow` reports join candidate loss separately. `requiredCount`
+counts matches reaching compaction and is a lower bound when candidates were lost.
 
 ::lens{scenario=gpu-spatial-analysis.buffer-selection rung=result caption="Observations within 300 m of a library are selected; distance is straight-line, not walking."}
 
@@ -723,8 +919,14 @@ No warning is possible because the distance is a GPU view; see [Precision of lon
 Selects points within a per-frame distance (inclusive) of point or segment features. A
 polyline is passed as consecutive segment rows. The contributor composes `GPUNearestFeatureJoin`. Unlike
 the join's unordered `matches`, it writes a source-aligned 0/1 mask and stable IDs in ascending row
-order (`output.outputMask`, `output.matches`), with a clamped count and overflow that covers both the
-output capacity and the join. `points` is a `GPUPointGeometryPort` whose `sourceIds` become the match IDs.
+order (`output.outputMask`, `output.matches`), with a clamped count. `output.matches.status.overflow`
+reports final output capacity loss; optional `output.matches.status.candidateOverflow` reports
+join candidate loss separately. `points` is a `GPUPointGeometryPort` whose `sourceIds` become the match IDs.
+Optional `output.nearestFeatureRows` contains the original feature row before application-ID
+remapping; it replaces the misleading `nearestFeatureIds` spelling, which is rejected. Selection
+uses those rows, so a feature ID of `0xffffffff` still selects a genuinely matched point. Feature
+`sourceIds` are ignored by this selection operation; query `points.sourceIds` still identify the
+selected query points in `matches.ids`.
 `output.drawInstanceCount` (one `uint32` row, requires `output.matches`) receives the clamped selected count
 from the publish node, so it can be bound as an indirect draw instance count. The distance is planar in
 coordinate units by default; with `spatialContext: {coordinateSpace: 'longitude-latitude', metric:

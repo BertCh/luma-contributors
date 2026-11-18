@@ -86,10 +86,23 @@ The space-time permutation model of `GPUSpatialScanStatistic` conditions on the 
 explained by the bucket margin and is not a cluster (Tango et al. 2011). This scan compares the counts with a supplied `baseline` instead:
 `F = C ln(C / B) + B - C` for `C > B`, Neill et al. (2005). It scans windows ending at the last bucket.
 
-For each center and window length, the neighborhood is the center and its nearest zones (the kNN table the scan builds,
+For each center and window length, the neighborhood is its nearest zones (the kNN table the scan builds,
 `maximumNeighbors <= 64`). Fast Subset Scan (Neill 2012): the best subset is a prefix of the zones sorted by
 `C_i / B_i`, so an exact search over the subsets of the neighborhood is a fixed sort and one prefix scan.
 A zone whose baseline is not positive is excluded. The most likely cluster is reported with its member zones.
+
+Neighbor discovery defaults to `nearestZoneSearch: 'auto'`, which uses the same exact coordinate
+indexes as the spatial scan for truncated lists (at most 64 rows). A whole-domain list uses
+full-scan. Neighbors are ordered by `(separation key, zone row)`; a zero-distance tie with lower
+rows can displace the center itself. For three coincident zones and `maximumNeighbors: 1`, every
+neighborhood contains only row 0, so cases on rows 1 and 2 are outside those neighborhoods.
+`'indexed'` selects it explicitly; `'full-scan'` selects the exhaustive route for comparison.
+`contributor.nearestZoneSearch` reports the resolved route, and
+`contributor.estimatedFullScanSeparationCount` bounds exhaustive separation evaluations per submission
+by `5 * zones^2` for a shorter-than-domain list, or `zones^2` for a whole-domain list, excluding sorting.
+Both routes order by `(separation key, zone row)` in planar and great-circle contexts. The index is
+rebuilt each submission; axis-degenerate data can still require quadratic search work. See the
+[spatial scan neighbor discovery details](./operators-dynamics.md#gpuspatialscanstatistic).
 
 Inference: `maximumReplicates` Monte Carlo replicates of independent Poisson counts from the baseline, each searched like the data.
 The p-value is `(1 + #{replicate maxima >= observed}) / (P + 1)`. Secondary clusters and repeated-analysis adjustment are not

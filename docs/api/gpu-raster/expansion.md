@@ -8,6 +8,30 @@ raster contributors from `@luma-contributors/analysis/raster-analysis`, terrain 
 `@luma-contributors/analysis/gpu-terrain`, and hull/mesh contributors from
 `@luma-contributors/analysis/gpu-spatial-analysis`.
 
+`GPURasterRankFilter`, `GPURasterFillNoData` and `GPURasterReprojection` accept the published
+`GPURasterBand`: either packed buffer storage or a selected channel of a single-mip, single-layer
+2D `r32float`/`rgba32float`, `r32uint`/`rgba32uint`, or `r32sint`/`rgba32sint` texture matching
+the band's scalar format. Texture extents must equal the input grid (the source grid for
+reprojection). Channels are zero-based; single-channel textures require channel zero. Texture
+handles must include `Texture.SAMPLE` usage; `Texture.COPY_DST` alone is insufficient. Supplied
+`input.scale` and `input.offset` must remain finite when converted to float32.
+The published `GPURasterTextureToBuffer` adds one graph conversion pass, compares nodata in the
+raw selected channel, combines it with the band's optional `validity` mask, and applies scale
+and offset once. These continuous-value operators produce calibrated float32 values and uint32
+validity; integer category/label operators retain their separate exact-integer input contracts.
+Texture shape, format, channel and mask are validated at construction; graph ownership is checked
+before any conversion scratch or nodes are created. Updating texture contents or mask flags and
+resubmitting the compiled graph recomputes the result.
+Input band metadata and its storage descriptor are captured at construction, including channel,
+calibration, nodata and view/mask identities. Declared fields are read by property access, including
+inherited and non-enumerable values on both the band and its storage descriptor. Mutating the caller's
+descriptors does not change the measurement read by a wired graph; update the captured GPU contents
+or rebuild the contributor.
+The surface-preparation recipe validates the texture, target graph and caller-provided output
+boundary, including each supplied view's format, packing and exact row count, before allocating
+default outputs. A rejected texture or invalid output can be corrected and retried on the same
+graph with the same recipe ID.
+
 ## Operations and contracts
 
 | Proposal | Public API | Contract and current boundary |
@@ -71,30 +95,67 @@ memory or throughput guarantee.
 
 `GPURasterFractionalCoverage` accepts `grid` and `zones` using the shared four-level polygon
 layout. Allocate `zoneIds`, `cellIds`, and `fractions` with a common tuple capacity, plus scalar
-`status.count`, `status.requiredCount`, `status.overflow`, and per-feature `zoneValidity`. A failed polygon triangulation
-invalidates its feature; that feature contributes no tuples. `status.requiredCount` counts all positive
-coverage tuples even when output capacity is insufficient. A vertex whose pixel coordinate is
-within four float32 steps of an integer (`4 * 2^-23 * max(|k|, 1)`) is placed on that cell
-boundary, so a zone edge that follows a cell boundary leaves no sliver tuple in the neighbouring
-cell, also when the cell size is not a float32 number (0.3, a third of a degree). The snap cannot
+`status.count`, `status.requiredCount`, `status.overflow`, optional `status.candidateOverflow`, and
+per-feature `zoneValidity`. A failed polygon triangulation invalidates its feature; that feature
+contributes no tuples. On final tuple-capacity overflow, `requiredCount` counts positive tuples:
+increase the tuple capacity to that count and rerun. On indexed candidate exhaustion,
+`candidateOverflow = 1`, `requiredCount = 0xffffffff`, and `overflow` may remain zero. Increase
+the candidate budget and rerun **before interpreting requiredCount as a tuple allocation size**.
+The sentinel is not a request for a 0xffffffff-row tuple buffer. Keep the two overflow flags separate.
+A vertex whose pixel coordinate is
+within `min(1e-5, 4 * 2^-23 * max(|k|, 1))` pixels of a cell boundary is placed on that boundary:
+integers for area grids, half-integers for point grids. This removes boundary slivers only when
+the inverse-affine error is within that cap. Decimal cells can exceed the cap even with zero
+origin: at width 0.3, `[39.3, 39.6]` can leave about 1.53e-5 coverage in column 130 beside the
+intended column 131. Every positive sliver occupies a tuple and can exhaust an otherwise exact
+tuple capacity; allocate spare tuple capacity, checking candidateOverflow before requiredCount/overflow. Device division can
+change these tiny supports. The exact identity
+affine `[1, 0, 0, 0, 1, 0]` bypasses snapping, preserving all representable subpixel coordinates.
+For other affines, snapping compares displacement from the nearest lattice point and moves a
+vertex by at most 1e-5 pixel per axis, independently of pixel index. Clipping uses cell-local
+coordinates. The snap cannot
 absorb the rounding of `position - origin`: keep the grid origin near the geometry. The required `parameters` view
 (`getGPURasterFractionalCoverageParameterValues(grid)`, 8 float32 values) carries the affine, so a
 moved georeference of the same size does not recompile.
+The website coverage runs distinguish pending readback, incomplete polygon coverage and a valid
+empty intersection. Pending/incomplete readouts show that state and clear the highlighted support;
+only complete coverage may display zero cells and zero area.
 
 `GPURasterFractionalZonalStatistics` consumes those views, a calibrated band, `zoneCount`, and
 `quantity`. It returns `totals`, coverage-weighted raw-value `means`, `coveredArea`, `validArea`,
 and `validity`. Extensive cell totals use `value * fraction`; density and intensive integrals use
-`value * fraction * abs(affine determinant)`. Missing values reduce observed area and remain unknown.
+`value * fraction * cellArea`. Missing values reduce observed area and remain unknown.
 Means divide the value/fraction sum by observed fractions. Empty or wholly unobserved zones have
 invalid totals/means; covered/observed areas remain available. Incomplete coverage invalidates all
-aggregates. Area units are source-coordinate units squared; project geographic polygons before
-interpreting physical area. The determinant is that of `grid.affine`, fixed at compile time, unless
+aggregates. The default `cellSizeMode: 'uniform'` uses source-coordinate units squared.
+Scalar, categorical and distribution consumers require `count <= tuple capacity`,
+`requiredCount == count`, zero `overflow`, zero optional `candidateOverflow`, and nonzero
+zone validity. Prepared-coverage operation ports preserve optional candidateOverflow. Missing
+candidate evidence is accepted only when that optional input is not supplied. A clean subsequent
+submission restores usable results. Means divide by the actual positive fraction sum, including
+normal float32 sums below 1e-30; only zero support uses a safe denominator.
+`'geographic'` (longitude/latitude degrees) and `'web-mercator'` (EPSG:3857 meters) use WGS84
+ground square meters at each row center, with the same approximation as the fractional categorical
+and distribution contributors. Both modes require an axis-aligned grid. Alternatively, supply
+positive finite `cellAreas`, exactly one per raster cell, in caller-declared area units; this requires
+uniform mode. An invalid explicit area suppresses the affected zone's result (NaN areas and
+totals/means, validity zero). `coveredArea` and `validArea` use the selected area units; density
+and intensive `totals` have input units times area, while extensive totals retain input units.
+Means remain coverage-fraction weighted in input units for every area model.
+The default planar determinant is that of `grid.affine`, fixed at compile time, unless
 the optional `parameters` prop is given: pass the same per-frame georeference view as the coverage
 class, and the cell area is read from it on every encoding. Do so whenever the coverage
 `parameters` are rewritten for another cell size; otherwise the fractions follow the new
 georeference while `coveredArea`, `validArea` and density `totals` keep the compiled cell area.
 `GPURasterFractionalCategoricalStatistics` and `GPURasterFractionalZonalDistribution` take the
 same prop.
+Ground-mode row centers also follow the origin y and signed row step in `parameters`.
+Explicit `cellAreas` override the affine area and must be updated by the caller when needed.
+With explicit areas the unused affine determinant need not fit float32. Ground modes also check
+the per-frame cross-axis words: a repacked non-axis-aligned affine suppresses all scalar results
+(NaN aggregates and validity zero). Each zone's published areas and, when observed, total/mean
+must fit finite float32; an unrepresentable aggregate suppresses that zone, preserving usable
+zones. Empty or wholly missing zones retain their finite area outputs and validity zero.
 
 {/* parameters: GPURasterFractionalCoverage generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
@@ -141,10 +202,15 @@ unresolved evidence. Cross-tile drainage and branching D-infinity/MFD are not im
 
 ### Group outlines and recipes
 
-`GPUGroupConcaveHull` masks points for each requested group before running independent Delaunay
-stages. Every group reserves `max(0, 2*pointCount-5)` triangle slots and three boundary slots per
-triangle; status and masks distinguish used output. This explicit `groupCount * pointCount` work
-and memory should be bounded by the caller. It preserves original point indices without readback.
+`GPUGroupConcaveHull` uses one group-aware Delaunay build and preserves original point rows without
+readback. Its default fixed layout reserves `T = max(0, 2*pointCount-5)` triangle slots and `3*T`
+boundary slots per group. With `layout: 'packed'`, those reservations cover all groups together;
+retained triangles and boundary edges form separate compact group-major lists. The four views in
+`output.groups` (`triangleOffsets`, `triangleCounts`, `edgeOffsets`, `edgeCounts`) each have one row
+per group. Packed `status.count` and `requiredCount` count boundary edges and `overflow` is zero
+with the required full reservation. `status.converged` has one row per group; incomplete groups
+emit no geometry. Validity marks the used compact prefix, with zero padding. The triangle
+reservation is bounded by 715,827,882 rows for uint32 addressing and by device binding sizes.
 
 `addClusterAndOutlineRecipe` accepts `outline: {kind: 'alpha', maximumCircumradius}`. The result's
 `outlineType` identifies the selected mode. Alpha geometry lives in `concaveHull`; `areas`,
@@ -188,16 +254,50 @@ Settings of `getGPURasterWalkingCostParameterValues`:
 
 ### `GPURasterReprojection`
 
-Both affines are read from a float32 parameter view packed by
+The sampling transform is read from a float32 parameter view packed by
 `getGPURasterReprojectionParameterValues({sourceGrid, destinationGrid, inverseProjection})`.
 Write new words into a `GPUParameterBuffer` between encodings to change origins, rotation, shear
 or resolution. Shapes, CRS, pixel interpretation and the inverse projection stay fixed. Affines
 whose packed float32 axes are singular are rejected before encoding. The packer
-subtracts same-CRS origins in float64 and splits source origins for double-single projections, so
-large map coordinates retain sub-cell accuracy. Projection inputs should still use a local frame.
+composes the entire destination-to-source transform in float64 for same-CRS sampling, including
+origin differences and area/point sample shifts. Evaluation is centered on a destination pixel
+near source support before packing, preserving cancellation between large scales and translations.
+Identical grids therefore
+preserve sample coordinates on wide sheared strips within float32 sampling-index precision.
+With an explicit projection, the source inverse linear affine is computed in float64 before packing;
+the packer rejects a source inverse whose packed coefficients form a singular matrix.
+Double-single outputs subtract a split
+source origin. Projection inputs should still use a local frame; ill-conditioned source affines can
+amplify float32 projection error, so choose a source lattice that resolves the required cells.
 Without `parameters` the contributor owns a buffer containing the initial affines. Call `destroy()`
 after destroying its compiled graph, including for same-CRS sampling. Tile reprojection forwards
 this same parameter view to its sampler; source tile bounds stay fixed in source pixel coordinates.
+
+The 20-word packed layout is now **version 3**, exposed as
+`GPU_RASTER_REPROJECTION_PARAMETER_VERSION`, with the version stored in word 17. Repack manual
+parameter buffers using the current packer. A different version produces NaN values and validity
+zero. Versions 1 (separate axes/determinant) and 2 (unanchored composition) must be repacked.
+
+| Words | Same CRS (no inverse projection) | Explicit inverse projection |
+|---|---|---|
+| 0–3 | Composed sample matrix `[a, b, d, e]` | Destination world matrix `[a, b, d, e]` |
+| 4–5 | Source sample position at the destination anchor, including pixel shifts | Destination world origin |
+| 6–9 | Reserved zeros | Source inverse matrix `[a, b, d, e]` |
+| 10 | Reserved zero | Reserved zero |
+| 11–12 | Zeros | Local-f32 projection-origin minus source-origin shift; zeros for double-single |
+| 13–16 | Zeros | Source origin `[xHigh, xLow, yHigh, yLow]` for double-single; zeros for local-f32 |
+| 17 | Version 3 | Version 3 |
+| 18–19 | Destination pixel anchor `[column, row]` | Reserved zeros |
+
+Without an inverse projection, subtract words 18–19 from integer destination column/row,
+multiply by words 0–3, and add words 4–5 to obtain source sample column/row directly.
+Area centers and the source half-cell shift
+are already included. With a projection, generate destination centers as before, project, subtract
+the source origin, apply words 6–9, and subtract 0.5 for an area-interpreted source grid.
+
+Nearest sampling compares the coordinate's fractional part to 0.5 before incrementing its floor,
+on both axes. Exact ties select the higher index. This avoids rounding a coordinate just below
+the half-cell boundary up when adding 0.5 in float32.
 
 {/* parameters: GPURasterReprojection generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
@@ -222,6 +322,8 @@ coordinates. Without one, CRS metadata must match. Source pixels outside the pro
 invalid projection domains remain nodata; strict bilinear sampling requires every participating
 sample, while renormalization uses surviving support. A projection-bearing contributor registers
 once and owns its projection parameter buffer: destroy it after destroying its compiled graph.
+Renormalization divides by the actual positive weight, so a lone value of 7 remains 7 even at
+normal float32 weight 1e-32. Zero support uses a safe denominator and remains invalid.
 
 Reconstruction, fill holes, thinning and walking perform an additional check round to establish the
 final fixed point. The rounds run as GPU-gated iterations: once a round changes nothing, later rounds
@@ -236,6 +338,27 @@ unconverged reconstruction holds the partially spread marker, and an unconverged
 partially thinned mask. Earlier releases published all-NaN or `0xfffffffe` output instead; callers
 that relied on that must now test `converged`. Watershed segmentation leaves original
 markers identifiable but publishes unresolved non-marker pixels when its step budget is exhausted.
+
+For reconstruction and fill holes, `maximumIterations` bounds the published propagation distance
+in neighbor steps. The extra verification pass only checks whether the budgeted result is a fixed
+point; it never advances that result. `iterationCount` includes this check and can therefore be
+`maximumIterations + 1`. With marker `[1, 0, 0, 0]`, mask `[1, 1, 1, 1]` and a one-round dilation
+budget, reconstruction publishes `[1, 1, 0, 0]`, count 2, `converged=0` and
+`iterationLimitReached=1`. The CPU reconstruction and hole-fill twins obey the same budget and
+default of 64 rounds; they drop only the GPU command-node cap. For an unfinished hole fill,
+background farther than the budget from the boundary is still marked as a hole.
+The CPU hole-fill queue stops at that frontier and only inspects immediate neighbors there to
+verify completeness; it does not traverse the remaining connected component. Construction captures
+the grid, iteration budget and nested port names in both operation forms and contributors.
+The website's fill-hole and reconstruction previews return convergence, label unfinished propagation,
+and withhold final fill/cut counts and their derived overlays until convergence.
+The showcase's missing-observations scene likewise omits the reconstruction bar from its selected-cell
+chart until convergence, matching its map and readout even when the partial value is finite.
+
+Reconstruction band inputs in both operation forms use the first `grid.width * grid.height` samples
+and validity flags. Each supplied values/validity view must contain at least that many entries; spare
+capacity is ignored. CPU calibration borrows that logical prefix at the supplied typed-array offset,
+so a nonzero offset in either values or validity remains meaningful. Undersized bands are rejected.
 
 ## Reference evidence
 

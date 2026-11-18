@@ -57,9 +57,12 @@ Two nearby line vertices round to the same grid point. The keep-collapsed policy
 Default `searchStructure: 'grid'` reuses candidate scratch in batches of at most 256 lines.
 `candidateCapacity` defaults to 1,024 and is at most 4,294,967,290. Overflow uses bounded exhaustive
 fallback or reports incomplete geometry; `candidateOverflowPolicy: 'incomplete'` disables fallback.
+If this can suppress a line, supply `issueCode`, `validity` or `status.candidateOverflow`; required
+geometry/count outputs alone are rejected because suppressed and genuinely empty lines have the
+same zero counts. This check applies to GPU and CPU operation forms too.
 Explicit brute force and fallback bound `(positions + lines) * (references + 1)^3` by 16,777,216.
 
-Two reference points are inserted along a six-unit segment in projection order. Counts delimit the fixed output slots; validity and source edges are captured.
+Two reference points are inserted along a six-unit segment in projection order. Counts delimit the fixed output slots; issue codes and source edges are captured. Optional validity is nonzero for usable lines.
 
 {/* lens:GPUSegmentSnap */}
 

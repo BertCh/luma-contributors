@@ -1,0 +1,38 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-dataframe.coregionalization-fit",
+  "rung": "result",
+  "size": "full",
+  "example": {
+    "code": "graph.add(new GPUCoregionalizationFit(properties));\nreturn properties.output;",
+    "language": "ts",
+    "lineCount": 2
+  },
+  "scenarioId": "gpu-dataframe.coregionalization-fit",
+  "viewId": "result-view",
+  "caption": "Result of gpu-dataframe.coregionalization-fit: distances, semivariances, pairCounts, parameters → invalidCount. rows: 1. values read back from the GPU run. input distances: 4 rows.",
+  "description": "Result of gpu-dataframe.coregionalization-fit: distances, semivariances, pairCounts, parameters → invalidCount. rows: 1. values read back from the GPU run. input distances: 4 rows.",
+  "llms": "Result of gpu-dataframe.coregionalization-fit: distances, semivariances, pairCounts, parameters → invalidCount\n\n- rows: 1\n- input distances: 4 rows\n- input semivariances: 12 rows\n- input pairCounts: 4 rows\n- input parameters: 5 rows\n- Coordinate model unknown: drawn as planar x, y.\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "rows",
+    "value": "1"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><div class=\"cv-result-tables\"><table class=\"cv-table\" data-key-space=\"bin\"><caption>Common lag bin (last has zero pairs) (bin) · 4 rows</caption><thead><tr><th scope=\"col\">distances</th><th scope=\"col\">pairCounts</th></tr></thead><tbody><tr><td data-provenance=\"readback\">0.5</td><td data-provenance=\"readback\">10</td></tr><tr><td data-provenance=\"readback\">1</td><td data-provenance=\"readback\">20</td></tr><tr><td data-provenance=\"readback\">2</td><td data-provenance=\"readback\">30</td></tr><tr><td data-provenance=\"readback\">3</td><td data-provenance=\"readback\">0</td></tr></tbody></table><table class=\"cv-table\" data-key-space=\"triangle-entry\"><caption>Bin-major upper triangle (00, 01, 11) (triangle-entry) · 12 rows</caption><thead><tr><th scope=\"col\">semivariances</th></tr></thead><tbody><tr><td data-provenance=\"readback\">0.734</td></tr><tr><td data-provenance=\"readback\">-0.367</td></tr><tr><td data-provenance=\"readback\">1.1</td></tr><tr><td data-provenance=\"readback\">1.38</td></tr><tr><td data-provenance=\"readback\">-0.688</td></tr><tr><td data-provenance=\"readback\">2.06</td></tr><tr><td colspan=\"1\">… 6 more rows</td></tr></tbody></table><table class=\"cv-table\" data-key-space=\"parameter\"><caption>Tolerance, model code, nugget, sill, range (parameter) · 5 rows</caption><thead><tr><th scope=\"col\">parameters</th></tr></thead><tbody><tr><td data-provenance=\"readback\">0.00001</td></tr><tr><td data-provenance=\"readback\">0</td></tr><tr><td data-provenance=\"readback\">0</td></tr><tr><td data-provenance=\"readback\">1</td></tr><tr><td data-provenance=\"readback\">2</td></tr></tbody></table><table class=\"cv-table\" data-key-space=\"coefficient\"><caption>Structure-major row-major square entry (coefficient) · 4 rows</caption><thead><tr><th class=\"cv-col--output\" scope=\"col\">matrices</th><th class=\"cv-col--output\" scope=\"col\">loadings</th></tr></thead><tbody><tr><td class=\"cv-col--output\" data-provenance=\"readback\">2</td><td class=\"cv-col--output\" data-provenance=\"readback\">1</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">-1</td><td class=\"cv-col--output\" data-provenance=\"readback\">-1</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">-1</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.618</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">3</td><td class=\"cv-col--output\" data-provenance=\"readback\">1.62</td></tr></tbody></table><table class=\"cv-table\" data-key-space=\"fit\"><caption>Coregionalization fit (fit) · 1 rows</caption><thead><tr><th class=\"cv-col--output\" scope=\"col\">diagnostics</th><th class=\"cv-col--output\" scope=\"col\">validity</th><th class=\"cv-col--output\" scope=\"col\">iterationCount</th><th class=\"cv-col--output\" scope=\"col\">converged</th><th class=\"cv-col--output\" scope=\"col\">iterationLimitReached</th><th class=\"cv-col--output\" scope=\"col\">invalidCount</th></tr></thead><tbody><tr><td class=\"cv-col--output\" data-provenance=\"readback\">1.3e-13, 0, 3, 60</td><td class=\"cv-col--output\" data-provenance=\"readback\">1</td><td class=\"cv-col--output\" data-provenance=\"readback\">2</td><td class=\"cv-col--output\" data-provenance=\"readback\">1</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">1</td></tr></tbody></table></div><p class=\"cv-legend\">grey: input distances, semivariances, pairCounts, parameters · blue: output matrices, loadings, diagnostics, validity, iterationCount, converged, iterationLimitReached, invalidCount</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-11-18T16:33:02.743Z",
+    "runId": "run-7691add7",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-7691add7",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

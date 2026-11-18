@@ -7,24 +7,24 @@
   "viewId": "result-view",
   "caption": "Result of gpu-spatial-analysis.segment-ring-assembly: positions → ringPositions.",
   "description": "Result of gpu-spatial-analysis.segment-ring-assembly: positions → ringPositions. polygons: 64. values read back from the GPU run. input positions: 17 polygons.",
-  "llms": "Result of gpu-spatial-analysis.segment-ring-assembly: positions → ringPositions\n\n- polygons: 64\n- input positions: 17 polygons\n- Planar coordinates (m); uniform scale.\n- 3201 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 3248 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-spatial-analysis.segment-ring-assembly: positions → ringPositions\n\n- polygons: 64\n- input positions: 17 polygons\n- Planar coordinates (m); uniform scale.\n- positions: 10 of 17 polygons shown; evenly sampled features and vertices\n- ringPositions: 1 of 64 polygons shown; evenly sampled features and vertices; 63 invalid or uncaptured features omitted\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "polygons",
     "value": "64"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-result-view\"><svg class=\"cv-figure\" width=\"160\" height=\"96\" viewBox=\"0 0 160 96\" preserveAspectRatio=\"xMidYMid meet\" data-extent=\"[[-1975.719970703125,0],[10017.650390625,17517.720703125]]\" role=\"img\" aria-label=\"Result: ringPositions\"><defs><pattern id=\"lens-gpu-spatial-analysis-segment-ring-assembly-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"3\" height=\"3\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-spatial-analysis-segment-ring-assembly-result-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-spatial-analysis-segment-ring-assembly-result-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g data-role=\"output\"><path class=\"cv-mark cv-mark--output cv-area\" data-role=\"output\" stroke-width=\"0.8999999999999999\" fill=\"#0072b2\" stroke=\"#0072b2\" fill-opacity=\"0.22\" d=\"M80.6,13.68 L63.27,8.4 L53.13,25.47 L64.85,72.94 L103.19,76.76 L105.48,65.72 L107.42,65.44 L107.83,53.82 L94.97,54.56 L100.38,41.06 L98.33,35.94 L96.47,25.79 L96.07,24.5 L95.18,15.26 L97.38,11.98 Z\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"0\"></path></g><g data-role=\"highlight\"></g></svg></section>",
+    "html": "<section class=\"lens-view lens-result-view\"><svg class=\"cv-figure\" width=\"160\" height=\"96\" viewBox=\"0 0 160 96\" preserveAspectRatio=\"xMidYMid meet\" data-extent=\"[[-1975.719970703125,2711.679931640625],[10017.650390625,17517.720703125]]\" role=\"img\" aria-label=\"Result: ringPositions\"><defs><pattern id=\"lens-gpu-spatial-analysis-segment-ring-assembly-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"3\" height=\"3\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-spatial-analysis-segment-ring-assembly-result-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-spatial-analysis-segment-ring-assembly-result-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><desc>ringPositions: 1 of 64 polygons shown; evenly sampled features and vertices; 63 invalid or uncaptured features omitted</desc><g data-role=\"output\"><path class=\"cv-mark cv-mark--output cv-area\" data-role=\"output\" stroke-width=\"0.8999999999999999\" fill=\"#0072b2\" stroke=\"#0072b2\" fill-opacity=\"0.22\" d=\"M80.72,15.09 L67.65,11.02 L61.18,9.47 L50.48,7.17 L48.36,20.98 L48.83,56.6 L53.04,87.92 L80.08,80.41 L101.25,88.16 L110.35,85.43 L109.21,79.9 L110.15,80.3 L111.99,78.98 L109.21,75.26 L108.58,66.07 L111.58,62.3 L105.21,62.26 L96.66,61.93 L88.82,53.93 L105.39,46.89 L103.03,45.26 L101.56,40.91 L100.76,34.56 L99.49,29.19 L96.41,26.81 L98.74,28.05 L96.3,20.92 L98.89,15.99 L99.29,16.51 L100.55,11.9 L94.42,10.49 L80.7,13.94 Z\" fill-rule=\"evenodd\" data-feature-row=\"0\" data-capture-id=\"gpu-spatial-analysis-segment-ring-assembly-snapshots-ringPositions-0\" data-provenance=\"readback\"></path></g><g data-role=\"highlight\"></g></svg></section>",
     "width": 160,
     "height": 96
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-11T15:21:17.900Z",
-    "runId": "run-14cbb874",
+    "date": "2026-11-18T16:33:48.194Z",
+    "runId": "run-14451f57",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-14cbb874",
+    "runId": "run-14451f57",
     "rung": "result",
     "bindings": {},
     "clauses": [],

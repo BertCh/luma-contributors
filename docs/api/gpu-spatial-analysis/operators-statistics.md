@@ -72,9 +72,30 @@ Neighbors, islands and re-standardization follow the shared rules of the local s
   `S2` and from the neighbors of other rows, in one pass with no cascade (a row whose only neighbors
   were islands keeps its place in `n` and adds no weight). `islands: 'keep'` is esda's convention.
   The summary `islandCount` reports the islands under either policy. esda parity needs `'keep'`.
-- **Truncated weights.** If `weights.status.overflow` is nonzero the weights are incomplete, so the
-  weight sums, the mean, the variance and every statistic block are NaN (`n` and `islandCount` stay;
-  the `output.joinCounts` view holds 0).
+- **Incomplete weights.** If either `weights.status.overflow` or `weights.status.candidateOverflow`
+  is nonzero, the weight sums, mean, variance and every statistic block (including analytic
+  p-values) are NaN. Population, island and black counts remain available; `output.joinCounts`
+  holds 0 as an unavailable value, not an observed zero. Display consumers must check both loss
+  flags: unavailable means or lags have no quadrant, and join counts are unavailable until recovery.
+  This applies to packed and chunked weights in both `mode: 'tiled'` and
+  `mode: 'reference'`, even when no output status is requested. Pass the producer's `outputWeights`
+  directly so its loss flags travel with the CSR buffers.
+  Observed joins use up to one fractional digit: asymmetric weights can produce half joins.
+  The showcase tooltip reads the published join class (the no-class sentinel means no data),
+  and the quadrant legend counts unavailable rows separately from its reported island total.
+- **Loss diagnostics.** Optional `output.status.overflow` and `output.status.candidateOverflow`
+  are separate uint32 scalars. They forward the producer's corresponding flags as 0 or 1,
+  and write 0 for an absent input flag. Overflow reports final capacity loss; candidateOverflow
+  reports intermediate loss. Contiguity pair-only loss reports `[0, 1]`, even if the final slots
+  are ample. The statistic forwards these causes independently.
+  Each is overwritten on every submission, so
+  inference resumes when the producer clears both flags. Increasing final output capacity cannot
+  recover dropped candidates. The summary layout, scalar allocation ownership and baseline limit
+  of eight storage bindings per kernel are unchanged.
+  Input `weights.status.overflow` needs at least one uint32 word; spare words are ignored.
+- **Chunk status.** Loss flags must be aggregated on outer `weights.status`. Local Moran,
+  hot-spot, local Geary and both global modes reject loss flags on individual CSR chunks at
+  construction, even if the outer port is also present, rather than silently ignore them.
 - **`alternative`** (`'two-sided'` default, `'greater'`, `'lesser'`; compile-time) selects
   the tail of every analytic p field, including the join counts: `'greater'` is the upper tail of z
   (for example positive autocorrelation of Moran's I), `'lesser'` the lower tail. `'directed'` and
@@ -116,11 +137,15 @@ uint32 count outputs preserve exact populations; float32 statistics remain round
 `GPUHotSpotAnalysis`: Scalable rows are bounded by 4,294,963,199 and actual device bindings.
 Additive uint32 count outputs preserve exact populations; float32 statistics remain rounded.
 
-`GPUHotSpotAnalysis`, `GPULocalMoran` and `GPULocalGeary` accept optional `output.status.invalidCount` and `output.status.overflow` uint32
-scalars. `invalidCount` counts selected input rows with nonfinite values; masked rows, islands and
-undefined analytic tests do not count. `overflow` forwards input weights' capacity overflow as 0 or 1,
-and is 0 when the input has no overflow port. Both outputs are overwritten on every encoding,
-independently of multiple-testing correction. Existing result views and formulas are unchanged.
+`GPUHotSpotAnalysis`, `GPULocalMoran` and `GPULocalGeary` accept optional uint32 scalars
+`output.status.invalidCount`, `output.status.overflow` and `output.status.candidateOverflow`.
+`invalidCount` counts selected input rows with nonfinite values; masked rows, islands and
+undefined analytic tests do not count. `overflow` and `candidateOverflow` forward the producer's
+corresponding final-capacity and intermediate-loss flags.
+Each is 0 or 1,
+and is 0 when its input port is absent. All requested status scalars are overwritten on every
+encoding, independently of multiple-testing correction. Candidate loss is kept separate: increasing
+the final capacity cannot recover candidates already dropped upstream.
 
 `GPUHotSpotAnalysis.selfWeight` accepts a numeric default or a packed float32 view from
 `getGPUHotSpotAnalysisParameterValues` hosted in a `GPUParameterBuffer`. Updating that buffer
@@ -159,8 +184,14 @@ Shared semantics (also `GPULocalGeary`):
   `GPUSpatialAutocorrelationSettings`.
 - **Neighbors.** A neighbor is a slot with a positive weight that points at another included row.
   Zero-weight slots, the focal row's own slot and out-of-range IDs are not neighbors: they are not
-  counted in `neighborCounts` or `minimumNeighbors`. If `weights.status.overflow` is nonzero the
-  weights were truncated and every output is NaN.
+  counted in `neighborCounts` or `minimumNeighbors`. If either `weights.status.overflow` or
+  `weights.status.candidateOverflow` is nonzero, the weights are incomplete. Floating statistic
+  and inference outputs (including raw and adjusted p-values) are NaN, and significance classes
+  (`quadrants` or `bins`) are 0. This also suppresses ungated Moran quadrants. The statistic's
+  own optional status forwards both producer flags. `neighborCounts` is 0 for every row during
+  loss, meaning unavailable, not that the retained CSR has no neighbors. Population/island counts
+  retain their meanings; `invalidCount` still counts nonfinite input values rather than
+  incomplete neighborhoods. When loss clears, active-neighbor counts are recomputed normally.
 - **Re-standardization.** Weights are used as given, except when `weights.information.transform` is
   `'row'`: then each row's weights are divided by their sum over the active neighbors, so masked or
   missing neighbors drop out and the row still sums to 1 (esda on the subset `W`, re-row-standardized,
@@ -229,14 +260,40 @@ and non-star), `Moran_Local`, `Geary_Local` and the statsmodels adjustments for 
 `'exclude'` and the re-standardized masked case.
 
 ```ts
-graph.add(new GPUNeighborSearch({
+const search = new GPUNeighborSearch({
   mode: 'radius', gridSize: [256, 256], positions,
   parameters: searchParameters.importToGraph(graph), output: {...weights, status: {overflow}}
-}));
-graph.add(new GPUHotSpotAnalysis({weights, values, parameters, output: {zScores, bins, pValues}}));
-graph.add(new GPULocalMoran({weights, values, parameters, output: {zScores, quadrants}}));
+});
+graph.add(search);
+graph.add(new GPUHotSpotAnalysis({weights: search.outputWeights, values, parameters, output: {zScores, bins, pValues}}));
+graph.add(new GPULocalMoran({weights: search.outputWeights, values, parameters, output: {zScores, quadrants}}));
 searchParameters.write(getGPUNeighborSearchParameterValues({bounds, radius: 500}));
 ```
+
+Pass the producer's `outputWeights` directly. Rebuilding a weights object from only its CSR buffers
+drops the search's completeness signals. For a line of four points spaced one unit apart, radius
+1.1 requires six directed neighbor slots: capacity one reports overflow and suppresses Moran
+inference; capacity six permits the defined tests. After candidate loss, even ample final capacity
+must leave inference unavailable until the producer reports a complete neighborhood.
+
+#### How it computes
+
+{/* lens:GPUHotSpotAnalysis */}
+{/* lens:GPULocalMoran */}
+
+`GPULocalMoran`:
+
+::lens{scenario=gpu-spatial-analysis.local-moran rung=datum bind=page datum=420 caption="Inspect tract 420: its value, neighbour lag, local I, and corrected p-value."}
+::lens{scenario=gpu-spatial-analysis.local-moran rung=formula caption="Follow 2 equations: local I and its conditional-randomisation z-score."}
+::lens{scenario=gpu-spatial-analysis.local-moran rung=kernel caption="Inspect 791 focal invocations and the retained WGSL bindings."}
+::lens{scenario=gpu-spatial-analysis.local-moran rung=graph caption="Trace queen weights, row standardisation, local moments, and FDR across 791 tracts."}
+
+`GPUHotSpotAnalysis`:
+
+::lens{scenario=gpu-spatial-analysis.hot-spot-analysis rung=datum bind=page datum=420 view=neighbourhood-view caption="Inspect tract 420: its queen neighbours, Gi* z-score, corrected p-value and confidence bin."}
+::lens{scenario=gpu-spatial-analysis.hot-spot-analysis rung=formula caption="Follow the Gi* z-score: a weighted sum of centred values over its neighbour-count spread."}
+::lens{scenario=gpu-spatial-analysis.hot-spot-analysis rung=kernel caption="Inspect 791 focal invocations, the moment passes, FDR adjustment and classify kernel."}
+::lens{scenario=gpu-spatial-analysis.hot-spot-analysis rung=graph caption="Trace queen weights, moments, Gi* gather, Benjamini-Hochberg adjustment and confidence bins."}
 
 {/* parameters: GPUHotSpotAnalysis generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
@@ -244,6 +301,7 @@ searchParameters.write(getGPUNeighborSearchParameterValues({bounds, radius: 500}
 
 - Packer: `getGPUHotSpotAnalysisParameterValues(settings?)`, writes `GPU_HOT_SPOT_ANALYSIS_PARAMETER_LENGTH` (1) `float32` values.
 - Packer: `getGPUSpatialAutocorrelationParameterValues(settings?)`, writes `GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH` (8) `float32` values.
+  - Input port: `parameters`.
 
 Settings of `getGPUHotSpotAnalysisParameterValues`:
 
@@ -265,6 +323,7 @@ Settings of `getGPUSpatialAutocorrelationParameterValues`:
 #### `GPULocalMoran` parameters
 
 - Packer: `getGPUSpatialAutocorrelationParameterValues(settings?)`, writes `GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH` (8) `float32` values.
+  - Input port: `parameters`.
 
 Settings of `getGPUSpatialAutocorrelationParameterValues`:
 
@@ -274,25 +333,6 @@ Settings of `getGPUSpatialAutocorrelationParameterValues`:
 | `fixedMoments` (optional) | `GPUSpatialAutocorrelationFixedMoments` | Optional moments that replace the moments of the current rows. |
 
 {/* /parameters */}
-
-#### How it computes
-
-{/* lens:GPUHotSpotAnalysis */}
-{/* lens:GPULocalMoran */}
-
-`GPULocalMoran`:
-
-::lens{scenario=gpu-spatial-analysis.local-moran rung=datum bind=page datum=420 caption="Inspect tract 420: its value, neighbour lag, local I, and corrected p-value."}
-::lens{scenario=gpu-spatial-analysis.local-moran rung=formula caption="Follow 2 equations: local I and its conditional-randomisation z-score."}
-::lens{scenario=gpu-spatial-analysis.local-moran rung=kernel caption="Inspect 791 focal invocations and the retained WGSL bindings."}
-::lens{scenario=gpu-spatial-analysis.local-moran rung=graph caption="Trace queen weights, row standardisation, local moments, and FDR across 791 tracts."}
-
-`GPUHotSpotAnalysis`:
-
-::lens{scenario=gpu-spatial-analysis.hot-spot-analysis rung=datum bind=page datum=420 view=neighbourhood-view caption="Inspect tract 420: its queen neighbours, Gi* z-score, corrected p-value and confidence bin."}
-::lens{scenario=gpu-spatial-analysis.hot-spot-analysis rung=formula caption="Follow the Gi* z-score: a weighted sum of centred values over its neighbour-count spread."}
-::lens{scenario=gpu-spatial-analysis.hot-spot-analysis rung=kernel caption="Inspect 791 focal invocations, the moment passes, FDR adjustment and classify kernel."}
-::lens{scenario=gpu-spatial-analysis.hot-spot-analysis rung=graph caption="Trace queen weights, moments, Gi* gather, Benjamini-Hochberg adjustment and confidence bins."}
 
 ### `GPULocalGeary`
 
@@ -326,6 +366,11 @@ residual power. Positive usable neighbors are normalized within each row. Masked
 values and islands have no residual; an all-zero or absent residual field leaves the statistic
 undefined. The per-row `output.status` codes remain `0` defined, `1` excluded, `2` undefined and
 `3` incomplete weights.
+
+Either upstream overflow or candidateOverflow (including a flag on an individual chunk) makes
+all LOSH statistics and normalized residuals NaN, every per-row status INCOMPLETE, and residualCount
+zero. The same compiled graph recovers after both input loss causes clear. The local-variability
+recipe therefore suppresses LOSH consistently with its Moran stage.
 
 The global mean uses parallel maximum, count and sum reductions. Residuals are divided by their
 maximum before summation, so a finite mean does not overflow merely because its unscaled total
@@ -508,6 +553,11 @@ Adjusts a column of per-row p-values for multiple testing on the GPU. `method` i
 - **`minimumFamilySize`.** `m = max(testedRows, minimumFamilySize)`; rows without a p-value count as
   `p = 1`. Use it to pin `m` when the tested set can shrink (for example an analysis mask that
   follows the viewport). The optional `output.testedCount` reports the `m` actually used.
+  The GPU contributor accepts `minimumFamilySize` up to 2^31. The host helper
+  `getMultipleTestingAdjustedPValues` and CPU twin `computeMultipleTestingAdjustmentOnCPU` accept
+  up to 2^32 - 1. Their allocation and sorting depend only on the supplied p-value rows, including
+  when the logical family is larger. For Benjamini-Yekutieli the host harmonic factor uses at most
+  64 terms, then an Euler-Maclaurin expansion with remainder below binary64 rounding.
 - **Which method.** Local statistics of neighboring rows share observations, so their p-values are
   dependent. Benjamini-Hochberg only controls the false discovery rate under independence or
   positive regression dependence; use `'benjamini-yekutieli'` (Benjamini-Hochberg times
@@ -566,6 +616,19 @@ the valid cells and is not changed by a display mask. `method` is `'benjamini-ho
   `alpha` may fall on either side of statsmodels' float64 decision.
 - At most 2,147,483,648 cells, subject to sort and device limits. This is a field operation on a linear cell array, so it needs no raster grid.
 
+```ts
+graph.add(new GPURasterFalseDiscoveryRateMask({
+  cellCount: width * height,
+  pValues: trendPValues,
+  validity: trendValidity,
+  method: 'benjamini-hochberg',
+  parameters: alphaParameters, // getGPURasterFalseDiscoveryRateMaskParameterValues({alpha: 0.05})
+  output: {significant, criticalPValue}
+}));
+```
+
+{/* lens:GPURasterFalseDiscoveryRateMask */}
+
 {/* parameters: GPURasterFalseDiscoveryRateMask generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 #### `GPURasterFalseDiscoveryRateMask` parameters
@@ -580,20 +643,26 @@ Settings of `getGPURasterFalseDiscoveryRateMaskParameterValues`:
 
 {/* /parameters */}
 
-```ts
-graph.add(new GPURasterFalseDiscoveryRateMask({
-  cellCount: width * height,
-  pValues: trendPValues,
-  validity: trendValidity,
-  method: 'benjamini-hochberg',
-  parameters: alphaParameters, // getGPURasterFalseDiscoveryRateMaskParameterValues({alpha: 0.05})
-  output: {significant, criticalPValue}
-}));
-```
-
-{/* lens:GPURasterFalseDiscoveryRateMask */}
-
 ### `GPULocalPermutationTest` and `GPUGlobalPermutationTest`
+
+For recording one row's raw conditional draws, import `createLocalPermutationReplay` and
+`LocalPermutationReplayProps` from `@luma-contributors/analysis/gpu-spatial-analysis`.
+Add the test to the same recording graph first, then add the returned command-node producer.
+Replay requires whole-CSR weights: exactly one chunk covering all test rows. Multi-chunk
+weights are rejected when constructing the replay, even after the test has been lowered;
+repeating the lowering step cannot enable that unsupported form. A supported whole-CSR test
+that has not been lowered instead reports that the test must be lowered first.
+The helper borrows the test's prepared inputs and replays its full permutation budget, including
+when sequential testing stopped early. Use `output.permutationCounts[row]` from the test to select
+the prefix used by its decision. A zero replay-info count means the row is unavailable or invalid;
+suppress its distribution. Captures use `gpu-replay` provenance and name the pinned row.
+The helper snapshots the test, row and both output view references before validating them;
+later edits to the caller's props or nested output map cannot replace a validated binding.
+Upload new values to the captured row view to change the pin. Row-domain metadata belongs to
+the capture; the producer has no `keySpace` option. The scenario reads `replayInfo` alongside
+`nullDistribution`, omits a zero-count replay and publishes exactly the reported prefix (for
+example five values when five draws were requested into a 99-value allocation). Missing or
+out-of-capacity replay counts are rejected before sidecar publication.
 
 `GPUGlobalPermutationTest`: Scalable rows are bounded by 4,294,963,199 and actual device bindings.
 Additive uint32 count outputs preserve exact populations; float32 statistics remain rounded.
@@ -711,10 +780,18 @@ one-row `output.islandCount` (local) or `summary[GPU_GLOBAL_PERMUTATION_SUMMARY.
 When `weights.information.transform` is `'row'`, each analysis row's active weights are re-standardized to
 sum to 1, in the lags and in `S0`, so a masked or missing neighbor drops out instead of shrinking
 the row sum below 1 (numerically identical when nothing is dropped); other transforms are used as
-given. If `weights.status.overflow` is nonzero the weights are truncated: no row is analyzed
-(statistics NaN), and the local test sets `output.status.overflow`. The mean is a fixed-order tree sum followed by a
+given. If `weights.status.overflow` or `weights.status.candidateOverflow` is nonzero the weights are
+incomplete: no row is analyzed (statistics NaN), and the local test's existing completeness flag
+`output.status.overflow` is 1 for either loss stage, including a flag on a chunk. Inspect the two input flags separately to identify
+the loss stage. The mean is a fixed-order tree sum followed by a
 second-pass correction of the deviations, and `n` is an exact uint32, so large-offset data keep
 `sum(z) = 0` to f32 accuracy.
+
+Local permutation construction rejects an estimated command graph above 32,768 nodes, before
+allocating its scratch buffers. Its conservative bound is `256 + 3 * C + T + 2 * L`, where `C` is
+the number of CSR chunks (one for whole weights), `T` is the total row-tile count and `L` is the
+number of distinct final/candidate loss views across the outer weights and all chunks. Each loss
+view needs both a preparation pass and a public-completeness writer; shared views count once.
 
 **Permutation count.** The count is never clamped. A per-frame `permutationCount` outside
 `[1, maximumPermutations]` writes NaN p-values: the local test leaves every row untested and sets
@@ -818,42 +895,6 @@ parameters.write(test.getParameterValues(settings));
 const metadata = test.getInferenceMetadata(settings);
 ```
 
-{/* parameters: GPUGlobalPermutationTest generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
-
-#### `GPUGlobalPermutationTest` parameters
-
-- Packer: `getGPUPermutationParameterValues(settings, options?)`, writes `GPU_PERMUTATION_PARAMETER_LENGTH` (4) `uint32` values.
-  - `options` (`{maximumPermutations?: number}`)
-- Packer: `instance.getParameterValues(settings)`, writes the `uint32` parameter view.
-
-Settings of `getGPUPermutationParameterValues`:
-
-| Field | Type | Description |
-|---|---|---|
-| `seed` | `number` | Random seed, an integer in `[0, 2^53)`. Results are a pure function of the seed, the inputs and `permutationCount`, independent of the dispatch shape. Per frame. |
-| `permutationCount` | `number` | Number of permutations `P`, in `[1, maximumPermutations]` of the contributor. The count is never clamped: a value outside that range makes the kernels write NaN p-values (local: rows are not tested and `output.status.overflow` is set; global: the `permutationCount` field of `output.summary` is NaN). Validate on the CPU with the contributor's `getParameterValues` or the `maximumPermutations` option of `getGPUPermutationParameterValues`. |
-| `significanceLevel` (optional) | `number` | Significance level for the local `significant` mask. Defaults to 0.05. Ignored by the global test. |
-
-{/* /parameters */}
-
-{/* parameters: GPULocalPermutationTest generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
-
-#### `GPULocalPermutationTest` parameters
-
-- Packer: `getGPUPermutationParameterValues(settings, options?)`, writes `GPU_PERMUTATION_PARAMETER_LENGTH` (4) `uint32` values.
-  - `options` (`{maximumPermutations?: number}`)
-- Packer: `instance.getParameterValues(settings)`, writes the `uint32` parameter view.
-
-Settings of `getGPUPermutationParameterValues`:
-
-| Field | Type | Description |
-|---|---|---|
-| `seed` | `number` | Random seed, an integer in `[0, 2^53)`. Results are a pure function of the seed, the inputs and `permutationCount`, independent of the dispatch shape. Per frame. |
-| `permutationCount` | `number` | Number of permutations `P`, in `[1, maximumPermutations]` of the contributor. The count is never clamped: a value outside that range makes the kernels write NaN p-values (local: rows are not tested and `output.status.overflow` is set; global: the `permutationCount` field of `output.summary` is NaN). Validate on the CPU with the contributor's `getParameterValues` or the `maximumPermutations` option of `getGPUPermutationParameterValues`. |
-| `significanceLevel` (optional) | `number` | Significance level for the local `significant` mask. Defaults to 0.05. Ignored by the global test. |
-
-{/* /parameters */}
-
 #### How it computes
 
 {/* lens:GPULocalPermutationTest */}
@@ -872,6 +913,44 @@ Settings of `getGPUPermutationParameterValues`:
 ::lens{scenario=gpu-spatial-analysis.global-permutation-test rung=formula caption="Follow the pseudo p-value and the simulated z-score from the 99 pair sums."}
 ::lens{scenario=gpu-spatial-analysis.global-permutation-test rung=kernel caption="Inspect the pair-sum, shuffle and finalize kernels with their retained WGSL bindings."}
 ::lens{scenario=gpu-spatial-analysis.global-permutation-test rung=graph caption="Trace weights, 100 pair sums, reduction over row blocks and the finalize summary."}
+
+{/* parameters: GPUGlobalPermutationTest generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
+
+#### `GPUGlobalPermutationTest` parameters
+
+- Packer: `getGPUPermutationParameterValues(settings, options?)`, writes `GPU_PERMUTATION_PARAMETER_LENGTH` (4) `uint32` values.
+  - Input port: `parameters`.
+  - `options` (`{maximumPermutations?: number}`)
+- Packer: `instance.getParameterValues(settings)`, writes the `uint32` parameter view.
+
+Settings of `getGPUPermutationParameterValues`:
+
+| Field | Type | Description |
+|---|---|---|
+| `seed` | `number` | Random seed, an integer in `[0, 2^53)`. Results are a pure function of the seed, the inputs and `permutationCount`, independent of the dispatch shape. Per frame. |
+| `permutationCount` | `number` | Number of permutations `P`, in `[1, maximumPermutations]` of the contributor. The count is never clamped: a value outside that range makes the kernels write NaN p-values (local: rows are not tested and `output.status.overflow` is set; global: the `permutationCount` field of `output.summary` is NaN). Validate on the CPU with the contributor's `getParameterValues` or the `maximumPermutations` option of `getGPUPermutationParameterValues`. |
+| `significanceLevel` (optional) | `number` | Significance level for the local `significant` mask. Defaults to 0.05. Ignored by the global test. |
+
+{/* /parameters */}
+
+{/* parameters: GPULocalPermutationTest generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
+
+#### `GPULocalPermutationTest` parameters
+
+- Packer: `getGPUPermutationParameterValues(settings, options?)`, writes `GPU_PERMUTATION_PARAMETER_LENGTH` (4) `uint32` values.
+  - Input port: `parameters`.
+  - `options` (`{maximumPermutations?: number}`)
+- Packer: `instance.getParameterValues(settings)`, writes the `uint32` parameter view.
+
+Settings of `getGPUPermutationParameterValues`:
+
+| Field | Type | Description |
+|---|---|---|
+| `seed` | `number` | Random seed, an integer in `[0, 2^53)`. Results are a pure function of the seed, the inputs and `permutationCount`, independent of the dispatch shape. Per frame. |
+| `permutationCount` | `number` | Number of permutations `P`, in `[1, maximumPermutations]` of the contributor. The count is never clamped: a value outside that range makes the kernels write NaN p-values (local: rows are not tested and `output.status.overflow` is set; global: the `permutationCount` field of `output.summary` is NaN). Validate on the CPU with the contributor's `getParameterValues` or the `maximumPermutations` option of `getGPUPermutationParameterValues`. |
+| `significanceLevel` (optional) | `number` | Significance level for the local `significant` mask. Defaults to 0.05. Ignored by the global test. |
+
+{/* /parameters */}
 
 ### `GPUSpatialPearson` and `GPUGammaStatistic`
 
@@ -1004,6 +1083,10 @@ fit one 128 MiB binding (`getGPUAZPMaximumTableWordCount(device)` words, 33,554,
 device). After the local optimum the one-thread round-finish kernel zeroes a GPU-written indirect
 dispatch, so the remaining rounds launch only that kernel.
 
+The AZP CPU twin obeys the same explicit `maximumIterations` bound. Its pure function defaults to
+256 rounds when the budget is omitted. A successful batch on the last permitted round reports
+`converged = 0` and `iterationLimitReached = 1`; a no-move round must execute to prove convergence.
+
 `GPUAZPRegions`, `GPUMaxPRegions` and `GPUWardRegions` share two input rules. **Attributes are
 standardized by default** (`standardize`, default true): each column becomes a z-score over its finite
 rows with the population standard deviation (divisor `n`, the `sklearn` `StandardScaler` convention),
@@ -1019,6 +1102,23 @@ view holding `[seed]` (`getGPUAZPRegionsParameterValues`, `getGPUWardRegionsPara
 smallest Ward increase in within-region squared error. `targetRegionCount` and `maximumIterations`
 bound the search; disconnected weights can stop it before the target, which is reported through
 `output.status` (`GPU_WARD_STATUS`).
+
+The Ward CPU twin obeys the same explicit round budget, including zero. With zero rounds and valid
+input it returns the singleton partition and reports the iteration limit unless the target is already
+met. Invalid input sets `invalidCount` and leaves both `converged` and `iterationLimitReached` zero,
+including at a zero-round budget, for both merge schedules and operation forms. The pure CPU function
+defaults to `rowCount - targetRegionCount` rounds when the budget is omitted.
+
+Ward captures declared options, output maps and adjacency status fields by property read at
+construction, including inherited/non-enumerable getters. Later caller-map changes cannot remove
+a declared loss flag; buffer contents remain per-frame inputs.
+
+Ward suppresses partition outputs if either `weights.status.overflow` or
+`weights.status.candidateOverflow` is nonzero: every label is `0xffffffff`, `objective` is NaN,
+and iteration/convergence fields are zero. The flags retain their separate final-output and
+candidate-loss meanings; neither contributes to `invalidCount`. Both operation forms accept the
+same optional `weights.status` graph values; the pure CPU function accepts corresponding uint32
+arrays in `input.status`. Clearing both flags on a later submission permits merging again.
 
 `GPUWardRegions` has a compile-time `mergeSchedule`. The default `'sequential'` applies one merge per
 unrolled iteration (always the globally cheapest adjacent pair), so reaching `k` regions from `n` rows
@@ -1066,10 +1166,17 @@ label-propagation rounds; a failed region with no completed neighbor stays and i
 status. The returned start has the fewest under-threshold regions, then the most regions, then the
 smallest within-region sum of squares of the grown regions (before enclave rows join), then the lowest
 start index; the status reports the region count, any infeasible remainder, the `selectedStart` and the
-`improvementMoveCount`, and `objective` is the exact within-region sum of squares of the returned
-labels. With `maximumIterations > 0` (default 0) the selected construction is refined by greedy AZP
+`improvementIterationCount` (successful rounds applying at least one move, rather than reassigned
+rows; formerly named `improvementMoveCount`), and `objective` is the exact within-region sum of squares of the returned
+labels. `maximumIterations` bounds refinement rounds on both CPU and GPU; a round can move several
+independent rows. With `maximumIterations > 0` (default 0) the selected construction is refined by greedy AZP
 moves that keep every region at or above the threshold, which lowers `objective` at the same region
 count (the AZP phase reads the same `parameters` view); spopt's `MaxPHeuristic` anneals instead.
+
+Both CPU and GPU limit growth to `min(maximumGrowthSteps, 2 * rowCount + 2)` rounds and enclave
+assignment to `min(maximumGrowthSteps, rowCount + 1)` rounds. At the limit they publish the current
+partition: unreached rows become singleton regions, unfinished regions contribute to
+`infeasibleRegionCount`, and `feasible` is zero while any such region remains.
 
 The rounds are unrolled to `maximumGrowthSteps` (compile time, default 256, at most 4096) and gated on
 the GPU, so rounds after the construction has settled launch nothing and every dispatch is
@@ -1138,14 +1245,39 @@ fixed workgroup tree sums the objective scale (sparse input: `loss(r)` too), so 
 demandCount)` work (dense) instead of `O(maximumFacilityCount * facilityCount * demandCount)` and the
 sums do not depend on scheduling. The earlier per-pair kernels summed per-row differences; the
 decomposition sums the same terms grouped differently, so the applied swap is the same except where
-float32 summation order changes a near-tie, which the 1e-6 threshold guards (integer-valued data, as in
-the specs, is exact, and the specs require identical swaps). The dense kernel visits every row of a
+float32 summation order changes a near-tie, which the 1e-6 threshold guards (the small integer
+fixtures in the specs sum exactly, and the specs require identical swaps). The dense kernel visits every row of a
 candidate, so each row served by `r` adds its own net term `w * (min(max(c, d1), d2) - d1)` (and the
 reachable weight it loses if neither `d2` nor `c` reaches it) instead of a separate `loss(r)` and
 `extra(i, r)`; no large `d2` terms cancel, which a spec with `d2` about `1e7 * d1` checks in float32.
 The sparse kernel cannot visit unlisted pairs, so it sums `loss(r)` per selected facility (one
-workgroup each) and adds `extra(i, r)`; there a second-nearest cost many orders of magnitude above the
-nearest can add rounding noise of that size to the pair score.
+workgroup each) and adds `extra(i, r)`. For a fully reachable solution the comparison cap described
+below bounds the individual terms; float32 summation order can still change near-ties.
+
+Every finite nonnegative cost is reachable, including values at or above `1e30`; only `+Infinity`
+marks an unreachable pair. This rule applies to greedy scores, swaps and final assignments in both
+representations. Assignment ties choose the lowest facility row. A coverage threshold of `+Infinity`
+covers all reachable pairs and never covers unreachable pairs.
+
+P-median greedy scores and swap cost totals, gains and tolerance comparisons use a common binary
+scale when the complete weighted demand sum risks overflow. The cost exponent uses costs and
+weights from the same demand row and excludes zero products, so unrelated maxima on
+noncontributing rows do not erase small improvements. For p-median swaps, when every positive-weight
+demand row is already reachable, the exponent instead bounds the weighted nearest costs for that
+iteration, with headroom for the sparse sum of capped terms. Weighted comparison costs are capped
+at twice that scaled objective before differences are formed: a larger cost cannot improve the
+current solution. This prevents unused, enormous
+fallback costs from erasing a small gain through scaling or sparse loss/extra cancellation. A swap
+that can reach new positive-weight demand retains the full input product scale. These bounds affect
+comparisons only; assigned costs and the reported objective remain in caller units.
+Swap reach weights and maximum-coverage swap gains, losses, totals and tolerance likewise share a
+weight exponent. The tolerance remains relative to the total demand weight, including uncovered
+rows, even when its raw sum overflows.
+This allows a representable improvement even when the previous objective overflows float32.
+Assigned costs and the final objective remain in caller units;
+score arithmetic retains the usual float32 rounding.
+The CPU twin honors the same explicit or default swap budget. It reports a limit after the last
+permitted applied swap, and convergence only when a permitted iteration finds no improvement.
 
 `sparseCosts` replaces the dense matrix with CSR rows: `offsets` (`demandCount + 1` non-decreasing
 `uint32`, from 0 to the entry count), `facilities` (strictly ascending and below `facilityCount` within a
@@ -1207,48 +1339,6 @@ significance and BH tests compare correctly rounded f32 products, never quotient
 use fixed-shape workgroup trees. Every output is bitwise reproducible for a seed.
 
 Maximum: all limits derive from the device's `maxStorageBufferBindingSize`; the values below are for a default device (128 MiB). `GPUAZPRegions` and `GPUWardRegions` take at most `getGPURegionalizationMaximumSlotCount(device)` (`2^24`) `weights.neighbors` slots (AZP symmetrized adjacency and Ward contracted edge records hold 8 bytes per slot in one binding; Ward also reserves a hash table at exactly twice the input slot capacity) and `GPUMaxPRegions` at most `getGPUMaxPMaximumSlotCount(device)` (`2^23`, its AZP refinement symmetrizes again); `GPUAZPRegions` tables are at most `getGPUAZPMaximumTableWordCount(device)` (`2^25`) words and Ward's `rows x (columnCount + 1)` region table is at most `getGPUWardMaximumRegionTableWordCount(device)` (`2^25`). `GPULocationAllocation` takes at most `getGPULocationAllocationMaximumFacilityCount(device)` (`2^24`) facilities, `getGPULocationAllocationMaximumDemandCount(device)` (`11184810`) demand rows and `getGPULocationAllocationMaximumCostCount(device)` (`2^25`) cost entries.
-
-{/* parameters: GPUAZPRegions generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
-
-#### `GPUAZPRegions` parameters
-
-- Packer: `getGPUAZPRegionsParameterValues(settings?)`, writes `GPU_AZP_REGIONS_PARAMETER_LENGTH` (1) `uint32` values.
-
-Settings of `getGPUAZPRegionsParameterValues`:
-
-| Field | Type | Description |
-|---|---|---|
-| `seed` (optional) | `number` | Reproducible tie-order seed, an integer in `[0, 2^32 - 1]`. Defaults to 0. Record the seed used to create `initialLabels` next to it. |
-
-{/* /parameters */}
-
-{/* parameters: GPUMaxPRegions generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
-
-#### `GPUMaxPRegions` parameters
-
-- Packer: `getGPUMaxPRegionsParameterValues(settings?)`, writes `GPU_MAX_P_REGIONS_PARAMETER_LENGTH` (1) `uint32` values.
-
-Settings of `getGPUMaxPRegionsParameterValues`:
-
-| Field | Type | Description |
-|---|---|---|
-| `seed` (optional) | `number` | Reproducible seed of the random seed-row order of every start (and of the improvement phase's tie order), an integer in `[0, 2^32 - 1]`. Defaults to 0. |
-
-{/* /parameters */}
-
-{/* parameters: GPUWardRegions generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
-
-#### `GPUWardRegions` parameters
-
-- Packer: `getGPUWardRegionsParameterValues(settings?)`, writes `GPU_WARD_REGIONS_PARAMETER_LENGTH` (1) `uint32` values.
-
-Settings of `getGPUWardRegionsParameterValues`:
-
-| Field | Type | Description |
-|---|---|---|
-| `seed` (optional) | `number` | Reproducible tie-order seed, an integer in `[0, 2^32 - 1]`. Defaults to 0. |
-
-{/* /parameters */}
 
 `GPUAZPRegions`: Improve contiguous starting regions by moving border tracts, returning region labels, the within-region sum of squares and status words.
 
@@ -1325,6 +1415,48 @@ tract vertex-mean centres, prepared on the CPU as the input; the figure does not
 ::lens{scenario=gpu-spatial-analysis.rose-statistic rung=kernel caption="Inspect the tiled bin and moment reduction kernel with its retained WGSL bindings."}
 ::lens{scenario=gpu-spatial-analysis.rose-statistic rung=graph caption="Trace the single-pass reduction from 894 segments into five summary words and 18 sector bins."}
 
+{/* parameters: GPUAZPRegions generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
+
+#### `GPUAZPRegions` parameters
+
+- Packer: `getGPUAZPRegionsParameterValues(settings?)`, writes `GPU_AZP_REGIONS_PARAMETER_LENGTH` (1) `uint32` values.
+
+Settings of `getGPUAZPRegionsParameterValues`:
+
+| Field | Type | Description |
+|---|---|---|
+| `seed` (optional) | `number` | Reproducible tie-order seed, an integer in `[0, 2^32 - 1]`. Defaults to 0. Record the seed used to create `initialLabels` next to it. |
+
+{/* /parameters */}
+
+{/* parameters: GPUMaxPRegions generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
+
+#### `GPUMaxPRegions` parameters
+
+- Packer: `getGPUMaxPRegionsParameterValues(settings?)`, writes `GPU_MAX_P_REGIONS_PARAMETER_LENGTH` (1) `uint32` values.
+
+Settings of `getGPUMaxPRegionsParameterValues`:
+
+| Field | Type | Description |
+|---|---|---|
+| `seed` (optional) | `number` | Reproducible seed of the random seed-row order of every start (and of the improvement phase's tie order), an integer in `[0, 2^32 - 1]`. Defaults to 0. |
+
+{/* /parameters */}
+
+{/* parameters: GPUWardRegions generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
+
+#### `GPUWardRegions` parameters
+
+- Packer: `getGPUWardRegionsParameterValues(settings?)`, writes `GPU_WARD_REGIONS_PARAMETER_LENGTH` (1) `uint32` values.
+
+Settings of `getGPUWardRegionsParameterValues`:
+
+| Field | Type | Description |
+|---|---|---|
+| `seed` (optional) | `number` | Reproducible tie-order seed, an integer in `[0, 2^32 - 1]`. Defaults to 0. |
+
+{/* /parameters */}
+
 ### `GPUSpatialClustering`
 
 Cluster planar points by density (DBSCAN), returning compact cluster labels, core flags and the cluster count.
@@ -1344,6 +1476,11 @@ canonical: compact cluster IDs follow the smallest core row of each cluster, and
 joins the adjacent cluster with the smallest root. Outputs are per-point labels, roots, and core
 flags, the cluster count, a compact list of cluster representatives, and cluster sizes and
 centroids, all in the `output` bag. The settings type is `GPUSpatialClusteringSettings`.
+
+With zero positions, only cluster counts, sizes, centroids and compact status scalars are written.
+The zero-length per-point views may share their unused input buffer; no dummy storage row is
+required. Writable cluster outputs still need valid storage bindings and disjoint logical ranges;
+sizes and centroids may share an aligned binding prefix because separate passes fill them.
 
 ```ts
 graph.add(new GPUSpatialClustering({
@@ -1395,6 +1532,15 @@ Planar positions are float32, so the representable spacing near a coordinate of 
 upload so the spacing stays far below `epsilon`.
 Pass optional `spatialContext` to `getGPUSpatialClusteringParameterValues(settings)` to warn on short `epsilon` values; see [Precision of longitude/latitude positions](./concepts.md#precision-of-longitudelatitude-positions).
 
+#### How it computes
+
+{/* lens:GPUSpatialClustering */}
+
+::lens{scenario=gpu-spatial-analysis.spatial-clustering rung=datum bind=page datum=1000 caption="Inspect observation 1000: its position, core flag and cluster label."}
+::lens{scenario=gpu-spatial-analysis.spatial-clustering rung=formula caption="Follow the core test: observations within epsilon, counted against the minimum points."}
+::lens{scenario=gpu-spatial-analysis.spatial-clustering rung=kernel caption="Inspect the grid-binned core, union and label kernels with their retained WGSL bindings."}
+::lens{scenario=gpu-spatial-analysis.spatial-clustering rung=graph caption="Trace the cell grid, core flags, lock-free union-find and compact labels over 2,344 observations."}
+
 {/* parameters: GPUSpatialClustering generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 #### `GPUSpatialClustering` parameters
@@ -1412,15 +1558,6 @@ Settings of `getGPUSpatialClusteringParameterValues`:
 | `timeEpsilon` (optional) | `number` | Space-time clustering (ST-DBSCAN): two points are neighbors only when, besides the spatial test, their relative times differ by at most this many ticks of the contributor's `temporalContext` unit. Positive. Required when the contributor has `times`, and ignored otherwise. Stored at index 6. |
 
 {/* /parameters */}
-
-#### How it computes
-
-{/* lens:GPUSpatialClustering */}
-
-::lens{scenario=gpu-spatial-analysis.spatial-clustering rung=datum bind=page datum=1000 caption="Inspect observation 1000: its position, core flag and cluster label."}
-::lens{scenario=gpu-spatial-analysis.spatial-clustering rung=formula caption="Follow the core test: observations within epsilon, counted against the minimum points."}
-::lens{scenario=gpu-spatial-analysis.spatial-clustering rung=kernel caption="Inspect the grid-binned core, union and label kernels with their retained WGSL bindings."}
-::lens{scenario=gpu-spatial-analysis.spatial-clustering rung=graph caption="Trace the cell grid, core flags, lock-free union-find and compact labels over 2,344 observations."}
 
 ### `GPUSpatialKMeans`
 
@@ -1483,6 +1620,15 @@ result equals running every iteration when `tolerance` is 0 (an exact fixed poin
 are `parameters` words and the k-means++ round and the restart index come from a GPU cursor word, so the graph compiles one pipeline per kernel at any `k` and
 `restartCount`, and restart scoring is a two-stage (per-chunk, then fixed-order) reduction.
 
+#### How it computes
+
+{/* lens:GPUSpatialKMeans */}
+
+::lens{scenario=gpu-spatial-analysis.spatial-k-means rung=datum bind=page datum=1000 caption="Inspect observation 1000: its cluster label and squared distance to that center."}
+::lens{scenario=gpu-spatial-analysis.spatial-k-means rung=formula caption="Follow the inertia and the center update: squared distance to the nearest center, then member means."}
+::lens{scenario=gpu-spatial-analysis.spatial-k-means rung=kernel caption="Inspect the assignment, chunked reduction and center-update kernels with their retained WGSL bindings."}
+::lens{scenario=gpu-spatial-analysis.spatial-k-means rung=graph caption="Trace k-means++ seeding and 20 unrolled Lloyd iterations down to the inertia reduction."}
+
 {/* parameters: GPUSpatialKMeans generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 #### `GPUSpatialKMeans` parameters
@@ -1497,15 +1643,6 @@ Settings of `getGPUSpatialKMeansParameterValues`:
 | `tolerance` (optional) | `number` | Convergence tolerance: an iteration converges when the largest center shift (Euclidean, in position units) is at most this value. Finite and `>= 0`; default `0`, which stops only at an exact fixed point and so gives the same result as running every iteration. A positive value trades exactness for fewer iterations. After convergence the remaining iterations' assign, reduction and relocation kernels are skipped through a GPU-written indirect dispatch, so each one costs only a one-thread convergence check. |
 
 {/* /parameters */}
-
-#### How it computes
-
-{/* lens:GPUSpatialKMeans */}
-
-::lens{scenario=gpu-spatial-analysis.spatial-k-means rung=datum bind=page datum=1000 caption="Inspect observation 1000: its cluster label and squared distance to that center."}
-::lens{scenario=gpu-spatial-analysis.spatial-k-means rung=formula caption="Follow the inertia and the center update: squared distance to the nearest center, then member means."}
-::lens{scenario=gpu-spatial-analysis.spatial-k-means rung=kernel caption="Inspect the assignment, chunked reduction and center-update kernels with their retained WGSL bindings."}
-::lens{scenario=gpu-spatial-analysis.spatial-k-means rung=graph caption="Trace k-means++ seeding and 20 unrolled Lloyd iterations down to the inertia reduction."}
 
 ### `GPUHierarchicalDensityClustering`
 
@@ -1552,10 +1689,9 @@ graph.add(new GPUHierarchicalDensityClustering({
 
 {/* parameters: GPUHierarchicalDensityClustering generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
-##### `GPUHierarchicalDensityClustering` parameters
+#### `GPUHierarchicalDensityClustering` parameters
 
 - Packer: `getGPUHierarchicalDensityClusteringParameterValues(settings)`, writes `GPU_HIERARCHICAL_DENSITY_CLUSTERING_PARAMETER_LENGTH` (4) `float32` values.
-- Packer: `getGPUNeighborSearchParameterValues(settings)`, writes `GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH` (12) `float32` values.
 
 Settings of `getGPUHierarchicalDensityClusteringParameterValues`:
 
@@ -1563,26 +1699,41 @@ Settings of `getGPUHierarchicalDensityClusteringParameterValues`:
 |---|---|---|
 | `timeScale` | `number` | Spatial position units per temporal-context tick. Finite and non-negative; zero ignores time distances. |
 
-Settings of `getGPUNeighborSearchParameterValues`:
-
-| Field | Type | Description |
-|---|---|---|
-| `spatialContext` (optional) | `GPUSpatialContext` | Spatial context of the positions; when it is longitude/latitude, a distance under 10 float32 quanta (about 17 m) logs a warning (see Precision of longitude/latitude positions). Does not change the packed values. |
-| `bounds` | `readonly [number, number, number, number]` | `[minX, minY, maxX, maxY]` extent of the search lattice. Targets and self-join rows outside it (or with non-finite coordinates) are excluded: they become isolates and never a neighbor, so it must cover every target of interest (count the dropped rows with `invalidCount`). The queries of a cross join are not clipped by it: a query outside the bounds still finds its exact neighbors (great-circle latitude must be within +-90). For a great-circle search these are degrees `[minLongitude, minLatitude, maxLongitude, maxLatitude]` with a longitude span of at most 360 (`[-180, -90, 180, 90]` for the world). |
-| `radius` (optional) | `number` | In the units of the spatial context (position units, or meters/kilometers of great-circle distance). Radius mode: the distance band (neighbors satisfy `d <= radius`); a non-positive or non-finite radius yields empty rows. kNN mode: an optional maximum distance; `Infinity` (the default) or any non-positive value means unbounded. |
-| `weightKind` (optional) | `GPUNeighborSearchWeightKind` | Weight function. Defaults to `'binary'`. |
-| `power` (optional) | `number` | Inverse-distance exponent. Defaults to 1. |
-| `distanceFloor` (optional) | `number` | Inverse distance uses `max(d, distanceFloor)`, in the length unit of the distances. Defaults to `1e-6`, the default of `GPUNearestFeatureWeights` too, so coincident points (`d = 0`) get the finite weight `distanceFloor^-power` (`1e6` at power 1). An explicit 0 removes the floor: coincident points then get weight 0, because their weight is not finite, and a zero-weight slot is not a neighbor. Under the default, a coincident neighbor outweighs every ordinary neighbor by many orders of magnitude and takes nearly all of a row-standardized row; pass a floor on the scale of the data when positions repeat (see the class documentation). |
-| `kernel` (optional) | `GPUNeighborSearchKernel` | Kernel profile for `weightKind: 'kernel'`. Defaults to `'triangular'`. |
-| `rowStandardize` (optional) | `boolean` | Divides each row's weights by their sum (zero-sum rows stay zero). Defaults to false. |
-| `timeRadius` (optional) | `number` | Time window of a space-time search, in the `temporalContext` unit: a neighbor satisfies `\|t_target - t_query\| <= timeRadius`. Non-positive or non-finite makes every row empty. Required with `times`, and selects the `GPU_NEIGHBOR_SEARCH_TEMPORAL_PARAMETER_LENGTH`-word layout. |
-| `timeBounds` (optional) | `readonly [number, number]` | `[minimumTime, maximumTime]` covered by the index. Rows outside it are invalid, like rows outside `bounds`. Required with `timeRadius`. |
-
 {/* /parameters */}
 
 ### `GPUSpatialWeightsMinimumSpanningTree`, `GPUSkaterRegions`, and `GPURegionPartitionEvaluation`
 
 `GPUSpatialWeightsMinimumSpanningTree`: Find the minimum spanning forest of a contiguity graph by attribute dissimilarity, returning tree-edge flags, component labels and edge costs.
+
+Either weights loss flag suppresses the forest: tree flags are zero, component labels are
+`0xffffffff` (unavailable), and compact count/requiredCount are zero. The producer's `output`
+port carries compact candidateOverflow for either upstream cause; compact overflow only reports
+compact destination capacity. SKATER on the same weights suppresses labels (`0xffffffff`),
+region count (zero/unavailable), cut IDs (no cut) and gains (NaN). Clearing loss restores normal
+results on resubmission. Showcase/explorer region and coloring readouts withhold definite results
+while either producer flag is set; a sentinel is never a region, color or observed count.
+`GPUSkaterRegionsOperation` and `CPUSkaterRegionsOperation` accept the two graph value names under
+`weights.status`. The pure `computeSkaterRegionsOnCPU` accepts the corresponding uint32 arrays
+under `input.status`, alongside its flat CSR arrays, and uses the same suppression sentinels.
+Both operation forms read the supplied loss values on every run of a reused compiled graph;
+clearing a loss word restores normal outputs on the next run.
+Pass the complete producer weights port to every forest and partition stage, including REDCAP
+and Ward; a clean supplied status has the same result as omitted status. MST's packed
+`output.status` requires `GPU_MINIMUM_SPANNING_TREE_STATUS.length` words (now two):
+`invalidCount` stays at word zero and `candidateOverflow` at word one reports either upstream
+adjacency loss cause as 0/1, even without compact edges. Increase old one-word allocations to
+the named length. Compact `output.edges.status.candidateOverflow` reports the same adjacency loss.
+SKATER consumes the forest's loss word through `treeStatus`, in both operation forms and its CPU
+twin. On clean and suppressed frames it writes one region-count word and
+`maximumRegionCount - 1` cut entries; spare output capacity stays untouched.
+Forest, SKATER, LOSH and multivariate Geary capture their declared props and nested port maps at
+construction, including inherited getters and masks. Change GPU buffer contents to resubmit;
+construct a new contributor to change a view or destination.
+Both named SKATER operations accept `weights.status.overflow` and `candidateOverflow` value names
+and apply this suppression before CPU forest traversal or GPU cuts. The pure CPU twin accepts the
+same scalar arrays in `input.status`. A missing forest label during loss is unavailable, not an
+invalid-tree exception. Only one `regionCount` word and `maximumRegionCount - 1` cut-log words are
+written, including during suppression; spare destination words are preserved.
 
 ::lens{scenario=gpu-spatial-analysis.spatial-weights-minimum-spanning-tree rung=result caption="The 135 tree edges joining 136 tracts, drawn between centroids over poverty and coloured by dissimilarity; total 29.6."}
 
@@ -1613,17 +1764,19 @@ Assuncao et al. 2006).
   attribute rows. A total order of `(cost, lower-row CSR slot)` makes the forest unique and equal to
   Kruskal under that order, with integer atomics and no float races. `output` holds `treeEdgeFlags`
   (per CSR slot), `componentLabels` (the minimum row of each tree) and, optionally, a compact `edges`
-  list (`ids` plus `status: {count, overflow, requiredCount?}`) with `edgeEndpoints`, `edgeDissimilarities` and `standardizedValues`. It unrolls `ceil(log2 rows)` rounds. Tied costs
+  list (`ids` plus `status: {count, overflow, requiredCount?, candidateOverflow?}`) with `edgeEndpoints`, `edgeDissimilarities` and `standardizedValues`. It unrolls `ceil(log2 rows)` rounds. Tied costs
   can pick different edges than scipy's traversal order, with the same total cost.
   Non-finite attribute entries are skipped as in `GPUAZPRegions`, `GPUWardRegions` and `GPUMaxPRegions`:
   the standardization mean and deviation use the finite entries of each column, so one NaN no longer
   makes every edge cost NaN, and the entry stays non-finite in `standardizedValues`. Every link that
   touches a row with a non-finite entry costs `+Infinity`, so it joins the forest last and the forest
-  still spans each connected component. The optional `output.status` (one word,
-  `GPU_MINIMUM_SPANNING_TREE_STATUS.invalidCount`) counts the skipped entries, before standardization.
+  still spans each connected component. The optional `output.status` stores the skipped-entry count,
+  before standardization, at `GPU_MINIMUM_SPANNING_TREE_STATUS.invalidCount`; its second word,
+  `GPU_MINIMUM_SPANNING_TREE_STATUS.candidateOverflow`, independently reports adjacency loss.
   Unlike the three solvers above, the tree is still built when the count is nonzero. Pass the status
   view to `GPUSkaterRegions` as `treeStatus`: like those solvers, SKATER then makes no cut while the
   count is nonzero (each tree stays one region and every `cutEdges` entry is `GPU_SKATER_NO_CUT`).
+  A nonzero adjacency-loss word suppresses labels/count/cuts/gains instead of publishing a partition.
 - `GPUSkaterRegions`: greedy SKATER cuts of that tree. Each step evaluates the sum-of-squared-deviation
   reduction of every tree edge in parallel (Euler-tour side sums) and applies the best one, ties to the
   lowest slot, while honoring `minimumRegionSize`. The reduction is computed in its direct form
@@ -1633,13 +1786,16 @@ Assuncao et al. 2006).
   last place of the region's attribute sum spread over the smaller side, which centred attributes keep small. The target region count and the minimum size are
   per-frame `parameters` words written with
   `getGPUSkaterRegionsParameterValues({regionCount, minimumRegionSize})`
-  (`GPU_SKATER_REGIONS_PARAMETER_LENGTH` words); `maximumRegionCount - 1` steps are compile-time, so the
+  (`GPU_SKATER_REGIONS_PARAMETER_LENGTH` words); at most `min(maximumRegionCount - 1, rows - 1)` steps
+  are compiled, so the
   partition with k regions is a prefix of the one with k + 1. `output` holds `labels` (the row index of
   each region's top), `regionCount`, `cutEdges` and `cutGains`. The partitions equal spopt `SpanningForest` (squared-Euclidean metric) exactly, including
   floors and islands; spopt's `islands='increase'` adds the tree count to `n_clusters`, while here the
   target counts every region. SKATER does not center attributes itself: the tree's `standardize`
   (default true) does, and `standardizedValues` should be passed as the SKATER `values` so the cuts and
   the tree share a metric and the f32 subtree-sum subtraction stays well conditioned.
+  The optional cut logs still contain `maximumRegionCount - 1` entries; entries beyond the attainable
+  cuts are `GPU_SKATER_NO_CUT` and zero gain.
 - `GPURegionPartitionEvaluation`: scores any label column (SKATER, `GPUSpatialClustering`, `GPUSpatialKMeans`):
   region count, within, between and total sum of squared deviations, smallest and largest region, the
   fraction of weights-graph links that cross regions (a compactness proxy) and the number of ignored
@@ -1665,26 +1821,22 @@ graph.add(new GPUSkaterRegions({weights, treeEdgeFlags, componentLabels, values:
   output: {labels, regionCount}}));
 ```
 
+SKATER, Ward, AZP and Max-p expose `estimatedCommandNodeCount` and reject construction when this
+upper bound exceeds the shared 32,768-node limit. The estimate includes transitive adjacency,
+sort/scan, contiguity and nested refinement nodes. Published primitives have named conservative
+allowances, checked against emitted graphs in node tests. A GPU dispatch gate saves execution
+after convergence; the construction budget still counts every unrolled round.
+SKATER's bound includes loss aggregation and each requested suppression pass. With loss ports
+and all four outputs, 4,094 rows and `maximumRegionCount: 4094` require 32,773 nodes and are refused.
+Ward and AZP snapshot their iteration budgets (and Ward's schedule) before validation. Ward's
+mutual-nearest estimate uses 18 nodes per round through 4,096 input rows and 45 per round above
+that threshold, matching the cooperative and radix selection routes respectively.
+
 Cost: the publish and apply kernels are single-threaded and each SKATER step is
 `O(sum of side sizes)`, which suits thousands of units and is quadratic on path-like trees of 100,000
 rows or more. Once a step finds no cut or the target region count is reached, the one-thread kernels
 zero a GPU-written indirect dispatch, so the remaining steps launch only their one-thread kernels. The
 step index comes from a GPU cursor word, so every step shares one pipeline per kernel.
-
-{/* parameters: GPUSkaterRegions generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
-
-#### `GPUSkaterRegions` parameters
-
-- Packer: `getGPUSkaterRegionsParameterValues(settings)`, writes `GPU_SKATER_REGIONS_PARAMETER_LENGTH` (2) `uint32` values.
-
-Settings of `getGPUSkaterRegionsParameterValues`:
-
-| Field | Type | Description |
-|---|---|---|
-| `regionCount` | `number` | Target region count, clamped to `maximumRegionCount` on the GPU. A value at or below the number of forest trees cuts nothing. |
-| `minimumRegionSize` (optional) | `number` | Minimum region size in rows. Defaults to 1. |
-
-{/* /parameters */}
 
 #### How it computes
 
@@ -1712,6 +1864,21 @@ Settings of `getGPUSkaterRegionsParameterValues`:
 ::lens{scenario=gpu-spatial-analysis.region-partition-evaluation rung=formula caption="Follow within, between and total sums of squares into the Calinski-Harabasz pseudo-F."}
 ::lens{scenario=gpu-spatial-analysis.region-partition-evaluation rung=kernel caption="Inspect the sort, region-sum, deviation and summary kernels with their retained WGSL bindings."}
 ::lens{scenario=gpu-spatial-analysis.region-partition-evaluation rung=graph caption="Trace queen weights, the label sort, per-region sums and the nine-word summary."}
+
+{/* parameters: GPUSkaterRegions generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
+
+#### `GPUSkaterRegions` parameters
+
+- Packer: `getGPUSkaterRegionsParameterValues(settings)`, writes `GPU_SKATER_REGIONS_PARAMETER_LENGTH` (2) `uint32` values.
+
+Settings of `getGPUSkaterRegionsParameterValues`:
+
+| Field | Type | Description |
+|---|---|---|
+| `regionCount` | `number` | Target region count, clamped to `maximumRegionCount` on the GPU. A value at or below the number of forest trees cuts nothing. |
+| `minimumRegionSize` (optional) | `number` | Minimum region size in rows. Defaults to 1. |
+
+{/* /parameters */}
 
 ### `GPUGroupGeometry`
 
@@ -1751,11 +1918,21 @@ graph.add(new GPUGroupGeometry({
 }));
 ```
 
+#### How it computes
+
+{/* lens:GPUGroupGeometry */}
+
+::lens{scenario=gpu-spatial-analysis.group-geometry rung=datum bind=page datum=1000 caption="Inspect observation 1000: its cluster label, the group it adds to."}
+::lens{scenario=gpu-spatial-analysis.group-geometry rung=formula caption="Follow the group mean centre and the medoid, the member with the smallest summed distance."}
+::lens{scenario=gpu-spatial-analysis.group-geometry rung=kernel caption="Inspect the sort, segmented bounds, centre, ellipse and medoid kernels with their retained WGSL bindings."}
+::lens{scenario=gpu-spatial-analysis.group-geometry rung=graph caption="Trace DBSCAN labels, the sort by group, segmented reductions and the medoid search."}
+
 {/* parameters: GPUGroupGeometry generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 #### `GPUGroupGeometry` parameters
 
 - Packer: `getGPUGeographicDistributionParameterValues(settings?)`, writes `GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH` (8) `float32` values.
+  - Input port: `parameters`.
 
 Settings of `getGPUGeographicDistributionParameterValues`:
 
@@ -1768,15 +1945,6 @@ Settings of `getGPUGeographicDistributionParameterValues`:
 | `medianTolerance` (optional) | `number` | Absolute tolerance, in position units, under which the last Weiszfeld step counts as converged for `medianConverged`. The iteration stops once every non-empty group's last step is at most this value. Non-negative. Defaults to `GPU_GEOGRAPHIC_DISTRIBUTION_DEFAULT_MEDIAN_TOLERANCE`. |
 
 {/* /parameters */}
-
-#### How it computes
-
-{/* lens:GPUGroupGeometry */}
-
-::lens{scenario=gpu-spatial-analysis.group-geometry rung=datum bind=page datum=1000 caption="Inspect observation 1000: its cluster label, the group it adds to."}
-::lens{scenario=gpu-spatial-analysis.group-geometry rung=formula caption="Follow the group mean centre and the medoid, the member with the smallest summed distance."}
-::lens{scenario=gpu-spatial-analysis.group-geometry rung=kernel caption="Inspect the sort, segmented bounds, centre, ellipse and medoid kernels with their retained WGSL bindings."}
-::lens{scenario=gpu-spatial-analysis.group-geometry rung=graph caption="Trace DBSCAN labels, the sort by group, segmented reductions and the medoid search."}
 
 ### `GPUGroupConvexHull`
 
@@ -2069,6 +2237,15 @@ Compile-time: `gridWidth`, `gridHeight`, `sliceCount` (at most 256), `maximumRad
 optional `lastValidSlice` (per cell) and optional `globalStatistics`
 `[n, mean, variance, standardDeviation]`.
 
+#### How it computes
+
+{/* lens:GPUEmergingHotSpots */}
+
+::lens{scenario=gpu-spatial-analysis.emerging-hot-spots rung=datum bind=page datum=100 caption="Inspect cell 100: its trend statistics, hot and cold month counts and category."}
+::lens{scenario=gpu-spatial-analysis.emerging-hot-spots rung=formula caption="Follow space-time Gi*, the Mann-Kendall trend and the adjusted p-value rule for hot and cold months."}
+::lens{scenario=gpu-spatial-analysis.emerging-hot-spots rung=kernel caption="Inspect the moment, Gi*, adjustment, Mann-Kendall and classification kernels with their retained WGSL bindings."}
+::lens{scenario=gpu-spatial-analysis.emerging-hot-spots rung=graph caption="Trace the global moments, Gi* per bin, Benjamini-Hochberg adjustment and per-cell classification."}
+
 {/* parameters: GPUEmergingHotSpots generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 #### `GPUEmergingHotSpots` parameters
@@ -2091,15 +2268,6 @@ Settings of `getGPUEmergingHotSpotsParameterValues`:
 | `sporadicRequiresFinalSlice` (optional) | `boolean` | Whether Sporadic hot and cold need a statistically significant hot (cold) final slice, as current ArcGIS Pro defines them. Defaults to `true`. `false` restores the older rule that also labels a cell with a non-significant final slice Sporadic when it has only hot (cold) history, so results computed before the change can be reproduced. Only that neutral-final case changes; a location that fails the new test is `NO_PATTERN`. |
 
 {/* /parameters */}
-
-#### How it computes
-
-{/* lens:GPUEmergingHotSpots */}
-
-::lens{scenario=gpu-spatial-analysis.emerging-hot-spots rung=datum bind=page datum=100 caption="Inspect cell 100: its trend statistics, hot and cold month counts and category."}
-::lens{scenario=gpu-spatial-analysis.emerging-hot-spots rung=formula caption="Follow space-time Gi*, the Mann-Kendall trend and the adjusted p-value rule for hot and cold months."}
-::lens{scenario=gpu-spatial-analysis.emerging-hot-spots rung=kernel caption="Inspect the moment, Gi*, adjustment, Mann-Kendall and classification kernels with their retained WGSL bindings."}
-::lens{scenario=gpu-spatial-analysis.emerging-hot-spots rung=graph caption="Trace the global moments, Gi* per bin, Benjamini-Hochberg adjustment and per-cell classification."}
 
 ### `addSpaceTimeHotSpotsRecipe`
 
@@ -2228,6 +2396,15 @@ parameters.write(
 - Determinism: rows are sorted by group once and every sum, including each Weiszfeld step, is a
   fixed-order segmented tree sum. No float atomics; repeated encodings are bitwise identical.
 
+#### How it computes
+
+{/* lens:GPUGeographicDistribution */}
+
+::lens{scenario=gpu-spatial-analysis.geographic-distribution rung=datum bind=page datum=420 caption="Inspect tract 420: its centroid and population weight enter every group sum."}
+::lens{scenario=gpu-spatial-analysis.geographic-distribution rung=formula caption="Follow the standard distance and ellipse: weighted second moments about the mean centre."}
+::lens{scenario=gpu-spatial-analysis.geographic-distribution rung=kernel caption="Inspect the moment passes, the spread kernel and the ellipse ring kernel."}
+::lens{scenario=gpu-spatial-analysis.geographic-distribution rung=graph caption="Trace the weighted sums into the mean centre, spread and ellipse vertices."}
+
 {/* parameters: GPUGeographicDistribution generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 #### `GPUGeographicDistribution` parameters
@@ -2246,16 +2423,11 @@ Settings of `getGPUGeographicDistributionParameterValues`:
 
 {/* /parameters */}
 
-#### How it computes
-
-{/* lens:GPUGeographicDistribution */}
-
-::lens{scenario=gpu-spatial-analysis.geographic-distribution rung=datum bind=page datum=420 caption="Inspect tract 420: its centroid and population weight enter every group sum."}
-::lens{scenario=gpu-spatial-analysis.geographic-distribution rung=formula caption="Follow the standard distance and ellipse: weighted second moments about the mean centre."}
-::lens{scenario=gpu-spatial-analysis.geographic-distribution rung=kernel caption="Inspect the moment passes, the spread kernel and the ellipse ring kernel."}
-::lens{scenario=gpu-spatial-analysis.geographic-distribution rung=graph caption="Trace the weighted sums into the mean centre, spread and ellipse vertices."}
-
 ### `GPURegionStatistics`
+
+The compact `output.selectedRows.status.overflow` reports final selection capacity loss;
+optional `candidateOverflow` reports truncated region input or grid candidate loss. Its `requiredCount` counts
+selected rows reaching compaction and is a lower bound when candidates were lost.
 
 `GPURegionStatistics`: Select tract centroids inside a lasso and reduce them to counts, sum, mean, extremes and a histogram.
 
@@ -2325,7 +2497,9 @@ capacity, or pick-region overflow), 4 `candidatesTruncated` (grid candidate stag
 `decodeGPURegionStatistics` and `GPURegionStatisticsReadback` decode the words. The same flags are also available
 as named one-row status scalars beside the header, which keeps its words: optional `output.status.overflow` is 1
 when bit 1 or 2 is set and `output.status.candidateOverflow` is 1 when bit 4 is set (it is not folded into
-`overflow`).
+`overflow`). Optional `output.selectedRows.status.candidateOverflow` reports bits 2 or 4 separately
+from `output.selectedRows.status.overflow`; `selectedRows.status.requiredCount` counts selected rows
+reaching final compaction and is a lower bound when the region input or grid candidates were truncated.
 
 An optional `output.drawInstanceCount` (one-row `uint32` view, for example the instance-count word
 of an indirect draw record) receives the same capacity-clamped selected count as
@@ -2486,6 +2660,15 @@ focalParameters.write(
 - Cost is `(2r + 1)^2` reads per cell; see Status and limitations for the still-open separable and
   summed-area variants.
 
+#### How it computes
+
+{/* lens:GPUFocalStatistics */}
+
+::lens{scenario=gpu-spatial-analysis.focal-statistics rung=datum bind=page datum=528 caption="Inspect cell 528: its window, mean, deviation and valid-cell count."}
+::lens{scenario=gpu-spatial-analysis.focal-statistics rung=formula caption="Follow the window mean and population deviation over the valid cells of each window."}
+::lens{scenario=gpu-spatial-analysis.focal-statistics rung=kernel caption="Inspect 1,024 gather invocations reading each window in row-major order."}
+::lens{scenario=gpu-spatial-analysis.focal-statistics rung=graph caption="Trace the single moments kernel from the elevation raster to the window statistics."}
+
 {/* parameters: GPUFocalStatistics generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 #### `GPUFocalStatistics` parameters
@@ -2502,15 +2685,6 @@ Settings of `getGPUFocalStatisticsParameterValues`:
 | `propagateCenterNoData` (optional) | `boolean` | When true, a nodata center cell yields nodata statistics. Defaults to false. |
 
 {/* /parameters */}
-
-#### How it computes
-
-{/* lens:GPUFocalStatistics */}
-
-::lens{scenario=gpu-spatial-analysis.focal-statistics rung=datum bind=page datum=528 caption="Inspect cell 528: its window, mean, deviation and valid-cell count."}
-::lens{scenario=gpu-spatial-analysis.focal-statistics rung=formula caption="Follow the window mean and population deviation over the valid cells of each window."}
-::lens{scenario=gpu-spatial-analysis.focal-statistics rung=kernel caption="Inspect 1,024 gather invocations reading each window in row-major order."}
-::lens{scenario=gpu-spatial-analysis.focal-statistics rung=graph caption="Trace the single moments kernel from the elevation raster to the window statistics."}
 
 ### `GPUSimilarLocations`
 
@@ -2533,6 +2707,15 @@ attribute weights), `standardization` (`'zscore'`, population, or `'rank'`, perc
   keeps ties on the lowest ID.
 - `'rank'` standardization uses a quadratic scan, so it suits tens of thousands of rows, not millions.
 
+#### How it computes
+
+{/* lens:GPUSimilarLocations */}
+
+::lens{scenario=gpu-spatial-analysis.similar-locations rung=datum bind=page datum=60 caption="Inspect tract 60: its distance to the reference tract and its similarity rank."}
+::lens{scenario=gpu-spatial-analysis.similar-locations rung=formula caption="Follow the z-scores, the reference vector and the weighted Euclidean distance to it."}
+::lens{scenario=gpu-spatial-analysis.similar-locations rung=kernel caption="Inspect the column statistics, standardize, reference, distance, sort and rank kernels with retained WGSL bindings."}
+::lens{scenario=gpu-spatial-analysis.similar-locations rung=graph caption="Trace validation, z-scores, the reference mean, distances and the stable sort into ranks."}
+
 {/* parameters: GPUSimilarLocations generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 #### `GPUSimilarLocations` parameters
@@ -2550,15 +2733,6 @@ Settings of `getGPUSimilarLocationsParameterValues`:
 | `weights` (optional) | `ArrayLike<number>` | Non-negative weight per attribute. Defaults to 1 for every attribute. |
 
 {/* /parameters */}
-
-#### How it computes
-
-{/* lens:GPUSimilarLocations */}
-
-::lens{scenario=gpu-spatial-analysis.similar-locations rung=datum bind=page datum=60 caption="Inspect tract 60: its distance to the reference tract and its similarity rank."}
-::lens{scenario=gpu-spatial-analysis.similar-locations rung=formula caption="Follow the z-scores, the reference vector and the weighted Euclidean distance to it."}
-::lens{scenario=gpu-spatial-analysis.similar-locations rung=kernel caption="Inspect the column statistics, standardize, reference, distance, sort and rank kernels with retained WGSL bindings."}
-::lens{scenario=gpu-spatial-analysis.similar-locations rung=graph caption="Trace validation, z-scores, the reference mean, distances and the stable sort into ranks."}
 
 ### `GPULocalOutlierFactor`
 
@@ -2589,6 +2763,18 @@ never flagged. A radius-mode table works, but the k-distance is then the largest
 a pinned scikit-learn run (24 points with `k = 5`, and a duplicate case) kDistance was within 2e-6 relative
 and lof within 1e-4, with the mask and count exact.
 
+#### How it computes
+
+{/* lens:GPULocalOutlierFactor */}
+
+::lens{scenario=gpu-spatial-analysis.local-outlier-factor rung=datum bind=page datum=1000 caption="Inspect observation 1000: its k-distance, density, LOF and outlier flag."}
+::lens{scenario=gpu-spatial-analysis.local-outlier-factor rung=formula caption="Follow the reachability distance, local density and the ratio of neighbour density to its own."}
+::lens{scenario=gpu-spatial-analysis.local-outlier-factor rung=kernel caption="Inspect the k-distance, density, score and outlier-mask kernels with their retained WGSL bindings."}
+::lens{scenario=gpu-spatial-analysis.local-outlier-factor rung=graph caption="Trace the ten-nearest-neighbour search into k-distance, density, LOF and the thresholded mask."}
+
+See [local variability and regression extensions](./statistical-expansion.md) for the expanded
+statistics, fixed, finite-grid or golden-section-selected multiscale fits, generalized local models, pooled panels and regimes.
+
 {/* parameters: GPULocalOutlierFactor generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 #### `GPULocalOutlierFactor` parameters
@@ -2603,15 +2789,3 @@ Settings of `getGPULocalOutlierFactorParameterValues`:
 | `densityFloor` (optional) | `number` | Added to each row's mean reachability distance before inverting it, so a cluster of coincident points (mean reachability 0) gets a large finite density `1 / densityFloor` instead of infinity. Must be positive and finite. Defaults to scikit-learn's `1e-10`. Raise it (for example to the coordinate resolution) to make duplicate-heavy data less extreme. Its unit is the length unit of `neighbors.spatialContext`; declare the context of this value through `GPULocalOutlierFactorProps.spatialContext` to check compatibility. |
 
 {/* /parameters */}
-
-#### How it computes
-
-{/* lens:GPULocalOutlierFactor */}
-
-::lens{scenario=gpu-spatial-analysis.local-outlier-factor rung=datum bind=page datum=1000 caption="Inspect observation 1000: its k-distance, density, LOF and outlier flag."}
-::lens{scenario=gpu-spatial-analysis.local-outlier-factor rung=formula caption="Follow the reachability distance, local density and the ratio of neighbour density to its own."}
-::lens{scenario=gpu-spatial-analysis.local-outlier-factor rung=kernel caption="Inspect the k-distance, density, score and outlier-mask kernels with their retained WGSL bindings."}
-::lens{scenario=gpu-spatial-analysis.local-outlier-factor rung=graph caption="Trace the ten-nearest-neighbour search into k-distance, density, LOF and the thresholded mask."}
-
-See [local variability and regression extensions](./statistical-expansion.md) for the expanded
-statistics, fixed, finite-grid or golden-section-selected multiscale fits, generalized local models, pooled panels and regimes.

@@ -8,7 +8,7 @@
   "viewId": "datum-receipt",
   "caption": "Receipt of GPS fix 40. matchBreaks: 0. values read back from the GPU run. assignment: 2 quantities.",
   "description": "Receipt of GPS fix 40. matchBreaks: 0. values read back from the GPU run. assignment: 2 quantities.",
-  "llms": "Receipt of GPS fix 40\n\n- matchBreaks: 0\n- assignment: 2 quantities\n- summary: 1 quantities\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: transients matchedEdges, snappedPositions, matchSnapDistances, matchBreaks, matchedCount, matchOverflow retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Receipt of GPS fix 40\n\n- matchBreaks: 0\n- assignment: 2 quantities\n- summary: 1 quantities\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: transients matchedEdges, snappedPositions, matchSnapDistances, matchBreaks, matchedCount, matchCandidateOverflow retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "matchBreaks",
     "value": "0"
@@ -57,16 +57,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-11T15:20:12.328Z",
-    "runId": "run-e0aa4a4e",
+    "date": "2026-11-18T16:33:04.760Z",
+    "runId": "run-140b3f8d",
     "observerEffects": [
       "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
-      "lens twin: transients matchedEdges, snappedPositions, matchSnapDistances, matchBreaks, matchedCount, matchOverflow retained instead of aliased"
+      "lens twin: transients matchedEdges, snappedPositions, matchSnapDistances, matchBreaks, matchedCount, matchCandidateOverflow retained instead of aliased"
     ]
   },
   "state": {
-    "runId": "run-e0aa4a4e",
+    "runId": "run-140b3f8d",
     "rung": "datum",
     "bindings": {
       "entity": 40

@@ -11,6 +11,13 @@ operations, `GPUData`/`GPUVector`/`GPUTable`, GPU Dataframe, GPU Graph Algorithm
 DGGS, GPU Trace, physics and simulation, renderers) is owned and documented by luma.gl. Operations
 here are built from the public `@luma.gl/core`, `@luma.gl/shaders` and `@luma.gl/graph` APIs.
 
+## Run your first computation
+
+The [CPU variogram walkthrough](./operation-forms-and-cpu-twins.md#variogram-fitting-without-a-graph)
+fits generated data without a GPU. Follow it with the complete
+[point-density GPU walkthrough](./operation-forms-and-cpu-twins.md#point-density-from-device-to-readback)
+to create a device, allocate views, submit work, read typed results and release resources.
+
 ## Entries
 
 | Entry | Use it for |

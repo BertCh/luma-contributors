@@ -25,6 +25,12 @@ const result = addDasymetricRedistributionRecipe(graph, {
 packed planar polygons; `parameters` is the `getGPURasterFractionalCoverageParameterValues(grid)` view. `sourceTotals.length` is the source-feature count. Feature rows and
 target IDs remain stable, including empty sources and targets. Prepared coverage uses the
 `GPURasterFractionalCoverage` output layout and retains its original status views.
+This includes optional `candidateOverflow`, independently of final tuple `overflow`. Prepared
+coverage is usable only with matching in-capacity count/requiredCount, both supplied overflow
+flags zero, and valid source zones. Candidate-only loss suppresses the mass ledger and sets
+`status.complete = 0`; increasing final pair or tuple capacity alone cannot repair candidate loss.
+Each prepared-coverage status view must contain at least one word. The recipe reads its first
+logical word, including for offset views, and ignores any spare words.
 
 ## Measure and conservation
 
@@ -79,6 +85,10 @@ float32 arithmetic overflow set `complete = 0` and invalidate published numeric 
 NaN. This includes a finite ancillary value times finite cell area overflowing float32, source
 support sums overflowing, and target support or mass sums overflowing. `sourceValidity` becomes
 zero. Coverage status and the caller's input buffers remain available for diagnosis.
+
+The intermediate weights port shares the areal stage's pair-overflow and required-count views.
+The producer rewrites them on every submission before transfer, so complete support restores
+usable outputs after an earlier overflow.
 
 `intermediates` retains the original grid, coverage, ancillary band, mask, source-total and
 target-zone views, plus the derived cell weights, expanded tuple identities and weights, and

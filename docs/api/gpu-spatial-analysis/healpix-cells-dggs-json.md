@@ -53,6 +53,9 @@ The output is checked in a spec against the required members and shapes of that 
 
 The OGC HEALPix DGGRS defines its own zone IDs and sub-zone order (root rhombus hex digits, row-major scanlines, WGS84), not the nested index on the sphere. So `zoneId` is `healpix-nested:<order>:<index>` and the data follows nested order; a conforming OGC client would need a mapping that is not provided.
 One ancestral zone and one relative depth (at most 10) per document.
+Property names are preserved as own keys in both `schema.properties` and `values`, including
+`__proto__`. These two dictionaries have null prototypes; serialization preserves every supplied
+property name and its aligned data array. Non-finite values become `null`.
 
 ## Not done: A5
 

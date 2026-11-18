@@ -1,0 +1,170 @@
+# Computation lenses, views, packs, and recorded scenarios
+
+The first changes I would make are in the result renderer. **47 of 53 checked-in result tables place values from different key spaces on the same row. Of 88 full result figures captioned as lines or polygons, 44 contain no output path.** Both problems are visible in the committed twins and can be verified without running a GPU. The archive is consistent enough to catch these problems once its tests check what the figure communicates.
+
+## What I checked
+
+I reviewed the working tree on November 17, 2026. I read the package manifest and README, scenario and record types, registration and capture APIs, record codec, and example extractor in full. I sampled the largest view and scenario utilities, all five family pack entry points, the controller and coordinator lifecycle, coverage and twin tests, and the authoring guide. For new work I followed the spacing, contiguity, and network visibility scenarios from commit `609affbb`. For ordinary cases I followed class breaks, Local Moran, kriging, and raster indices through registration, execution or recorded output, and presentation.
+
+I scanned all source files for analysis imports and all archived records and twins for the counts below. The package has **1,028 TypeScript source files, 107,929 TypeScript lines, and 124 spec files**. `computation-lenses` accounts for 840 TypeScript files, 33 JSON extracts, and one README. The archive contains **413 records** totaling 49,454,190 bytes and **1,858 twins** totaling 34,400,509 bytes. All 1,858 twins matched their source record’s run ID. All 413 records have the adapter label `apple (unknown)`.
+
+I made no changes and ran no build, compiler, test suite, browser, or GPU workload. I checked consumer imports as evidence of API use. I did not review consumer implementations, verify numerical GPU results, measure elapsed test time, or independently determine redistribution rights.
+
+Representative census commands, from the repository root:
+
+```sh
+rg --files modules/lenses/src -g '*.ts' | wc -l
+rg --files modules/lenses/test -g '*.spec.ts' | wc -l
+rg --files modules/lenses/src/computation-lenses/scenarios |
+  sed -E 's/.*(\.lens\.ts|\.example\.ts)$/\1/' | sort | uniq -c | sort -nr | head
+rg -n ': SPATIOTEMPORAL_REVIEW_PENDING' modules/lenses/test/computation-docs/lens-coverage.node.spec.ts | wc -l
+rg -n 'registerDefaultViewPack\(' modules/lenses/src
+rg -n '@luma-contributors/lenses' modules/kepler/src website examples -g '*.{ts,tsx,js,mjs}'
+git show --stat 609affbb -- modules/lenses
+```
+
+For sibling similarity I compared each file to its closest sibling of the same suffix and family. This reproduces the score used in LENS-06. It preserves identifiers and normalizes quoted strings.
+
+```python
+from itertools import combinations
+from pathlib import Path
+from statistics import median
+import re
+
+root = Path("modules/lenses/src/computation-lenses/scenarios")
+for suffix in ("*.lens.ts", "*.example.ts"):
+    grams = {}
+    for path in root.rglob(suffix):
+        lines = [re.sub(r"""'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*" """.strip(), "'STR'", s)
+                 for line in path.read_text().splitlines()
+                 if (s := line.strip()) and not s.startswith(("//", "/*", "*"))]
+        grams[path] = set(zip(lines, lines[1:], lines[2:]))
+    best = dict.fromkeys(grams, 0.0)
+    for a, b in combinations(grams, 2):
+        if a.parent == b.parent:
+            score = len(grams[a] & grams[b]) / max(1, len(grams[a] | grams[b]))
+            best[a], best[b] = max(best[a], score), max(best[b], score)
+    print(suffix, len(best), median(best.values()), sum(v >= .8 for v in best.values()))
+```
+
+### Vocabulary as implemented
+
+**Lens.** A lens is one reading of a computation record. A Markdown directive selects a scenario and a *rung*, such as result, formula, datum, or graph. It can pin an entity or iteration and request a particular view. A live lens has a controller that owns those choices and can share selections with other lenses on the page. [Authoring guide:13](../../../docs/api/computation-views.md:13) · [lens-controller.ts:32](../../../modules/lenses/src/computation-views/hosts/lens-controller.ts:32)
+
+**View.** A view is a registered way to answer the question posed by a rung. It declares which records it can handle, builds a model, renders a host-independent tree, and describes the same model for accessibility. Several views can serve one rung. The registry chooses among satisfied candidates and has a table fallback with a reason. [view-registration.ts:170](../../../modules/lenses/src/computation-views/registry/view-registration.ts:170) · [view-registry.ts:110](../../../modules/lenses/src/computation-views/registry/view-registry.ts:110)
+
+**Pack.** A view pack supplies domain knowledge keyed by operator or recipe export name. It can supply formulas, variable kinds, stages, guards, and domain-specific views. There are five `gpu-*/computation-pack` entry points. Scenario registration lives in a separate directory, although importing a family’s scenarios can also register its pack. This distinction matters to someone who only wants to render a saved record. [view-registration.ts:50](../../../modules/lenses/src/computation-views/registry/view-registration.ts:50) · [view-registration.ts:221](../../../modules/lenses/src/computation-views/registry/view-registration.ts:221) · [network scenario index:5](../../../modules/lenses/src/computation-lenses/scenarios/gpu-network/index.ts:5)
+
+**Scenario.** A scenario is an identified, executable example of a documented export. Its descriptor names the audience, supported rungs, default rung, and optional dataset and example source. `load()` returns `run(device)` and can also return `describeStructure(device)`. Listing descriptors requires no device. [types.ts:17](../../../modules/lenses/src/computation-lenses/types.ts:17) · [registry.ts:39](../../../modules/lenses/src/computation-lenses/registry.ts:39)
+
+**Lens record.** In memory, `LensRecord` is analysis’s `GPUComputationRecordWithSidecars`: the graph and its explanatory metadata, with optional measurements and captures. On disk, `docs/lens-records/<scenario>.json` adds scenario, adapter and date provenance and encodes the payload compactly. The two representations currently share a misleading TypeScript type. [view-registration.ts:29](../../../modules/lenses/src/computation-views/registry/view-registration.ts:29) · [types.ts:42](../../../modules/lenses/src/computation-lenses/types.ts:42)
+
+**Lens twin.** A twin is a static rendering of a particular directive against a record. It carries figure HTML, caption, description, key number, provenance and permalink state, with optional receipt, formula, example, and guard verdicts. Plain result directives can also have thumbnail twins. It is a presentation artifact and requires no second execution of the algorithm. [static-twin.ts:36](../../../modules/lenses/src/computation-views/twin/static-twin.ts:36) · [lens-twins.node.spec.ts:46](../../../modules/lenses/test/computation-docs/lens-twins.node.spec.ts:46)
+
+The authoring guide explains most of this, including capture, pending records, and linked selections. The package README gives a directory map but no link to the guide or worked reading path. The guide’s rung table omits `result`, even though `result` is the default for scenario authors. [Package README:3](../../../modules/lenses/README.md:3) · [Guide:43](../../../docs/api/computation-views.md:43) · [define-lens-scenarios.ts:37](../../../modules/lenses/src/computation-lenses/define-lens-scenarios.ts:37)
+
+## Findings
+
+### LENS-01 Result tables join unrelated entities by array position [P0] [correctness]
+
+- **Evidence.** A match between *any two* array key spaces enables table mode. `renderTable` then includes **every** non-geometric input and output and looks up each by the same row number. The final tagged output also determines the headline. In the committed kriging twin, the first row places station precipitation `56.6`, cell variance `13500`, and a whole-run invalid count `18` together. The caption reports `uncertainCount. rows: 1`. The record identifies 681 stations and 4,662 raster cells. Matching rendered `<th>` names back to their capture key spaces found multiple declared key spaces in **47 of 53** full `result-view` tables. [result-view.ts:239](../../../modules/lenses/src/computation-views/views/result-view.ts:239) · [result-view.ts:250](../../../modules/lenses/src/computation-views/views/result-view.ts:250) · [result-view.ts:1102](../../../modules/lenses/src/computation-views/views/result-view.ts:1102) · [kriging scenario:89](../../../modules/lenses/src/computation-lenses/scenarios/gpu-spatial-analysis/kriging.lens.ts:89) · [kriging twin:13](../../../docs/lens-records/twins/gpu-spatial-analysis.kriging~result.json:13) · [rendered table:21](../../../docs/lens-records/twins/gpu-spatial-analysis.kriging~result.json:21)
+- **Why it matters.** The public view presents a row association that the computation never made. A reader can reasonably interpret the variance as belonging to that station. A trailing diagnostic can also displace the requested analysis result.
+- **Proposed change.** Group table columns by declared key space. Require an explicit relation for cross-space alignment, display run diagnostics separately, and count entities using component width. Add an optional primary-output capture ID to the scenario’s presentation metadata. Pin the kriging case by asserting the rainfall headline and the station, cell, and run groupings. **M, additive API, changes rendered output.**
+- **Confidence.** High. The incorrect association is observable in checked-in HTML.
+
+### LENS-02 Geometry sampling can remove every output feature [P1] [correctness]
+
+- **Evidence.** The renderer derives one stride from the entire vertex array, applies it within each feature, and skips a line with fewer than two surviving vertices or a polygon with fewer than three. In the Local Moran twin, the headline says **791 polygons** and the figure HTML contains **zero `<path>` elements**. Across full `result-view` twins whose key-number label is `lines` or `polygons`, **44 of 88** have zero `<path data-role="output">`. For the corresponding thumbnails it is **76 of 88**. These counts describe the artifact, without attributing every instance to the same cause. [result-view.ts:469](../../../modules/lenses/src/computation-views/views/result-view.ts:469) · [result-view.ts:627](../../../modules/lenses/src/computation-views/views/result-view.ts:627) · [Local Moran twin:13](../../../docs/lens-records/twins/gpu-spatial-analysis.local-moran~result.json:13) · [figure HTML:21](../../../docs/lens-records/twins/gpu-spatial-analysis.local-moran~result.json:21)
+- **Why it matters.** Real values, a credible caption, and a passing snapshot can accompany an empty map. The thumbnail budget makes the problem particularly visible in a catalog.
+- **Proposed change.** Select features first, reserving the pinned or highlighted feature. Allocate enough vertices for each selected feature to remain drawable, preserve line endpoints, and report how many features are shown. Add a Node assertion that a nonempty, drawable output produces an output mark or an explicit fallback. **M, nonbreaking API.**
+- **Confidence.** High.
+
+### LENS-03 The capture API returns compact data under the decoded record type [P1] [ergonomics]
+
+- **Evidence.** `toRecordedLensFile()` casts `compactLensRecordEnvelope(...)` to `RecordedLensFile`. That type declares `record: LensScenarioResult`, whose graphs are objects. **All 413 archived files** instead have an array at `record.graphs[0]`. `captureLensScenarioRecord()` exposes the same return type. Consequently, `captured.record.graphs[0].id` type-checks and yields `undefined` on a compact graph. The writer also accepts a timestamp or adapter label that the reader subsequently rejects. [registry.ts:55](../../../modules/lenses/src/computation-lenses/registry.ts:55) · [registry.ts:76](../../../modules/lenses/src/computation-lenses/registry.ts:76) · [types.ts:48](../../../modules/lenses/src/computation-lenses/types.ts:48) · [run-lens-scenario.ts:27](../../../modules/lenses/src/computation-lenses/run-lens-scenario.ts:27) · [record-encoding.ts:283](../../../modules/lenses/src/computation-lenses/record-encoding.ts:283)
+- **Why it matters.** The natural next step after capturing a record is to inspect or render it. The signature invites a caller to skip the required conversion.
+- **Proposed change.** Give serialized and decoded envelopes distinct types, make `fromRecordedLensFile(unknown)` the decoding boundary, and validate shared envelope metadata on write as well as read. Keep the existing file schema readable. **M, source-breaking for callers accessing encoded payloads as decoded graphs, wire-compatible.**
+- **Confidence.** High.
+
+### LENS-04 Unmounting one lens removes another lens’s selection relations [P1] [correctness]
+
+- **Evidence.** Mounted lenses default to the same page coordinator. Each controller registers relations under `${runId}/${relation.id}`. The coordinator replaces an existing entry with that ID, and each controller deletes the ID on teardown or record replacement. Two rungs of the same run therefore share a single entry that either controller can delete. The existing relation-replacement test uses one controller. [mount-lens.ts:85](../../../modules/lenses/src/computation-views/hosts/mount-lens.ts:85) · [lens-controller.ts:377](../../../modules/lenses/src/computation-views/hosts/lens-controller.ts:377) · [lens-controller.ts:330](../../../modules/lenses/src/computation-views/hosts/lens-controller.ts:330) · [key-relations.ts:163](../../../modules/lenses/src/computation-views/coordinator/key-relations.ts:163) · [controller test:311](../../../modules/lenses/test/computation-views/hosts/lens-controller.node.spec.ts:311)
+- **Why it matters.** Removing an offscreen card can stop a still-mounted card from mapping a selection between key spaces. That is a normal lifecycle for the documented page host.
+- **Proposed change.** Have the coordinator retain each record’s relations and return a release handle. Delete a relation when its last owner releases it. Extend the current `external → row` test to two controllers on one run, destroy one, and make another pick through the survivor. **S–M, nonbreaking.**
+- **Confidence.** High from the deterministic map operations. Browser lifecycle execution was not performed.
+
+### LENS-05 Published documentation can silently regress from captured to pending [P1] [testing]
+
+- **Evidence.** Missing records are allowed by default. The twin test adds the twin to `referenced` **before** `if (!existsSync(recordFile)) continue`. A previously checked-in twin can therefore survive deletion of its source record without a missing, stale, or orphan failure from these checks. A fence-aware scan found **1,531 directives for 427 scenario IDs**. **29 directives for 14 IDs** currently lack a record, including the three spacing directives. The guide explicitly allows pending records during authoring. [lens-coverage.node.spec.ts:223](../../../modules/lenses/test/computation-docs/lens-coverage.node.spec.ts:223) · [lens-twins.node.spec.ts:143](../../../modules/lenses/test/computation-docs/lens-twins.node.spec.ts:143) · [spacing directives:99](../../../docs/api/gpu-spatial-analysis/analysis-experience.md:99) · [pending-record convention:133](../../../docs/api/computation-views.md:133)
+- **Why it matters.** A deliberately staged addition and accidental loss of an established capture produce the same default outcome. All current twins have source records, so this is a good point to establish a regression floor.
+- **Proposed change.** Require a source record for every checked-in twin. Track deliberately pending scenario IDs in a small manifest with a reason, fail on new unlisted gaps, and remove entries upon capture. Keep capture writes opt-in. **S, nonbreaking runtime.**
+- **Confidence.** High. The 14 missing IDs are an inventory, not a claim that all 14 should already have shipped.
+
+### LENS-06 Coverage costs more than the guarantee it buys [P2] [architecture]
+
+- **Evidence.** The rule applies to five selected barrels, specifically classes discovered through `getCommandNodes` and `add…Recipe` functions. The checker creates a TypeScript program per uncached barrel. Each covered element needs an operator, formula or exemption, registration, marker, directive, and eventually a record. Yet the directive-to-element check compares `scenario.entry === entry.entry`, accepting a sibling’s scenario. A static section/slug scan found no current mismatched marked section, so tightening this check appears inexpensive. There are **89** explicit spatiotemporal pending entries against the roadmap’s recorded **85**. [lens-directives.ts:170](../../../modules/lenses/test/computation-docs/lens-directives.ts:170) · [lens-directives.ts:191](../../../modules/lenses/test/computation-docs/lens-directives.ts:191) · [coverage checks:420](../../../modules/lenses/test/computation-docs/lens-coverage.node.spec.ts:420) · [directive join:466](../../../modules/lenses/test/computation-docs/lens-coverage.node.spec.ts:466) · [roadmap:346](../../../dev-docs/roadmap.md:346)
+- **Measured authoring cost.** The 830 scenario-directory TypeScript files comprise **300 `.lens.ts` files / 30,726 lines**, **425 `.example.ts` files / 20,285 lines**, and **105 other files / 13,114 lines**. The median closest-sibling similarity is **0.398** for lens files and **0.102** for whole example files. **37/300** lens files score at least 0.8, including **26** with identical normalized line-trigram sets. Looking specifically at the displayed example regions gives a different result: **80/425** have one executable line, **49** are `graph.add(new Contributor(props))`, and **26** return a recipe call. The spacing and contiguity descriptors demonstrate duplicated registration metadata. Class breaks demonstrates why some examples deserve to stay hand-written. [Spacing descriptor:7](../../../modules/lenses/src/computation-lenses/scenarios/gpu-spatial-analysis/analysis-spacing.lens.ts:7) · [contiguity descriptor:7](../../../modules/lenses/src/computation-lenses/scenarios/gpu-spatial-analysis/analysis-contiguity-statistics.lens.ts:7) · [normalize geometry example:12](../../../modules/lenses/src/computation-lenses/scenarios/gpu-spatial-analysis/normalize-geometry.example.ts:12) · [class breaks example:34](../../../modules/lenses/src/computation-lenses/scenarios/gpu-dataframe/class-breaks.example.ts:34)
+- **Proposed change.** First compare against `elementScenarios` in the directive check. Share one discovery program across covered barrels or consume a checked catalog export inventory. Introduce explicit coverage choices for an individually demonstrated operator, a variant demonstrated by a named family scenario, and a documented exemption. Derive IDs and default registration rows from the catalog. Retain hand-authored fixtures, choices, formulas, and expected results where they teach or verify something specific. **M, nonbreaking if IDs and existing example paths are preserved.**
+- **Confidence.** High. **KNOWN(LN-ST)** for the stale pending count only. The cost figures measure files and lines, not author hours or compiler wall time.
+
+### LENS-07 The package declares a required registration module free of side effects [P1] [packaging]
+
+- **Evidence.** The all-scenarios entry imports `../../computation-views/packs/gpu-core/index` solely for registration. That module calls `registerDefaultViewPack(GPU_CORE_VIEW_PACK)`. The `sideEffects` patterns cover scenario directories and `computation-pack` directories, but omit `computation-views/packs/gpu-core`. This is the one unmatched module among six pack registration calls. Its array view is selected in **117 of 363** full, unpinned result twins. [Scenario entry:7](../../../modules/lenses/src/computation-lenses/scenarios/index.ts:7) · [GPU core pack:25](../../../modules/lenses/src/computation-views/packs/gpu-core/index.ts:25) · [package.json:52](../../../modules/lenses/package.json:52) · [class breaks twin:12](../../../docs/lens-records/twins/gpu-dataframe.class-breaks~result.json:12)
+- **Why it matters.** A consumer bundler honoring the manifest can drop the registration. The live host could then select a different result view from the checked-in twin built under Node.
+- **Proposed change.** Add the exact source and distribution registration paths to `sideEffects`. Add a small packaging fixture that checks the selected class-breaks view after consuming the optimized all-scenarios entry. Longer term, let a host pass packs explicitly when creating a registry. **S, nonbreaking.**
+- **Confidence.** High for the manifest mismatch. **UNVERIFIED** for the output of any particular bundler.
+
+### LENS-08 Dataset provenance has already drifted from the intended publication boundary [P2] [packaging]
+
+- **Evidence.** The manifest includes both `src` and `dist` and exports `computation-lenses/data/*`. The data directory contains **33 JSON files / 1,402,751 bytes**: three `f-*`, five `n-*`, two `s1-*`, nine `s2-*`, eight `s3-*`, and six `t-*`. Comparing filenames against the data README found **one missing row**, `s3-chicago-area-roads.json`, and **two rows for absent files**, `g-nl-rail-graph.json` and `k-core.json`. The missing file identifies 448 OpenStreetMap-derived lines and ODbL attribution, which its scenario also records. Separately, TypeScript color tables carry third-party attribution inside the rendering code. [package.json:41](../../../modules/lenses/package.json:41) · [data inventory:17](../../../modules/lenses/src/computation-lenses/data/README.md:17) · [data inventory:35](../../../modules/lenses/src/computation-lenses/data/README.md:35) · [area roads:1](../../../modules/lenses/src/computation-lenses/data/s3-chicago-area-roads.json:1) · [line-length scenario:58](../../../modules/lenses/src/computation-lenses/scenarios/gpu-spatial-analysis/line-length-per-polygon.lens.ts:58) · [color-table credits:1360](../../../modules/lenses/src/computation-views/scales/ramps.ts:1360)
+- **Why it matters.** The repository points maintainers to this inventory when deciding what can ship. Lazy JSON imports help loading behavior, but the package file list still includes those assets.
+- **Proposed change.** Reconcile the three inventory entries now and add a filename-parity check. Move licensed extracts and the scenarios that import them to a private workspace. Give the candidate public runtime an explicit file allowlist, retain palette notices, and verify the packed file list and a render using a synthetic fixture before changing `private`. Keep captures and twins derived from restricted fixtures in the docs distribution pending their own review. **S for inventory, M for package separation.** Moving public data subpaths would break their consumers.
+- **Confidence.** High for the inventory and package contents. Publication clearance requires the maintainer’s license review. [Repository data policy:227](../../../THIRD-PARTY-DATA.md:227)
+
+### LENS-09 Public exports dwarf the surface exercised by consumers [P2] [ergonomics]
+
+- **Evidence.** Following source export declarations without typechecking produced **34 names** at both the root and `/computation-lenses`, **6** at `/computation-lenses/registry`, and **457 value and type names** at `/computation-views` through **52 star exports**. The five pack entries expose **19 dataframe, 5 network, 20 raster, 37 spatial, and 4 terrain names**. Even the coverage checker must use a different retrieval convention across families. Direct package-import consumers found in scope of the census were one kepler source file, three website files, and three example files. They chiefly look up or run scenarios, decode files, or mount a lens. The website also reads selected example source directly. [Root index:5](../../../modules/lenses/src/index.ts:5) · [views index:8](../../../modules/lenses/src/computation-views/index.ts:8) · [family loaders:160](../../../modules/lenses/test/computation-docs/lens-coverage.node.spec.ts:160) · [kepler lookup:71](../../../modules/kepler/src/analysis/catalog-lens.ts:71) · [website decoder:57](../../../website/src/lens/generate-view-models.ts:57) · [example host:81](../../../examples/deck/kepler-compute/src/workflow/workbench-run-log.tsx:81)
+- **Dependency boundary.** Of **841 literal analysis import references** in lens source, one targets an unpublished subpath: `GPULocalPermutationReplay`. I found no relative source imports into analysis. Tests separately use **61 references to 11 unpublished analysis paths across 45 files**, including private testing helpers and independent oracles. The public-example checker accepts syntactically plausible kebab-case deep paths, and the upstream-first checker matches `@luma.gl/*` only. The package-export verifier skips wildcard keys, including the family pack entry. [Local permutation:40](../../../modules/lenses/src/computation-lenses/scenarios/gpu-spatial-analysis/local-permutation-test.lens.ts:40) · [oracle import:11](../../../modules/lenses/test/computation-lenses/regionalization-correctness.node.spec.ts:11) · [example checker:59](../../../modules/lenses/src/computation-lenses/lens-example.ts:59) · [upstream checker:54](../../../scripts/check-upstream-first.mjs:54) · [export verifier:17](../../../scripts/verify-package-exports.mjs:17)
+- **Proposed change.** Add named reader, host, and author exports and one `createViewPack()` convention per family. Document the six terms and link the existing guide from the README. Preserve old aliases during migration. Compare runtime imports with the actual analysis export map, exercise all five concrete pack entries, and keep test-only oracle sharing explicit. **M, additive initially.** Raise the existing private-import issue to a release blocker for any distribution containing that scenario.
+- **Confidence.** High for repository consumers and source declarations. **KNOWN(INT-06)** for the single runtime import and its release priority.
+
+### LENS-10 Twin verification repeatedly reads and decodes the same record [P2] [performance]
+
+- **Evidence.** The twin spec reads and decodes a file inside its directive loop. `buildLensTwin()` then calls `fromRecordedLensFile()` again, including when handed a decoded envelope. Weighted by current directive occurrences, that loop requests **203,084,999 source-record bytes** for **49,454,190 distinct bytes**, before thumbnail rendering. Its expected map also retains serialized twin text until the entire scan is complete. [lens-twins.node.spec.ts:138](../../../modules/lenses/test/computation-docs/lens-twins.node.spec.ts:138) · [per-directive read:149](../../../modules/lenses/test/computation-docs/lens-twins.node.spec.ts:149) · [static-twin.ts:118](../../../modules/lenses/src/computation-views/twin/static-twin.ts:118)
+- **Why it matters.** Each new rung adds file parsing, graph expansion, and capture-array allocation for a run already used by adjacent figures. A permanent cache of all decoded records would introduce a different memory cost.
+- **Proposed change.** Group directive keys by scenario, decode one record, render and compare its full and thumbnail variants, then release it. Retain filenames and hashes for the final orphan check. Keep the existing rule that a failed scan cannot prune files. **M, nonbreaking.**
+- **Confidence.** High for requested bytes and repeated conversion. Wall-clock and peak-memory improvements are **UNVERIFIED**.
+
+## Cross-cutting patterns
+
+- **Carry identity through to the consumer.** The record already distinguishes stations, cells, and runs. The coverage registry already knows the documented element. Both bugs arise where a consumer joins on a weaker key than the producer supplied. Use the exact key in table construction and in coverage checks.
+- **Test the meaning of a twin as well as its bytes.** Byte comparison is valuable for deterministic rendering. Add three archive-wide assertions: a table has one declared row domain or an explicit join, a nonempty geometric result has a drawable mark or stated fallback, and each persisted twin retains a source record. These checks run over committed JSON without a device.
+- **Make shared resources declare their owner.** The controller already reference-counts scale caches. Relations need equivalent ownership. A decoded capture can likewise have one owner for the duration of a scenario’s twin generation. [lens-controller.ts:79](../../../modules/lenses/src/computation-views/hosts/lens-controller.ts:79)
+
+## Keep
+
+- **The pure view contract.** `satisfies`, `build`, `render`, and `describe` let an interactive host and a static document explain the same model. Explicit disabled reasons and a table fallback are worth preserving. [view-registration.ts:195](../../../modules/lenses/src/computation-views/registry/view-registration.ts:195)
+- **Real execution with small, independently understandable expectations.** The new analysis-profile runner decodes public outputs and checks five points, a nearest-neighbor maximum of three, and cardinalities `[1,1,0]`. That catches an incorrect record even if its graph and node IDs are unchanged. The generic structure tests compare IDs and skip runners without `describeStructure`; they serve a different purpose. [analysis-profile-run.ts:151](../../../modules/lenses/src/computation-lenses/scenarios/gpu-spatial-analysis/analysis-profile-run.ts:151) · [record-structure.spec.ts:22](../../../modules/lenses/test/computation-lenses/record-structure.spec.ts:22)
+- **Data-driven registration with executable examples.** The raster tranche declares eight rows together and its runner imports the actual example functions. It already demonstrates how to reduce registration work while preserving a runnable snippet and a real fixture. [coverage-tranche-one.scenarios.ts:58](../../../modules/lenses/src/computation-lenses/scenarios/gpu-raster/coverage-tranche-one.scenarios.ts:58) · [coverage-tranche-one-runner.ts:10](../../../modules/lenses/src/computation-lenses/scenarios/gpu-raster/coverage-tranche-one-runner.ts:10)
+- **Independent capture, rendering, and size checks.** Captures are opt-in, records have individual and total budgets, and twin validation checks accessibility fields and size. The spatial runner distinguishes readback from GPU replay and validates sidecars. Those are sound foundations for the semantic checks above. [capture-records.spec.ts:20](../../../modules/lenses/test/computation-lenses/capture-records.spec.ts:20) · [record-budget.node.spec.ts:13](../../../modules/lenses/test/computation-lenses/record-budget.node.spec.ts:13) · [spatial-scenario-utils.ts:205](../../../modules/lenses/src/computation-lenses/scenarios/gpu-spatial-analysis/spatial-scenario-utils.ts:205)
+
+## Future
+
+1. **Separate record reading and rendering from the private scenario collection.** A consumer should be able to decode a record, select packs, render a twin, or mount a view without importing fixtures. The trade-off is another workspace boundary and explicit host setup. It gives the code a publication path while preserving the existing data restrictions.
+2. **Add a typed lens declaration keyed by catalog export name.** The catalog supplies identity, package, and documentation location. The lens declaration supplies the question, dataset, primary output, example, and any shared-scenario relationship. Generate registration indexes and coverage reports from the join. Keep old scenario IDs as permalinks. The trade-off is maintaining a schema for declarations, offset by fewer hand-synchronized files. [Catalog by export name:21](../../../modules/analysis/src/gpu-spatial-analysis/ontology/all-entry-points/entry-point-operator-details.ts:21)
+3. **Make replay verification incremental and semantic.** Keep a manifest of scenario, capture inputs, example revision, and renderer revision. A renderer change can regenerate affected twins from existing records. A changed recipe or dataset can request targeted GPU recapture. Maintain a small set of numerical expectations and multi-adapter cases separately. The trade-off is dependency tracking, but it makes clear which claims each verification step establishes.
+4. **Introduce a supported public surface before publication.** Document three journeys: reading an existing record, mounting a live lens, and authoring a pack or scenario. Use explicit exports for these journeys, retain compatibility aliases, and test one consumer per journey against distributed entry points.
+
+## Top 5
+
+1. Fix result-table key-space alignment and primary-output selection. Use the committed kriging twin as the regression case.
+2. Sample complete drawable features and catch empty geometric results throughout the archive.
+3. Distinguish encoded files from decoded records in the public types and remove the second decode.
+4. Reference-count shared record relations and test teardown with two lenses on the same run.
+5. Require a source record for every checked-in twin and track the 14 deliberately pending or overdue captures explicitly.
+
+## Questions for the lead
+
+- Should every public contributor have an individually captured result, or is a named family scenario sufficient for variants with the same observable behavior? This decision determines whether the 89 pending entries represent 89 separate authoring jobs.
+- Is the intended first public product a record reader and renderer, or a runnable scenario collection as well? The former has a substantially smaller data and import boundary.
+- Which existing scenario IDs and family entry points are treated as stable by consumers outside this repository? Those are the compatibility constraints to preserve during the split.

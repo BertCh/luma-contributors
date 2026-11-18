@@ -7,7 +7,7 @@
   "viewId": "dispatch-view",
   "caption": "Dispatch of network-reachability-initialize. invocations: 1,280. structure metadata only. workgroups 5.",
   "description": "Dispatch of network-reachability-initialize. invocations: 1,280. structure metadata only. workgroups 5.",
-  "llms": "Dispatch of network-reachability-initialize\n\n- invocations: 1,280\n- workgroups 5\n- lanes per workgroup 256\n- Lane grid rasterized; first 15 and pinned lane labelled\n- idle lanes 81\n- expanded workgroup 0\n- id probe not recorded\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: transients costs, predecessors, converged, ids, lineOffsets, pathFound, count, overflow retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Dispatch of network-reachability-initialize\n\n- invocations: 1,280\n- workgroups 5\n- lanes per workgroup 256\n- Lane grid rasterized; first 15 and pinned lane labelled\n- idle lanes 81\n- expanded workgroup 0\n- id probe not recorded\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: transients costs, predecessors, converged, ids, nodeRows, lineOffsets, pathFound, count, overflow, candidateOverflow retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "invocations",
     "value": "1,280"
@@ -19,16 +19,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-11T15:20:12.941Z",
-    "runId": "run-70cde4eb",
+    "date": "2026-11-18T16:33:05.795Z",
+    "runId": "run-30d8c168",
     "observerEffects": [
       "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
-      "lens twin: transients costs, predecessors, converged, ids, lineOffsets, pathFound, count, overflow retained instead of aliased"
+      "lens twin: transients costs, predecessors, converged, ids, nodeRows, lineOffsets, pathFound, count, overflow, candidateOverflow retained instead of aliased"
     ]
   },
   "state": {
-    "runId": "run-70cde4eb",
+    "runId": "run-30d8c168",
     "rung": "kernel",
     "bindings": {},
     "clauses": [],

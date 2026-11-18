@@ -7,24 +7,24 @@
   "viewId": "result-view",
   "caption": "Result of gpu-spatial-analysis.shared-paths: leftBoundaries, rightBoundaries →…",
   "description": "Result of gpu-spatial-analysis.shared-paths: leftBoundaries, rightBoundaries → sharedPaths. lines: 4,096. values read back from the GPU run. input leftBoundaries: 1 lines.",
-  "llms": "Result of gpu-spatial-analysis.shared-paths: leftBoundaries, rightBoundaries → sharedPaths\n\n- lines: 4,096\n- input leftBoundaries: 1 lines\n- input rightBoundaries: 16 lines\n- Planar coordinates (m); uniform scale.\n- 224 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 2977 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 8192 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "llms": "Result of gpu-spatial-analysis.shared-paths: leftBoundaries, rightBoundaries → sharedPaths\n\n- lines: 4,096\n- input leftBoundaries: 1 lines\n- input rightBoundaries: 16 lines\n- Planar coordinates (m); uniform scale.\n- leftBoundaries: 1 of 1 lines shown; evenly sampled features and vertices; line endpoints retained\n- rightBoundaries: 7 of 16 lines shown; evenly sampled features and vertices; line endpoints retained\n- sharedPaths: 5 of 4096 lines shown; evenly sampled features and vertices; line endpoints retained; 4091 invalid or uncaptured features omitted\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "lines",
     "value": "4,096"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-result-view\"><svg class=\"cv-figure\" width=\"160\" height=\"96\" viewBox=\"0 0 160 96\" preserveAspectRatio=\"xMidYMid meet\" data-extent=\"[[-1975.719970703125,0],[10017.650390625,17517.720703125]]\" role=\"img\" aria-label=\"Result: sharedPaths\"><defs><pattern id=\"lens-gpu-spatial-analysis-shared-paths-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"3\" height=\"3\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-spatial-analysis-shared-paths-result-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-spatial-analysis-shared-paths-result-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g data-role=\"output\"></g><g data-role=\"highlight\"></g></svg></section>",
+    "html": "<section class=\"lens-view lens-result-view\"><svg class=\"cv-figure\" width=\"160\" height=\"96\" viewBox=\"0 0 160 96\" preserveAspectRatio=\"xMidYMid meet\" data-extent=\"[[1364.8699951171875,7588.89990234375],[6957.830078125,10681.2998046875]]\" role=\"img\" aria-label=\"Result: sharedPaths\"><defs><pattern id=\"lens-gpu-spatial-analysis-shared-paths-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"3\" height=\"3\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-spatial-analysis-shared-paths-result-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-spatial-analysis-shared-paths-result-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><desc>sharedPaths: 5 of 4096 lines shown; evenly sampled features and vertices; line endpoints retained; 4091 invalid or uncaptured features omitted</desc><g data-role=\"output\"><path class=\"cv-mark cv-mark--output cv-line\" data-role=\"output\" stroke-width=\"0.8999999999999999\" fill=\"none\" stroke=\"#0072b2\" d=\"M154,87.07 L131.45,87.08 L106.83,87.24 L75.11,87.44 L45.73,88.91\" fill-rule=\"evenodd\" data-feature-row=\"0\" data-capture-id=\"gpu-spatial-analysis-shared-paths-snapshots-sharedPaths-0\" data-provenance=\"readback\"></path><path class=\"cv-mark cv-mark--output cv-line\" data-role=\"output\" stroke-width=\"0.8999999999999999\" fill=\"none\" stroke=\"#0072b2\" d=\"M45.73,88.91 L39.37,88.77\" fill-rule=\"evenodd\" data-feature-row=\"1\" data-capture-id=\"gpu-spatial-analysis-shared-paths-snapshots-sharedPaths-0\" data-provenance=\"readback\"></path><path class=\"cv-mark cv-mark--output cv-line\" data-role=\"output\" stroke-width=\"0.8999999999999999\" fill=\"none\" stroke=\"#0072b2\" d=\"M39.37,88.77 L19.8,66.81 L6.31,44.96 L17.12,13.01\" fill-rule=\"evenodd\" data-feature-row=\"2\" data-capture-id=\"gpu-spatial-analysis-shared-paths-snapshots-sharedPaths-0\" data-provenance=\"readback\"></path><path class=\"cv-mark cv-mark--output cv-line\" data-role=\"output\" stroke-width=\"0.8999999999999999\" fill=\"none\" stroke=\"#0072b2\" d=\"M17.12,13.01 L48.88,13.07 L86.81,12.48 L101.34,8.69\" fill-rule=\"evenodd\" data-feature-row=\"3\" data-capture-id=\"gpu-spatial-analysis-shared-paths-snapshots-sharedPaths-0\" data-provenance=\"readback\"></path><path class=\"cv-mark cv-mark--output cv-line\" data-role=\"output\" stroke-width=\"0.8999999999999999\" fill=\"none\" stroke=\"#0072b2\" d=\"M101.34,8.69 L106.38,7.08 L113.46,13.23 L116.07,23.02\" fill-rule=\"evenodd\" data-feature-row=\"4\" data-capture-id=\"gpu-spatial-analysis-shared-paths-snapshots-sharedPaths-0\" data-provenance=\"readback\"></path></g><g data-role=\"highlight\"></g></svg></section>",
     "width": 160,
     "height": 96
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-11T15:21:19.006Z",
-    "runId": "run-f71bd5b0",
+    "date": "2026-11-18T16:33:48.958Z",
+    "runId": "run-a0b38eb2",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-f71bd5b0",
+    "runId": "run-a0b38eb2",
     "rung": "result",
     "bindings": {},
     "clauses": [],

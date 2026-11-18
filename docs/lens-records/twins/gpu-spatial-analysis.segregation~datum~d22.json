@@ -6,15 +6,15 @@
   "size": "full",
   "scenarioId": "gpu-spatial-analysis.segregation",
   "viewId": "datum-receipt",
-  "caption": "Receipt of tracts 22. localEntropy: 1.4740455150604248. values read back from the GPU run. result: 4 quantities.",
-  "description": "Receipt of tracts 22. localEntropy: 1.4740455150604248. values read back from the GPU run. result: 4 quantities.",
-  "llms": "Receipt of tracts 22\n\n- localEntropy: 1.4740455150604248\n- result: 4 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "caption": "Receipt of tracts 22. localEntropy: 1.4740455150604248. values read back from the GPU run. result: 2 quantities.",
+  "description": "Receipt of tracts 22. localEntropy: 1.4740455150604248. values read back from the GPU run. result: 2 quantities.",
+  "llms": "Receipt of tracts 22\n\n- localEntropy: 1.4740455150604248\n- result: 2 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "localEntropy",
     "value": "1.4740455150604248"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of tracts 22</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"result\"><tr><th scope=\"rowgroup\" colspan=\"5\">result</th></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-segregation-snapshots-tracts-0\" title=\"context\">tracts</button></td><td>441.9568176269531, 6615.00927734375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-segregation-snapshots-resultTracts-0\" title=\"gpu-spatial-analysis-segregation-snapshot-tap\">resultTracts</button></td><td>441.9568176269531, 6615.00927734375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-segregation-snapshots-localTheil-0\" title=\"tract contribution to the entropy index H; NaN where undefined\">localTheil</button></td><td>-0.0022655786015093327</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-segregation-snapshots-localEntropy-0\" title=\"gpu-spatial-analysis-segregation-snapshot-tap\">localEntropy</button></td><td>1.4740455150604248</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of tracts 22</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"result\"><tr><th scope=\"rowgroup\" colspan=\"5\">result</th></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-segregation-snapshots-localTheil-0\" title=\"tract contribution to the entropy index H; NaN where undefined\">localTheil</button></td><td>-0.0022655786015093327</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-segregation-snapshots-localEntropy-0\" title=\"gpu-spatial-analysis-segregation-snapshot-tap\">localEntropy</button></td><td>1.4740455150604248</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -27,20 +27,6 @@
       "provenance"
     ],
     "rows": [
-      [
-        "result",
-        "tracts",
-        "441.9568176269531, 6615.00927734375",
-        "0",
-        "readback"
-      ],
-      [
-        "result",
-        "resultTracts",
-        "441.9568176269531, 6615.00927734375",
-        "0",
-        "readback"
-      ],
       [
         "result",
         "localTheil",
@@ -58,19 +44,17 @@
     ],
     "provenance": [
       "readback",
-      "readback",
-      "readback",
       "readback"
     ]
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-11T15:21:18.057Z",
-    "runId": "run-a181327b",
+    "date": "2026-11-18T16:33:48.405Z",
+    "runId": "run-ef96d69b",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-a181327b",
+    "runId": "run-ef96d69b",
     "rung": "datum",
     "bindings": {
       "entity": 22

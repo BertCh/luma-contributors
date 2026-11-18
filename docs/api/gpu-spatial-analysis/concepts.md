@@ -73,6 +73,35 @@ classified values. Ports only group existing graph views; they do not allocate, 
 read back buffers. Polygons always use the four-level layout of `GPUPolygonGeometryPort`
 (`positions`, `featureOffsets`, `polygonOffsets`, `ringOffsets`; rows are features, the first ring of
 each polygon is its shell), lines use `positions` and `lineOffsets`, and tracks `trackOffsets`.
+`GPUPointGeometryPort` and `GPULineGeometryPort` exclude `featureOffsets`; named multipart ports
+are distinct types and cannot be passed to single-part consumers. Those consumers also reject
+grouping at construction, including object-spread inputs, before unpacking positions or offsets.
+This includes geometry validity, line topology/clipping/refinement, track similarity and the
+points-in-polygons, cluster-outline and straight-line catchment recipes. Both choropleth backends
+reject a grouped point feature instead of counting its parts separately.
+
+`GPUMultipartPointGeometryPort` adds feature-to-point-part `featureOffsets` to the point port;
+`GPUMultipartLineGeometryPort` adds feature-to-linestring-part `featureOffsets` above `lineOffsets`.
+Both use one `sourceIds` row per feature. Offsets start at zero, are nondecreasing and terminate
+at the child count. Equal adjacent offsets describe an empty feature or part, rather than a missing
+owner. `validateGPUMultipartGeometryPort` checks static formats, terminal entries and identity
+lengths; it does not read offset contents from the GPU. Measures and affine transform share this
+validation and retain their existing flat props. For multipart input, both require at least one
+feature and one position.
+
+`createGPUMultipartRowOwnersNode(graph, id, geometry, featureRows)` writes one feature row per
+point part or linestring part using the current offsets on each submission. The caller owns the
+packed `uint32` output, whose length must equal the part count. Empty features own no rows; empty
+line parts still have an owner. Uncovered parts receive `GPU_MULTIPART_NO_FEATURE_ROW`
+(`0xffffffff`), never an application ID. The adapter requires disjoint buffers for its packed
+`featureOffsets` and output views, and each aligned binding must fit the device's
+`maxStorageBufferBindingSize`. It does not validate offset contents or make a join feature-aware;
+each consumer must explicitly support multipart input.
+Predicate joins support feature-level `intersects`, `within` and `coveredBy`; nearest joins support
+multipart queries and targets in neighbors mode, and prepared indices use feature bounds.
+See [multipart join rules and operation forms](./operators-joins.md) for supported routes,
+candidate budgets and CPU twins.
+
 Contributors with one geometry take these fields flat (`GPUPolygonGeometryFields`,
 `GPULineGeometryFields`, `GPUTrajectoryGeometryFields`); contributors with two geometries, such as
 the joins, take whole tagged ports (`GPUPackedGeometryPort<...>`, one packed `positions` view), so a
@@ -153,9 +182,23 @@ Recipe results use a required common envelope with `outputs`, `intermediates` an
   and region shapes are read from storage views, usually a `GPUParameterBuffer` that the
   application rewrites with `write()`. Lengths, capacities, grid sizes, and which optional views
   exist are compile-time topology; each prop's TSDoc says which category it belongs to.
+  `GPUParameterValues<Format>` maps `float32`, `uint32`, and `sint32` to `Float32Array`,
+  `Uint32Array`, and `Int32Array`. Initial values and updates must match the declared format;
+  matching arrays from other JavaScript realms are accepted. Mismatched arrays and supplied
+  non-array initializers (including `null`) are rejected without reinterpreting their bytes.
+  Only `undefined` omits initialization. `length` is an integer in
+  `[0, 2^32 - 1]`. Initial values must fit that logical length, including when it is zero.
+  Updates start at an integer `firstElement` in `[0, length]` and must fit the remaining elements.
 - **Bounded results report overflow on the GPU.** Compact ID lists use `GPUCompactOutput`
-  (`ids` and `status: {count, overflow, requiredCount?}`). `status.count` is clamped to `ids.length` and
-  can be an indirect draw instance count; `status.overflow` is rewritten every encoding.
+  (`ids` and `status: {count, overflow, candidateOverflow?, requiredCount?}`). `status.count` is clamped
+  to `ids.length` and can be an indirect draw instance count. `overflow` means final output capacity
+  loss; `candidateOverflow` means earlier loss that growing the output cannot recover. Both supplied
+  flags are rewritten every encoding. `requiredCount` counts accepted rows reaching the final stage,
+  before output truncation; it is a lower bound after candidate loss or saturation at `0xffffffff`.
+  A consumer must propagate supplied incompleteness, suppress dependent results, or refuse/fall back.
+  The shared `createPublishNode` refuses nonempty `candidateOverflowSources` without a candidate
+  destination. Producers publish their own optional domain diagnostics separately; omitting such
+  diagnostics is not evidence of completeness.
 - **Stable IDs.** Result IDs are the caller's `sourceIds[row]` (or tile IDs) when given and zero-based
   rows otherwise. Node and transient IDs are `${id}-<step>`, so two instances in one graph need
   different `id` props.
@@ -174,6 +217,44 @@ Recipe results use a required common envelope with `outputs`, `intermediates` an
     `positions`, `featureOffsets`, `polygonOffsets` and `ringOffsets`. Contributors with a single
     geometry take the same fields flat, without `kind` (`GPUPolygonGeometryFields`). See
     [Shared ports](#shared-ports-status-and-planning).
+
+`defineGPUSpatialParameterSchema` checks defaults and `packGPUSpatialParameterValues` checks
+overrides in both their input and encoded domains. Float32 fields are checked after `Math.fround`:
+a finite-only field rejects `1e39`, which would encode as infinity. Bounds apply to the stored
+value too: a default or override of `0.1` with maximum `0.1` is rejected because float32 stores
+`0.10000000149011612`. Use representable bounds when that is the intended endpoint. Integer
+fields require whole values within their signed or unsigned 32-bit range; they never wrap.
+`allowNonFinite` explicitly permits NaN and infinity for fields whose kernel defines them.
+
+Contributor authors can import `validateSinglePackedView(view, formats, name)` from
+`@luma-contributors/analysis/analysis-core` for the common packed-format, alignment and stride
+check. It rejects `GraphVectorView` even when it has one chunk.
+`validateGraphOutputsDisjointFromInputs(id, outputs, inputs)` accepts records keyed by port name
+and reports both conflicting names, including aliases of imported physical buffers. Array
+arguments remain supported; their errors identify the two array indices.
+
+Public props describe supported analysis choices. Benchmark batch sizes, forced cleanup passes,
+kriging test chunk sizes, chunk-recursion row bases and extra cell-count destinations belong to
+internal composition factories. Use `GPUCellPyramid` for per-level counts and pass the complete
+chunked weights object to `GPUSpatialLag`; it handles row bases itself. Generalized GWR publishes
+fitted means on the response scale; its bandwidth-selection candidates use link-scale fits internally.
+Cell-pyramid and host-scheduled centrality compositions also share their binding preflights through
+internal helpers. Their standalone contributors run these checks from `getCommandNodes` before
+declaring scratch; callers do not need a separate validation call. The former `validateBindings`
+and `validateGraphBindings` composition methods are private implementation details.
+
+For contributor authors, `getWGSLKernelBinding` infers scalar component arrays only for packed,
+32-bit-aligned `float32`, `uint32`, or `sint32` scalar/vector views (two to four components).
+Atomic access requires an integer view. Other formats and strided layouts are rejected; an
+explicit `WGSLKernelBinding` record is required for deliberate raw-word reinterpretation.
+`createFillNode` fills every scalar component of these layouts by default. Its `componentCount`
+is an integer prefix length from zero to `view.length * componentsPerRow`, measured in components.
+Its `type` must match the view's scalar format (`f32`, `u32`, or `i32`). A zero-component fill
+binds no target and records no commands, including for an empty view at the backing-buffer end.
+`sliceGraphChunkGroupView` borrows a packed parent range with nonnegative integer row bounds
+inside `view.length`; an empty slice at the end is valid. It rejects strided parents and never
+expands into spare backing-buffer capacity. This descriptor helper accepts packed byte formats
+at unaligned offsets and permits nested slicing; storage-word alignment is checked when binding.
 
 ## Precision of longitude/latitude positions
 
@@ -263,10 +344,44 @@ device.submit();
 `encode()` only records commands; the application submits (`device.submit()` for the device's
 default encoder, or `device.submit(encoder.finish())` for its own encoder). The second argument's
 `parameters` is the graph's typed CPU channel, which node conditions and encode callbacks receive.
-Analysis contributors do not use it: every per-frame value they read is packed into a GPU view (a
-`GPUParameterBuffer` written by a `get*ParameterValues` packer, see each class's "Parameters"
-subsection), so changing it needs no re-encode logic and no CPU-side state. The graph is therefore a
-`GPUCommandGraph<void>` and the call passes `{parameters: undefined}`.
+Numeric per-frame inputs are packed into GPU views (a `GPUParameterBuffer` written by a
+`get*ParameterValues` packer, see each class's "Parameters" subsection). For those contributors,
+use `GPUCommandGraph<void>` and pass `{parameters: undefined}`.
+
+`GPUSpatialJoinPrepared` and `GPUStudyWindowPreparation` also accept a CPU `rebuildWhen` predicate.
+Give the handle and graph the same frame type. The first encoding and first encoding after
+explicit invalidation bypass the predicate; otherwise it receives that frame once per encoding.
+Requested geometry generations remain pending on the GPU until complete preparation executes,
+including when an encoding is discarded. The current public builders replay against a retained
+geometry snapshot each encoding; geometry refresh alone is GPU-gated. Use one active resumable
+execution per handle/graph.
+
+```ts
+type Frame = {geometryChanged: boolean};
+const graph = new GPUCommandGraph<Frame>(device);
+const prepared = new GPUSpatialJoinPrepared<Frame>({
+  geometry: polygons,
+  rebuildWhen: frame => frame.geometryChanged
+});
+graph.add(prepared);
+// Add the joins that consume prepared before compiling.
+const compiled = graph.compile();
+compiled.encode(device.commandEncoder, {parameters: {geometryChanged: true}});
+device.submit();
+```
+
+Both handles default their frame type to `unknown`; an annotated callback can infer it. When
+using `invalidate()` alone, they also work with a `GPUCommandGraph<void>`.
+
+`GPUAdamStep`, `GPUFittingCoordinateEncoder`, `GPUFittingGradientSums`,
+`GPUFittingMinibatchOrder`, `GPUPolygonTriangulation` and `GPUSegmentRingAssembly` snapshot
+construction options, spatial contexts and port maps. Mutating the caller's props or replacing a
+port afterward does not change their validated shapes or bindings. GPU views and buffers retain
+their identities: update their contents for per-frame inputs, and construct a new contributor to
+change topology.
+
+Snapshots read declared fields through property access, so class getters and non-enumerable
+ports are supported. Exposed spatial context descriptors and their nested metadata are frozen.
 
 The gpu-raster base operators (`GPURasterStatistics`, the filters, morphology and region operators)
 predate `GPUCommandNodeProducer`: they declare their work with `operator.addToGraph(graph)` instead

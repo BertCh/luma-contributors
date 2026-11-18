@@ -1,0 +1,37 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.analysis-contiguity-statistics",
+  "rung": "result",
+  "size": "thumbnail",
+  "scenarioId": "gpu-spatial-analysis.analysis-contiguity-statistics",
+  "viewId": "result-view",
+  "caption": "Result of gpu-spatial-analysis.analysis-contiguity-statistics: positions, ringO…",
+  "description": "Result of gpu-spatial-analysis.analysis-contiguity-statistics: positions, ringOffsets, polygonOffsets, featureOffsets → candidateOverflow. rows: 1. values read back from the GPU run. input positions: 12 rows.",
+  "llms": "Result of gpu-spatial-analysis.analysis-contiguity-statistics: positions, ringOffsets, polygonOffsets, featureOffsets → candidateOverflow\n\n- rows: 1\n- input positions: 12 rows\n- input ringOffsets: 4 rows\n- input polygonOffsets: 4 rows\n- input featureOffsets: 4 rows\n- Coordinate model unknown: drawn as planar x, y.\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "rows",
+    "value": "1"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><svg class=\"cv-figure\" width=\"160\" height=\"96\" viewBox=\"0 0 160 96\" preserveAspectRatio=\"xMidYMid meet\" data-extent=\"[[-1,-1],[1,1]]\" role=\"img\" aria-label=\"Result: candidateOverflow\"><defs><pattern id=\"lens-gpu-spatial-analysis-analysis-contiguity-statistics-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"3\" height=\"3\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-spatial-analysis-analysis-contiguity-statistics-result-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-spatial-analysis-analysis-contiguity-statistics-result-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g><rect class=\"cv-mark cv-mark--output cv-cell\" data-role=\"output\" stroke-width=\"0.6\" fill=\"#0072b2\" stroke=\"#ffffff\" x=\"6\" y=\"6\" width=\"148\" height=\"14\" data-provenance=\"readback\"></rect></g></svg></section>",
+    "width": 160,
+    "height": 96
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-11-18T16:33:09.919Z",
+    "runId": "run-98eafc28",
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-98eafc28",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

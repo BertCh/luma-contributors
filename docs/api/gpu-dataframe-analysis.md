@@ -15,8 +15,68 @@ composite scores, inequality measures, calendar buckets, period indices, cube la
 time-window filters, temporal reductions,
 and pair-statistics tools (variograms, correlograms, Ripley's K, point-pattern indices). Each is an
 algorithm or workflow that declares resources and command nodes into a caller-owned
-`GPUCommandGraph` through `getCommandNodes(graph)` (`GPUCommandNodeProducer`). It never compiles,
+`GPUCommandGraph` through `getCommandNodes(graph)` (`GPUCommandNodeProducer`). A contributor never compiles,
 submits, encodes, or reads back.
+
+### Execution and ownership of wide numeric operations
+
+The entry point also exports one-shot functions. These create a separate graph on every call and
+await a summary on the CPU; use the contributor when the result must compose into an existing graph.
+
+| API | Execution and transfer cost | Ownership |
+| --- | --- | --- |
+| `GPUWideNumericScan` | Declares nodes in the caller's graph over resident word vectors; no implicit upload, submission or readback. | Caller owns input vectors, initialized output words, compilation, encoding, submission and optional readback. |
+| `runWideNumericKernel` | Allocates and initializes a result buffer, compiles a new graph, encodes, submits, and awaits readback of `max(16, resultWordCount * 4)` bytes; returns `resultWordCount` words. | Borrows resident inputs; destroys its compiled graph and result buffer in `finally`. |
+| `aggregateInteger64OnGpu`, `aggregateInteger64Range` | Resident-vector one-shot aggregation through `runWideNumericKernel`; reads 44 bytes and returns a CPU summary. | Borrows input vectors and validity; releases its graph and result buffer. |
+| `scanWideNumericColumnOnGpu` | Resident-vector one-shot narrowing diagnostics; reads 24 bytes and returns a CPU report. | Borrows input vectors and validity; releases its graph and result buffer. |
+| `aggregateDecimal128OnGpu` | Resident-vector one-shot decimal aggregation; reads 76 bytes and returns a CPU summary. | Borrows word vectors and validity; releases its graph and result buffer. |
+| `makeDecimal128WordVectors` | Uploads an Arrow Decimal128 column's words and, when needed, validity. Does not submit a scan or read back. | Caller must invoke the returned `destroy()` to release the uploaded vectors. |
+| `aggregateDecimal128Column` | Uploads an Arrow Decimal128 column, performs the one-shot decimal aggregation, and awaits its summary readback. | Releases the uploaded vectors in `finally` as well as the scan's graph and result buffer. |
+
+A graph-resident count of present nonzero values can feed another node without a CPU wait:
+
+```ts
+import {Buffer, type Device} from '@luma.gl/core';
+import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import type {GPUVector} from '@luma.gl/graph/gpu-data';
+import {GPUWideNumericScan} from '@luma-contributors/analysis/dataframe-analysis';
+
+declare const device: Device;
+declare const words: GPUVector<'uint32x2'>;
+const resultBuffer = device.createBuffer({
+  data: new Uint32Array(4),
+  usage: Buffer.STORAGE | Buffer.COPY_SRC | Buffer.COPY_DST
+});
+const graph = new GPUCommandGraph(device);
+const output = graph.createDataView(
+  graph.importBuffer({id: 'present-count', byteLength: 16, usage: resultBuffer.usage}, resultBuffer),
+  {format: 'uint32', length: 4}
+);
+graph.add(new GPUWideNumericScan({
+  id: 'present-count', words, resultWordCount: 1, output,
+  phaseBodies: ['if (present && any(pair != vec2u(0u))) { atomicAdd(&result[0], 1u); }']
+}));
+// Add downstream nodes reading output before compiling.
+const compiled = graph.compile();
+const encoder = device.createCommandEncoder();
+compiled.encode(encoder, {parameters: undefined});
+device.submit(encoder.finish());
+// Before reusing this graph, reset resultBuffer to zero, then encode and submit again.
+// Once all consumers have finished: compiled.destroy(); resultBuffer.destroy();
+```
+
+For an explicit CPU summary, use the one-shot path and await its readback:
+
+```ts
+import type {Device} from '@luma.gl/core';
+import type {GPUVector} from '@luma.gl/graph/gpu-data';
+import {aggregateInteger64OnGpu} from '@luma-contributors/analysis/dataframe-analysis';
+
+declare const device: Device;
+declare const words: GPUVector<'uint32x2'>;
+const summary = await aggregateInteger64OnGpu({device, words, signed: true});
+// summary.sum is a bigint on the CPU. The caller still owns words.
+```
 
 ## When to use it
 
@@ -33,39 +93,62 @@ filter, or aggregation plan.
 - `GPUColumnProfile` fuses count, nulls, moments, histogram, distinct estimate, and top categories
   into one statistics panel. Use `GPUDataFrameHistogramQuery` when you only need an explicit
   histogram.
-- `GPUTimeWindowFilter` publishes compacted IDs, masks, and fade weights for a window that moves
+- `GPUTimeWindowFilter` publishes compacted source rows, optional caller IDs, masks, and fade weights for a window that moves
   every frame, including exact `Int64` time words. Express a fixed time predicate as a dataframe
   filter expression instead.
 
 ## Quick start
 
+Use the [complete GPU walkthrough](./operation-forms-and-cpu-twins.md#point-density-from-device-to-readback)
+for device creation, buffer imports, submission, typed readback and cleanup. A time-window filter
+uses a compact output object rather than a single output view:
+
+Import `Float32Array.of(0, 10, 20)` as a three-row `float32` timestamps view. Times and
+window bounds share an epoch and units. Allocate the output views below, then add the filter
+with this checked function.
+
 ```ts
-import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import type {Device} from '@luma.gl/core';
+import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph';
 import {GPUParameterBuffer} from '@luma-contributors/analysis/analysis-core';
 import {
-  GPUTimeWindowFilter,
-  getGPUTimeWindowFilterParameterValues,
+  GPUTimeWindowFilter, getGPUTimeWindowFilterParameterValues,
   GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH
 } from '@luma-contributors/analysis/dataframe-analysis';
 
-const graph = new GPUCommandGraph(device, {id: 'time'});
-const window = new GPUParameterBuffer(device, {
-  id: 'time-window',
-  format: 'float32',
-  length: GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH
-});
-
-// `timestamps` and `output` are graph views created on `graph`.
-graph.add(new GPUTimeWindowFilter({timestamps, window: window.importToGraph(graph), output}));
-const compiled = await graph.compileAsync(); // once
-
-// every frame: rewrite parameters, encode the same compiled graph
-window.write(getGPUTimeWindowFilterParameterValues({start: now - 60, end: now}));
-compiled.encode(device.commandEncoder, {parameters: undefined});
+export function addTimeWindowExample(
+  device: Device, graph: GPUCommandGraph, timestamps: GraphDataView<'float32'>,
+  rows: GraphDataView<'uint32'>, count: GraphDataView<'uint32'>,
+  overflow: GraphDataView<'uint32'>, requiredCount: GraphDataView<'uint32'>
+) {
+  const window = new GPUParameterBuffer(device, {
+    id: 'time-window-example-parameters',
+    format: 'float32',
+    length: GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH,
+    values: getGPUTimeWindowFilterParameterValues({start: 5, end: 15})
+  });
+  graph.add(new GPUTimeWindowFilter({
+    timestamps, window: window.importToGraph(graph),
+    output: {rows, status: {count, overflow, requiredCount}}
+  }));
+  return window;
+}
 ```
 
-`encode()` only records; submit with `device.submit()`. [Running contributors](./gpu-spatial-analysis/concepts.md#running-contributors)
-covers `compileAsync()`, rebuilding without a stall, submission and why `parameters` is `undefined`.
+Keep the returned window buffer until the compiled graph has been destroyed.
+
+| Output port | Format and rows | Expected readback |
+| --- | --- | --- |
+| `rows` | `uint32`, capacity 3 | First `count[0]` source-row indices only: `[1]` |
+| `status.count` | `uint32`, 1 | `[1]`, clamped to capacity |
+| `status.requiredCount` | `uint32`, 1 | `[1]`, accepted count before capacity truncation |
+| `status.overflow` | `uint32`, 1 | `[0]`; 1 means accepted rows were dropped |
+
+The inclusive window accepts only timestamp 10. Spare row slots have no result meaning; use the
+count rather than reading the entire capacity as accepted rows. Submit and read the buffers with
+the walkthrough's lifecycle, reading overflow alongside IDs. When overflow is nonzero, resize and
+rerun or propagate incompleteness. Rewrite the window buffer with the packer to move the window
+without recompiling. Destroy the compiled graph before the window and other caller-owned buffers.
 
 ## Conventions
 
@@ -81,8 +164,8 @@ covers `compileAsync()`, rebuilding without a stall, submission and why `paramet
   (`ids` and a `status` with `count`, `overflow` and optional `requiredCount`). `status.count` is clamped
   to `ids.length` and can be an indirect draw instance count; `status.overflow` is rewritten every
   encoding.
-- **Stable IDs.** Result IDs are the caller's `sourceIds[row]` (or tile IDs) when given and zero-based
-  rows otherwise. Node and transient IDs are `${id}-<step>`, so two instances in one graph need
+- **Rows and IDs.** `GPUTimeWindowFilter.output.rows` always contains zero-based source rows;
+  optional `output.ids` contains caller identities from `sourceIds`. Node and transient IDs are `${id}-<step>`, so two instances in one graph need
   different `id` props.
 - **One import per buffer.** Import a buffer once (for example with `graph.importGPUData()` or
   `GPUParameterBuffer.importToGraph()`) and pass the returned view to every contributor that reads
@@ -102,14 +185,25 @@ covers `compileAsync()`, rebuilding without a stall, submission and why `paramet
 
 ## `GPUTimeWindowFilter`
 
-Filter timestamped rows against an inclusive time window, producing a row mask and compact accepted ids.
+Filter timestamped rows against an inclusive time window, producing a row mask and compact accepted source-row indices in `output.rows`. Use `rows` as gather indices. Optional `sourceIds` and `output.ids` must be supplied together: the latter maps each retained row to its opaque caller identity. Both destinations have the same capacity and must use separate buffers. For times `[0, 10]`, source IDs `[1, 0]`, and window `[0, 0]`, the result is `rows = [0]`, `ids = [1]`; gathering attributes `[10, 20]` by `rows` returns `[10]`.
+
+Optional `output.status.candidateOverflow` is rewritten to zero: this exact filter has no
+candidate stage. It is a writable output and must be disjoint from the compact rows and IDs, all other
+outputs and every input, including application `sourceIds`.
+
+The time filter, key join and temporal reduction capture declared input, output and nested status
+bindings once at construction, including inherited getters. Later edits to those JavaScript maps
+do not redirect writes. Buffer contents remain per-frame values.
 
 ::lens{scenario=gpu-dataframe.time-window-filter rung=result caption="588 of 1,500 observations fall inside 2023-06-01 to 2023-09-01 (rows 513 to 1100, CPU check)."}
 
+The lens tags the summary scalar with `count` and the accepted source-row array with `compact`.
+The first retained source row is 513; the result cardinality and compact panel length are 588.
+
 Filters timestamped rows (instants) or time intervals (trail segments) against a per-frame window
-and publishes stable compacted IDs, a clamped count, and optional mask, fade weights, segment clip
+and publishes stable compacted rows, optional caller IDs, a clamped count, and optional mask, fade weights, segment clip
 fractions, per-track visible counts, and an indirect `instanceCount`. All outputs live in one
-`output` prop (`GPUTimeWindowFilterOutput`: `GPUCompactOutput` plus `outputMask`, `fadeWeights`,
+`output` prop (`GPUTimeWindowFilterOutput`: compact `rows` and `status`, optional mapped `ids`, plus `outputMask`, `fadeWeights`,
 `clipFractions`, `trackVisibleCounts`, `drawInstanceCount`); `trackIds` is an input. The per-frame settings object is `GPUTimeWindowFilterSettings` (`GPUTimeWindowFilterWordSettings` for Int64 words), packed by `getGPUTimeWindowFilterParameterValues` or `getGPUTimeWindowFilterWordParameterValues`. Timestamps come in three
 forms, chosen by the view format:
 
@@ -136,9 +230,9 @@ When the instants are sorted by time (the usual layout of a recorded track or ev
 single one-thread kernel: O(log n) per frame for any row count, with no mask pass, scan or
 compaction. The range is written to `output.rowRange` (`[firstRow, rowCount]`, `rowCount` unclamped),
 `output.drawFirstInstance` (the draw record's `firstInstance`, so the instance index is the row
-index) and the usual status words and `output.drawInstanceCount`; `output.ids` receives only its
-first `min(count, ids.length)` entries (`sourceIds` if given, else row indices) from a kernel that
-returns early past the count. A caller that reads only the range passes a small `ids` view. Acceptance
+index) and the usual status words and `output.drawInstanceCount`; `output.rows` receives only its
+first `min(count, rows.length)` source-row indices from a kernel that returns early past the count.
+An optional gather maps these rows through `sourceIds` into `output.ids`. A caller that reads only the range passes a small `rows` view. Acceptance
 uses the same comparison helpers as the mask path (double-single `timestampsLow` and Int64 words
 included), so the rows are exactly those the mask path accepts.
 
@@ -167,7 +261,7 @@ graph.add(new GPUTimeWindowFilter({
   window: window.importToGraph(graph),
   // `output` is a `GPUTimeWindowFilterOutput`: the compact list plus the optional views.
   output: {
-    ...compactOutput, // ids, status: {count, overflow, optional requiredCount}
+    ...compactOutput, // rows, status: {count, overflow, optional requiredCount}
     fadeWeights, clipFractions,
     drawInstanceCount: graph.importGPUData('trail-count', drawCommands.getInstanceCountData(0))
   }
@@ -198,9 +292,18 @@ graph.add(new GPUTimeWindowFilter({
 window.write(getGPUTimeWindowFilterWordParameterValues({start: playheadMs - 3_600_000, end: playheadMs}));
 ```
 
+#### How it computes
+
+{/* lens:GPUTimeWindowFilter */}
+
+::lens{scenario=gpu-dataframe.time-window-filter rung=datum bind=page datum=513 caption="Observation 513, 2023-06-01 10:57, is the first row inside the window."}
+::lens{scenario=gpu-dataframe.time-window-filter rung=formula bind=page datum=513}
+::lens{scenario=gpu-dataframe.time-window-filter rung=kernel caption="Look at the classify kernel: the window start and end are read from the parameter buffer, not baked into WGSL."}
+::lens{scenario=gpu-dataframe.time-window-filter rung=graph caption="One classify node, the visibility workflow that compacts source rows, and a publish node that clamps the count."}
+
 {/* parameters: GPUTimeWindowFilter generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
-#### `GPUTimeWindowFilter` parameters
+### `GPUTimeWindowFilter` parameters
 
 - Packer: `getGPUTimeWindowFilterParameterValues(settings)`, writes `GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH` (8) `float32` values.
 - Packer: `getGPUTimeWindowFilterWordParameterValues(settings)`, writes `GPU_TIME_WINDOW_FILTER_WORD_PARAMETER_LENGTH` (8) `uint32` values.
@@ -224,15 +327,6 @@ Settings of `getGPUTimeWindowFilterWordParameterValues`:
 | `endFadeDuration` (optional) | `number` | Fade weight ramps 1 to 0 over `[end - endFadeDuration, end]`. 0 (default) disables the ramp. |
 
 {/* /parameters */}
-
-#### How it computes
-
-{/* lens:GPUTimeWindowFilter */}
-
-::lens{scenario=gpu-dataframe.time-window-filter rung=datum bind=page datum=513 caption="Observation 513, 2023-06-01 10:57, is the first row inside the window."}
-::lens{scenario=gpu-dataframe.time-window-filter rung=formula bind=page datum=513}
-::lens{scenario=gpu-dataframe.time-window-filter rung=kernel caption="Look at the classify kernel: the window start and end are read from the parameter buffer, not baked into WGSL."}
-::lens{scenario=gpu-dataframe.time-window-filter rung=graph caption="One classify node, the visibility workflow that compacts ids, and a publish node that clamps the count."}
 
 ## `GPUColumnQuantiles`, `GPUClassBreaks`, `GPUColorScale`, and `GPUBivariateClassification`
 
@@ -424,6 +518,16 @@ scaleParameters.write(getGPUColorScaleParameterValues({scale: 'threshold', domai
   default `'ordinal'` keeps `uint32` as category codes. The value format is topology (fixed at compile
   time). This is what lets a count column (for example dense `GPUGroupStatistics` `counts`) feed a
   choropleth without a float copy.
+- `GPUClassBreaksOperation` and `CPUClassBreaksOperation` infer the values format and row count
+  from the input vector. Optional `valuesFormat` and `rowCount` assert that inferred schema;
+  both forms reject a mismatch and require at least one input row, including when `rowCount`
+  is omitted. The same props object selects either execution form. Constructors snapshot the
+  schema, compiled methods and output port names: mutating that caller object later does not
+  change an existing operation. Declared fields include inherited and non-enumerable getters,
+  including `mask` and output port names, and are captured once at construction.
+  `naturalBreaksExactStorage` requires `naturalBreaksMode: 'exact'` on both forms even when
+  `methods` excludes natural breaks; omit the storage option otherwise. This dependency is
+  independent of device limits. Input vector contents and packed parameter values remain per-frame.
 - Per-frame settings are the CPU objects `GPUColumnQuantilesSettings`, `GPUClassBreaksSettings`,
   `GPUColorScaleSettings`, and `GPUBivariateClassificationSettings`, packed by the matching
   `getGPU<Class>ParameterValues(settings, target?)`.
@@ -434,6 +538,15 @@ scaleParameters.write(getGPUColorScaleParameterValues({scale: 'threshold', domai
 Classify two columns into an n by n grid and colour each row from a bivariate palette.
 
 ::lens{scenario=gpu-dataframe.bivariate-classification rung=result caption="The 3 by 3 grid puts 218 tracts in the low-poverty, low-uninsured class and 64 in the opposite corner (CPU check)."}
+
+#### How it computes
+
+{/* lens:GPUBivariateClassification */}
+
+::lens{scenario=gpu-dataframe.bivariate-classification rung=datum bind=page datum=16 caption="Tract 16 falls in joint class 8: high poverty and high uninsured, shared by 64 tracts (CPU check)."}
+::lens{scenario=gpu-dataframe.bivariate-classification rung=formula bind=page datum=16}
+::lens{scenario=gpu-dataframe.bivariate-classification rung=kernel caption="Look at classY * classCountX + classX: each axis counts its inner edges at or below the value."}
+::lens{scenario=gpu-dataframe.bivariate-classification rung=graph caption="A single bivariate kernel reading two value columns, two edge lists, a palette and parameters."}
 
 {/* parameters: GPUBivariateClassification generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
@@ -452,20 +565,20 @@ Settings of `getGPUBivariateClassificationParameterValues`:
 
 {/* /parameters */}
 
-#### How it computes
-
-{/* lens:GPUBivariateClassification */}
-
-::lens{scenario=gpu-dataframe.bivariate-classification rung=datum bind=page datum=16 caption="Tract 16 falls in joint class 8: high poverty and high uninsured, shared by 64 tracts (CPU check)."}
-::lens{scenario=gpu-dataframe.bivariate-classification rung=formula bind=page datum=16}
-::lens{scenario=gpu-dataframe.bivariate-classification rung=kernel caption="Look at classY * classCountX + classX: each axis counts its inner edges at or below the value."}
-::lens{scenario=gpu-dataframe.bivariate-classification rung=graph caption="A single bivariate kernel reading two value columns, two edge lists, a palette and parameters."}
-
 ### `GPUClassBreaks`
 
 Compute choropleth class edges and per-class counts from a float column, with a switchable method.
 
 ::lens{scenario=gpu-dataframe.class-breaks rung=result caption="Equal-interval breaks split 788 valid tracts into classes of 257, 250, 168, 85 and 28 (CPU check)."}
+
+#### How it computes
+
+{/* lens:GPUClassBreaks */}
+
+::lens{scenario=gpu-dataframe.class-breaks rung=datum bind=page datum=2 caption="Inner edge e2 is 32.1 percent, the lower bound of the third class (CPU check)."}
+::lens{scenario=gpu-dataframe.class-breaks rung=formula bind=page datum=2}
+::lens{scenario=gpu-dataframe.class-breaks rung=kernel caption="Look at the equal-interval branch: edges step from the sample minimum by (max - min) / k."}
+::lens{scenario=gpu-dataframe.class-breaks rung=graph caption="Moment, quantile and method nodes compiled for the chosen methods, publishing breaks and counts."}
 
 {/* parameters: GPUClassBreaks generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
@@ -486,15 +599,6 @@ Settings of `getGPUClassBreaksParameterValues`:
 | `customEdges` (optional) | `ArrayLike<number>` | `'custom'`: ascending class edges `e[0..k]`, at most `maximumClassCount + 1` of them. |
 
 {/* /parameters */}
-
-#### How it computes
-
-{/* lens:GPUClassBreaks */}
-
-::lens{scenario=gpu-dataframe.class-breaks rung=datum bind=page datum=2 caption="Inner edge e2 is 32.1 percent, the lower bound of the third class (CPU check)."}
-::lens{scenario=gpu-dataframe.class-breaks rung=formula bind=page datum=2}
-::lens{scenario=gpu-dataframe.class-breaks rung=kernel caption="Look at the equal-interval branch: edges step from the sample minimum by (max - min) / k."}
-::lens{scenario=gpu-dataframe.class-breaks rung=graph caption="Moment, quantile and method nodes compiled for the chosen methods, publishing breaks and counts."}
 
 ### `GPUScalarScale`
 
@@ -542,6 +646,15 @@ byte per channel; subnormal arithmetic is outside that parity contract.
 
 ::lens{scenario=gpu-dataframe.color-scale rung=result caption="Five poverty bands hold 117, 181, 171, 148 and 171 tracts; darker blue means higher poverty (CPU check)."}
 
+#### How it computes
+
+{/* lens:GPUColorScale */}
+
+::lens{scenario=gpu-dataframe.color-scale rung=datum bind=page datum=1 caption="Tract 1 has 43 percent poverty: above the 40 percent edge, class 4, the darkest blue."}
+::lens{scenario=gpu-dataframe.color-scale rung=formula bind=page datum=1}
+::lens{scenario=gpu-dataframe.color-scale rung=kernel caption="Look at the binary search over inner domain edges that yields the class."}
+::lens{scenario=gpu-dataframe.color-scale rung=graph caption="A single colour-scale kernel reading values, domain, palette and parameters."}
+
 {/* parameters: GPUColorScale generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 #### `GPUColorScale` parameters
@@ -564,15 +677,6 @@ Settings of `getGPUColorScaleParameterValues`:
 | `exponent` (optional) | `number` | Exponent of the `pow` scale. Default `1`. |
 
 {/* /parameters */}
-
-#### How it computes
-
-{/* lens:GPUColorScale */}
-
-::lens{scenario=gpu-dataframe.color-scale rung=datum bind=page datum=1 caption="Tract 1 has 43 percent poverty: above the 40 percent edge, class 4, the darkest blue."}
-::lens{scenario=gpu-dataframe.color-scale rung=formula bind=page datum=1}
-::lens{scenario=gpu-dataframe.color-scale rung=kernel caption="Look at the binary search over inner domain edges that yields the class."}
-::lens{scenario=gpu-dataframe.color-scale rung=graph caption="A single colour-scale kernel reading values, domain, palette and parameters."}
 
 ### `GPUScalarScale`
 
@@ -597,6 +701,15 @@ Select exact quantiles of a float column and a percentile-range row mask, from c
 
 ::lens{scenario=gpu-dataframe.column-quantiles rung=result caption="Poverty quartiles are 14.1, 25.6 and 38.1 percent over 788 valid tracts; 711 tracts sit inside the 5-95 filter (CPU check)."}
 
+#### How it computes
+
+{/* lens:GPUColumnQuantiles */}
+
+::lens{scenario=gpu-dataframe.column-quantiles rung=datum bind=page datum=0 caption="First quartile (p = 0.25): 14.1 percent of residents below 150% of poverty."}
+::lens{scenario=gpu-dataframe.column-quantiles rung=formula bind=page datum=0}
+::lens{scenario=gpu-dataframe.column-quantiles rung=kernel caption="Look at the interpolation: rank h, its fractional part, then the two neighbouring order statistics."}
+::lens{scenario=gpu-dataframe.column-quantiles rung=graph caption="Four radix passes, each a histogram plus a select node, then a finish node and the filter mask."}
+
 {/* parameters: GPUColumnQuantiles generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 #### `GPUColumnQuantiles` parameters
@@ -613,15 +726,6 @@ Settings of `getGPUColumnQuantilesParameterValues`:
 | `quantileCount` (optional) | `number` | Number of probability slots. Defaults to `quantiles.length`. Unused slots become NaN. |
 
 {/* /parameters */}
-
-#### How it computes
-
-{/* lens:GPUColumnQuantiles */}
-
-::lens{scenario=gpu-dataframe.column-quantiles rung=datum bind=page datum=0 caption="First quartile (p = 0.25): 14.1 percent of residents below 150% of poverty."}
-::lens{scenario=gpu-dataframe.column-quantiles rung=formula bind=page datum=0}
-::lens{scenario=gpu-dataframe.column-quantiles rung=kernel caption="Look at the interpolation: rank h, its fractional part, then the two neighbouring order statistics."}
-::lens{scenario=gpu-dataframe.column-quantiles rung=graph caption="Four radix passes, each a histogram plus a select node, then a finish node and the filter mask."}
 
 ## `GPUColumnProfile`
 
@@ -683,6 +787,15 @@ domainParameters.write(getGPUColumnProfileParameterValues([[0, 100], [NaN, NaN]]
   the current column from a GPU cursor word, so the pipeline count does not grow with the column
   count.
 
+#### How it computes
+
+{/* lens:GPUColumnProfile */}
+
+::lens{scenario=gpu-dataframe.column-profile rung=datum bind=page datum=3 caption="Column 3, median household income: 772 non-null tracts, 19 nulls."}
+::lens{scenario=gpu-dataframe.column-profile rung=formula bind=page datum=3}
+::lens{scenario=gpu-dataframe.column-profile rung=kernel caption="Look at the Welford and Chan merges: moments never come from raw squared sums."}
+::lens{scenario=gpu-dataframe.column-profile rung=graph caption="Per-column moment tiles, a merge, domain, histogram and HyperLogLog nodes, then a finish node."}
+
 {/* parameters: GPUColumnProfile generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 ### `GPUColumnProfile` parameters
@@ -692,15 +805,6 @@ domainParameters.write(getGPUColumnProfileParameterValues([[0, 100], [NaN, NaN]]
   - `columnCount` (`number`): Number of columns. Defaults to `domains.length`.
 
 {/* /parameters */}
-
-#### How it computes
-
-{/* lens:GPUColumnProfile */}
-
-::lens{scenario=gpu-dataframe.column-profile rung=datum bind=page datum=3 caption="Column 3, median household income: 772 non-null tracts, 19 nulls."}
-::lens{scenario=gpu-dataframe.column-profile rung=formula bind=page datum=3}
-::lens{scenario=gpu-dataframe.column-profile rung=kernel caption="Look at the Welford and Chan merges: moments never come from raw squared sums."}
-::lens{scenario=gpu-dataframe.column-profile rung=graph caption="Per-column moment tiles, a merge, domain, histogram and HyperLogLog nodes, then a finish node."}
 
 ## `GPUGroupStatistics`
 
@@ -752,6 +856,10 @@ fractions.write(Float32Array.of(0.1, 0.5, 0.9)); // no recompile
 ::lens{scenario=gpu-dataframe.group-statistics rung=graph caption="A radix sort of rows by key, group ranges from head flags and a scan, then the moment and order-statistic nodes."}
 
 ## `GPUKeyJoin`
+
+Compact `rows.status` destinations, including optional `candidateOverflow`, are writable outputs:
+they must not overlap other outputs or share buffers with input keys. Candidate status clears to
+zero for this exact join; final overflow reports only compact capacity.
 
 `count-distinct` counts distinct finite values among matching right rows; missing and nonfinite
 values do not contribute. Right tables are bounded by 2,147,483,648 rows, subject to sort and device
@@ -1024,6 +1132,15 @@ Tests whether points cluster or spread out, from nearest-neighbour distances and
 
 ::lens{scenario=gpu-dataframe.point-pattern-indices rung=result caption="Mean nearest-neighbour distance is 122 m against 497 m expected: ratio 0.25 for 1,500 observations, strongly clustered."}
 
+#### How it computes
+
+{/* lens:GPUPointPatternIndices */}
+
+::lens{scenario=gpu-dataframe.point-pattern-indices rung=datum bind=page datum=0 caption="The single Clark-Evans row: 1,500 points, observed 122.4 m, expected 497.3 m (Donnelly), ratio 0.246."}
+::lens{scenario=gpu-dataframe.point-pattern-indices rung=formula bind=page datum=0}
+::lens{scenario=gpu-dataframe.point-pattern-indices rung=kernel caption="Look at the Donnelly edge term added to 0.5 sqrt(A / n), and the guard and none alternatives beside it."}
+::lens{scenario=gpu-dataframe.point-pattern-indices rung=graph caption="A cell sort, nearest-neighbour and guard reductions, then Clark-Evans and quadrat statistics nodes."}
+
 {/* parameters: GPUPointPatternIndices generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 #### `GPUPointPatternIndices` parameters
@@ -1042,20 +1159,20 @@ Settings of `getGPUPointPatternIndicesParameterValues`:
 
 {/* /parameters */}
 
-#### How it computes
-
-{/* lens:GPUPointPatternIndices */}
-
-::lens{scenario=gpu-dataframe.point-pattern-indices rung=datum bind=page datum=0 caption="The single Clark-Evans row: 1,500 points, observed 122.4 m, expected 497.3 m (Donnelly), ratio 0.246."}
-::lens{scenario=gpu-dataframe.point-pattern-indices rung=formula bind=page datum=0}
-::lens{scenario=gpu-dataframe.point-pattern-indices rung=kernel caption="Look at the Donnelly edge term added to 0.5 sqrt(A / n), and the guard and none alternatives beside it."}
-::lens{scenario=gpu-dataframe.point-pattern-indices rung=graph caption="A cell sort, nearest-neighbour and guard reductions, then Clark-Evans and quadrat statistics nodes."}
-
 ### `GPURipley`
 
 Estimates Ripley's K and L over radii from planar points with an edge correction, in a rectangular window.
 
 ::lens{scenario=gpu-dataframe.ripley rung=result caption="L - r is 2,558 m at 200 m and 3,699 m at 2 km: clustering at every radius."}
+
+#### How it computes
+
+{/* lens:GPURipley */}
+
+::lens{scenario=gpu-dataframe.ripley rung=datum bind=page datum=4 caption="Radius 1,000 m: K is 55.7 million m2, so L is 4,210 m and L - r is 3,210 m."}
+::lens{scenario=gpu-dataframe.ripley rung=formula bind=page datum=4}
+::lens{scenario=gpu-dataframe.ripley rung=kernel caption="Look at the isotropic weight 1 / max(circle fraction, 1/100): pairs near the window edge count more."}
+::lens{scenario=gpu-dataframe.ripley rung=graph caption="A cell sort, one pair histogram, then finish and derive nodes for K, L and L - r."}
 
 {/* parameters: GPURipley generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
@@ -1074,20 +1191,20 @@ Settings of `getGPURipleyParameterValues`:
 
 {/* /parameters */}
 
-#### How it computes
-
-{/* lens:GPURipley */}
-
-::lens{scenario=gpu-dataframe.ripley rung=datum bind=page datum=4 caption="Radius 1,000 m: K is 55.7 million m2, so L is 4,210 m and L - r is 3,210 m."}
-::lens{scenario=gpu-dataframe.ripley rung=formula bind=page datum=4}
-::lens{scenario=gpu-dataframe.ripley rung=kernel caption="Look at the isotropic weight 1 / max(circle fraction, 1/100): pairs near the window edge count more."}
-::lens{scenario=gpu-dataframe.ripley rung=graph caption="A cell sort, one pair histogram, then finish and derive nodes for K, L and L - r."}
-
 ### `GPURipleyDistanceFunctions`
 
 Estimates the nearest-neighbour G, empty-space F and J functions over radii from planar points, border-corrected.
 
 ::lens{scenario=gpu-dataframe.ripley-distance-functions rung=result caption="G is 0.82 at 200 m while F is 0.05: events are far closer to each other than random locations are to events."}
+
+#### How it computes
+
+{/* lens:GPURipleyDistanceFunctions */}
+
+::lens{scenario=gpu-dataframe.ripley-distance-functions rung=datum bind=page datum=0 caption="Radius 200 m: G 0.818, F 0.050, so J = (1 - G) / (1 - F) is 0.19."}
+::lens{scenario=gpu-dataframe.ripley-distance-functions rung=formula bind=page datum=0}
+::lens{scenario=gpu-dataframe.ripley-distance-functions rung=kernel caption="Look at the border test: only events at least r from the window edge enter the G denominator."}
+::lens{scenario=gpu-dataframe.ripley-distance-functions rung=graph caption="A cell sort, separate G and F accumulations (event pairs and reference lattice), then a finish node."}
 
 {/* parameters: GPURipleyDistanceFunctions generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
@@ -1105,26 +1222,27 @@ Settings of `getGPURipleyDistanceFunctionsParameterValues`:
 
 {/* /parameters */}
 
-#### How it computes
-
-{/* lens:GPURipleyDistanceFunctions */}
-
-::lens{scenario=gpu-dataframe.ripley-distance-functions rung=datum bind=page datum=0 caption="Radius 200 m: G 0.818, F 0.050, so J = (1 - G) / (1 - F) is 0.19."}
-::lens{scenario=gpu-dataframe.ripley-distance-functions rung=formula bind=page datum=0}
-::lens{scenario=gpu-dataframe.ripley-distance-functions rung=kernel caption="Look at the border test: only events at least r from the window edge enter the G denominator."}
-::lens{scenario=gpu-dataframe.ripley-distance-functions rung=graph caption="A cell sort, separate G and F accumulations (event pairs and reference lattice), then a finish node."}
-
 ### `GPURipleyEnvelope`
 
 Simulates complete spatial randomness with a fixed seed and returns pointwise and global envelopes of L - r with a Monte Carlo p-value.
 
 ::lens{scenario=gpu-dataframe.ripley-envelope rung=result caption="Observed L - r reaches 3,699 m at 2 km; 39 seeded simulations never leave plus or minus 41 m."}
 
+#### How it computes
+
+{/* lens:GPURipleyEnvelope */}
+
+::lens{scenario=gpu-dataframe.ripley-envelope rung=datum bind=page datum=9 caption="Radius 2,000 m: simulations span -19.7 to 30.2 m, the observed L - r is 3,698.8 m, p is 0.025."}
+::lens{scenario=gpu-dataframe.ripley-envelope rung=formula bind=page datum=9}
+::lens{scenario=gpu-dataframe.ripley-envelope rung=kernel caption="Look at the lower and upper reductions over finite simulations and the rank-based p-value."}
+::lens{scenario=gpu-dataframe.ripley-envelope rung=graph caption="39 seeded simulations, each with its own cell keys and sort, feeding the envelope reduction."}
+
 {/* parameters: GPURipleyEnvelope generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 #### `GPURipleyEnvelope` parameters
 
 - Packer: `getGPURipleyParameterValues(settings)`, writes `GPU_RIPLEY_PARAMETER_LENGTH` (8) `float32` values.
+  - Input port: `parameters`.
 
 Settings of `getGPURipleyParameterValues`:
 
@@ -1137,20 +1255,20 @@ Settings of `getGPURipleyParameterValues`:
 
 {/* /parameters */}
 
-#### How it computes
-
-{/* lens:GPURipleyEnvelope */}
-
-::lens{scenario=gpu-dataframe.ripley-envelope rung=datum bind=page datum=9 caption="Radius 2,000 m: simulations span -19.7 to 30.2 m, the observed L - r is 3,698.8 m, p is 0.025."}
-::lens{scenario=gpu-dataframe.ripley-envelope rung=formula bind=page datum=9}
-::lens{scenario=gpu-dataframe.ripley-envelope rung=kernel caption="Look at the lower and upper reductions over finite simulations and the rank-based p-value."}
-::lens{scenario=gpu-dataframe.ripley-envelope rung=graph caption="39 seeded simulations, each with its own cell keys and sort, feeding the envelope reduction."}
-
 ### `GPUSpatialCorrelogram`
 
 Computes Moran's I per cumulative distance band for a station value, with z-scores and p-values under randomization.
 
 ::lens{scenario=gpu-dataframe.spatial-correlogram rung=result caption="Moran's I is 0.97 in the first 25 km band and 0.82 by 200 km: rainfall is strongly autocorrelated."}
+
+#### How it computes
+
+{/* lens:GPUSpatialCorrelogram */}
+
+::lens{scenario=gpu-dataframe.spatial-correlogram rung=datum bind=page datum=0 caption="First band (up to 25 km): I is 0.971 against E[I] = -0.0008, z is 40.9, from 1,752 pairs."}
+::lens{scenario=gpu-dataframe.spatial-correlogram rung=formula bind=page datum=0}
+::lens{scenario=gpu-dataframe.spatial-correlogram rung=kernel caption="Look at the band test on pair distance and the product (x_i - mean)(x_j - mean) summed per band."}
+::lens{scenario=gpu-dataframe.spatial-correlogram rung=graph caption="Moments, a cell sort, the band pair histogram and a fourth-moment sum, then finish and publish nodes."}
 
 {/* parameters: GPUSpatialCorrelogram generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
@@ -1168,20 +1286,20 @@ Settings of `getGPUSpatialCorrelogramParameterValues`:
 
 {/* /parameters */}
 
-#### How it computes
-
-{/* lens:GPUSpatialCorrelogram */}
-
-::lens{scenario=gpu-dataframe.spatial-correlogram rung=datum bind=page datum=0 caption="First band (up to 25 km): I is 0.971 against E[I] = -0.0008, z is 40.9, from 1,752 pairs."}
-::lens{scenario=gpu-dataframe.spatial-correlogram rung=formula bind=page datum=0}
-::lens{scenario=gpu-dataframe.spatial-correlogram rung=kernel caption="Look at the band test on pair distance and the product (x_i - mean)(x_j - mean) summed per band."}
-::lens{scenario=gpu-dataframe.spatial-correlogram rung=graph caption="Moments, a cell sort, the band pair histogram and a fourth-moment sum, then finish and publish nodes."}
-
 ### `GPUVariogram`
 
 Computes the empirical semivariogram of a station value over distance lags, with pair counts and mean pair distances.
 
 ::lens{scenario=gpu-dataframe.variogram rung=result caption="Semivariance rises from 546 at the first 25 km lag to 2,567 at 300 km: nearby stations see similar rainfall."}
+
+#### How it computes
+
+{/* lens:GPUVariogram */}
+
+::lens{scenario=gpu-dataframe.variogram rung=datum bind=page datum=3 caption="Lag 3 (75 to 100 km): semivariance 962.6 from 6,216 pairs at a mean separation of 87.9 km."}
+::lens{scenario=gpu-dataframe.variogram rung=formula bind=page datum=3}
+::lens{scenario=gpu-dataframe.variogram rung=kernel caption="Look at the lag index min(floor(d / D * H), H - 1) and the squared value difference."}
+::lens{scenario=gpu-dataframe.variogram rung=graph caption="Moments and a unit-variance estimate, a cell sort, the pair-histogram pass and a finish node."}
 
 {/* parameters: GPUVariogram generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
@@ -1198,15 +1316,6 @@ Settings of `getGPUVariogramParameterValues`:
 | `azimuthOffset` (optional) | `number` | Start of the first direction sector, in radians counterclockwise from +x. Sector `s` holds pairs whose undirected direction (taken modulo pi) minus this offset, again modulo pi, lies in `[s * pi / directionCount, (s + 1) * pi / directionCount)`. Ignored when `directionCount` is 1. Defaults to 0. |
 
 {/* /parameters */}
-
-#### How it computes
-
-{/* lens:GPUVariogram */}
-
-::lens{scenario=gpu-dataframe.variogram rung=datum bind=page datum=3 caption="Lag 3 (75 to 100 km): semivariance 962.6 from 6,216 pairs at a mean separation of 87.9 km."}
-::lens{scenario=gpu-dataframe.variogram rung=formula bind=page datum=3}
-::lens{scenario=gpu-dataframe.variogram rung=kernel caption="Look at the lag index min(floor(d / D * H), H - 1) and the squared value difference."}
-::lens{scenario=gpu-dataframe.variogram rung=graph caption="Moments and a unit-variance estimate, a cell sort, the pair-histogram pass and a finish node."}
 
 ## `GPUCompositeScore`
 
@@ -1276,6 +1385,15 @@ parameters.write(
 - `compile-time`: row count, `indicatorCount`, `enableRank`, `enablePrincipalComponent`, the mask
   and which outputs exist. `per frame`: scaler, aggregation, weights, directions, epsilon.
 
+#### How it computes
+
+{/* lens:GPUCompositeScore */}
+
+::lens{scenario=gpu-dataframe.composite-score rung=datum bind=page datum=603 caption="Tract 603 scores highest, 0.79: poverty 67.8, unemployment 37.1, uninsured 24.5 and 62.7 percent without a vehicle (CPU check)."}
+::lens{scenario=gpu-dataframe.composite-score rung=formula bind=page datum=603}
+::lens{scenario=gpu-dataframe.composite-score rung=kernel caption="Look at the min-max step (x - min) / (max - min), the direction flip and the division by the sum of absolute weights."}
+::lens{scenario=gpu-dataframe.composite-score rung=graph caption="Per-column extrema and moment reductions merged in tile order, then a score node reading the parameter buffer."}
+
 {/* parameters: GPUCompositeScore generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 ### `GPUCompositeScore` parameters
@@ -1293,15 +1411,6 @@ Settings of `getGPUCompositeScoreParameterValues`:
 | `epsilon` (optional) | `number` | Positive shift added before the logarithm of the geometric mean. Defaults to `1e-6`. |
 
 {/* /parameters */}
-
-#### How it computes
-
-{/* lens:GPUCompositeScore */}
-
-::lens{scenario=gpu-dataframe.composite-score rung=datum bind=page datum=603 caption="Tract 603 scores highest, 0.79: poverty 67.8, unemployment 37.1, uninsured 24.5 and 62.7 percent without a vehicle (CPU check)."}
-::lens{scenario=gpu-dataframe.composite-score rung=formula bind=page datum=603}
-::lens{scenario=gpu-dataframe.composite-score rung=kernel caption="Look at the min-max step (x - min) / (max - min), the direction flip and the division by the sum of absolute weights."}
-::lens{scenario=gpu-dataframe.composite-score rung=graph caption="Per-column extrema and moment reductions merged in tile order, then a score node reading the parameter buffer."}
 
 ## `GPUInequality`
 
@@ -1340,6 +1449,15 @@ serial per-zone walks and their rounding order; a dominant zone serializes that 
 parallel summation order can change the last float32 bits; sums and published statistics remain
 float32. Pooled and global reductions use fixed-order tiles.
 
+#### How it computes
+
+{/* lens:GPUInequality */}
+
+::lens{scenario=gpu-dataframe.inequality rung=datum bind=page datum=27 caption="Community area 28 has the highest Gini, 0.307, over 20 tracts with a population-weighted mean income of 85,684 dollars (CPU check)."}
+::lens{scenario=gpu-dataframe.inequality rung=formula bind=page datum=27}
+::lens{scenario=gpu-dataframe.inequality rung=kernel caption="Look at the trapezoid sum 1 - sum (P_i - P_(i-1)) (L_i + L_(i-1)) walked over each zone's value-sorted rows."}
+::lens{scenario=gpu-dataframe.inequality rung=graph caption="Two sorts, by value and then by zone, a per-zone walk, and a finish node for the pooled summary."}
+
 {/* parameters: GPUInequality generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 ### `GPUInequality` parameters
@@ -1356,16 +1474,10 @@ Settings of `getGPUInequalityParameterValues`:
 
 {/* /parameters */}
 
-#### How it computes
-
-{/* lens:GPUInequality */}
-
-::lens{scenario=gpu-dataframe.inequality rung=datum bind=page datum=27 caption="Community area 28 has the highest Gini, 0.307, over 20 tracts with a population-weighted mean income of 85,684 dollars (CPU check)."}
-::lens{scenario=gpu-dataframe.inequality rung=formula bind=page datum=27}
-::lens{scenario=gpu-dataframe.inequality rung=kernel caption="Look at the trapezoid sum 1 - sum (P_i - P_(i-1)) (L_i + L_(i-1)) walked over each zone's value-sorted rows."}
-::lens{scenario=gpu-dataframe.inequality rung=graph caption="Two sorts, by value and then by zone, a per-zone walk, and a finish node for the pooled summary."}
-
 ## `GPUTemporalReduction`
+
+All `occupiedSlots.status` destinations, including optional `candidateOverflow`, are writable
+outputs and must not overlap other outputs or share buffers with inputs such as `cellIds`.
 
 Reduce timestamped rows to per cell and time-bucket counts, extremes, first and last values.
 
@@ -1398,6 +1510,15 @@ bucketParameters.write(getGPUTemporalReductionParameterValues(origin, width)); /
 - Inputs must be single packed views; chunked vectors are not supported.
 - `sorted: true` (default false, compile-time) declares `timestamps` non-decreasing and non-NaN. The rows with bucket in `[0, bucketCount)` are then one contiguous range found by two binary searches (same bucket rules as above: the correctly rounded `fround(t - origin) < fround(bucketCount * width)` test in float mode, the exact quotient in word mode), and the classify, extreme and tie kernels are dispatched indirectly over just that range, with the first row read from a GPU word. A scrub costs O(range), not O(rows), and the result is bit-identical to the unsorted path on sorted input. It adds one `uint32` scratch column of `rows` entries. The order is not checked; unsorted input silently reduces the wrong rows.
 
+#### How it computes
+
+{/* lens:GPUTemporalReduction */}
+
+::lens{scenario=gpu-dataframe.temporal-reduction rung=datum bind=page datum=133 caption="Slot 133 is insects in week 27: 32 observations, research grade mixed (minimum 0, maximum 1; CPU check)."}
+::lens{scenario=gpu-dataframe.temporal-reduction rung=formula bind=page datum=133}
+::lens{scenario=gpu-dataframe.temporal-reduction rung=kernel caption="Look at the bucket test: fround(b * width) <= fround(t - origin) < fround((b + 1) * width)."}
+::lens{scenario=gpu-dataframe.temporal-reduction rung=graph caption="Init, classify, extreme, row-tie and finish nodes, then compaction and publish of occupied slots."}
+
 {/* parameters: GPUTemporalReduction generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 ### `GPUTemporalReduction` parameters
@@ -1410,15 +1531,6 @@ bucketParameters.write(getGPUTemporalReductionParameterValues(origin, width)); /
   - `width` (`number | bigint`): Integer bucket width in `[1, 2^64 - 1]`. A `number` must be a safe integer to be exact; pass a `bigint` beyond 2^53.
 
 {/* /parameters */}
-
-#### How it computes
-
-{/* lens:GPUTemporalReduction */}
-
-::lens{scenario=gpu-dataframe.temporal-reduction rung=datum bind=page datum=133 caption="Slot 133 is insects in week 27: 32 observations, research grade mixed (minimum 0, maximum 1; CPU check)."}
-::lens{scenario=gpu-dataframe.temporal-reduction rung=formula bind=page datum=133}
-::lens{scenario=gpu-dataframe.temporal-reduction rung=kernel caption="Look at the bucket test: fround(b * width) <= fround(t - origin) < fround((b + 1) * width)."}
-::lens{scenario=gpu-dataframe.temporal-reduction rung=graph caption="Init, classify, extreme, row-tie and finish nodes, then compaction and publish of occupied slots."}
 
 ## `GPUCalendarBuckets`
 
@@ -1454,6 +1566,18 @@ parameters.write(getGPUCalendarBucketsParameterValues(-300 /* UTC-5 */, 0 /* Mon
   without an error. Rows are floored to whole milliseconds first (a negative sub-millisecond time
   lands in the earlier millisecond), then decoded as before. Seconds beyond +-2^52 are invalid. The
   `timeZone` transitions stay epoch milliseconds whatever the unit.
+- Host calendar display: `getTimestampCalendarMilliseconds(ticks, arrowUnit)` floors exact ticks to
+  the containing millisecond before conversion to Number, matching this decode and the day rendered by
+  `formatTimestampTicks`. Arrow units are `0` seconds, `1` milliseconds, `2` microseconds and `3`
+  nanoseconds: `-1n` in microseconds or nanoseconds returns `-1` millisecond (1969-12-31), while zero
+  and positive sub-millisecond ticks return `0`. `getTimestampPresentationMilliseconds` retains
+  truncation toward zero for numeric callers. Neither helper changes source ticks or exact export text.
+  The calendar helper accepts source instants only within Date's inclusive
+  `[-8640000000000000, 8640000000000000]` millisecond range and throws `RangeError` outside it,
+  before conversion to Number. Every millisecond in that range is exactly representable. The GPU
+  decoder supports a wider range; group those ticks into days in `bigint` first, using floor
+  division, rather than narrowing milliseconds. For microseconds, for example:
+  `day = ticks >= 0n ? ticks / 86400000000n : -((-ticks + 86399999999n) / 86400000000n)`.
 - `parameters` (`sint32`, 2 elements, per frame, no rebuild): fixed UTC offset in minutes and the first
   day of the week for `weekday` and the matrix (0 = Monday, the ISO default, to 6 = Sunday). ISO week
   numbers always start on Monday.
@@ -1486,6 +1610,15 @@ parameters.write(getGPUCalendarBucketsParameterValues(-300 /* UTC-5 */, 0 /* Mon
 - Exact integer arithmetic only (floor conversion of the unit to milliseconds, nibble-wise 64-bit division, Hinnant `civil_from_days`), identical on
   every adapter. Outputs are split over several decode kernels to respect the 8 storage binding limit.
 
+#### How it computes
+
+{/* lens:GPUCalendarBuckets */}
+
+::lens{scenario=gpu-dataframe.calendar-buckets rung=datum bind=page datum=0 caption="Observation 0 is Sunday 2023-01-01 08:05: weekday 6, hour 8, month 1."}
+::lens{scenario=gpu-dataframe.calendar-buckets rung=formula bind=page datum=0}
+::lens{scenario=gpu-dataframe.calendar-buckets rung=kernel caption="Look at the floor division by 86,400,000 and the Hinnant civil-date arithmetic after it."}
+::lens{scenario=gpu-dataframe.calendar-buckets rung=graph caption="Decode kernels split over the storage-binding limit, plus a cleared matrix and its count kernel."}
+
 {/* parameters: GPUCalendarBuckets generated by modules/analysis/test/analysis-core/doc-parameters.ts from the TSDoc; do not edit */}
 
 ### `GPUCalendarBuckets` parameters
@@ -1496,15 +1629,6 @@ parameters.write(getGPUCalendarBucketsParameterValues(-300 /* UTC-5 */, 0 /* Mon
   - `target` (`Int32Array`): Optional destination of at least 2 elements.
 
 {/* /parameters */}
-
-#### How it computes
-
-{/* lens:GPUCalendarBuckets */}
-
-::lens{scenario=gpu-dataframe.calendar-buckets rung=datum bind=page datum=0 caption="Observation 0 is Sunday 2023-01-01 08:05: weekday 6, hour 8, month 1."}
-::lens{scenario=gpu-dataframe.calendar-buckets rung=formula bind=page datum=0}
-::lens{scenario=gpu-dataframe.calendar-buckets rung=kernel caption="Look at the floor division by 86,400,000 and the Hinnant civil-date arithmetic after it."}
-::lens{scenario=gpu-dataframe.calendar-buckets rung=graph caption="Decode kernels split over the storage-binding limit, plus a cleared matrix and its count kernel."}
 
 ## `GPUPeriodIndex`
 
@@ -1547,8 +1671,37 @@ graph.add(
 - Fixed axis: period `floor((time - origin) / width)` with `width` a positive integer below 2^63 (a `number` must be a safe integer; pass a `bigint` beyond 2^53) and `origin` signed Int64 ticks after the Unix epoch. The difference and the division run on the Int64 words, so they are exact for every time, including times before 1970 and beyond 2^53 ticks, and for widths past 32 bits.
 - Output `periods` holds one `uint32` per row: the period, `GPU_PERIOD_INDEX_OUT_OF_RANGE` (`0xfffffffe`) for a valid time before the origin or past the last period, or `GPU_PERIOD_INDEX_INVALID` (`0xffffffff`) for a masked row or a time the calendar decode rejected. Rows are skipped, never clamped.
 - Status: `output.status.invalidCount` (optional) is the number of skipped rows, those with `GPU_PERIOD_INDEX_OUT_OF_RANGE`. Masked and undecodable rows are not counted. It is cleared on every encoding and counted with an integer `atomicAdd`.
-- Limits: `periods.count` is an integer in `[1, GPU_PERIOD_INDEX_MAXIMUM_COUNT]` (4294967293, the two sentinels are not periods). `output.periods` and the Int64 `timestamps` must each fit one storage binding: 33,554,432 rows and 16,777,216 rows on a default device; larger inputs are refused at declaration.
-- Inputs must be single packed views; an optional `mask` (`uint32`, zero writes the invalid sentinel) must have one row per input row.
+- Limits: `periods.count` is an integer in `[1, GPU_PERIOD_INDEX_MAXIMUM_COUNT]` (4294967293, the two sentinels are not periods). Each bound range must fit `device.limits.maxStorageBufferBindingSize` **per chunk**, including any prefix required for an aligned binding offset. At a 128 MiB binding limit with no prefix, a `uint32` output or calendar column holds up to 33,554,432 rows per chunk, and Int64 `timestamps` hold up to 16,777,216 rows per chunk. Larger totals are supported by chunking, up to 4,294,967,295 total rows and subject to the command-node budget.
+- Row inputs and `output.periods` accept packed views or chunked `GraphVectorView`s with matching ordered chunk lengths across every active column, the optional `mask` and the output. Each chunk is packed; mixing mismatched row partitions is rejected. Status views remain packed. An optional `mask` (`uint32`, zero writes the invalid sentinel) must have one row per input row.
+
+For example, the fixed-axis chunk fixture uses three rows partitioned as `[1, 2]`. Given caller-owned
+GPU vectors `timestampVector`, `maskVector` and `periodVector` with those same ordered chunk lengths:
+
+```ts
+graph.add(
+  new GPUPeriodIndex({
+    id: 'periods',
+    temporalContext, // millisecond, Unix epoch, int64-words
+    periods: {kind: 'fixed', origin: 0n, width: 1000, count: 12},
+    timestamps: graph.importGPUVector('chunked-times', timestampVector),
+    mask: graph.importGPUVector('chunked-mask', maskVector),
+    output: {
+      periods: graph.importGPUVector('chunked-periods', periodVector),
+      status: {invalidCount} // one packed uint32 word
+    }
+  })
+);
+```
+
+This declares `periods-clear-invalid-count`, `periods-periods-chunk-0` and
+`periods-periods-chunk-1`. A combined timestamp length above one binding's row limit is accepted
+when each bound chunk range fits the device limit.
+
+Calendar hour multiplication, step differences and division use exact 64-bit words, so indices at
+`2^31 - 1`, `2^31` and above remain usable up to `periods.count - 1`. Calendar origins must have a
+whole-step index in `[-2^31, 2^31 - 1]`; steps per period (`interval`, times seven for weeks) must
+be in `[1, 2^31 - 1]`. These construction-time origin and divisor limits do not cap row indices or
+the unsigned period count. Row dates follow the supported `GPUCalendarBuckets` decoder range.
 
 ### `GPUPeriodIndex` parameters
 
@@ -1759,6 +1912,17 @@ the unnormalized mark sum need not fit float32. Small marks remain unscaled.
 
 ## `GPUVariogramModelFit`
 
+The direct contributor and both variogram fit operations snapshot model order and options at
+construction. The operations also capture input and output graph names. Caller edits to model
+arrays or output maps cannot change the declared row counts, result keys or later GPU lowering.
+The contributor preserves view/buffer identities and dynamic contents. Construct a new fit to
+change its model list, options or bindings.
+
+Both operation forms require three distinct output graph names, each different from every input
+graph name. Collisions throw at construction with the operation ID and conflicting output port;
+shared read-only input names are allowed. This prevents an output from erasing another result or
+overwriting an input in the declared graph contract.
+
 {/* lens:GPUVariogramModelFit */}
 
 ::lens{scenario=gpu-dataframe.variogram-model-fit rung=result caption="Resident spherical, exponential and Gaussian fits to 20 explicitly synthetic empirical lag bins."}
@@ -1777,36 +1941,15 @@ The fitter also supports `matern-3/2` and `matern-5/2`. With `a = factor * h / r
 
 ::lens{scenario=gpu-dataframe.coregionalization-fit rung=graph caption="Gated residual fits and PSD projections publish matrices, square loading factors and named convergence status."}
 
-Fits a linear model of coregionalization from complete direct/cross semivariogram matrices on common lag supports. For fixed basic semivariograms `g_s(h) = nugget_s + sill_s * shape_s(h / range_s)`, it minimizes `Σ_h N_h ||Γ_h - Σ_s B_s g_s(h)||_F² / Σ_h N_h` over positive semidefinite matrices `B_s`. Off-diagonal residuals count twice. Each sweep updates structures sequentially by fitting the residual from the other structures and clipping negative eigenvalues to zero, starting from zero matrices ([Goulard–Voltz, 1992](https://doi.org/10.1007/BF00893750)). It fits coefficients for supplied models and ranges; dependent structures can have nonunique coefficients.
+Fits a positive semidefinite linear model of coregionalization from complete direct/cross
+semivariogram matrices on shared lag supports. The [coregionalization guide](dataframe-analysis/coregionalization-fit.md)
+is the canonical reference for input layout, per-frame parameters, GPU bounds, output sizing,
+budget/validity status, independent verification and supplying the fitted model to local kriging.
 
-`distances: float32` and `pairCounts: uint32` have one row per lag. `semivariances: float32` holds one bin-major upper triangle `(0,0), (0,1), …, (1,1), …` per lag. Assemble direct and cross variograms using the same supports and complete-case sample pairs. Negative cross semivariances are retained. A nonpositive/nonfinite lag, zero pair count or any nonfinite matrix entry excludes the whole bin; missing cross entries are not imputed. No coordinates are read, and lags and ranges must share units.
-
-`getGPUCoregionalizationFitParameterValues(structures, tolerance = 1e-5)` supplies the per-frame buffer `[tolerance, modelCode, nugget, sill, range, …]`. Structures support spherical, exponential, Gaussian and Matérn 3/2 and 5/2, with the effective-range convention above. Use `sill: 1, nugget: 0` for a unit-sill basis, or `sill: 0, nugget: 1` for a pure nugget. Compile-time props are `variableCount` (2–4), `structureCount` (1–4), `maximumIterations` (0–1024, default 128) and view shapes. All view contents, including tolerance and model parameters, can change per frame. This reference-tier GPU fit accepts at most 256 lag matrices and estimates `2 * maximumIterations + 3` command nodes.
-
-Outputs `matrices` and `loadings` are `float32`, each with a result prefix of `structureCount * variableCount²` elements in structure-major, row-major order. `B_s = L_s L_sᵀ`; loading factors are square spectral factors and need not be triangular. Compare matrices or reconstructed factors across implementations because eigenvector signs and repeated-eigenvalue bases are arbitrary. `diagnostics: float32x4` holds `[weighted objective, relative coefficient change, usable bins, total pair weight]`. Relative change is the largest coefficient change divided by the largest absolute old/new coefficient over the sweep, or zero when both are zero. Views must be packed; outputs use distinct buffers disjoint from inputs. Trailing output capacity is left untouched.
-
-Required uint32 scalar status ports are `validity`, `iterationCount`, `converged`, `iterationLimitReached` and `invalidCount` (excluded lag matrices). A budget exit publishes the current PSD fit with validity 1, converged 0 and iterationLimitReached 1; zero budget publishes zero matrices and factors. No usable bins, invalid parameters, a zero-energy structure or nonfinite arithmetic gives validity 0, convergence/limit flags 0 and NaN coefficients, objective and change. Usable-bin and total-weight diagnostics remain available.
-
-Prefer `CPUCoregionalizationFitOperation` for small fits whose bins are already on the CPU. It uses the same ports as `GPUCoregionalizationFitOperation`, computes in float64 and rounds once at output, and drops the GPU bin and sweep caps. Both operations take the same graph properties; the GPU form requires `GPU_CONTRIBUTOR_OPERATION_LOWERING`. Float32 accumulation can change convergence counts and loading bases. The pure `computeCoregionalizationFitOnCPU` accepts typed arrays; `fitLinearModelOfCoregionalization` additionally returns `coregionalizationModels` ready for `GPULocalKriging`:
-
-```typescript
-import {fitLinearModelOfCoregionalization} from '@luma-contributors/analysis/dataframe-analysis';
-
-const fit = fitLinearModelOfCoregionalization(
-  {distances, semivariances, pairCounts},
-  {variableCount: 2, structures: [{model: 'spherical', range: 2, sill: 1}]}
-);
-if (!fit.validity[0]) throw new Error('Coregionalization fit is invalid');
-// Inspect fit.converged[0] and fit.iterationLimitReached[0] before using a budget result.
-const krigingModel = {
-  mode: 'co-kriging',
-  variableCount: 2,
-  covariance: fit.coregionalizationModels[0].covariance,
-  coregionalizationModels: fit.coregionalizationModels
-};
-```
-
-Invalid fits return an empty `coregionalizationModels` list. Local co-kriging requires `covariance` when no parameter buffer is supplied; use the first fitted structure after checking validity. GPU factors use the same layout: read back each square structure slice to supply its `loadings`.
+It covers `GPUCoregionalizationFit`, `GPUCoregionalizationFitOperation`,
+`CPUCoregionalizationFitOperation`, `computeCoregionalizationFitOnCPU` and
+`fitLinearModelOfCoregionalization`. Prefer the float64 CPU twin for small host-resident fits;
+the GPU operation uses `GPU_CONTRIBUTOR_OPERATION_LOWERING` with the same graph properties.
 
 The lens example uses three hand-derived lag matrices from `B = [[2, -1], [-1, 3]]` and a unit-sill spherical structure of range 2. A fourth, unrelated matrix has zero pairs and is excluded. When run, the scenario uses an eight-sweep budget and records GPU matrices, factors, residual diagnostics and every named status port.
 

@@ -84,6 +84,12 @@ Optional `monitoring: {historyLength, threshold, minimumConsecutive}` fits only 
 
 Status is 0 for fit, 1 for insufficient support, 2 for rank/nonfinite failure, 4 for a rejected training gap, or 8 for exhausted iterations. The stack limit is 256 slots. With `h` training slots and `c` coefficients including jump, `h*c + c*c + 2*c + 8 <= 2048` bounds private QR storage, and `h*c + h + ceil(h/32) + c + 64 <= 2048` bounds the main fit workspace, each within an 8 KiB explicit working-array budget per kernel function (for example 128 training slots and 12 dummy phases). Iterative work additionally requires `h*c*(h-2*minimumSegmentLength+2)*maximumIterations <= 16,777,216`. Compiler temporaries, helper arguments and total driver private memory are hardware dependent. The equivalent pinned NumPy references verify these selected models; multiple trend/seasonal break counts, automatic period estimation, calibrated inferential p-values and full BFAST equivalence are not claimed.
 
+The largest accepted period-12 dummy-season history remains 129 training slots (14 coefficients).
+Its QR helper uses exactly 8,192 bytes of declared function-local storage, including the mutable
+design copy, arrays, result and scalar locals. A single accumulator is reused for the original
+column norm, each orthogonal projection and the final norm; their lifetimes do not overlap, and
+the two orthogonalization passes and arithmetic order are unchanged.
+
 ## Evidence and scaling limits
 
 ### Named limits and remaining serial steps

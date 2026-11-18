@@ -23,6 +23,14 @@ Provide equal-length `distances: float32`, `semivariances: float32`, and `pairCo
 
 The range search uses `[minimumLag / 10, maximumLag * 3]`. Every fixed range solves nonnegative nugget/sill least squares, comparing both boundary fits. Cressie weighting starts from pair weights and refits three times with `pairCount / fittedSemivariance²`; the f32 denominator floor is `1e-20`. Invalid/nonpositive lag or empty bins are skipped. At least two distinct positive lags are needed. AIC compares the same empirical bins and is an unweighted residual diagnostic, not a spatial likelihood. Status 3 returns a candidate without claiming an identified interior range. The existing `fitVariogramModel` remains an explicitly CPU-side helper.
 
+Explicit `rangeSteps` (3–1024) and `maximumIterations` (0–64) bind the GPU contributor, both
+operation forms and the CPU helpers for every weighting pass. The ladder defaults to 200 points;
+omitted refinement budgets retain GPU 32 and CPU 60 steps. Zero performs no refinement steps,
+while still evaluating the ladder and the initial two interior candidates. Both operation forms
+publish the actual final log-range bracket and status 3 for an endpoint ladder optimum or a bracket
+wider than `1e-5`; finite candidates remain available. GPU can stop once the bracket is at most
+`1e-5`, while CPU uses float64 refinements up to its budget.
+
 Range candidates execute in parallel. Refinement uses one 64-lane workgroup per model to reduce bin statistics and residuals, with ordered golden-section steps and Cressie rounds. Floating accumulation order differs from the CPU helper and the earlier serial refinement; compare numerical tolerances and statuses rather than bit identity. The refinement adds fixed workgroup storage without increasing the candidate-search buffer or combining input batches.
 
 ## Kriging modes and support

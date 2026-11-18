@@ -7,7 +7,7 @@
   "viewId": "dispatch-view",
   "caption": "Dispatch of network-coarsening-zero-stats. invocations: 32. structure metadata only. workgroups 1.",
   "description": "Dispatch of network-coarsening-zero-stats. invocations: 32. structure metadata only. workgroups 1.",
-  "llms": "Dispatch of network-coarsening-zero-stats\n\n- invocations: 32\n- workgroups 1\n- lanes per workgroup 32\n- idle lanes 21\n- expanded workgroup 0\n- id probe not recorded\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: transients groupNodeCount, groupCentroid, sourceGroups, targetGroups, edgeCounts, superedgeCount, overflow retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Dispatch of network-coarsening-zero-stats\n\n- invocations: 32\n- workgroups 1\n- lanes per workgroup 32\n- idle lanes 21\n- expanded workgroup 0\n- id probe not recorded\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: transients groupNodeCount, groupCentroid, sourceGroups, targetGroups, edgeCounts, superedgeCount, overflow, candidateOverflow retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "invocations",
     "value": "32"
@@ -19,16 +19,16 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-16T00:41:27.754Z",
-    "runId": "run-153df4a2",
+    "date": "2026-11-18T16:33:04.918Z",
+    "runId": "run-574a1c09",
     "observerEffects": [
       "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
-      "lens twin: transients groupNodeCount, groupCentroid, sourceGroups, targetGroups, edgeCounts, superedgeCount, overflow retained instead of aliased"
+      "lens twin: transients groupNodeCount, groupCentroid, sourceGroups, targetGroups, edgeCounts, superedgeCount, overflow, candidateOverflow retained instead of aliased"
     ]
   },
   "state": {
-    "runId": "run-153df4a2",
+    "runId": "run-574a1c09",
     "rung": "kernel",
     "bindings": {},
     "clauses": [],

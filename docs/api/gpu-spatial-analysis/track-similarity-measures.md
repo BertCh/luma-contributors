@@ -40,11 +40,30 @@ new GPUTrackSimilarity({
   directions. It is not densified and has no vertex cap.
 - **Hausdorff** is the existing output, unchanged.
 
+For geographic Hausdorff and SSPD, projection and interpolation use one wrapped start-to-end
+longitude arc. The nearest-segment candidate is compared with both endpoints; its distance never
+exceeds either endpoint distance. This holds for queries on the opposite side of the globe as well
+as for queries near the antimeridian. For example, the point `(0°, 0°)` and segment
+`(100°, 0°) → (-100°, 0°)` have Hausdorff and SSPD distances of `100° × sphereRadius × π / 180`
+with default densification. The local projection remains an approximation for long edges.
+
 EDR and ERP run the anti-diagonal dynamic program of DTW with one extra table row and column for
 the empty prefix, so the boundary prefix costs come from the same recurrence; they share the
 shorter-track cap `maximumFrechetVertexCount` (`frechetCapExceeded` in `pairStatus`, NaN result)
 and `densify`. SSPD uses 64 lanes per pair with fixed-order lane sums and a fixed binary tree (no
 atomics). EDR is exact in f32; ERP sums in f32, so its error grows with `n + m` like DTW.
+
+The CPU twin creates densified points only for requested measures that use them. Requests limited
+to `maximumDistance` and/or `symmetricSegmentPathDistance` use the original vertices, even with a
+small positive `densify`. For measures that densify, each expanded track must have at most
+`2^32 - 1` vertices (the JavaScript array length limit); the CPU checks that count before
+allocating the dense points. An explicit `maximumFrechetVertexCount` also binds CPU dynamic-program
+measures: beyond the shorter densified track cap, status is `frechetCapExceeded` and their distances
+are NaN (decisions are zero). Hausdorff, SSPD and maximum distance remain available. Omitting that
+prop leaves the CPU shorter-track count uncapped.
+The GPU also checks expanded counts only when a requested measure uses densification, and checks
+the shorter-track cap only when a dynamic-program measure is requested. A maximum-distance-only
+or SSPD-only request therefore remains valid when an unused expanded count would exceed uint32.
 
 Hausdorff, EDR, ERP and SSPD are not in the MovingPandas 0.23 distance list except Hausdorff, DTW,
 LCSS and Frechet, so EDR, ERP and SSPD are verified against double-precision definitions written

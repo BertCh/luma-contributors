@@ -27,6 +27,18 @@ its optional `invalidCount` (one `uint32` row) counts the cells of the result th
 and normalize that sentinel difference. GPU float32 arithmetic can differ from GDAL's double
 accumulation; parity uses numerical tolerances.
 
+`input` accepts a published `GPURasterBand` backed by a packed buffer or a selected texture
+channel. Texture dimensions must equal `grid.width` and `grid.height`; use a single 2D mip/layer
+of `r32float`, `rgba32float`, `r32uint`, `rgba32uint`, `r32sint` or `rgba32sint` matching the band
+format. Set `input.storage.channel` (default zero) for RGBA inputs. The published texture-to-buffer
+conversion evaluates raw nodata and the optional band `validity` mask before calibration. Invalid
+texture shape/channel/format is rejected at construction, and foreign graph ownership is rejected
+before scratch allocation. The texture handle must include `Texture.SAMPLE` usage. Supplied
+`input.scale` and `input.offset` must remain finite after float32 conversion. These checks run
+before output allocation in the surface-preparation recipe as well, allowing a corrected same-ID
+retry after rejection. Band metadata, nested storage and mask/view identities are captured at
+construction; texture and mask contents remain per-submission inputs.
+
 The direct Rasterio oracle generator is
 `modules/analysis/test/oracles/raster-fill-four-quadrant.py`; its JSON records Rasterio and
 GDAL versions. Cases cover asymmetric holes, borders and ties, bounded original donors and no

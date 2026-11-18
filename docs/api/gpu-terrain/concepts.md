@@ -89,6 +89,28 @@ Absolute heights and DEM heights must share one vertical datum, and observer pos
 
 ## GPU execution model
 
+For tiled terrain, a halo stage must bound every source read and preserve the sampling geometry
+when the window moves. `GPUTerrainHorizon.getHaloStage()` provides the march bound
+`maximumRadius + 1`. For sweep it provides `maximumRadius` with explicit `parameterLayout: 'sweep'`.
+That layout packs a common `sweepSourceGrid`, `sweepReferenceCellSize` and per-frame `sweepOrigin`
+in 24 parameters. Both algorithms require this shared source-row layout for latitude-dependent
+halos, including distance cutoffs. View padding never selects a layout. The origin is measured in
+overview pixels relative to the shared source grid; do not infer downsampling from a level number.
+Placement updates reuse the compiled shader. March adds only integer displacements to the pixel
+origin, keeping fractions separate so crop offsets cannot change validity corners by rounding.
+Horizon construction captures declared options by property access, including inherited and
+non-enumerable getters. In particular, `cellSizeMode: 'geographic'` requires the shared source-row
+layout for a halo regardless of how the property is defined; changing the caller's option later
+does not change that validated requirement.
+`GPUTerrainCastShadow` uses the same shared-source model with its own 32-value sweep parameter
+layout. Its `getHaloStage()` returns the radius only with explicit `parameterLayout: 'sweep'`;
+the standard 16-value window-local model refuses halo assembly. Use the same source grid,
+reference cells and fixed radius across windows, and pack each window's origin per frame.
+`GPUTerrainWeissLandforms.getHaloStage()` provides `localRadius` only with local
+standardization. Global Weiss statistics and geomorphons with per-frame anisotropic cell sizes
+have no complete fixed local bound. Their advisory `localRadius` (Weiss) and `searchRadius`
+(geomorphons) are not halo stages. Keep only the core outputs of a correctly expanded tile.
+
 How terrain contributors run on the device: the command graph they declare, the kernels it
 compiles to, and the resources each pass reads and writes, drawn from a recorded real run.
 

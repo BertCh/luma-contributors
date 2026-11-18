@@ -75,6 +75,9 @@ Triangle reservation is bounded by 715,827,882 to keep six boundary words per tr
 addressing; device bindings impose lower limits.
 
 An alpha complex selects Delaunay triangles by maximum circumradius and derives the exposed boundary edges; graph and validity are the appropriate structural explanation.
+The circumcircle solve independently scales its two edge equations by powers of two, protecting
+products at large, small and unequal coordinate scales. Degenerate triangles and unrepresentable final
+radii are excluded. Float32 accuracy still limits nearly collinear circumcircles.
 
 {/* lens:GPUConcaveHull */}
 
@@ -85,6 +88,29 @@ An alpha complex selects Delaunay triangles by maximum circumradius and derives 
 ## `GPUGroupConcaveHull`
 
 Independent alpha complexes preserve original point IDs and empty group slots; boundary and triangle capacities remain explicit.
+
+The default `layout: 'fixed'` reserves `T = max(0, 2*n-5)` triangle rows per group and `3*T`
+boundary-edge rows per group, where `n` is the total input position count. Validity masks select
+retained rows. With `layout: 'packed'`, reserve only `T` triangle rows and `3*T` boundary-edge
+rows across all groups. Each list is compact and group-major; its validity is one in the used
+prefix and zero in padding. `output.groups.triangleOffsets`, `triangleCounts`, `edgeOffsets` and
+`edgeCounts` each have `groupCount` rows and describe ranges in the corresponding compact list.
+An empty or fully removed group has count zero and the current prefix offset.
+When the total input has fewer than three positions, reserve zero geometry rows; packed counts
+and every group range are still written as zero. Resubmitting after all triangles are removed
+clears the old compact geometry, validity and counts.
+Zero-length logical views still need one physical row of backing storage for the published binding
+helper: 12 bytes for `uint32x3` triangles, 8 for `uint32x2` edges, and 4 for scalar validity.
+
+Packed `output.status.count` and `requiredCount` count boundary-edge rows, and `overflow` is zero
+because this layout requires the full linear reservation. `output.status.converged` still has one
+row per group: a nonconverged group contributes no triangles or edges. The packed reservation is
+bounded by 715,827,882 total triangle rows for uint32 addressing, with device bindings imposing
+lower limits. Both layouts use the same group-aware Delaunay build and retain original position rows.
+All output fields, including the four packed range views, must use distinct buffers disjoint from
+the inputs. Missing packed fields fail at construction with a contributor-prefixed diagnostic.
+The grouped contributor snapshots its layout and nested output maps at construction while retaining
+the supplied GPU views; later edits to the caller's props/maps do not change the validated graph.
 
 {/* lens:GPUGroupConcaveHull */}
 

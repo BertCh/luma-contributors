@@ -1,5 +1,12 @@
 # Upstream proposals
 
+Ready-to-file bodies for the first four filings are in the
+[draft index](./upstream-drafts/README.md): [packed CPU/GPU transfers](./upstream-drafts/01-packed-cpu-gpu-transfer.md),
+[histogram edges and domains](./upstream-drafts/02-histogram-edges-and-domains.md),
+[caller CSR with masks](./upstream-drafts/03-caller-csr-and-masks.md), and
+[typed buffer imports and CPU vector construction](./upstream-drafts/04-typed-buffer-and-cpu-vector.md).
+They distinguish installed alpha.14 source checks from historical GPU measurements. Nothing has been filed.
+
 Nothing has been filed upstream: no issue and no pull request. Measurements cover one adapter: headless Chromium WebGPU on Apple Metal. Repository pins are `10.0.0-alpha.14` (bumped 2026-11-14 for the Kepler port, with deck.gl 10.0.0-alpha.1 and math.gl 5.0.0-beta.8). Between alpha.13 and alpha.14 luma.gl changed only colour conversion, the expression operation and SQL files, so proposals 1 to 14 are unchanged; proposal 15 comes from the Kepler port and was checked against the alpha.14 `dist`.
 
 ## 1. Summary for the maintainer
@@ -157,7 +164,7 @@ Evidence: `modules/analysis/test/gpu-spatial-analysis/spatial-join/gpu-point-in-
 
 Problem: WGSL has no int64; `dggs_u64_*` and `fp64_u64_*` use `vec2u(high, low)` but omit multiply/divide and require whole shader modules. Epoch-millisecond division, accumulators and key comparison need local words. H3 centres/azimuths exist only in `dggs_h3_get_face_center_geo` and `dggs_h3_get_face_axis_azimuths`; a renamed function yields 0 parsed rows and an empty dependent array without validation.
 
-Change: standalone `uint64` add/subtract/negate/compare, `shiftLeft`, `shiftRight`, `multiply32` (64 by 32), `divide32`, float32 conversion and storage-order converters; dggs/fp64arithmetic depend on it. Export centre/azimuth data from `@luma.gl/shaders` as two frozen 20-row arrays and generate WGSL from them; the summary requests all four H3 tables. Retires `UINT64_WGSL` in `analysis-core/kernels/uint64-wgsl.ts`, word helpers in `analysis-core/cell-key-wgsl.ts` (`getFixedPointWGSL`) and `gpu-spatial-analysis/cell-aggregation/cell-keys.ts` (`CELL_KEY_WGSL`), `TERRAIN_SUMMED_AREA_WGSL_HELPERS` in `gpu-terrain/topographic-position/terrain-summed-area-table.ts`, `add64`/`subtract64` in `dataframe-analysis/pair-statistics/gpu-ripley.ts`, `divideUnsigned64`/`negateInt64` in `dataframe-analysis/calendar-buckets/gpu-calendar-buckets.ts`, plus `parseDggsFaceTable` in `gpu-spatial-analysis/cell-indexing/h3-index-extended-wgsl.ts`.
+Change: standalone `uint64` add/subtract/negate/compare, `shiftLeft`, `shiftRight`, `multiply32` (64 by 32), `divide32`, float32 conversion and storage-order converters; dggs/fp64arithmetic depend on it. Export centre/azimuth data from `@luma.gl/shaders` as two frozen 20-row arrays and generate WGSL from them; the summary requests all four H3 tables. Retires `UINT64_WGSL` in `analysis-core/kernels/uint64-wgsl.ts`, word helpers in `analysis-core/kernels/cell-key-wgsl.ts` (`getFixedPointWGSL`) and `gpu-spatial-analysis/cell-aggregation/cell-keys.ts` (`CELL_KEY_WGSL`), `TERRAIN_SUMMED_AREA_WGSL_HELPERS` in `gpu-terrain/topographic-position/terrain-summed-area-table.ts`, `add64`/`subtract64` in `dataframe-analysis/pair-statistics/gpu-ripley.ts`, `divideUnsigned64`/`negateInt64` in `dataframe-analysis/calendar-buckets/gpu-calendar-buckets.ts`, plus `parseDggsFaceTable` in `gpu-spatial-analysis/cell-indexing/h3-index-extended-wgsl.ts`.
 
 Evidence: `modules/analysis/test/utils/wgsl-words-search.spec.ts` compares words with BigInt; `modules/analysis/test/gpu-spatial-analysis/cell-indexing/h3-index-extended.node.spec.ts` requires 20 parser rows. Published side: reading.
 
@@ -202,7 +209,7 @@ All rows are declaration readings. Local paths identify the symbols that could d
 
 | Published API | Request | Local code it would retire or simplify |
 | --- | --- | --- |
-| `GPUGridIndex` | Cell-size mode `origin + k * cellSize`, half-open domain, ascending cell order, Z-ignoring raster mode, named limits, offsets/sorted IDs as read views | `createPointCloudGridIndex`, `pointcloud-analysis/pointcloud-grid-index.ts` |
+| `GPUGridIndex` | Cell-size mode `origin + k * cellSize`, half-open domain, ascending cell order, Z-ignoring raster mode, named limits, offsets/sorted IDs as read views | `createPointCloudGridIndex`, `pointcloud-analysis/operations/pointcloud-grid-index.ts` |
 | `GPUGridBinning` | Per-frame active grid size | `GPUFlowAggregation`, `gpu-network/flow-aggregation/gpu-flow-aggregation.ts` grid zones |
 | `GPUGridBinning`, `GPUGridAggregation` | Per-row cell key or deterministic fixed-point sum instead of float compare-exchange | `GPUPointDensity`, `gpu-spatial-analysis/point-density/point-density-kernels.ts` (`createPointDensityGridKeysNode`) |
 | `GPURasterRegionMeasurements` | Exact deterministic sums and per-row cell area | `GPUTerrainCatchmentSummary`, `gpu-terrain/terrain-processing/gpu-terrain-catchment-summary.ts` area/mean/extrema |

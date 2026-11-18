@@ -3,11 +3,20 @@
 `addExcessRiskRecipe(graph, props)` and `addSpatialRateRecipe(graph, props)` append GPU nodes
 without submitting commands or reading results. Import them from `@luma-contributors/analysis/gpu-spatial-analysis`.
 Both return ordinary recipe results: `outputs.excessRisk` or `outputs.spatialRates`, contributors,
-intermediates and stage status. Excess risk has no status stages; spatial rates preserve the supplied
+intermediates and stage status. Excess risk reports `invalidCount` in an `excess-risk` stage;
+spatial rates preserve the supplied
 weights status in a `weights` stage. Pass `output` for a caller-owned readback-capable view;
 otherwise the terminal view is graph-owned. Imported buffers remain caller-owned. Inputs are packed
 `float32` or `uint32` graph views, with matching row counts; there is no implicit vector chunk packing.
 For uint32 counts, GPU conversion to float32 loses integer precision above 2^24.
+
+Both recipes prepare their complete declarations on a separate graph before changing the caller's
+graph. Invalid shapes, aliases, foreign views and contributor expansion failures leave the caller's
+nodes and resources unchanged, so a corrected configuration can reuse the same recipe ID. Preparation
+uses the same device limits and preserves buffer aliases and view offsets; it never compiles or
+allocates GPU storage. It repeats host declaration work once. This guarantee covers configuration
+validation; existing caller node-ID collisions, a graph already frozen by compilation, and allocation
+failures during final declaration are outside it. Supply unused recipe/resource IDs on a mutable graph.
 
 ```ts
 const risk = addExcessRiskRecipe(graph, {events, populations, mask});

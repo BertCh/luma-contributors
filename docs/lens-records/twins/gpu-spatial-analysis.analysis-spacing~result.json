@@ -1,0 +1,55 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.analysis-spacing",
+  "rung": "result",
+  "size": "full",
+  "example": {
+    "code": "graph.add(\n  new GPUAnalysisSpacing({\n    positions,\n    spatialContext: {coordinateSpace: 'planar', metric: 'native'},\n    neighborRank: 3,\n    gridSize: [4, 4],\n    output: {summary}\n  })\n);\n// Word 21 is the float32 maximum nearest-neighbor distance in the public summary layout.\nconst nearestNeighborMaximum = graph.createDataView(summary.buffer, {\n  format: 'float32',\n  byteOffset: summary.byteOffset + 21 * 4,\n  length: 1\n});",
+    "language": "ts",
+    "lineCount": 15
+  },
+  "scenarioId": "gpu-spatial-analysis.analysis-spacing",
+  "viewId": "result-view",
+  "caption": "Result of gpu-spatial-analysis.analysis-spacing: positions → nearestNeighborMaximum. rows: 1. values read back from the GPU run. input positions: 5 rows.",
+  "description": "Result of gpu-spatial-analysis.analysis-spacing: positions → nearestNeighborMaximum. rows: 1. values read back from the GPU run. input positions: 5 rows.",
+  "llms": "Result of gpu-spatial-analysis.analysis-spacing: positions → nearestNeighborMaximum\n\n- rows: 1\n- input positions: 5 rows\n- Coordinate model unknown: drawn as planar x, y.\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "rows",
+    "value": "1"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><div class=\"cv-result-tables\"><table class=\"cv-table\" data-key-space=\"point\"><caption>point (point) · 5 rows</caption><thead><tr><th scope=\"col\">positions</th></tr></thead><tbody><tr><td data-provenance=\"readback\">0, 0</td></tr><tr><td data-provenance=\"readback\">0, 0</td></tr><tr><td data-provenance=\"readback\">3, 0</td></tr><tr><td data-provenance=\"readback\">0, 4</td></tr><tr><td data-provenance=\"readback\">3, 4</td></tr></tbody></table><table class=\"cv-table\" data-key-space=\"population\"><caption>population (population) · 1 rows</caption><thead><tr><th class=\"cv-col--output\" scope=\"col\">nearestNeighborMaximum</th></tr></thead><tbody><tr><td class=\"cv-col--output\" data-provenance=\"readback\">3</td></tr></tbody></table></div><p class=\"cv-legend\">grey: input positions · blue: output nearestNeighborMaximum</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "unknown",
+      "reason": "missing or invalid coordinateModel"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-11-18T16:33:10.165Z",
+    "runId": "run-7c107b55",
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-7c107b55",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

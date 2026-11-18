@@ -86,7 +86,8 @@ The opt-in `terrain-processing-benchmark.spec.ts` covers all six terrain roadmap
 includes source hashes, device limits, initial allocation/preparation/upload, graph declaration,
 synchronous compilation, first submit/fence, three repeated in-place upload/submit samples, full
 output readback, native GPU timestamps and actual compiled transient allocation. Run it with
-`VITE_TERRAIN_PROCESSING_BENCHMARK=true yarn test-browser-benchmarks --maxWorkers=1 --silent=false --reporter=verbose modules/analysis/test/gpu-terrain/terrain-processing/terrain-processing-benchmark.spec.ts`.
+`yarn test-benchmarks modules/analysis/test/gpu-terrain/terrain-processing/terrain-processing-benchmark.spec.ts`.
+The launcher enables benchmark flags, uses one worker and forwards the selected file.
 
 The following measurements predate parallel depression activation and window-cell breach search; rerun the benchmark for their current timing and scratch usage. The Apple WebGPU/Metal device measured the following at 16,384 cells. Both timing columns are
 medians of three repeated submissions, and scratch excludes caller inputs/outputs and driver
@@ -128,6 +129,12 @@ to a finite float32 value.
 ### GPUTerrainBranchingFlow
 
 Branching flow remains resident and is bounded by 32,768 command nodes and actual device bindings.
+
+The public contributor exposes `getCommandNodes(graph)`. Resident tiled composition obtains the
+four-word iteration gate status through an internal module factory; the former internal
+`getCommandNodesWithIterationStatus` class method is no longer exposed. Both paths use the same
+validated contributor and kernel builder, including cached construction-time distance declarations.
+This keeps private gate ports out of the public class without changing status words or graph nodes.
 
 {/* lens:GPUTerrainBranchingFlow */}
 

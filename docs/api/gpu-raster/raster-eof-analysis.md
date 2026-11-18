@@ -75,6 +75,7 @@ was not run** (it was not installed, to stay within the disk available when the 
 ### `GPURasterEOFProjection` parameters
 
 - Packer: `getGPURasterSnapshotCovarianceParameterValues(settings, cellCount)`, writes `GPU_RASTER_SNAPSHOT_COVARIANCE_PARAMETER_LENGTH` (2) `float32` values.
+  - Input port: `parameters`.
   - `cellCount` (`number`)
 
 Settings of `getGPURasterSnapshotCovarianceParameterValues`:

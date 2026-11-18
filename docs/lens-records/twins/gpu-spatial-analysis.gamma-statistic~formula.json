@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula Gamma = sum_ij w_ij t(x_i, y_j) / sum_ij w_ij over directed edges with positive weight to another included row; t = (x - mx)(y - my) for cross-product (edge-weighted means mx, my), (x - y)^2 for squared-difference, |x - y| for absolute-diffe…",
   "description": "Formula Gamma = sum_ij w_ij t(x_i, y_j) / sum_ij w_ij over directed edges with positive weight to another included row; t = (x - mx)(y - my) for cross-product (edge-weighted means mx, my), (x - y)^2 for squared-difference, |x - y| for absolute-diffe…",
-  "llms": "Formula Gamma = sum_ij w_ij t(x_i, y_j) / sum_ij w_ij over directed edges with positive weight to another included row; t = (x - mx)(y - my) for cross-product (edge-weighted means mx, my), (x - y)^2 for squared-difference, |x - y| for absolute-difference. y is the second variable, or x itself when none is given. NaN when the total edge weight is not positive. There is no analytic p-value.\n\n- bound symbols: 5/5\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula Gamma = sum_ij w_ij t(x_i, y_j) / sum_ij w_ij over directed edges with positive weight to another included row; t = (x - mx)(y - my) for cross-product (edge-weighted means mx, my), (x - y)^2 for squared-difference, |x - y| for absolute-difference. y is the second variable, or x itself when none is given. NaN when the total edge weight is not positive. There is no analytic p-value.\n\n- bound symbols: 3/5\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "5/5"
+    "value": "3/5"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gamma-statistic</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{statistic}{\\Gamma}&amp;=\\frac{\\term{numerator}{\\sum_{ij}w_{ij}\\,t(x_i,y_j)}}{\\term{weightTotal}{\\sum_{ij}w_{ij}}},\n&amp;t(x,y)&amp;=\\begin{cases}(x-\\term{meanX}{\\bar{x}})(y-\\term{meanY}{\\bar{y}})&amp;\\text{cross-product}\\\\(x-y)^2&amp;\\text{squared difference}\\\\|x-y|&amp;\\text{absolute difference}\\end{cases}\n\\end{aligned}</pre><p class=\"lens-ascii\">Gamma = sum_ij w_ij t(x_i, y_j) / sum_ij w_ij over directed edges with positive weight to another included row; t = (x - mx)(y - my) for cross-product (edge-weighted means mx, my), (x - y)^2 for squared-difference, |x - y| for absolute-difference. y is the second variable, or x itself when none is given. NaN when the total edge weight is not positive. There is no analytic p-value.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.gamma-statistic-compiled:gamma-statistic-statistic\" data-value=\"statistic\">statistic · output · answer</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.gamma-statistic-compiled:gamma-statistic-statistic\" data-value=\"numerator\">numerator · intermediate · numerator</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.gamma-statistic-compiled:gamma-statistic-centered\" data-value=\"weightTotal\">weightTotal · intermediate · weightTotal</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.gamma-statistic-compiled:gamma-statistic-centered\" data-value=\"meanX\">meanX · intermediate · meanX</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.gamma-statistic-compiled:gamma-statistic-centered\" data-value=\"meanY\">meanY · intermediate · meanY</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gamma-statistic</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{statistic}{\\Gamma}&amp;=\\frac{\\term{numerator}{\\sum_{ij}w_{ij}\\,t(x_i,y_j)}}{\\term{weightTotal}{\\sum_{ij}w_{ij}}},\n&amp;t(x,y)&amp;=\\begin{cases}(x-\\term{meanX}{\\bar{x}})(y-\\term{meanY}{\\bar{y}})&amp;\\text{cross-product}\\\\(x-y)^2&amp;\\text{squared difference}\\\\|x-y|&amp;\\text{absolute difference}\\end{cases}\n\\end{aligned}</pre><p class=\"lens-ascii\">Gamma = sum_ij w_ij t(x_i, y_j) / sum_ij w_ij over directed edges with positive weight to another included row; t = (x - mx)(y - my) for cross-product (edge-weighted means mx, my), (x - y)^2 for squared-difference, |x - y| for absolute-difference. y is the second variable, or x itself when none is given. NaN when the total edge weight is not positive. There is no analytic p-value.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.gamma-statistic-compiled:gamma-statistic-statistic\" data-value=\"statistic\">statistic · output · answer</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.gamma-statistic-compiled:gamma-statistic-statistic\" data-value=\"numerator\">numerator · intermediate · numerator</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.gamma-statistic-compiled:gamma-statistic-statistic\" data-value=\"weightTotal\">weightTotal · intermediate · weightTotal</button><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"meanX\">meanX · intermediate · unknown — wgsl meanX not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"meanY\">meanY · intermediate · unknown — wgsl meanY not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -50,14 +50,14 @@
       [
         "meanX",
         "intermediate",
-        "meanX",
+        "unknown",
         "—",
         "metadata"
       ],
       [
         "meanY",
         "intermediate",
-        "meanY",
+        "unknown",
         "—",
         "metadata"
       ]
@@ -77,8 +77,8 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-11T15:20:41.871Z",
-    "runId": "run-0100e97f",
+    "date": "2026-11-18T16:33:25.025Z",
+    "runId": "run-4c837a6b",
     "observerEffects": [
       "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
@@ -86,7 +86,7 @@
     ]
   },
   "state": {
-    "runId": "run-0100e97f",
+    "runId": "run-4c837a6b",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

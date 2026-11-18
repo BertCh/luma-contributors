@@ -1,6 +1,6 @@
 # Upstream-first plan
 
-This repository contains geospatial and analysis code built on published luma.gl public entry points. The installed and pinned release is `10.0.0-alpha.13`. `10.0.0-alpha.14` changes colour conversion, expression operations and SQL; these do not change this plan.
+This repository contains geospatial and analysis code built on published luma.gl public entry points. The [alpha package contract](./release-package.md) records the installed integration target separately from the accepted peer range and publication status.
 
 ## Rules
 
@@ -9,7 +9,7 @@ This repository contains geospatial and analysis code built on published luma.gl
 3. When an API is missing, use the public API even if verbose; adapt to luma.gl's design; drop the feature; only as a last resort write a small helper named for the analysis domain.
 4. Send luma.gl improvements upstream as ordinary pull requests. Do not carry them here or wait for them. Remove a workaround when a published release supplies its replacement.
 5. Source under `modules/analysis/src` belongs only in `analysis-core`, `computation-record`, `gpu-spatial-analysis`, `gpu-network`, `gpu-terrain`, `testing`, `dataframe-analysis`, `raster-analysis`, `pointcloud-analysis` and `geospatial-analysis`.
-6. `scripts/check-upstream-first.mjs` enforces published entry points, forbidden `_internal` segments, analysis-owned directories and no luma.gl re-exports from `modules/*/src`.
+6. `scripts/check-upstream-first.mjs` enforces the allowed package set independently of published entry points, restricts engine to tests/examples, forbids `_internal` segments, checks analysis-owned directories (only `index.ts` may sit directly in `modules/analysis/src`) and rejects luma.gl re-exports from `modules/*/src`. See [script gates](./script-gates.md).
 7. Validate contributor props once at construction with named-limit helpers; follow [contributor-contract.md](./contributor-contract.md).
 
 Exceptional grid WGSL copies are allowed only for kernels consuming published grid state. Each needs a row in [upstream-workarounds.md](./upstream-workarounds.md), an entry in `modules/analysis/test/analysis-core/official-wgsl-copies.node.spec.ts` and a pin comparing the copy with upstream text. Match the paired class's arithmetic: `GPUGridIndex` and `GPUGridBinning` differ.
@@ -50,7 +50,7 @@ Paths below are under `modules/analysis/src`. Import analysis contracts from `@l
 | `analysis-core/kernels/hash-uint32.ts`: `HASH_UINT32_WGSL`; `scan-total.ts`: `createSaturatedScanTotalNodes`; `load-balanced-for-each.ts`: `createLoadBalancedForEachNode`; `parallel-merge-tree.ts`: `getParallelMergeTreeNodes` | Hashing, saturated scan totals and work distribution for analysis. |
 | `analysis-core/kernels/polygon-edge-slabs.ts`: `getPolygonEdgeSlabNodes`; `stable-lexicographic-index-sort.ts`: `createStableLexicographicIndexSortNodes`; `study-window-wgsl.ts`: `getStudyWindowWGSL`; `wgsl-common.ts`: `GET_NAN_WGSL` | Polygon candidate slabs, stable key ordering, study-window sampling and shared WGSL constants. |
 | `analysis-core/contracts/spatial-context.ts`: `GPUSpatialContext`, `validateGPUSpatialContext`; `analysis-core/polygon-triangulation/gpu-polygon-triangulation.ts`: `getPolygonTriangulationIndexCount`; `analysis-core/ring-assembly/gpu-segment-ring-assembly.ts`: `GPU_SEGMENT_RING_ASSEMBLY_NONE` | Spatial contracts, polygon triangulation sizing and ring assembly. |
-| `analysis-core/network-topology.ts`: `GPUNetworkTopology`, `validateGPUNetworkTopology`; `analysis-core/raster-grid.ts`: `getRasterGroundCellSize`; `analysis-core/lon-lat-ring-wgsl.ts`: `createLonLatPolygonCheckNode` | Network, raster ground-spacing and longitude/latitude ring contracts. |
+| `analysis-core/contracts/network-topology.ts`: `GPUNetworkTopology`, `validateGPUNetworkTopology`; `analysis-core/contracts/raster-grid.ts`: `getRasterGroundCellSize`; `analysis-core/kernels/lon-lat-ring-wgsl.ts`: `createLonLatPolygonCheckNode` | Network, raster ground-spacing and longitude/latitude ring contracts. |
 | `analysis-core/graph-support/arrow-analytics-normalization.ts`: `prepareArrowTableForGPUAnalytics`; `arrow-analytics-time-upload.ts`: `makeGPUTimeVectorFromPreparedArrowColumn`; `arrow-analytics-wide-numeric.ts`: `isWideNumericType`, `convertWideNumericValue`, `convertWideNumericVector` | Arrow normalization and exact time upload over published Arrow and GPU-data APIs. |
 | `testing/gpu-contributor-test-utils.ts`: `createNullWebGPUDevice`, `getGPUCommandNodeKernelSources`, `getGPUCommandNodePipelineKeys`, `getParsedKernelSources`; `testing/require-test-device.ts`: `requireTestDevice` | Workspace-only test helpers. The null-device shim supplies WebGPU type and limits for declaration and kernel inspection, not GPU execution. `testing/index.ts` is a TypeScript workspace alias, not a published package export. |
 

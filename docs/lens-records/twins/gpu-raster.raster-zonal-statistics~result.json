@@ -18,14 +18,14 @@
     "value": "5"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-result-view\"><table class=\"cv-table\"><thead><tr><th class=\"cv-col--output\" scope=\"col\">zoneCellCounts</th><th class=\"cv-col--output\" scope=\"col\">zoneMeans</th><th class=\"cv-col--output\" scope=\"col\">zoneMinimums</th><th class=\"cv-col--output\" scope=\"col\">zoneMaximums</th></tr></thead><tbody><tr><td class=\"cv-col--output\" data-provenance=\"readback\">3682</td><td class=\"cv-col--output\" data-provenance=\"readback\">1320</td><td class=\"cv-col--output\" data-provenance=\"readback\">1070</td><td class=\"cv-col--output\" data-provenance=\"readback\">1790</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">272</td><td class=\"cv-col--output\" data-provenance=\"readback\">1150</td><td class=\"cv-col--output\" data-provenance=\"readback\">1070</td><td class=\"cv-col--output\" data-provenance=\"readback\">1780</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">13</td><td class=\"cv-col--output\" data-provenance=\"readback\">1100</td><td class=\"cv-col--output\" data-provenance=\"readback\">1070</td><td class=\"cv-col--output\" data-provenance=\"readback\">1370</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">34</td><td class=\"cv-col--output\" data-provenance=\"readback\">1090</td><td class=\"cv-col--output\" data-provenance=\"readback\">1080</td><td class=\"cv-col--output\" data-provenance=\"readback\">1100</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">95</td><td class=\"cv-col--output\" data-provenance=\"readback\">1350</td><td class=\"cv-col--output\" data-provenance=\"readback\">1080</td><td class=\"cv-col--output\" data-provenance=\"readback\">1360</td></tr></tbody></table><p class=\"cv-legend\">grey: input zonalElevation, zonalZones · blue: output zoneCellCounts, zoneMeans, zoneMinimums, zoneMaximums</p><p class=\"cv-note\">cell size 120 m · Raster pixel grid; origin not recorded · cell size 120 m · Raster pixel grid; origin not recorded</p></section>",
+    "html": "<section class=\"lens-view lens-result-view\"><div class=\"cv-result-tables\"><table class=\"cv-table\" data-key-space=\"zones\"><caption>land-cover zones (zones) · 5 rows</caption><thead><tr><th class=\"cv-col--output\" scope=\"col\">zoneCellCounts</th><th class=\"cv-col--output\" scope=\"col\">zoneMeans</th><th class=\"cv-col--output\" scope=\"col\">zoneMinimums</th><th class=\"cv-col--output\" scope=\"col\">zoneMaximums</th></tr></thead><tbody><tr><td class=\"cv-col--output\" data-provenance=\"readback\">3682</td><td class=\"cv-col--output\" data-provenance=\"readback\">1320</td><td class=\"cv-col--output\" data-provenance=\"readback\">1070</td><td class=\"cv-col--output\" data-provenance=\"readback\">1790</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">272</td><td class=\"cv-col--output\" data-provenance=\"readback\">1150</td><td class=\"cv-col--output\" data-provenance=\"readback\">1070</td><td class=\"cv-col--output\" data-provenance=\"readback\">1780</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">13</td><td class=\"cv-col--output\" data-provenance=\"readback\">1100</td><td class=\"cv-col--output\" data-provenance=\"readback\">1070</td><td class=\"cv-col--output\" data-provenance=\"readback\">1370</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">34</td><td class=\"cv-col--output\" data-provenance=\"readback\">1090</td><td class=\"cv-col--output\" data-provenance=\"readback\">1080</td><td class=\"cv-col--output\" data-provenance=\"readback\">1100</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">95</td><td class=\"cv-col--output\" data-provenance=\"readback\">1350</td><td class=\"cv-col--output\" data-provenance=\"readback\">1080</td><td class=\"cv-col--output\" data-provenance=\"readback\">1360</td></tr></tbody></table></div><p class=\"cv-legend\">grey: input zonalElevation, zonalZones · blue: output zoneCellCounts, zoneMeans, zoneMinimums, zoneMaximums</p><p class=\"cv-note\">cell size 120 m · Raster pixel grid; origin not recorded · cell size 120 m · Raster pixel grid; origin not recorded</p></section>",
     "width": 640,
     "height": 0
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-11T15:20:15.878Z",
-    "runId": "run-27f4ff10",
+    "date": "2026-11-18T16:33:09.629Z",
+    "runId": "run-30c835dc",
     "observerEffects": [
       "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
@@ -33,7 +33,7 @@
     ]
   },
   "state": {
-    "runId": "run-27f4ff10",
+    "runId": "run-30c835dc",
     "rung": "result",
     "bindings": {},
     "clauses": [],

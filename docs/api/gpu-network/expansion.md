@@ -67,7 +67,15 @@ Node and CSR slot counts must fit uint32 indexing (maximum 4294967294) and each 
 must fit the device's storage binding limit. Two vertex-sized scratch columns replace the exact
 reference's quadratic reachability table. `computeNetworkStructureOnCPU({offsets, neighbors})`
 is the independent iterative Tarjan reference for the same minimum-ID label layout; it has no
-GPU step budget. The new class keeps this iterative SCC contract separate from
+GPU step budget by default. Its optional second argument `{maximumIterations}` selects budgeted
+SCC phases and returns `strongComponentsStatus` beside the labels. `CPUNetworkStructureOperation`
+also accepts `strongComponentsStatus` and returns every requested scalar. Exact SCCs report
+`converged=1`, `iterationCount=1` (one Tarjan traversal), and `iterationLimitReached=0`. When the
+caller explicitly selects parallel SCCs (or supplies auto/budget controls selecting the large-graph
+route), the CPU operation uses the trim/colour/backward/finalize state machine with that step budget.
+With no mode or budget supplied, CPU SCCs remain exact Tarjan at every accepted size; a 1025-vertex
+chain does not acquire the GPU default budget just by crossing the GPU exact-route limit.
+The new class keeps this iterative SCC contract separate from
 `GPUNetworkStructure`'s bounded resilience outputs. The algorithm is adapted from the user's
 luma.gl fork at `e0ed33791`, independently implemented for WebGPU and inspired by cuGraph.
 ## Large-graph directed components
@@ -77,6 +85,11 @@ luma.gl fork at `e0ed33791`, independently implemented for WebGPU and inspired b
 ::lens{scenario=gpu-network.network-strongly-connected-components rung=result caption="The cycle 0↔1 shares label 0; the outgoing singleton and isolated node keep labels 2 and 3."}
 
 ::lens{scenario=gpu-network.network-strongly-connected-components rung=graph caption="Follow GPU-gated trim, colour propagation, backward marking and convergence publication."}
+
+The result selects the four `strongComponents` labels as its primary output. The full-size
+table retains `converged`, `iterationCount` and `iterationLimitReached` in their separate
+one-row status domain; the thumbnail summarizes the labels. The graph rung shows the command
+graph separately. CSR inputs and all status readbacks remain in the record.
 
 `GPUNetworkStronglyConnectedComponents` takes forward CSR `topology`; weights are ignored.
 It uses O(V) scratch and vertex-parallel outgoing-neighbour visits, with GPU gates selecting

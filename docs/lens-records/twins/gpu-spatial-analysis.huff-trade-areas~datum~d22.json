@@ -6,15 +6,15 @@
   "size": "full",
   "scenarioId": "gpu-spatial-analysis.huff-trade-areas",
   "viewId": "datum-receipt",
-  "caption": "Receipt of tracts 22. tradeArea: 1. values read back from the GPU run. result: 5 quantities.",
-  "description": "Receipt of tracts 22. tradeArea: 1. values read back from the GPU run. result: 5 quantities.",
-  "llms": "Receipt of tracts 22\n\n- tradeArea: 1\n- result: 5 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "caption": "Receipt of tracts 22. tradeArea: 1. values read back from the GPU run. result: 3 quantities.",
+  "description": "Receipt of tracts 22. tradeArea: 1. values read back from the GPU run. result: 3 quantities.",
+  "llms": "Receipt of tracts 22\n\n- tradeArea: 1\n- result: 3 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "tradeArea",
     "value": "1"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of tracts 22</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"result\"><tr><th scope=\"rowgroup\" colspan=\"5\">result</th></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-huff-trade-areas-snapshots-tracts-0\" title=\"context\">tracts</button></td><td>441.9568176269531, 6615.00927734375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-huff-trade-areas-snapshots-population-0\" title=\"gpu-spatial-analysis-huff-trade-areas-snapshot-tap\">population</button></td><td>8715</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-huff-trade-areas-snapshots-resultTracts-0\" title=\"gpu-spatial-analysis-huff-trade-areas-snapshot-tap\">resultTracts</button></td><td>441.9568176269531, 6615.00927734375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-huff-trade-areas-snapshots-tradeAreaProbability-0\" title=\"gpu-spatial-analysis-huff-trade-areas-snapshot-tap\">tradeAreaProbability</button></td><td>0.2811562418937683</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-huff-trade-areas-snapshots-tradeArea-0\" title=\"gpu-spatial-analysis-huff-trade-areas-snapshot-tap\">tradeArea</button></td><td>1</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of tracts 22</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"result\"><tr><th scope=\"rowgroup\" colspan=\"5\">result</th></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-huff-trade-areas-snapshots-population-0\" title=\"gpu-spatial-analysis-huff-trade-areas-snapshot-tap\">population</button></td><td>8715</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-huff-trade-areas-snapshots-tradeAreaProbability-0\" title=\"gpu-spatial-analysis-huff-trade-areas-snapshot-tap\">tradeAreaProbability</button></td><td>0.2811562120914459</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-huff-trade-areas-snapshots-tradeArea-0\" title=\"gpu-spatial-analysis-huff-trade-areas-snapshot-tap\">tradeArea</button></td><td>1</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -29,13 +29,6 @@
     "rows": [
       [
         "result",
-        "tracts",
-        "441.9568176269531, 6615.00927734375",
-        "0",
-        "readback"
-      ],
-      [
-        "result",
         "population",
         "8715",
         "0",
@@ -43,15 +36,8 @@
       ],
       [
         "result",
-        "resultTracts",
-        "441.9568176269531, 6615.00927734375",
-        "0",
-        "readback"
-      ],
-      [
-        "result",
         "tradeAreaProbability",
-        "0.2811562418937683",
+        "0.2811562120914459",
         "0",
         "readback"
       ],
@@ -64,8 +50,6 @@
       ]
     ],
     "provenance": [
-      "readback",
-      "readback",
       "readback",
       "readback",
       "readback"
@@ -86,12 +70,12 @@
   ],
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-11T15:20:49.183Z",
-    "runId": "run-3a0f3f97",
+    "date": "2026-11-18T16:33:29.623Z",
+    "runId": "run-20432e9a",
     "observerEffects": []
   },
   "state": {
-    "runId": "run-3a0f3f97",
+    "runId": "run-20432e9a",
     "rung": "datum",
     "bindings": {
       "entity": 22

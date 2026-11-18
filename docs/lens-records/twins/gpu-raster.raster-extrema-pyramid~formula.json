@@ -7,13 +7,13 @@
   "viewId": "formula-card",
   "caption": "Formula Level 0 cell (i,j) is the maximum over the valid finite pixels of its S x S block (S = firstBlockSize = 4; footprint 'cell' adds no extra pixel). Level l+1 takes the maximum of the children (2i+a, 2j+b) of level l that exist, compared with s…",
   "description": "Formula Level 0 cell (i,j) is the maximum over the valid finite pixels of its S x S block (S = firstBlockSize = 4; footprint 'cell' adds no extra pixel). Level l+1 takes the maximum of the children (2i+a, 2j+b) of level l that exist, compared with s…",
-  "llms": "Formula Level 0 cell (i,j) is the maximum over the valid finite pixels of its S x S block (S = firstBlockSize = 4; footprint 'cell' adds no extra pixel). Level l+1 takes the maximum of the children (2i+a, 2j+b) of level l that exist, compared with strict > from the empty sentinel -FLT_MAX, in the order (0,0), (1,0), (0,1), (1,1); children past an odd edge are skipped, so an edge cell reduces fewer than four. The minimum is the same tree with < from +FLT_MAX; a cell with no valid pixel keeps the sentinel.\n\n- bound symbols: 2/2\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "llms": "Formula Level 0 cell (i,j) is the maximum over the valid finite pixels of its S x S block (S = firstBlockSize = 4; footprint 'cell' adds no extra pixel). Level l+1 takes the maximum of the children (2i+a, 2j+b) of level l that exist, compared with strict > from the empty sentinel -FLT_MAX, in the order (0,0), (1,0), (0,1), (1,1); children past an odd edge are skipped, so an edge cell reduces fewer than four. The minimum is the same tree with < from +FLT_MAX; a cell with no valid pixel keeps the sentinel.\n\n- bound symbols: 1/2\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
   "keyNumber": {
     "label": "bound symbols",
-    "value": "2/2"
+    "value": "1/2"
   },
   "figure": {
-    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-raster.raster-extrema-pyramid.rule</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{parent}{M_{l+1}(i,j)}=\\max_{a,b\\in\\{0,1\\}}\\term{child}{M_l(2i+a,\\,2j+b)},\\qquad M_0(i,j)=\\max_{\\mathrm{valid}\\ v\\in\\mathrm{block}(i,j)}v</pre><p class=\"lens-ascii\">Level 0 cell (i,j) is the maximum over the valid finite pixels of its S x S block (S = firstBlockSize = 4; footprint &#39;cell&#39; adds no extra pixel). Level l+1 takes the maximum of the children (2i+a, 2j+b) of level l that exist, compared with strict &gt; from the empty sentinel -FLT_MAX, in the order (0,0), (1,0), (0,1), (1,1); children past an odd edge are skipped, so an edge cell reduces fewer than four. The minimum is the same tree with &lt; from +FLT_MAX; a cell with no valid pixel keeps the sentinel.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-extrema-pyramid-compiled:raster-extrema-pyramid-level-0\" data-value=\"parent\">parent maximum · output · maximumValue</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-extrema-pyramid-compiled:raster-extrema-pyramid-levels-1-1\" data-value=\"child\">child maximum · input · tileMaximum</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-raster.raster-extrema-pyramid.rule</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{parent}{M_{l+1}(i,j)}=\\max_{a,b\\in\\{0,1\\}}\\term{child}{M_l(2i+a,\\,2j+b)},\\qquad M_0(i,j)=\\max_{\\mathrm{valid}\\ v\\in\\mathrm{block}(i,j)}v</pre><p class=\"lens-ascii\">Level 0 cell (i,j) is the maximum over the valid finite pixels of its S x S block (S = firstBlockSize = 4; footprint &#39;cell&#39; adds no extra pixel). Level l+1 takes the maximum of the children (2i+a, 2j+b) of level l that exist, compared with strict &gt; from the empty sentinel -FLT_MAX, in the order (0,0), (1,0), (0,1), (1,1); children past an odd edge are skipped, so an edge cell reduces fewer than four. The minimum is the same tree with &lt; from +FLT_MAX; a cell with no valid pixel keeps the sentinel.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-extrema-pyramid-compiled:raster-extrema-pyramid-level-0\" data-value=\"parent\">parent maximum · output · maximumValue</button><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"child\">child maximum · input · unknown — wgsl tileMaximum not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
     "width": 640,
     "height": 0
   },
@@ -36,7 +36,7 @@
       [
         "child maximum",
         "input",
-        "tileMaximum",
+        "unknown",
         "—",
         "metadata"
       ]
@@ -53,8 +53,8 @@
   },
   "provenance": {
     "adapter": "apple (unknown)",
-    "date": "2026-11-11T15:20:14.815Z",
-    "runId": "run-a9f783fe",
+    "date": "2026-11-18T16:33:08.438Z",
+    "runId": "run-7b6ce95b",
     "observerEffects": [
       "timestamps disabled compute-pass coalescing, so passes differ from production",
       "1 observation tap inserted",
@@ -62,7 +62,7 @@
     ]
   },
   "state": {
-    "runId": "run-a9f783fe",
+    "runId": "run-7b6ce95b",
     "rung": "formula",
     "bindings": {},
     "clauses": [],

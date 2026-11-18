@@ -37,6 +37,25 @@ entries, overflow).
 
 ## Lagged and differential local Moran: `GPUSpaceTimeLocalMoran`
 
+Like analytic local Moran, permutation scoring is unavailable when either supplied neighborhood
+loss word (`weights.status.overflow` or `candidateOverflow`) is nonzero. Every p-value and
+observed statistic is NaN, and the local permutation completeness word is 1 for either loss stage.
+Inspect the input flags separately to identify the loss stage. Clearing
+the flags with complete weights restores inference on the same graph.
+
+The Knox, Mantel and Jacquez contributors also suppress inference on either pair/neighborhood
+loss word: their entire float summary is NaN, float statistics are NaN, integer count statistics
+are zero, and an optional permutations-used output is zero. The Mantel operation and CPU twin
+accept `pairs.status: {overflow?, candidateOverflow?}` graph-value names; the pure CPU function
+accepts the corresponding Uint32Array words in `input.status`. These conditions are read afresh
+on each submission; the two input loss meanings remain distinct.
+Suppression writes only the published layout: `GPU_SPACE_TIME_SUMMARY_LENGTH` summary words,
+`maximumPermutations + 1` statistic words and one permutations-used word. Larger caller views
+retain their spare words on complete, suppressed and recovered submissions.
+Only `overflow` and `candidateOverflow` suppress CPU Mantel; capacity metadata such as
+`requiredCount` is ignored. The decoder represents a suppressed zero-draw frame with
+`permutationCount: 0, available: false`; positive draw counts retain their existing lower bounds.
+
 GeoDa definitions (the GeoDa workbook lab 6c (multivariate local statistics) and the GeoDa 1.22 differential
 Moran):
 
@@ -80,6 +99,11 @@ family. `multipleTesting` (default `'benjamini-hochberg'`; use `'benjamini-yekut
 dependence, which neighboring cells and adjacent lags are) adjusts across every tested (cell, lag) pair
 through `GPUMultipleTestingAdjustment`. Outputs are indexed `cell * lags.length + lagIndex`: `correlations`,
 `pValues`, optional `adjustedPValues`, `pairCounts`, `testedCount`. Both layouts are read in place.
+The optional outputs are independent: `testedCount` is a one-row uint32 count of finite raw p-values
+even without `adjustedPValues`. It is rewritten on every submission, including zero when no pair
+can be tested. `pairCounts` records overlap lengths even for untestable constant or missing series.
+`testedCount` may share a buffer with `pValues` in disjoint ranges, with or without adjusted p-values;
+counting uses private storage and a separate publication pass.
 
 Reference: numpy `corrcoef`, scipy `norm.sf` for the Fisher p-values and `false_discovery_control` for BH
 (same fixture), plus an independent double-precision implementation with an exact `erfc`. f32 sums, so

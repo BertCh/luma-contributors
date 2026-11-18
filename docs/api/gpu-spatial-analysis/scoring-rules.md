@@ -111,6 +111,10 @@ NaN variance scores NaN.
 `erf(x) = 2/sqrt(pi) exp(-x^2) sum_n 2^n x^(2n+1) / (2n + 1)!!` for `x <= 4` (no cancellation in
 f32) and takes 1 beyond, which truncates `erf` by less than `1.6e-8` (`|z|` above 5.7). The
 agreement with `math.erf` on the fixture is within `2e-6`.
+The leading term is evaluated as `|error| * erf(...)` and only the bounded correction is scaled
+by the deviation. For `|error| > 4 sqrt(2) * deviation`, the kernel uses
+`|error| - deviation / sqrt(pi)` before dividing, so an overflowing standardized error does not
+turn a finite representable score into infinity.
 
 A Gaussian ensemble scored with `GPUEnsembleScores` converges to this score as `m` grows: the test
 suite checks a 200-member quantile ensemble of `N(0, 1)` against `crps_norm(1; 0, 1)` within

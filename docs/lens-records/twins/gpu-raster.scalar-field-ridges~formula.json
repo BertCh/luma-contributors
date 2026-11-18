@@ -1,0 +1,103 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-raster.scalar-field-ridges",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-raster.scalar-field-ridges",
+  "viewId": "formula-card",
+  "caption": "Formula Central 3 by 3 differences of the calibrated field give gradient g and Hessian H in the orthogonal pixel basis. The smallest eigenpair (lambda, n) defines q = -(g dot n) / lambda * n / spacing. A valid interior cell is a ridge when lambda <…",
+  "description": "Formula Central 3 by 3 differences of the calibrated field give gradient g and Hessian H in the orthogonal pixel basis. The smallest eigenpair (lambda, n) defines q = -(g dot n) / lambda * n / spacing. A valid interior cell is a ridge when lambda <…",
+  "llms": "Formula Central 3 by 3 differences of the calibrated field give gradient g and Hessian H in the orthogonal pixel basis. The smallest eigenpair (lambda, n) defines q = -(g dot n) / lambda * n / spacing. A valid interior cell is a ridge when lambda < 0, -lambda >= minimumCurvature, center >= minimumValue and each q component is in [-0.5, 0.5). Half-cell ties select the larger column/row; equal eigenvalues choose the column normal. Strength is max(0, -lambda) at every valid stencil. Borders and stencils with missing or nonfinite samples write zero to all outputs. Geographic/Web Mercator ground scales are row-local tangent approximations, not a covariant Hessian or a material-LCS test.\n\n- bound symbols: 6/6\n- timestamps disabled compute-pass coalescing, so passes differ from production\n- 1 observation tap inserted\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "6/6"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-raster.scalar-field-ridges.height-ridge</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">H\\term{normal}{n}=\\term{eigenvalue}{\\lambda}n,\\quad \\lambda=\\lambda_{\\min}(H),\\quad \\term{offset}{q}=-\\frac{\\term{gradient}{g}^Tn}{\\lambda}\\,n/\\term{spacing}{s},\\quad \\term{ridge}{r}=\\mathbf{1}[\\lambda&lt;0,\\;-\\lambda\\ge c_{\\min},\\;f\\ge f_{\\min},\\;q\\in[-\\tfrac12,\\tfrac12)^2]</pre><p class=\"lens-ascii\">Central 3 by 3 differences of the calibrated field give gradient g and Hessian H in the orthogonal pixel basis. The smallest eigenpair (lambda, n) defines q = -(g dot n) / lambda * n / spacing. A valid interior cell is a ridge when lambda &lt; 0, -lambda &gt;= minimumCurvature, center &gt;= minimumValue and each q component is in [-0.5, 0.5). Half-cell ties select the larger column/row; equal eigenvalues choose the column normal. Strength is max(0, -lambda) at every valid stencil. Borders and stencils with missing or nonfinite samples write zero to all outputs. Geographic/Web Mercator ground scales are row-local tangent approximations, not a covariant Hessian or a material-LCS test.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-scalar-field-ridges-compiled:scalar-field-ridges-ridges\" data-value=\"normal\">normal · intermediate · normal</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-scalar-field-ridges-compiled:scalar-field-ridges-ridges\" data-value=\"eigenvalue\">eigenvalue · intermediate · smallest</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-scalar-field-ridges-compiled:scalar-field-ridges-ridges\" data-value=\"offset\">offset · intermediate · pixelOffset</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-scalar-field-ridges-compiled:scalar-field-ridges-ridges\" data-value=\"gradient\">gradient · intermediate · gradient</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-scalar-field-ridges-compiled:scalar-field-ridges-ridges\" data-value=\"spacing\">spacing · parameter · spacing</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-scalar-field-ridges-compiled:scalar-field-ridges-ridges\" data-value=\"ridge\">ridge · output · ridges</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "normal",
+        "intermediate",
+        "normal",
+        "—",
+        "metadata"
+      ],
+      [
+        "eigenvalue",
+        "intermediate",
+        "smallest",
+        "—",
+        "metadata"
+      ],
+      [
+        "offset",
+        "intermediate",
+        "pixelOffset",
+        "—",
+        "metadata"
+      ],
+      [
+        "gradient",
+        "intermediate",
+        "gradient",
+        "—",
+        "metadata"
+      ],
+      [
+        "spacing",
+        "parameter",
+        "spacing",
+        "—",
+        "metadata"
+      ],
+      [
+        "ridge",
+        "output",
+        "ridges",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "H\\term{normal}{n}=\\term{eigenvalue}{\\lambda}n,\\quad \\lambda=\\lambda_{\\min}(H),\\quad \\term{offset}{q}=-\\frac{\\term{gradient}{g}^Tn}{\\lambda}\\,n/\\term{spacing}{s},\\quad \\term{ridge}{r}=\\mathbf{1}[\\lambda<0,\\;-\\lambda\\ge c_{\\min},\\;f\\ge f_{\\min},\\;q\\in[-\\tfrac12,\\tfrac12)^2]",
+    "ascii": "Central 3 by 3 differences of the calibrated field give gradient g and Hessian H in the orthogonal pixel basis. The smallest eigenpair (lambda, n) defines q = -(g dot n) / lambda * n / spacing. A valid interior cell is a ridge when lambda < 0, -lambda >= minimumCurvature, center >= minimumValue and each q component is in [-0.5, 0.5). Half-cell ties select the larger column/row; equal eigenvalues choose the column normal. Strength is max(0, -lambda) at every valid stencil. Borders and stencils with missing or nonfinite samples write zero to all outputs. Geographic/Web Mercator ground scales are row-local tangent approximations, not a covariant Hessian or a material-LCS test.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-11-18T16:33:09.658Z",
+    "runId": "run-42a32b13",
+    "observerEffects": [
+      "timestamps disabled compute-pass coalescing, so passes differ from production",
+      "1 observation tap inserted",
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-42a32b13",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

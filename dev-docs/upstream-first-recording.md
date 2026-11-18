@@ -1,6 +1,6 @@
 # Computation records on published luma.gl
 
-`modules/analysis/src/computation-record` builds records from the public `GPUCommandGraph` API of installed `@luma.gl/graph@10.0.0-alpha.13`. No private graph fields or recording hooks are required. The alpha.14 changes do not affect this API.
+`modules/analysis/src/computation-record` builds records from the public `GPUCommandGraph` API of published `@luma.gl/graph`. The [alpha package contract](./release-package.md) records the installed integration target and accepted peer range separately. No private graph fields or recording hooks are required.
 
 ## Public graph data
 
