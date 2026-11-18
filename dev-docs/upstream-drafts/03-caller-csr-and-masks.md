@@ -1,6 +1,10 @@
 # Let graph algorithms consume CSR views and live selection masks
 
-Status: draft, not filed. Target: `@luma.gl/graph` 10.0.0-alpha.14.
+Status: draft, not filed. Target: `@luma.gl/graph` 10.0.0-alpha.16.
+
+Alpha.16 public API disposition: **not satisfied** in `@luma.gl/graph/gpu-graph-algorithms`.
+Public `GPUJacobiPCG` from `@luma.gl/graph/gpu-core` accepts caller CSR views for solves;
+that does not add the requested ports to degree, components, BFS or SSSP.
 
 ## Problem
 
@@ -29,7 +33,7 @@ API restrictions, not a claim that an existing supported invocation returns an i
 ## Minimal compile-time reproduction
 
 This uses only published luma.gl types. Given views in a caller's graph, there is no accepted degree
-invocation for them. Remove the two `@ts-expect-error` lines to see alpha.14 reject both ports.
+invocation for them. Remove the two `@ts-expect-error` lines to see alpha.16 reject both ports.
 The annotations let the example itself typecheck while asserting the restrictions remain present.
 
 ```typescript
@@ -51,9 +55,9 @@ export function reproduceMissingCSRPorts(
     }
   };
   return {
-    // @ts-expect-error alpha.14 requires GPUGraphAlgorithmsTopology, not CSR views.
+    // @ts-expect-error alpha.16 requires GPUGraphAlgorithmsTopology, not CSR views.
     topology,
-    // @ts-expect-error alpha.14 requires a physical GPUVector output.
+    // @ts-expect-error alpha.16 requires a physical GPUVector output.
     output
   };
 }
@@ -69,7 +73,7 @@ nodeMask    = [1, 1, 1]
 slotMask    = [1, 0, 1]       // close only 0→2
 ```
 
-Use `seeds = [0]` and `maxDepth: 2` for **both submissions**. Alpha.14 defaults to one hop;
+Use `seeds = [0]` and `maxDepth: 2` for **both submissions**. Alpha.16 defaults to one hop;
 that default would reach only `[0, 1, 0xffffffff]` through the first mask.
 Stored outgoing degree is `[2, 1, 0]`; requested live outgoing degree is **`[1, 1, 0]`**. BFS from
 0 with this two-hop budget has live distances **`[0, 1, 2]`**, versus `[0, 1, 1]` without the slot mask. On the same compiled

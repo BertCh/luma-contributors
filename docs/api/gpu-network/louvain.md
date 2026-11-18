@@ -94,13 +94,13 @@ seed is a deterministic priority, not a random permutation or the dense Philox o
 
 When local moving stabilizes after changes, a sort and segmented reduction creates
 the weighted quotient graph, including self-loops. Original labels are composed
-through levels. Each round/aggregation uses GPU dispatch gates. Installed alpha.14
+through levels. Each round/aggregation uses GPU dispatch gates. Installed alpha.16
 sort/reduction nodes omit public workload geometry; a domain adapter observes their
 public `ComputePass.dispatch` calls and GPU-gates the exact dimensions, without
 private metadata, submission, readback, or replacement upstream kernels. Its resources
 belong to the compiled command and are released on destruction.
 
-Evaluation of the installed **published `@luma.gl/graph` 10.0.0-alpha.14**:
+Evaluation of the installed **published `@luma.gl/graph` 10.0.0-alpha.16**:
 `GPUGraphAlgorithmsModularityOptimization`, exported from
 `@luma.gl/graph/gpu-graph-algorithms`, accepts topology and GPUVector outputs,
 resolution/minimumGain as construction-time numbers, up to 1,024 individual accepted
@@ -109,7 +109,7 @@ it performs **single-level** local moving, accepts **one globally best move** pe
 round, uses unordered float atomic sums, and performs **no graph coarsening**.
 It therefore cannot replace this multilevel, parallel, per-frame-parameter contract.
 No upstream source or private API is imported here. The installed package version
-is alpha.14; this comparison describes that installed version.
+is alpha.16; this comparison describes that installed version.
 
 ## CPU twin and verification
 

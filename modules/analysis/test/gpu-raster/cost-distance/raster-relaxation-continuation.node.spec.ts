@@ -3,6 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {createTransientView, GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {Buffer} from '@luma.gl/core';
+import {importGraphBuffer} from '../../../src/analysis-core/kernels/gpu-contributor-utils';
 import {expect, it} from 'vitest';
 import {
   getGPURasterRelaxationContinuationStateLength,
@@ -64,6 +66,62 @@ it('continuation state holds 256 bytes of loop words, then one stamp per 16x16 t
   // 40 x 36 cells are 3 x 3 tiles.
   expect(STATE_LENGTH).toBe(64 + 9);
   expect(GPU_RASTER_RELAXATION_RESTART_WORD).toBeLessThan(64);
+});
+
+it('continued rounds retain caller-owned state and values through the final status publication', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const stateBuffer = device.createBuffer({byteLength: STATE_LENGTH * 4, usage: Buffer.STORAGE});
+  const valuesBuffer = device.createBuffer({byteLength: CELLS * 4, usage: Buffer.STORAGE});
+  const state = importGraphBuffer(graph, 'state', stateBuffer, 'uint32', STATE_LENGTH);
+  const values = importGraphBuffer(graph, 'working', valuesBuffer, 'float32', CELLS);
+  try {
+    const nodes = new GPUCostDistance({
+      grid: GRID,
+      maximumIterations: 4,
+      friction: makeGPURasterBand(createTransientView(graph, 'friction', 'float32', CELLS), GRID, {
+        id: 'friction'
+      }),
+      parameters: createTransientView(graph, 'settings', 'float32', 8),
+      sources: createTransientView(graph, 'sources', 'uint32', 1),
+      continuation: {state, values},
+      output: {
+        costs: createTransientView(graph, 'costs', 'float32', CELLS),
+        status: {iterationCount: createTransientView(graph, 'count', 'uint32', 1)}
+      }
+    }).getCommandNodes(graph);
+    expect(state.buffer.transient).toBe(false);
+    expect(values.buffer.transient).toBe(false);
+    const usesBuffer = (nodeId: string, handle: typeof state.buffer) =>
+      nodes
+        .find(node => node.id === nodeId)!
+        .resources!.some(
+          resource =>
+            'buffer' in resource &&
+            ('buffer' in resource.buffer ? resource.buffer.buffer : resource.buffer) === handle
+        );
+    for (const nodeId of [
+      'cost-distance-relax-reset',
+      'cost-distance-relax-0',
+      'cost-distance-relax-3',
+      'cost-distance-finalize'
+    ]) {
+      expect(usesBuffer(nodeId, state.buffer), nodeId).toBe(true);
+    }
+    for (const nodeId of [
+      'cost-distance-initialize',
+      'cost-distance-relax-0',
+      'cost-distance-relax-3',
+      'cost-distance-publish'
+    ]) {
+      expect(usesBuffer(nodeId, values.buffer), nodeId).toBe(true);
+    }
+    graph.add(nodes); // validates the declared resource ownership/usages without any GPU submission
+  } finally {
+    stateBuffer.destroy();
+    valuesBuffer.destroy();
+    device.destroy();
+  }
 });
 
 it('without continuation the node list and defaults are unchanged', () => {
@@ -206,6 +264,34 @@ it('rejects unsupported or malformed continuations', () => {
 });
 
 // ---- CPU model of resume semantics ------------------------------------------------------------
+
+it('diagnostic: legal visibility orders can change round counts while preserving the exact fixed surface', () => {
+  // Three 16-cell tiles. Forward visibility propagates across all three in the first pass;
+  // round-start snapshots or reverse visibility advance the front one tile per pass.
+  const runs = [
+    {plainReadVisibility: 'round-start' as const, reversePlainWorkgroups: false},
+    {plainReadVisibility: 'live' as const, reversePlainWorkgroups: false},
+    {plainReadVisibility: 'live' as const, reversePlainWorkgroups: true}
+  ].map(options => {
+    const values = new Float64Array(48).fill(Infinity);
+    values[0] = 0;
+    const result = emulateTiledRelaxation({
+      width: 48,
+      height: 1,
+      values,
+      participates: () => true,
+      getEdgeCost: () => 1,
+      maxIterations: 8,
+      activateAllTiles: false,
+      state: {stamps: Uint32Array.of(1, 0, 0), iterationCount: 0},
+      ...options
+    });
+    expect(result.converged).toBe(true);
+    expect([...values]).toEqual(Array.from({length: 48}, (_, cell) => cell));
+    return result.iterationCount;
+  });
+  expect(runs).toEqual([4, 2, 4]);
+});
 
 /** Spiral corridors: nested square rings 4 cells wide, each wall ring with one gap on alternating sides. */
 function createSpiral(size: number): Float32Array {

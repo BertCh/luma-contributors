@@ -1,6 +1,11 @@
 # Add typed raw-buffer graph import and packed CPUVector construction
 
-Status: draft, not filed. Target: `@luma.gl/graph` 10.0.0-alpha.14.
+Status: draft, not filed. Target: `@luma.gl/graph` 10.0.0-alpha.16.
+
+Alpha.16 public API disposition: **not satisfied** for either constructor. Public
+`getGPUVectorWGSLLayout` from `@luma.gl/graph/gpu-data` supplies useful packed/native layout
+metadata (vec3 packed stride 12, native storage stride 16), but no raw-buffer import or
+`CPUVector.fromTypedArray` convenience API.
 
 ## Problem and current public APIs
 
@@ -92,7 +97,7 @@ graph.importBufferView<Format>({
 ```
 
 Derive descriptor capacity and usage from the buffer. Check format alignment and minimum row width
-**before** delegating integer/range validation to `createDataView`. Alpha.14's `createDataView`
+**before** delegating integer/range validation to `createDataView`. Alpha.16's `createDataView`
 accepts a scalar float32 at offset 1 and a one-byte row at offset 31 in a 32-byte buffer; a packed
 consumer such as `GPUHistogram` rejects them later. Delegation alone is insufficient.
 For the fixed-width 32-bit numeric formats proposed here, offset and stride must be multiples of

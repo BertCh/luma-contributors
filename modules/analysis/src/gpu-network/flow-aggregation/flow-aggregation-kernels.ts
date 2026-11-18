@@ -2,7 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {getViewBindingRange, getBoundedDispatchLayout} from '@luma.gl/graph/gpu-core';
+import {
+  GPU_GRID_COORDINATE_WGSL,
+  getViewBindingRange,
+  getBoundedDispatchLayout
+} from '@luma.gl/graph/gpu-core';
 import type {
   GPUCommandGraph,
   GPUCommandGraphGPUIndirectCondition,
@@ -191,11 +195,7 @@ const NO_ZONE: u32 = 0xffffffffu;
 ${IS_FINITE_VALUE_WGSL}
 ${props.kind === 'hexagon' ? GPU_POINT_DENSITY_HEXAGON_WGSL : ''}
 // Same cell formula as GPUGridBinning: inclusive bounds, maximum edge in the last cell.
-fn getCoordinate(value: f32, minimum: f32, maximum: f32, size: u32) -> u32 {
-  if (maximum == minimum || value == minimum) { return 0u; }
-  if (value == maximum) { return size - 1u; }
-  return min(u32((value - minimum) / (maximum - minimum) * f32(size)), size - 1u);
-}`,
+${GPU_GRID_COORDINATE_WGSL}`,
     body: `${boundsSource}
   ${
     props.activeGridSize

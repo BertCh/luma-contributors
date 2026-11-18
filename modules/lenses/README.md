@@ -57,7 +57,8 @@ The package depends on `@luma-contributors/analysis` (the computation-record typ
 `@luma-contributors/analysis/computation-record`), `@math.gl/core` and `@math.gl/geospatial`.
 Its luma.gl peers are `@luma.gl/core`, `@luma.gl/graph` and `@luma.gl/shaders`, accessed through
 published public entry points. `apache-arrow` is also a required peer. The [alpha package contract](../../dev-docs/release-package.md#tested-dependencies-and-accepted-peers)
-records the tested integration target separately from the accepted peer ranges. Run
+records the alpha.16 integration target (`10.0.0-alpha.16`) separately from the accepted
+peer range (`~10.0.0-alpha.16`) and completed checks. Run
 `yarn check-upstream-first` and `yarn verify-package-exports` to verify these boundaries.
 
 ## Conventions

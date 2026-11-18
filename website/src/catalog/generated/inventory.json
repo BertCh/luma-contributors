@@ -11549,7 +11549,7 @@
       "importPath": "@luma-contributors/analysis/gpu-spatial-analysis",
       "sourceFile": "modules/analysis/src/gpu-spatial-analysis/spatial-join/gpu-buffer-selection.ts",
       "directory": "gpu-spatial-analysis/spatial-join",
-      "propsType": "GPUBufferSelectionProps",
+      "propsType": "GPUBufferSelectionProps<PointGeometry>",
       "props": [
         {
           "name": "id",
@@ -11571,7 +11571,7 @@
         },
         {
           "name": "points",
-          "type": "GPUPointGeometryPort",
+          "type": "PointGeometry & (0 extends 1 & PointGeometry ? unknown : [P…",
           "optional": false,
           "jsdoc": "Points to test, possibly chunked; contents are per-frame and at least…"
         },
@@ -41936,7 +41936,7 @@
       "importPath": "@luma-contributors/analysis/gpu-spatial-analysis",
       "sourceFile": "modules/analysis/src/gpu-spatial-analysis/spatial-join/gpu-point-in-polygon-join.ts",
       "directory": "gpu-spatial-analysis/spatial-join",
-      "propsType": "GPUPointInPolygonJoinProps<TruncationRows, Parameters>",
+      "propsType": "GPUPointInPolygonJoinProps<TruncationRows, Parameters, Point",
       "props": [
         {
           "name": "id",
@@ -41946,7 +41946,7 @@
         },
         {
           "name": "points",
-          "type": "GPUPointGeometryPort",
+          "type": "PointGeometry & (0 extends 1 & PointGeometry ? unknown : [P…",
           "optional": false,
           "jsdoc": "Planar points, possibly chunked."
         },

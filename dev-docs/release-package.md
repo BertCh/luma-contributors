@@ -8,12 +8,20 @@ unresolved in [THIRD-PARTY-DATA.md](../THIRD-PARTY-DATA.md).
 ## Tested dependencies and accepted peers
 
 The workspace pins and installed copies of `@luma.gl/core`, `@luma.gl/graph` and
-`@luma.gl/shaders` are **10.0.0-alpha.14**. This is the integration target for the release checks,
+`@luma.gl/shaders` are **10.0.0-alpha.16**. This is the integration target for the release checks,
 not a claim that this stream ran the GPU suite. Root dev dependencies and resolutions keep those
-copies aligned. The analysis package accepts **`~10.0.0-alpha.14`** for each luma.gl peer: this
+copies aligned. The analysis package accepts **`~10.0.0-alpha.16`** for each luma.gl peer: this
 intentionally permits later prereleases on 10.0.0, stable 10.0.0 and stable 10.0.x patches below
 10.1.0. Satisfying that range is not evidence that a version was tested. Prereleases on another
 patch or minor do not automatically satisfy it.
+
+“Tested with” must identify checks actually run against that exact version; it does not follow
+from a dependency pin or semver acceptance. On 2026-11-18 alpha.16 passed the source and test
+typechecks, the build, the export and packed-consumer checks, the Node suite and the GPU suites,
+each run separately; one continuation spec was intermittent (LR-22) and `yarn verify` has not
+yet passed as one command on alpha.16. The audit found and adapted grid-coordinate drift and
+compile-option forwarding, and the deck.gl package extension was aligned; see
+[the alpha.16 audit](./upstream-workarounds.md#alpha16-public-api-audit-2026-11-18).
 
 `apache-arrow` is a **required peer**, with range `>=17.0.0`; the workspace currently installs
 17.0.0. Native imports of `analysis-core`, `gpu-spatial-analysis`, `gpu-network` and

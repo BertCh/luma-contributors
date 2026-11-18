@@ -1,13 +1,13 @@
 {
-  "lumaVersion": "10.0.0-alpha.14",
+  "lumaVersion": "10.0.0-alpha.16",
   "entryPoints": 11,
-  "sourceFileCount": 1746,
+  "sourceFileCount": 1772,
   "contributorClassCount": 499,
-  "importStatementCount": 1647,
+  "importStatementCount": 1658,
   "imports": [
     {
       "specifier": "@luma.gl/graph/gpu-core",
-      "count": 1258
+      "count": 1268
     },
     {
       "specifier": "@luma.gl/graph/gpu-raster",
@@ -15,7 +15,7 @@
     },
     {
       "specifier": "@luma.gl/core",
-      "count": 126
+      "count": 127
     },
     {
       "specifier": "@luma.gl/graph",
@@ -60,7 +60,7 @@
   ],
   "workarounds": {
     "dropped": 9,
-    "workaround": 37,
+    "workaround": 36,
     "accepted regression": 8,
     "obsolete": 1,
     "unmeasured": 1

@@ -140,7 +140,7 @@ it('R4 makes completeness mandatory for each proposed adjacency direction', () =
   ).toEqual([expect.stringContaining("Property 'completeness' is missing")]);
 });
 
-it('R5 rejects the example on alpha.14 and accepts the identical ports under the proposed types', () => {
+it('R5 rejects the example on alpha.16 and accepts the identical ports under the proposed types', () => {
   const [example, proposal] = getExamples('03-caller-csr-and-masks.md');
   expect(checkTypes(example)).toHaveLength(0);
   const unannotated = example.replace(/^\s*\/\/ @ts-expect-error.*\n/gm, '');

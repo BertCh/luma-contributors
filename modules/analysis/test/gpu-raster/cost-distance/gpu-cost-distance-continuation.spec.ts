@@ -110,14 +110,27 @@ function createRun(device: Device, frictionBuffer: Buffer, continued: boolean) {
     })
   );
   const compiled = graph.compile();
+  const history: {converged: number; iterationCount: number; state: number[]}[] = [];
   return {
     state,
+    history,
     execute: async () => {
       submitGraph(device, compiled, undefined);
-      const [[isConverged], [count]] = await Promise.all([
+      const [[isConverged], [count], stateWords] = await Promise.all([
         readUint32(converged, 1),
-        readUint32(iterationCount, 1)
+        readUint32(iterationCount, 1),
+        continued ? readUint32(state, 6) : Promise.resolve([] as number[])
       ]);
+      history.push({converged: isConverged, iterationCount: count, state: stateWords});
+      if (continued) {
+        expect(count, 'published count must match caller-owned continuation state').toBe(
+          stateWords[2]
+        );
+        expect(
+          isConverged,
+          'published convergence must match caller-owned continuation state'
+        ).toBe(stateWords[3]);
+      }
       return {converged: isConverged, iterationCount: count};
     },
     readCosts: () => readFloat32(costs, CELLS),
@@ -160,7 +173,10 @@ it('GPUCostDistance continuation: repeated 64-round executions equal the one-sho
     expect(Object.is(continuedCosts[cell], cost), `cell ${cell}`).toBe(true);
   }
   // The schedule follows the cumulative count, so the cumulative count equals the one-shot count.
-  expect(result.iterationCount).toBe(expected.iterationCount);
+  expect(
+    result.iterationCount,
+    JSON.stringify({oneShot: oneShot.history, continued: continued.history})
+  ).toBe(expected.iterationCount);
   console.log(
     `continuation spiral ${SIZE}^2: ${result.executions} executions, ${result.iterationCount} iterations`
   );

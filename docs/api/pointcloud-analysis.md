@@ -37,7 +37,7 @@ two-deviation threshold.
 
 ## Grid-index compatibility
 
-The local point-cloud index remains necessary with published luma.gl `10.0.0-alpha.13`:
+The local point-cloud index remains necessary with published luma.gl `10.0.0-alpha.16`:
 
 - Point-cloud cells use float32 `(position - origin) / cellSize`; `GPUGridIndex` normalizes through
   inclusive bounds and gridSize, which need not produce the same float32 cell edges.

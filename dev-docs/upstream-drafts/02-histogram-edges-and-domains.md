@@ -1,6 +1,10 @@
 # Make equal-width GPUHistogram stable at exact edges and wide GPU domains
 
-Status: draft, not filed. Target: `@luma.gl/graph` 10.0.0-alpha.14.
+Status: draft, not filed. Target: `@luma.gl/graph` 10.0.0-alpha.16.
+
+Alpha.16 public API disposition: **not satisfied** for this equal-width arithmetic request.
+`GPUHistogram` from `@luma.gl/graph/gpu-core` already supports views, offsets and explicit edges;
+the equal-width float quotient remains. No alpha.16 GPU failure is claimed by source inspection.
 
 ## Problem and verified scope
 
@@ -15,14 +19,14 @@ let ratio = (value - minimum) / (maximum - minimum);
 binIndex = min(u32(ratio * f32(BIN_COUNT)), BIN_COUNT - 1u);
 ```
 
-Alpha.14 already has literal, view and automatic domains, explicit irregular `edges`, masks,
+Alpha.16 already has literal, view and automatic domains, explicit irregular `edges`, masks,
 chunked inputs, domain/output view offsets and non-finite input filtering. Those are not missing
 APIs. This filing is about the remaining **equal-width float32** arithmetic. The integer path uses
 `multiplyDivideFloor` and is outside this reproduction.
 
 The committed downstream spec records observations on Apple M3 Pro / headless Chromium with
-**alpha.12**. Its formula remains in installed alpha.14, but that is source evidence only: this
-draft has no fresh GPU run, alpha.14 failure confirmation or second-adapter confirmation.
+**alpha.12**. Its formula remains in installed alpha.16, but that is source evidence only: this
+draft has no fresh GPU run, alpha.16 failure confirmation or second-adapter confirmation.
 
 ## Minimal reproduction using published packages
 

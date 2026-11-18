@@ -7,11 +7,12 @@ import {dirname, join, relative, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {maskWGSLComments} from '@luma.gl/shaders/wgsl';
 import {describe, expect, it} from 'vitest';
+import {expectGridCoordinateReaderSource} from '../utils/grid-coordinate-pins.test-utils';
 
 // Math correctness review, luma-official-02. AGENTS.md forbids copied luma.gl source. A few kernels
-// still hold a private copy of a WGSL function that published luma.gl does not export, because they
-// read state an official class built (the cell tables of `GPUGridIndex`, the counts of
-// `GPUGridBinning`) and must decide a cell with the same arithmetic. Each such copy is a registered
+// still hold a private copy of a WGSL function that published luma.gl does not export. The five
+// grid readers now interpolate the public export; their generated-source pins remain below.
+// Each remaining copy is a registered
 // workaround (`dev-docs/upstream-workarounds.md`, section 2) and needs a pin: a spec that compares
 // the copy with the text of the official kernel, so a luma.gl upgrade that changes one side fails a
 // test instead of silently changing results next to cell edges.
@@ -27,8 +28,6 @@ const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../
 const THIS_SPEC = 'modules/analysis/test/analysis-core/official-wgsl-copies.node.spec.ts';
 const ANALYSIS_SOURCE = 'modules/analysis/src';
 const OFFICIAL_ROOTS = ['node_modules/@luma.gl/graph/dist', 'node_modules/@luma.gl/shaders/dist'];
-const GRID_INDEX_KERNEL = 'node_modules/@luma.gl/graph/dist/gpu-core/gpu-grid-index-internals.js';
-const GRID_BINNING_KERNEL = 'node_modules/@luma.gl/graph/dist/gpu-core/gpu-grid-binning.js';
 const GRID_AGGREGATION_KERNEL = 'node_modules/@luma.gl/graph/dist/gpu-core/gpu-grid-aggregation.js';
 
 /**
@@ -52,52 +51,6 @@ type OfficialWGSLCopy = {
 };
 
 const OFFICIAL_WGSL_COPIES: OfficialWGSLCopy[] = [
-  {
-    functionName: 'getCoordinate',
-    localFile:
-      'modules/analysis/src/gpu-spatial-analysis/trajectory-encounters/encounter-kernels.ts',
-    officialFiles: [GRID_INDEX_KERNEL],
-    pinSpec:
-      'modules/analysis/test/gpu-spatial-analysis/trajectory-encounters/encounter-grid-coordinate-pin.node.spec.ts',
-    reason: 'Scans the cell tables of a published GPUGridIndex; a different cell drops pairs.'
-  },
-  {
-    functionName: 'getCoordinate',
-    localFile:
-      'modules/analysis/src/gpu-spatial-analysis/region-statistics/region-statistics-grid.ts',
-    officialFiles: [GRID_INDEX_KERNEL],
-    pinSpec:
-      'modules/analysis/test/gpu-spatial-analysis/region-statistics/region-statistics-grid-coordinate-pin.node.spec.ts',
-    reason: 'Turns a query rectangle into a cell range of a published GPUGridIndex.'
-  },
-  {
-    functionName: 'getCoordinate',
-    localFile:
-      'modules/analysis/src/gpu-spatial-analysis/spatial-interpolation/gpu-inverse-distance-weighting.ts',
-    officialFiles: [GRID_INDEX_KERNEL],
-    pinSpec:
-      'modules/analysis/test/gpu-spatial-analysis/spatial-interpolation/grid-coordinate-pin.node.spec.ts',
-    reason:
-      'GRID_COORDINATE_WGSL: every exact gather (inverse distance, kriging, density) reads a published GPUGridIndex.'
-  },
-  {
-    functionName: 'getCoordinate',
-    localFile: 'modules/analysis/src/gpu-spatial-analysis/point-density/point-density-kernels.ts',
-    officialFiles: [GRID_BINNING_KERNEL, GRID_AGGREGATION_KERNEL],
-    pinSpec:
-      'modules/analysis/test/gpu-spatial-analysis/point-density/point-density-grid-coordinate-pin.node.spec.ts',
-    reason:
-      'Keys the weights of a cell whose count comes from a published GPUGridBinning; a different cell splits count and weight.'
-  },
-  {
-    functionName: 'getCoordinate',
-    localFile: 'modules/analysis/src/gpu-network/flow-aggregation/flow-aggregation-kernels.ts',
-    officialFiles: [GRID_BINNING_KERNEL],
-    pinSpec:
-      'modules/analysis/test/gpu-network/flow-aggregation/flow-aggregation-grid-coordinate-pin.node.spec.ts',
-    reason:
-      'Grid zones of a flow must be the cells GPUGridBinning gives the same points; the kernel also needs a per-frame grid size.'
-  },
   {
     functionName: 'encodeOrderedFloat',
     localFile:
@@ -240,6 +193,42 @@ describe('private copies of official WGSL', () => {
         'safeNormal'
       )
     );
+  });
+
+  it.each([
+    [
+      'encounters',
+      'gpu-spatial-analysis/trajectory-encounters/encounter-kernels.ts',
+      'gpu-spatial-analysis/trajectory-encounters/encounter-grid-coordinate-pin.node.spec.ts'
+    ],
+    [
+      'regions',
+      'gpu-spatial-analysis/region-statistics/region-statistics-grid.ts',
+      'gpu-spatial-analysis/region-statistics/region-statistics-grid-coordinate-pin.node.spec.ts'
+    ],
+    [
+      'interpolation',
+      'gpu-spatial-analysis/spatial-interpolation/gpu-inverse-distance-weighting.ts',
+      'gpu-spatial-analysis/spatial-interpolation/grid-coordinate-pin.node.spec.ts'
+    ],
+    [
+      'density',
+      'gpu-spatial-analysis/point-density/point-density-kernels.ts',
+      'gpu-spatial-analysis/point-density/point-density-grid-coordinate-pin.node.spec.ts'
+    ],
+    [
+      'flow',
+      'gpu-network/flow-aggregation/flow-aggregation-kernels.ts',
+      'gpu-network/flow-aggregation/flow-aggregation-grid-coordinate-pin.node.spec.ts'
+    ]
+  ] as const)('%s uses the upstream grid export without a second getCoordinate and retains its standalone pin', (reader, localFile, pinSpec) => {
+    const source = readRepositoryFile(`modules/analysis/src/${localFile}`);
+    expect(source).toContain('${GPU_GRID_COORDINATE_WGSL}');
+    expect(source).not.toMatch(/\bfn\s+getCoordinate\s*\(/);
+    expect(readRepositoryFile(`modules/analysis/test/${pinSpec}`)).toContain(
+      `testGridCoordinateReader('${reader}')`
+    );
+    expectGridCoordinateReaderSource(reader);
   });
 
   it.each(OFFICIAL_WGSL_COPIES)('$functionName in $localFile still exists and has a pin', copy => {

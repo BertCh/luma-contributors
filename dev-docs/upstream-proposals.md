@@ -5,15 +5,60 @@ Ready-to-file bodies for the first four filings are in the
 [histogram edges and domains](./upstream-drafts/02-histogram-edges-and-domains.md),
 [caller CSR with masks](./upstream-drafts/03-caller-csr-and-masks.md), and
 [typed buffer imports and CPU vector construction](./upstream-drafts/04-typed-buffer-and-cpu-vector.md).
-They distinguish installed alpha.14 source checks from historical GPU measurements. Nothing has been filed.
+They distinguish installed alpha.16 source checks from historical GPU measurements. Nothing has been filed.
 
-Nothing has been filed upstream: no issue and no pull request. Measurements cover one adapter: headless Chromium WebGPU on Apple Metal. Repository pins are `10.0.0-alpha.14` (bumped 2026-11-14 for the Kepler port, with deck.gl 10.0.0-alpha.1 and math.gl 5.0.0-beta.8). Between alpha.13 and alpha.14 luma.gl changed only colour conversion, the expression operation and SQL files, so proposals 1 to 14 are unchanged; proposal 15 comes from the Kepler port and was checked against the alpha.14 `dist`.
+Nothing has been filed upstream: no issue and no pull request. Historical measurements cover one adapter: headless Chromium WebGPU on Apple Metal. Repository pins now target `10.0.0-alpha.16` (2026-11-18); deck.gl remains 10.0.0-alpha.1 and math.gl 5.0.0-beta.8. The offline audit below supersedes old claims of API absence; it does not remeasure GPU behavior. No alpha.14 declaration snapshot is available for an exhaustive release diff.
+
+## Alpha.16 request disposition (2026-11-18)
+
+Public means exported from an installed package entry point, not merely declared under dist.
+The five grid-coordinate copies were replaced as part of this bump to keep readers aligned
+with the published builder. Other adoption remains separate. See [the register](./upstream-workarounds.md#alpha16-public-api-audit-2026-11-18)
+for replacement contracts and call-site risks. Detailed reproductions below retain their original
+measurement scope; satisfied requests should not be filed as missing APIs.
+
+| Request | Alpha.16 status and public entry point |
+| --- | --- |
+| Kernel authoring factory (summary 1) | **Partly:** `Kernel` (`@luma.gl/graph`), `createGPUComputeCommandNode`/bounded-dispatch helpers (`@luma.gl/graph/gpu-core`) and `getGPUVectorWGSLLayout` (`@luma.gl/graph/gpu-data`) supply building blocks. No typed packed accessor/node factory, `getBoundedDispatchOverrides` or `getSpatialOperationNodes`. |
+| 1. One grid formula and WGSL export | **Satisfied and adopted in alpha.16:** `GPU_GRID_COORDINATE_WGSL` (`@luma.gl/graph/gpu-core`); index/query/binning/aggregation and all five local readers use it. Generated-source pins pass; the headless builder/reader edge/overflow regression passes 30 of 30 cases. |
+| 2. Caller CSR/masks/self-loops | **Not provided:** `@luma.gl/graph/gpu-graph-algorithms` still requires physical topology/output vectors; no requested view/mask contract. Solver CSR does not widen those algorithms. |
+| 3. Haversine | **Partly:** `GPUHaversineDistance` (`@luma.gl/graph/geospatial`) documents the 6371-kilometre radius and accepts raw Float64 deltas. No named default-radius constant or established float32 seam replacement. |
+| 4. Finite differences; 5. morphology | **Not provided:** constant spacing/no validity in `GPUFiniteDifference2D` (`@luma.gl/graph/gpu-core`); morphology in `@luma.gl/graph/gpu-raster` still caps radius at 8 without the requested fill/count/reconstruction contract. |
+| 6. Histogram | **Partly:** `GPUHistogram` (`@luma.gl/graph/gpu-core`) has GPU/auto domains, offsets, masks and explicit edges. Equal-width float quotient remains; NaN-as-finite-extent policy is absent. Historical alpha.12 failures need rerunning. |
+| 7. K-means; 8. contours; 9. wide/sparse joins/groups; 10. exact polygon fallback | **Not provided:** no requested seeding/tolerance/restarts, multi-level world/band contour, wide-key/deterministic sum or exact indexed-candidate polygon contract in the public vector-search/raster/gpu-core/geospatial entry points. |
+| 11. Standalone uint64/H3 data; 12. count; 13. compiler remedies | **Not provided:** no standalone multiply/divide or H3 table data export, universal requiredCount/overflow contract or compiler-safe exact arithmetic guarantee. Historical shader observations require adapter/browser requalification. |
+| 14. Smaller gaps (all rows) | **Partly for inspection:** `GPUCommandGraphCompileOptions.kernelMetadata`/`preflight.nodes[].kernel` (`@luma.gl/graph/gpu-core`), opt-in and only for nodes declaring metadata. Grid formula parity is satisfied by 1. Other rows remain unmet: cell size/dynamic size/keys, exact region sums/areas, reconstruction/stretch/derivative borders, offsets-only search, cell geometry, raster math/focal, bounded compaction, uint64 reduction, voxel means, origin fitting, SSSP, multilevel modularity, Philox, size-independent pipelines, bounded BVH refit and memory-aware scheduling. Existing `dependsOn` is usable, not a new scheduling policy. |
+| Segmented reduction/scan and scatter (export summary) | **Satisfied:** `GPUSegmentedReduction`, `GPUSegmentedScan`, `GPUScatter` (`@luma.gl/graph/gpu-core`). Ordinary sorted sums are **replaceable since alpha.16** after parity; exact accumulation stays local. |
+| Jacobi PCG (export summary) | **Satisfied export; partial downstream contract:** `GPUJacobiPCG` (`@luma.gl/graph/gpu-core`) accepts caller CSR/chunked views, returns residual/breakdown status and provides `getCommandNodes(graph)`. EC03 solver core is **replaceable since alpha.16**; grounding/status/continuation and semantic lowering still need work. |
+| Other requested exports | **Not provided:** `getGPUComputeDispatchWorkgroups`, `gateGPUCommandNodes`, `getPlatformFP64Arithmetic`, `getClassicFP64Defines`, raster-utils validators and `GPUScalar` are not public exports. Public `GPUScalarFormat` is a different type. |
+| Attachment/binding cache/module wiring | **Not provided:** producers and addToGraph domain classes still differ; Kernel requires per-dispatch bindings; no automatic shader-module resource wiring. |
+| Adapter limits/subgroups/buffer_view (section 4) | **Partly existing tools:** numeric `requiredLimits` and reduction strategy are public; no limits-only adapter-max policy, general scan/sort subgroup option or portable buffer_view guarantee. |
+| Dataframe lifecycle/nullability/crossfilter/descriptions | **Not provided:** no vector-construction nullable fields, query compileAsync/stats/preflight/mask-only mode, external mask/invalidate or source-expression descriptions. |
+| Arrow normalization/exact time | **Partly:** `planArrowGPUConversion`, `convertArrowToGPUVector`, `convertArrowTemporalToGPUVector(s)` (`@luma.gl/graph/arrow`) cover numeric/relative temporal routes, not the local string/dictionary policy or exact Int64 two-word upload. |
+| Null device/resource counters/packaging | **Not provided:** no null-WebGPU graph replacement; the texture-counter bug remains. Registry/tag observations are historical and unverified offline; crosswalk/authoring documentation remains work. |
+| 15.1 Glyph/vector helpers | **Not provided:** no `walkTextGlyphs` in `@luma.gl/engine/text` or `alignGraphVectorViews`/`getGraphVectorData` in `@luma.gl/graph/gpu-core`. |
+| 15.2 OOM; 15.3 pre-allocation planning; 15.4 atlas | **Not provided:** no typed class in `@luma.gl/core`, `GPUCommandGraph.planResources`/query `compilationStats`, or mipmaps/cache text-resource options in `@luma.gl/engine/text`. |
+| 15.5 Geometry/trips | **Partly:** `projectCPUVector`, `tessellateCPUVectorPolygons`, `tessellateGeoArrowColumnToCPUVectors`, `projectArrowCoordinates` (`@luma.gl/graph/arrow`) do not cover globe cutting, polygon contiguity or timed trips; math.gl dimension handling is separately scoped. |
+| 15.6 Deck patch; 15.7 spawn region; 15.8 globe paths | **Not provided:** deck is unchanged; `FlowParticleSimulation` (`@luma.gl/graph/experimental`) still has no spawn-region setter/option. |
+| Continuation (section 3) | **Not provided:** progressive `CompiledGPUCommandGraph.createExecution` schedules a finite graph; `GPULoopOperation` still unrolls its budget. |
+| Other fork candidates (section 5) | **Not established as supplied:** allocation-free plans, staging/upload pools, failed-map replacement, cache, caller-CSR SCC, core layout/resource fixes, query choose/coalesce/COUNT/USING/UNION, candidate-frontier queries and universally bounded Arrow converter dispatch require separate implementation evidence/tests. The historical fork inventory is not proof all fork changes are still absent. |
+
+`makeGPUExpressionFromPortableAST`/`makeGPUPredicateFromPortableAST` are public through
+`@luma.gl/graph/gpu-dataframe`; they do not expose private
+`makeGPUQueryExpressionShaderPlan`/`addGPUQueryPredicatePass`. `GPUExpressionOperation`
+(`@luma.gl/graph/gpu-core`) supports vectors and integer rounding (default truncate; nearest
+ties away from zero); no direct consumer was found under `modules/*/src`.
+
+Public `GPUCommandGraphInspector`/`GPUCommandGraphEncoding.readResource` from
+`@luma.gl/graph/gpu-core` partly supply resource inspection after submission, but read current
+allocations and reject reused transients. They do not satisfy intermediate retention/capture;
+the local snapshot tap remains necessary for that contract.
 
 ## 1. Summary for the maintainer
 
-Basis: about 570 kernel files (2,523 compute-node constructions) built only on the public entry points of @luma.gl/graph, core and shaders. Checked against 10.0.0-alpha.14.
+Original survey basis: about 570 kernel files (2,523 compute-node constructions) built only on the public entry points of @luma.gl/graph, core and shaders. Availability rechecked against 10.0.0-alpha.16 above; these counts are historical.
 
-For most items below a first implementation with tests already exists: the luma.gl fork these contributors came from (commit `e0ed33791`, 72 commits ahead of upstream at `704183953`) changed about 360 luma.gl-owned files in graph, core and engine and added 304 exported names, none of which is in the published `dist`. Section 5 maps the items to that code.
+For most items below a first implementation with tests already exists: the luma.gl fork these contributors came from (commit `e0ed33791`, 72 commits ahead of upstream at `704183953`) changed about 360 luma.gl-owned files in graph, core and engine and added 304 exported names. Some requests are now satisfied as marked above. Section 5 maps the original items to that code.
 
 **Top five**
 
@@ -23,7 +68,7 @@ For most items below a first implementation with tests already exists: the luma.
 4. A deterministic sum mode. GPUGroupAggregation, GPUGridAggregation, GPURasterRegionMeasurements and modularity use float compare-exchange sums that depend on thread order. The local fixed-point accumulator can be contributed.
 5. A GPU-gated loop that is not unrolled. GPULoopOperation unrolls maximumIterations copies, so centrality is capped at 32,768 command nodes.
 
-**Correctness (small, each has a reproduction)**
+**Original correctness findings (current disposition above)**
 
 - Grid cell rule: GPUGridIndex and GPUGridBinning/GPUGridAggregation use different getCoordinate formulas; x = -177 over [-180, 180] with 360 columns gives column 2 and column 3. One formula, exported as WGSL.
 - GPUGridIndexQuery: a bounds query can miss a point within a few ULP of a cell edge, because build and query use different arithmetic (CPU float32 model, not a GPU run).
@@ -36,9 +81,9 @@ For most items below a first implementation with tests already exists: the luma.
 - Self-loops: Degree counts a self-loop once and Modularity counts it twice.
 - Metal fast math deletes float compensation terms (Kahan, Neumaier, two-sum), so a compensated sum is the plain float32 sum bit for bit; any future compensated reduction needs an integer path, and this deserves a WGSL authoring page. A reduced reproduction of an Apple back-end miscompile of small integer tables exists.
 
-**Export what is already in dist**
+**Export requests (current disposition above)**
 
-- GPUSegmentedReduction, GPUSegmentedScan, GPUScatter, GPUJacobiPCG.
+- Satisfied in alpha.16: `GPUSegmentedReduction`, `GPUSegmentedScan`, `GPUScatter`, `GPUJacobiPCG` from `@luma.gl/graph/gpu-core`.
 - getGPUComputeDispatchWorkgroups and gateGPUCommandNodes; without them a gated loop cannot gate a published primitive.
 - getPlatformFP64Arithmetic and getClassicFP64Defines; the assembler picks the safe integer variant only on Apple.
 - getSpatialOperationNodes, validateRasterBand, and the GPUScalar type (public lowerers return it).
@@ -74,6 +119,10 @@ For most items below a first implementation with tests already exists: the luma.
 Proposal numbers 1–14 below identify the math proposals; 15 collects the Kepler port items (luma.gl and deck.gl). Local source paths are under `modules/analysis/src`; published graph paths are under `node_modules/@luma.gl/graph/dist`. `spec` means committed GPU or Node evidence; `replication` means CPU arithmetic from published source, not a GPU run; `reading` means source/declarations only; `measured, not committed` means a reported test-GPU run without a committed reproducing spec. [upstream-workarounds.md](./upstream-workarounds.md) owns the retirement register. Evidence remains limited to the stated adapter and inputs.
 
 ### 1. One grid cell-coordinate formula, public as WGSL
+
+**Satisfied in alpha.16:** `GPU_GRID_COORDINATE_WGSL` from `@luma.gl/graph/gpu-core`.
+The following problem/evidence describes the pre-bump implementation. All five registered copies
+were replaced during the bump, with generated-source pins retained; no missing-export filing is needed.
 
 Problem: `GPUGridBinning` (`gpu-core/gpu-grid-binning.js`, `getCoordinate`) and `GPUGridAggregation` (`gpu-core/gpu-grid-aggregation.js`, `getCoordinate`) use `min(u32((value - minimum) / (maximum - minimum) * f32(size)), size - 1u)`. `GPUGridIndex` (`gpu-core/gpu-grid-index-internals.js`, `getCoordinate`), query, point-spatial-query and spatial force layout rescale zero-straddling bounds by `max(abs(minimum), abs(maximum))` first. For `[-180, 180]`, 360 columns, x = -177, float32 gives `3 / 360 * 360 = 3.0000002` (column 3) versus `(-0.98333335 + 1) / 2 * 360 = 2.9999971` (column 2). Differences occur at 45 of 360 integer degrees and 967 of 12,407 near-edge values over seven bounds. Correctly rounded CPU division is a model; WGSL permits 2.5 ULP.
 
@@ -243,11 +292,11 @@ All rows are declaration readings. Local paths identify the symbols that could d
 5. Remaining features: 4, 7, 8, 9 and 14.
 6. Proposal 15: 15.1, 15.2 and 15.4 are small luma.gl changes; 15.6 and 15.8 go to deck.gl first because the port carries a patch for 15.6 and 15.8 affects every native non-billboard path on a globe.
 
-### 15. Kepler port items (luma.gl alpha.14 and deck.gl 10.0.0-alpha.1)
+### 15. Kepler port items (rechecked on luma.gl alpha.16; deck.gl 10.0.0-alpha.1)
 
 Found while porting `examples/deck/kepler-compute` onto published packages (KE-PORT in [roadmap.md](./roadmap.md)). Nothing is filed. Paths: luma.gl under `node_modules/@luma.gl/<package>/dist`, deck.gl under `node_modules/@deck.gl/core`. Local code that each item would retire is listed in [upstream-workarounds.md](./upstream-workarounds.md).
 
-**15.1 Export three helpers that exist unexported in alpha.14.** Evidence: `reading` plus a failed import.
+**15.1 Export three helpers that remain unexported in alpha.16.** Evidence: installed public declarations; the original report also records a failed import.
 
 - `walkTextGlyphs`, with `TextGlyphWalkOptions`, `TextGlyphVisit` and `TextRowMetrics`, is declared in `engine/dist/text/fonts/atlas/text-glyph-walker.d.ts` and documented as the canonical CPU atlas layout walk. `engine/dist/text/index.d.ts`, `experimental.d.ts` and `text-2d/index.d.ts` do not export it.
 - `alignGraphVectorViews` and `getGraphVectorData` are declared in `graph/dist/gpu-core/graph-vector-view-utils.d.ts`; `graph/dist/gpu-core/index.d.ts` does not export that module.
@@ -275,7 +324,7 @@ Found while porting `examples/deck/kepler-compute` onto published packages (KE-P
 
 Request: three small pull requests, or one, with these reproductions turned into tests in deck.gl's picking and effects suites.
 
-**15.7 Flow particle spawn region.** `FlowParticleSimulation` in alpha.14 (`graph/dist/experimental/simulation/flow-particle-simulation.d.ts`) has `setField`, `reset` and `step` only. The fork's `setSpawnRegion(region)` (`modules/graph/src/experimental/simulation/flow-particle-simulation.ts`, `flow-particle-shaders.ts` at `e0ed33791`) added a `spawn` rectangle uniform in normalized field coordinates: particles spawn inside it and respawn when they leave it. Reproduction: zoom a Flow Field layer to a tenth of the field; with the published class roughly a hundredth of the particle budget is on screen (area scales with the square of the zoom; not measured), where the fork kept the budget on screen. Evidence: `reading` and the fork shader. Request: a spawn region on the simulation props or as a setter, defaulting to the full field.
+**15.7 Flow particle spawn region.** `FlowParticleSimulation` in alpha.16 (`graph/dist/experimental/simulation/flow-particle-simulation.d.ts`) has `setField`, `reset` and `step` only. The fork's `setSpawnRegion(region)` (`modules/graph/src/experimental/simulation/flow-particle-simulation.ts`, `flow-particle-shaders.ts` at `e0ed33791`) added a `spawn` rectangle uniform in normalized field coordinates: particles spawn inside it and respawn when they leave it. Reproduction: zoom a Flow Field layer to a tenth of the field; with the published class roughly a hundredth of the particle budget is on screen (area scales with the square of the zoom; not measured), where the fork kept the budget on screen. Evidence: `reading` and the fork shader. Request: a spawn region on the simulation props or as a setter, defaulting to the full field.
 
 **15.8 deck.gl 10 WGSL `PathLayer` on a globe, non-billboard paths.** In `core/src/shaderlib/path/path.wgsl.ts` (lines 149 to 152) the join code writes `deltaA3 = rotationResult.transform * deltaA3` and the same for `deltaB3`. The GLSL path layer (`layers/dist/path-layer/path-layer-vertex.glsl.js`, `deltaA3 = deltaA3 * rotationMatrix`) multiplies from the left, which is the product with the transposed matrix. WGSL `M * v` is the untransposed product, so the tangent-frame rotation of the segment deltas is inverted. Reproduction (measured in the port's headless run by the gpu-layers stream; not committed as a spec): render the same path on a `GlobeView` with `billboard: false` through deck's native WGSL `PathLayer` and through the resident path layer, which applies the transpose; the native layer paints 38 pixels where the resident one paints 254. With `billboard: true` the two agree, because the rotation branch is skipped. Request: use `transpose(rotationResult.transform) * delta` (or multiply from the left) in `path.wgsl.ts`, with a `GlobeView` render test for non-billboard paths.
 

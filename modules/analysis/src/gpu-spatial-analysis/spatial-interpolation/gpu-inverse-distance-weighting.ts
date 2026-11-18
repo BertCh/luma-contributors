@@ -14,6 +14,7 @@ import {
 
 import {
   createTransientView,
+  GPU_GRID_COORDINATE_WGSL,
   GPUGridIndex,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -552,21 +553,7 @@ export const GRID_COORDINATE_WGSL = /* wgsl */ `
 ${IS_FINITE_VALUE_WGSL}
 ${IS_NAN_BITS_WGSL}// WGSL rejects NaN constants, so build one from a runtime bit pattern.
 ${GET_NAN_WGSL}
-fn getCoordinate(value: f32, minimum: f32, maximum: f32, size: u32) -> u32 {
-  if (maximum == minimum || value == minimum) { return 0u; }
-  if (value == maximum) { return size - 1u; }
-  if (minimum < 0.0 && maximum > 0.0) {
-    let scale = max(abs(minimum), abs(maximum));
-    let scaledValue = value / scale;
-    let scaledMinimum = minimum / scale;
-    let scaledMaximum = maximum / scale;
-    return min(
-      u32((scaledValue - scaledMinimum) / (scaledMaximum - scaledMinimum) * f32(size)),
-      size - 1u
-    );
-  }
-  return min(u32((value - minimum) / (maximum - minimum) * f32(size)), size - 1u);
-}`;
+${GPU_GRID_COORDINATE_WGSL}`;
 
 /**
  * Log-space weighted mean: weights are `exp2(logWeight - maximumLogWeight)`, rescaled whenever a

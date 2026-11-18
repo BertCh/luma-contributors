@@ -1,6 +1,9 @@
 # Avoid per-row host copies for packed mixed CPU/GPU vectors
 
-Status: draft, not filed. Target: `@luma.gl/graph` 10.0.0-alpha.14.
+Status: draft, not filed. Target: `@luma.gl/graph` 10.0.0-alpha.16.
+
+Alpha.16 public API disposition: **not satisfied**. `GPUGraph`/`GPUCPUOperation` remain public
+through `@luma.gl/graph/gpu-core`, but the packed host-transfer fast path is still absent.
 
 ## Problem
 
@@ -42,13 +45,13 @@ headless Chromium on the development Mac's Apple GPU with **alpha.12**:
 
 At one million rows this is about 11.25 ns per payload byte (or 5.625 ns per byte when counting both
 directions). These are end-to-end historical boundary timings, not isolated JavaScript copy costs,
-not alpha.14 results and not a prediction of the speedup. The original measurement script and full
+not alpha.16 results and not a prediction of the speedup. The original measurement script and full
 browser/adapter version details were not retained in that report. The following benchmark is a new,
 standalone reproduction protocol, not a claim to recreate that script exactly.
 
 ## Minimal reproduction and benchmark
 
-Run this module with a WebGPU `Device`. Use alpha.14 for all three luma.gl packages. It times a
+Run this module with a WebGPU `Device`. Use alpha.16 for all three luma.gl packages. It times a
 resident GPU input → identity CPU operation → GPU copy result. The final copy forces CPU output
 back onto the GPU. Construction, input upload, warm-up, validation readback and destruction are
 outside the recorded interval. `run()` resolves after GPU submission, so the metric is mixed-run
@@ -142,7 +145,7 @@ export async function benchmarkPackedBoundary(device: Device) {
 Report browser/OS, adapter, luma.gl versions and all five measured samples when comparing revisions.
 The raw readback is a control, not a number to subtract to claim pure packing time. The benchmark
 contains allocations and stage setup performed internally by `run()`; profile the named loops to
-attribute improvements. No alpha.14 timings have been collected for this draft.
+attribute improvements. No alpha.16 timings have been collected for this draft.
 
 ## Proposed change and alternatives
 

@@ -14,6 +14,7 @@ First standalone version, split on 2026-11-07 from the luma.gl `map-contributors
 - Uses published luma.gl through public entry points only. The integration target, accepted peer
   range and unpublished alpha contract are recorded separately in [release-package.md](dev-docs/release-package.md).
   No luma.gl code is copied or forked. See `dev-docs/upstream-first-plan.md`.
+- Targets published luma.gl `10.0.0-alpha.16` with peers `~10.0.0-alpha.16`; aligns grid readers with the public shared coordinate WGSL and forwards Kepler compile options. Node/GPU qualification is tracked in LR-22; segmented sums and PCG remain separate adoption work.
 - Analysis requires the `apache-arrow >=17.0.0` peer and ships licence texts plus a source notice
   inventory under `MIT AND Apache-2.0 AND BSD-3-Clause`. An offline packed-consumer checker verifies
   ESM/CommonJS exports, declaration targets, README links, notices and the documented CPU computation.

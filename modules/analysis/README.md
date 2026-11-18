@@ -1,7 +1,7 @@
 # @luma-contributors/analysis
 
 GPU geospatial and analysis operations built on published [luma.gl](https://luma.gl)
-(`@luma.gl/core`, `@luma.gl/shaders` and `@luma.gl/graph`). Tested with luma.gl `10.0.0-alpha.14`. The GPU
+(`@luma.gl/core`, `@luma.gl/shaders` and `@luma.gl/graph`). Integration target: luma.gl `10.0.0-alpha.16`. The GPU
 infrastructure itself (command graphs, GPU Core operations, GPU tables, dataframes, graph algorithms)
 comes from luma.gl. This package holds only the analysis code.
 
@@ -15,9 +15,9 @@ for a complete browser GPU computation using public APIs, including typed readba
 ## Installation contract
 
 `apache-arrow >=17.0.0` is a required peer, including when importing only construction helpers
-or network contributors. The luma.gl peers accept `~10.0.0-alpha.14`, which permits later
+or network contributors. The luma.gl peers accept `~10.0.0-alpha.16`, which permits later
 10.0.0 prereleases and stable 10.0.x versions below 10.1.0. This accepted range is broader than
-the tested version above. See the [alpha package contract](https://github.com/visgl/luma-contributors/blob/master/dev-docs/release-package.md)
+the integration target above. See the [alpha package contract](https://github.com/visgl/luma-contributors/blob/master/dev-docs/release-package.md)
 for release status and offline verification of the packed package.
 
 The package licence is `MIT AND Apache-2.0 AND BSD-3-Clause`. Individual source expressions

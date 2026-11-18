@@ -2,18 +2,18 @@
   "featured": [
     {
       "id": "gpu-spatial-analysis.kernel-density",
-      "recordBytes": 93179,
+      "recordBytes": 93201,
       "viewModelBytes": 45443
     },
     {
       "id": "gpu-spatial-analysis.local-moran",
-      "recordBytes": 365646,
-      "viewModelBytes": 41540
+      "recordBytes": 365686,
+      "viewModelBytes": 41539
     },
     {
       "id": "gpu-network.network-service-areas",
-      "recordBytes": 125048,
-      "viewModelBytes": 35632
+      "recordBytes": 124992,
+      "viewModelBytes": 35623
     }
   ],
   "median": {

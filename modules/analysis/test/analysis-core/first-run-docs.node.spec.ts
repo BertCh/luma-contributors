@@ -37,12 +37,12 @@ it('the CPU variogram walkthrough recovers the expected exponential model withou
   expect(result.exponentialParameters[3]).toBeLessThan(1e-8);
 });
 
-it('both READMEs lead to a first computation and state the tested peer version', () => {
+it('both READMEs lead to a first computation and state the integration target', () => {
   for (const page of ['README.md', 'modules/analysis/README.md']) {
     const text = readFileSync(join(REPOSITORY_ROOT, page), 'utf8');
     expect(text).toContain('Run your first computation');
     expect(text).toContain('operation-forms-and-cpu-twins');
-    expect(text).toContain('10.0.0-alpha.14');
+    expect(text).toContain('10.0.0-alpha.16');
     expect(text.indexOf('Run your first computation')).toBeLessThan(text.indexOf('|'));
   }
 });

@@ -1,7 +1,7 @@
 # luma.gl contributors
 
 GPU analysis operations, computation lenses and kepler.gl adapters built on
-[luma.gl](https://luma.gl). Tested with published luma.gl `10.0.0-alpha.14`.
+[luma.gl](https://luma.gl). Integration target: published luma.gl `10.0.0-alpha.16`.
 
 ## Run your first computation
 
@@ -27,8 +27,8 @@ This repository holds only geospatial and analysis code. It builds on published 
 of luma.gl code. See `dev-docs/upstream-first-plan.md`.
 
 `apache-arrow >=17.0.0` is a required peer of analysis, including for native imports of the
-authoring and network entry points. The accepted luma.gl peer range is `~10.0.0-alpha.14`,
-which also permits stable 10.0.x versions. The tested version above and the accepted range are
+authoring and network entry points. The accepted luma.gl peer range is `~10.0.0-alpha.16`,
+which also permits stable 10.0.x versions. The integration target and the accepted range are
 separate: see the [alpha package contract](dev-docs/release-package.md) for installation and
 packed-consumer verification.
 

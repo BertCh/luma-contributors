@@ -28,6 +28,10 @@ export type TiledRelaxationEmulatorInput = {
   sweepAfterIteration?: number;
   /** Every tile starts active (the tie phase) or none (seed kernels mark tiles). */
   activateAllTiles: boolean;
+  /** Diagnostic only: live neighboring tile writes versus the default round-start snapshot. */
+  plainReadVisibility?: 'round-start' | 'live';
+  /** Diagnostic only: reverse the order in which plain-pass workgroups become visible. */
+  reversePlainWorkgroups?: boolean;
   /**
    * Continuation state of a previous execution, updated in place: the tile stamps and the
    * cumulative iteration count. `maxIterations` is then the budget of this execution, the schedule
@@ -143,8 +147,18 @@ export function emulateTiledRelaxation(input: TiledRelaxationEmulatorInput): {
     const stampSnapshot = Uint32Array.from(stamps);
     let changed = false;
     if (cycle === 0) {
-      for (let tile = 0; tile < tilesX * tilesY; tile++) {
-        changed = relaxTile(tile, iteration, snapshot, values, stampSnapshot, [stamps]) || changed;
+      for (let position = 0; position < tilesX * tilesY; position++) {
+        const tile = input.reversePlainWorkgroups ? tilesX * tilesY - 1 - position : position;
+        const live = input.plainReadVisibility === 'live';
+        changed =
+          relaxTile(
+            tile,
+            iteration,
+            live ? values : snapshot,
+            values,
+            live ? stamps : stampSnapshot,
+            [stamps]
+          ) || changed;
       }
     } else {
       const vertical = cycle >= 3;

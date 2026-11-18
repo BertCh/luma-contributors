@@ -1,5 +1,9 @@
 # GPU compute adapters for kepler.gl
 
+The luma.gl integration target is `10.0.0-alpha.16`; peers accept `~10.0.0-alpha.16`.
+See the [alpha package contract](../../dev-docs/release-package.md#tested-dependencies-and-accepted-peers)
+for the distinction between the target, accepted range and completed checks.
+
 This private integration package connects application-owned datasets to luma compute. It keeps
 GPU resources outside serializable UI state, preserves source identity and makes CPU readback
 and complementary execution explicit. The Kepler example (`examples/deck/kepler-compute`) is not

@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {findNearestHexagon} from '../../gpu-spatial-analysis/point-density/point-density-oracle';
+import {getFloat32GridCoordinate} from '../../utils/grid-coordinate-bump-fixtures';
 
 type Bounds = [number, number, number, number];
 
@@ -67,14 +68,19 @@ export function findFlowZone(zones: FlowOracleZones, x: number, y: number): numb
   if (zones.kind === 'ids') {
     return undefined;
   }
-  const [minX, minY, maxX, maxY] = zones.bounds;
+  const [minX, minY, maxX, maxY] =
+    zones.kind === 'grid' ? zones.bounds.map(Math.fround) : zones.bounds;
+  if (zones.kind === 'grid') {
+    x = Math.fround(x);
+    y = Math.fround(y);
+  }
   const [columns, rows] = zones.gridSize;
   if (!Number.isFinite(x) || !Number.isFinite(y) || x < minX || x > maxX || y < minY || y > maxY) {
     return undefined;
   }
   if (zones.kind === 'grid') {
-    const column = Math.min(Math.floor(((x - minX) / (maxX - minX || 1)) * columns), columns - 1);
-    const row = Math.min(Math.floor(((y - minY) / (maxY - minY || 1)) * rows), rows - 1);
+    const column = getFloat32GridCoordinate(x, minX, maxX, columns);
+    const row = getFloat32GridCoordinate(y, minY, maxY, rows);
     return row * columns + column;
   }
   const [column, row] = findNearestHexagon(x, y, minX, minY, zones.radius, columns, rows).cell;

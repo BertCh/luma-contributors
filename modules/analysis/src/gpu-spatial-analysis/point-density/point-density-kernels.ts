@@ -2,11 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {
-  GPUCommandGraph,
-  GPUCommandNode,
-  GraphDataView,
-  GraphVectorView
+import {
+  GPU_GRID_COORDINATE_WGSL,
+  type GPUCommandGraph,
+  type GPUCommandNode,
+  type GraphDataView,
+  type GraphVectorView
 } from '@luma.gl/graph/gpu-core';
 import {
   createWGSLKernelNode,
@@ -237,12 +238,9 @@ export const POINT_DENSITY_WORKGROUP_SUM_SIZE = 256;
  * Writes one row-major grid cell key per position in `keys`, or `0xffffffff` for non-finite and
  * out-of-bounds rows.
  *
- * `getCoordinate` is the cell arithmetic of the published `GPUGridBinning`, which writes the
- * counts these keys are paired with: `(value - minimum) / (maximum - minimum) * size`, with no
- * rescaling when the bounds straddle zero. (`GPUGridIndex` rescales in that case and can put a
- * point on a cell edge in the neighbouring cell, so its variant must not be used here.) luma.gl
- * does not export the function; `point-density-grid-coordinate-pin.node.spec.ts` compares this
- * text with the published kernel.
+ * The public `GPU_GRID_COORDINATE_WGSL` keeps these keys paired with the counts written by
+ * `GPUGridBinning`, including extreme-domain rescaling. The generated-source pin verifies
+ * that the export is included verbatim and that no second coordinate function is declared.
  *
  * @internal
  */
@@ -290,11 +288,7 @@ export function createPointDensityGridKeysNode<Parameters>(
     declarations: `const COLUMNS: u32 = ${props.gridSize[0]}u;
 const ROWS: u32 = ${props.gridSize[1]}u;
 ${IS_FINITE_BITS_WGSL}
-fn getCoordinate(value: f32, minimum: f32, maximum: f32, size: u32) -> u32 {
-  if (maximum == minimum || value == minimum) { return 0u; }
-  if (value == maximum) { return size - 1u; }
-  return min(u32((value - minimum) / (maximum - minimum) * f32(size)), size - 1u);
-}`,
+${GPU_GRID_COORDINATE_WGSL}`,
     body: `${boundsSource}
   let x = positions[positionsOffset + index * 2u];
   let y = positions[positionsOffset + index * 2u + 1u];

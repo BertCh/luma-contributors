@@ -123,6 +123,8 @@ without launching a compiler with `node scripts/typecheck-tests.mjs --generate-o
   `@luma.gl/core`, `@luma.gl/shaders`, `@luma.gl/graph` (and, for examples and tests only,
   `@luma.gl/engine`) through their public package entry points. The integration target and accepted
   peer ranges are recorded separately in [the alpha package contract](dev-docs/release-package.md).
+  The integration target is `10.0.0-alpha.16`; peers accept `~10.0.0-alpha.16`.
+  A target or accepted range is not a claim that the complete GPU/release gate passed.
 - Never import a `@luma.gl/*` path with an `_internal` segment (even one listed in the package's
   exports), deep `dist` paths, or copied luma.gl source. Never fork,
   re-implement or re-export luma.gl APIs. See `dev-docs/upstream-first-plan.md`.

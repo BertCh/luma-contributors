@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  GPU_GRID_COORDINATE_WGSL,
   createTransientView,
   GPUPointSpatialFilter,
   GraphVectorView,
@@ -169,21 +170,7 @@ const DOMAIN_MIN: vec2f = vec2f(${getWGSLFloatLiteral(domainMinX)}, ${getWGSLFlo
 const DOMAIN_MAX: vec2f = vec2f(${getWGSLFloatLiteral(domainMaxX)}, ${getWGSLFloatLiteral(domainMaxY)});
 ${IS_FINITE_VALUE_WGSL}
 // Same cell mapping as GPUGridIndex.
-fn getCoordinate(value: f32, minimum: f32, maximum: f32, size: u32) -> u32 {
-  if (maximum == minimum || value == minimum) { return 0u; }
-  if (value == maximum) { return size - 1u; }
-  if (minimum < 0.0 && maximum > 0.0) {
-    let scale = max(abs(minimum), abs(maximum));
-    let scaledValue = value / scale;
-    let scaledMinimum = minimum / scale;
-    let scaledMaximum = maximum / scale;
-    return min(
-      u32((scaledValue - scaledMinimum) / (scaledMaximum - scaledMinimum) * f32(size)),
-      size - 1u
-    );
-  }
-  return min(u32((value - minimum) / (maximum - minimum) * f32(size)), size - 1u);
-}`,
+${GPU_GRID_COORDINATE_WGSL}`,
       // Invalid, empty, or non-overlapping queries produce zero ranges. The cell rectangle is
       // widened by one cell per side to absorb f32 rounding differences from the binning pass; it
       // only adds candidates, which the exact predicate rejects.

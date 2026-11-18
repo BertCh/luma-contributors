@@ -12,6 +12,7 @@ import {
   type OracleStudyWindow
 } from '../../analysis-core/study-window-oracle';
 import type {BinnedDensityInput} from './kernel-density-binned-oracle';
+import {getFloat32GridCoordinate} from '../../utils/grid-coordinate-bump-fixtures';
 
 /** CPU reference results for one density computation. */
 export type DensityOracleResult = {
@@ -31,11 +32,11 @@ export function computeGridDensity(
   gridSize: [number, number]
 ): DensityOracleResult {
   const [columns, rows] = gridSize;
-  const [minX, minY, maxX, maxY] = bounds;
+  const [minX, minY, maxX, maxY] = bounds.map(Math.fround);
   const result = createResult(columns * rows);
   for (let index = 0; index < positions.length / 2; index++) {
-    const x = positions[index * 2];
-    const y = positions[index * 2 + 1];
+    const x = Math.fround(positions[index * 2]);
+    const y = Math.fround(positions[index * 2 + 1]);
     if (
       !Number.isFinite(x) ||
       !Number.isFinite(y) ||
@@ -46,8 +47,8 @@ export function computeGridDensity(
     ) {
       continue;
     }
-    const column = Math.min(Math.floor(((x - minX) / (maxX - minX || 1)) * columns), columns - 1);
-    const row = Math.min(Math.floor(((y - minY) / (maxY - minY || 1)) * rows), rows - 1);
+    const column = getFloat32GridCoordinate(x, minX, maxX, columns);
+    const row = getFloat32GridCoordinate(y, minY, maxY, rows);
     accumulate(result, row * columns + column, weights?.[index]);
   }
   return finalize(result);

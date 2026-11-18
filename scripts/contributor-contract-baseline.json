@@ -667,12 +667,12 @@
       {
         "id": "df220d811e6f99ef6aafe5cad442db92d13684e3b6fb8fad58cc02aea77a5b85:1",
         "description": "getGridCandidateNodes: kernel [\"\\u0000-polygon-bounds-kernel\"] shader d4b838c5f68844cbc667f4a1e8bb1d115c72e91dac2e4ffa10e7ce196beb59e8",
-        "reason": "Existing polygon-bounds, grid-cell-ranges loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+        "reason": "Existing polygon-bounds, grid-cell-ranges loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged. This polygon-bounds site and shader identity are unchanged by alpha.16. Its pre-existing vertex loop executes activeCount = min(vertexCount[0], VERTEX_CAPACITY) iterations, where VERTEX_CAPACITY = selection.vertices.length is the construction-time vertex-view capacity; no fixed numeric maximum is claimed."
       },
       {
-        "id": "4422bc14178b884699a2728d1c58dcbeced913af294fb1eb0e45d788ee4e0da9:1",
-        "description": "getGridCandidateNodes: kernel [\"\\u0000-cell-ranges\"] shader 97d0dccc328ebdb12c492a99f34ddc8b91054bed733d9ae40d3c4dc41ba8f98b",
-        "reason": "Existing polygon-bounds, grid-cell-ranges loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+        "id": "27c53614ce7af25ed88ee8a194efb8e714cb6b7e6e8c6ae8ae88fd3016e4a659:1",
+        "description": "getGridCandidateNodes: kernel [\"\\u0000-cell-ranges\"] shader 22288c01a09aaaafb4d6aa12c62f9a56640dda62c6ee4c150e4f01f29ac71e96",
+        "reason": "Existing polygon-bounds, grid-cell-ranges loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged. Original allowance retained for the pre-existing row loop: alpha.16 changes the shared coordinate shader text and site identity, not this loop. It executes exactly HEIGHT = spatialIndex.index.gridSize[1] iterations over grid rows; HEIGHT is a construction-time dimension, not candidateCapacity or a fixed numeric maximum. GPU_GRID_COORDINATE_WGSL introduces no loop."
       }
     ],
     "modules/analysis/src/gpu-spatial-analysis/scan-statistics/gpu-spatial-scan-statistic.ts": [

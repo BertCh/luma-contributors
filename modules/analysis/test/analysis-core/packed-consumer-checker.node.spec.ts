@@ -168,7 +168,7 @@ describe('packed consumer checker', () => {
   it('accepts a later stable peer version allowed by the documented prerelease range', () => {
     const directory = createFixture();
     editManifest(directory, manifest => {
-      manifest.peerDependencies['fixture-peer'] = '~10.0.0-alpha.14';
+      manifest.peerDependencies['fixture-peer'] = '~10.0.0-alpha.16';
     });
     writeFixtureFile(
       directory,

@@ -1,6 +1,6 @@
 # Upstream workarounds register
 
-Status date: 2026-11-14. Baseline: published `@luma.gl/*@10.0.0-alpha.14` (bumped from alpha.13 on 2026-11-14).
+Status date: 2026-11-18. Integration target: published `@luma.gl/*@10.0.0-alpha.16`.
 
 This register tracks gaps against [upstream-first-plan.md](./upstream-first-plan.md) and [upstream-proposals.md](./upstream-proposals.md). Analysis paths omit `modules/analysis/src/`; bare filenames share the preceding directory. Recheck symbols before retirement. The luma.gl fork that preceded this repository (commit `e0ed33791`; code public on `BertCh/luma.gl`, branch `reference/map-contributors-pre-split-code`) holds working code and tests for many of the "what luma.gl needs" entries; [research/fork-comparison-2026-11-13](./research/fork-comparison-2026-11-13/README.md) maps each to its fork path.
 
@@ -14,6 +14,157 @@ This register tracks gaps against [upstream-first-plan.md](./upstream-first-plan
 | local kernel | Local code overlaps a published class whose contract lacks required options (section 4); delegate when compatible. |
 
 “What luma.gl needs” states what permits restoration/delegation; work proceeds without waiting for upstream.
+
+## Alpha.16 public API audit (2026-11-18)
+
+Checked offline against installed package `exports`, public entry-point declarations and the
+implementations they reference. There is no retained alpha.14 declaration inventory, so this is
+a comparison with the recorded requests and current consumers, not a complete upstream release
+diff or proof of the first release of each export. No GPU or performance result is inferred.
+The target/accepted-range/qualification policy is in [release-package.md](./release-package.md).
+The rows below qualify the older evidence in sections 1–4. The grid copies were replaced as a
+necessary alpha.16 bump adaptation; the remaining **replaceable since alpha.16** entries describe
+separate adoption work requiring parity coverage.
+
+| Recorded capability | Alpha.16 disposition and public replacement or remaining gap |
+| --- | --- |
+| Grid cell-coordinate WGSL | **Satisfied and replaced in alpha.16:** all five readers interpolate `GPU_GRID_COORDINATE_WGSL` from `@luma.gl/graph/gpu-core`, matching published index/query/binning/aggregation. Per-frame flow-grid dimensions remain local arguments to the shared function. The official registry and five standalone pins now inspect generated shaders for the export verbatim and exactly one `getCoordinate`; they pass in Node. The 30-case GPU regression passes. |
+| Segmented sum | **Satisfied; replaceable since alpha.16:** `GPUSegmentedReduction` and `GPUSegmentedScan` from `@luma.gl/graph/gpu-core`. Reduction takes packed scalar views, CSR offsets of length `output.length + 1`, sum/min/max and a separate output buffer. Its 256-lane tree can replace ordinary sorted sums after gather/empty-segment parity; this does not supply exact fixed-point sums. |
+| Sparse grounded-Laplacian solve (EC03) | **Partly; solver core replaceable since alpha.16:** `GPUJacobiPCG` from `@luma.gl/graph/gpu-core` has `getCommandNodes(graph)`, caller CSR/vector views (including chunks), Jacobi preconditioning, warm starts and residual/breakdown results. Local grounding, normalization, iteration/status semantics and semantic-operation lowering still need an adapter; the implementation still unrolls iterations. |
+| Computation-record annotations; stepped command-graph capture | **Partly:** public `GPUCommandGraphCompileOptions.kernelMetadata`, `GPUCommandGraphKernelMetadata` and `CompiledGPUCommandGraph.preflight.nodes[].kernel` from `@luma.gl/graph/gpu-core` expose declared entry point, workgroup size, bindings and optional source with `compile({kernelMetadata: 'source'})`. Collection is opt-in and only works for nodes declaring `kernel` (scan does; sort/reduction do not). Formula/provenance/loop annotations and retained intermediate capture remain local; no retain/per-node capture API. |
+| Packed kernel nodes; bounded dispatch overrides; contributor operations in `GPUGraph` | **Partly:** `getGPUVectorWGSLLayout` from `@luma.gl/graph/gpu-data` provides component types, packed stride and native WGSL alignment/stride (vec3: 12 versus 16 bytes). It supplies metadata, not packed accessors, a kernel authoring factory, `getSpatialOperationNodes`, `getBoundedDispatchOverrides` or a generic contributor lowerer. Existing public `Kernel`, `createGPUComputeCommandNode` and bounded dispatch helpers remain the building blocks. |
+| Indirect-dispatch geometry/gating; centrality compile cost | **Partly:** node `workload` and GPU indirect `condition` are public in `@luma.gl/graph/gpu-core`; scan supplies work/kernel metadata. `getGPUComputeDispatchWorkgroups` and `gateGPUCommandNodes` are not exported, sort/reduction still omit geometry, and progressive `CompiledGPUCommandGraph.createExecution` schedules a finite graph rather than a convergence continuation. Keep the Louvain dispatch adapter and bounded local loops. |
+| Arrow analytics normalization | **Partly:** `planArrowGPUConversion`, `convertArrowToGPUVector` and `convertArrowTemporalToGPUVector(s)` from `@luma.gl/graph/arrow` cover numeric conversion (including Bool/narrow/wide numeric sources), Float64 GPU conversion/residual lanes and relative temporal metadata. They do not provide the table-level dictionary/string policy or exact two-word Int64 time upload. Wide conversions warn about rounding; temporal output is relative Float32. Keep local exact-time and normalization policy. |
+| Raster validators and constructors; vertical-datum metadata | **Not provided:** `validateRasterBand`, `validateRasterMetadata` and `assertRasterStorageBindingFits` remain in unexported raster-utils; no public band constructor/`verticalDatum` field in `@luma.gl/graph/gpu-raster`. `getRasterDeviceLimits`/`planRasterDispatchStripes` there are partial planning tools only. |
+| Bind-group reuse | **Not provided:** public `Kernel` from `@luma.gl/graph` still takes bindings per dispatch and promises no mutable binding retention. No binding cache option. |
+| Out-of-memory detection | **Not provided:** `@luma.gl/core` has no public typed out-of-memory class; debug-gated scopes do not replace the Kepler admission scope. |
+| Crossfilter extensions; histogram-cube / skip-cube crossfilter | **Not provided:** `GPUCrossfilter` in `@luma.gl/graph/gpu-crossfilter` still lacks external-mask/invalidate/skip-cube APIs. Existing published range filtering remains usable. |
+| Primitive signature changes | **Partly:** the recorded missing segmented/solver exports are now covered above; no new compaction strategy, scan algorithm, radix digit-bit, voxel centroid/attribute or recording option. Existing adapted call sites stay as they are. |
+| Other carried WGSL; H3 face-table parsing; double-float WGSL; 64-bit integer WGSL | **Not provided:** public `@luma.gl/shaders`/`@luma.gl/graph/gpu-dggs` entry points do not expose the requested standalone normal/ordered-float/tile-latitude/uint64 multiply-divide helpers, H3 tables as data, or `getPlatformFP64Arithmetic`/`getClassicFP64Defines`. Integer barriers and historical Apple measurements require independent requalification. |
+| `addToGraph` bridge | **Not provided:** `GPUCommandNodeProducer`/`getCommandNodes` from `@luma.gl/graph/gpu-core` exists, but domain graph algorithms still use `addToGraph(): void`. No universal returned-node attachment contract. |
+| Projection-plan origin | **Not provided:** `compileProjectionPlan` in `@luma.gl/graph/gpu-project` still lacks the requested actual destination-origin fit/validation option. |
+| 64-bit/multi-key sort; specialized sort/scan and benchmark harness; block compaction | **Not provided:** public `GPUSort` still sorts a single uint32 key with at most 32 bits, and no requested Onesweep/look-back/block-compaction option is exported from `@luma.gl/graph/gpu-core`. Existing benchmark exports do not establish performance parity. |
+| Grid bounds and cell order | **Partly:** the unified coordinate helper fixes the formula split, but public `GPUGridIndex` still takes literal bounds and leaves within-cell order unspecified; no per-row key output or GPU-held index bounds. |
+| `MeteredCommandGraph`; pre-compile resource planning and compilation statistics | **Not provided:** `GPUCommandGraph` exposes compiled `stats`/`preflight`, but no allocation-free `planResources`; `CompiledGPUDataFrameQuery` from `@luma.gl/graph/gpu-dataframe` keeps its graph private and has no `compilationStats`. |
+| Null WebGPU test device; test leak statistics | **Not provided:** no declaration-only graph/null-WebGPU replacement; core/test-utils still reads `Texture2Ds Active`. |
+| Readback-ring constructor failure; table-field nullability | **Not provided:** `GPUReadbackRing` in `@luma.gl/graph/gpu-core` still allocates slots without constructor rollback; `GPUTable` vector props in `@luma.gl/graph/gpu-tables` still lack `fields`/`nullable`. |
+| Glyph walker and graph-vector view helpers | **Not provided:** `walkTextGlyphs` is not exported by `@luma.gl/engine/text`; `alignGraphVectorViews`/`getGraphVectorData` are not exported by `@luma.gl/graph/gpu-core`. Presence in dist is insufficient. |
+| Mipmapped bitmap label atlas; private bitmap font atlas | **Not provided:** `GPUTextResourcesProps` and bitmap atlas settings in `@luma.gl/engine/text` still lack `mipmaps` and `cache` respectively. |
+| Example geometry, polygon-contiguity and trip preparation; GeoArrow coordinate dimension | **Partly:** `@luma.gl/graph/arrow` exports `projectCPUVector`, `tessellateCPUVectorPolygons`, `tessellateGeoArrowColumnToCPUVectors` and `projectArrowCoordinates`. This is not the full geometry/globe/trips/contiguity preparation contract; no fix to the separate installed math.gl dimension rule is established by a luma.gl bump. |
+| Kepler-compute example; example GPU layers; deck.gl 9.4.0 patch; deck.gl 10.0.0-alpha.1 patch | **Not provided:** a luma.gl bump supplies neither a deck.gl 10 GPU-layer package nor the deck picking/effect/globe fixes. Deck and math.gl versions were not bumped. |
+| `waitForSubmittedWork`; local CPU operations and kernel nodes | **Already adequate public routes:** `Device.createFence()` in `@luma.gl/core`, `GPUCPUOperation` in `@luma.gl/graph/gpu-core`, and the local kernel composition described above. No new retirement claimed. |
+| Arrow batch streaming; Arrow partition descriptors; dataframe query descriptions and 8 lens scenarios | **Not provided:** public Arrow conversion/batch upload is not a table append stream, partition-descriptor builder or source-expression query description API. |
+| Residency arena, resident selection and tile LOD; missing lens packs; 3D datum conversion | **Not provided:** no restoration of these recorded capabilities by the audited public entry points; the first two remain application/lens work and ECEF/Helmert/epoch transformation remains upstream work. |
+| Large-input bounded dispatch; kernel throughput | **Partial qualification only:** `getBoundedDispatchLayout` is public in `@luma.gl/graph/gpu-core`; the historical 33.5M-row result and throughput claims need the lead's alpha.16 GPU/benchmark runs. Do not delete the old bounded-dispatch row on declarations alone. |
+| Exact/compensated reduction and scan sums; mask-only dataframe filter | **Not provided:** public segmented float trees are not exact accumulation; query filters still produce row indices. No safe submitted-revision gate was added. |
+
+For every local-kernel comparison in section 4, the unmet contract remains **not provided** in
+alpha.16 except these partial improvements: `GPUHistogram` already supports masks, explicit edges,
+domain/output view offsets and auto extent; equal-width edge arithmetic and NaN-domain policy still
+need work. `GPUGridIndex`/`GPUGridIndexQuery` share the coordinate helper, removing the recorded
+build/query formula mismatch, while cell-size/half-open domains, ordering, batched candidate gather
+and per-row keys remain missing. `GPUHaversineDistance` documents radius units and supports raw
+Float64 deltas, but that does not establish the requested float32 seam rule. These do not authorize
+delegation of the other section-4 contracts: k-means seeding/tolerance; cell geometry invalids and
+boundaries; contour/isoband output; raster arithmetic/stretch/focal/morphology/borders/large-radius
+blur and reconstruction; wide joins/groups/RLE; offsets-only CSR; caller-CSR graph algorithms,
+SCC and multilevel modularity; exact polygon predicates; Philox; voxel means; bounded compaction;
+deterministic raster regions/zones; matrix epilogues; transpose overflow; tile overlap; pair-gather
+invalid values. `validatePackedView` is already public in `@luma.gl/graph/gpu-core` and its local
+named-error wrapper remains intentional. Similarity-search delegation and fill-holes iteration
+count remain decisions about existing public APIs, not newly satisfied upstream requests.
+
+### Bump behavior and qualification risks
+
+- **Grid arithmetic adapted:** alpha.16 uses direct arithmetic for ordinary zero-crossing bounds
+  and rescales only when `maximum > 3.402823466e+38 + minimum`. All five local functions were
+  removed in favor of the public export. For x=-177 in [-180,180], 360 columns, encounters,
+  region statistics and interpolation change from cell 2 to 3; density and flow remain at 3.
+  In the nominal float32 model, x=0 in [-3e38,3e38] maps to 180 (old density/flow: 0).
+  Density and flow CPU test oracles now round uploads and each grid operation to float32,
+  including the overflow guard. The other three oracles are brute-force and have no grid
+  formula or production CPU twin to change. Node pins and fixed expected-cell references pass;
+  `modules/analysis/test/analysis-core/grid-coordinate-bump.spec.ts` supplies 30 headless cases
+  covering the five actual reader kernels, the published builder, active flow dimensions,
+  positive/zero-crossing bounds, exact edges, inclusive maximum, upload rounding and overflow.
+  In encounters the former cell mismatch can make forward-shell scanning visit self/duplicate
+  hits. Region/IDW range padding can hide the mismatch, so the headless cases additionally probe
+  the function extracted from each reader's generated shader and check the occupied builder cell.
+
+#### Alpha.16 GPU qualification (Metal, 2026-11-18)
+
+- **Grid overflow probe, all five readers — resolved:** the first run passed 25 of 30 cases, with all five
+  runtime-bound overflow probes returning 0 instead of 180. The expected value remains 180:
+  f32 bounds are ±3.0000000054977558e38, exceed the overflow-guard threshold, normalize to ±1,
+  and give `(0 - (-1)) / (1 - (-1)) * 360 = 180`. No edge branch applies. The fixture readers and
+  published builders use literal bounds, while the old surrogate probe loaded them from storage.
+  That changes specialization of the extreme divisions. The new probe matches literal bounds and
+  flow's actual active-dimension view and writes a completion marker beside a poisoned coordinate
+  word. On overflow it now reads the published builder's occupied cell on the same device, asserts
+  reader/builder agreement, and records the CPU model's 180 separately. Both all-three agreement
+  and device agreement differing from the model pass; reader/builder disagreement fails with all
+  three cells and the classified outcome in the message. The other 25 cases remain unchanged.
+  The first diagnostic rerun stopped at the reserved WGSL binding name `diagnostic`; it is now
+  `probeResults`, and a Node AST check validates every fixture binding with validateWGSLIdentifier.
+  A separately stamped runtime-bound probe remains diagnostic. `f32(1 / 3e38)` is subnormal
+  (about 3.333334e-39), so reciprocal rewriting/flush is a plausible Metal explanation for runtime
+  scaled bounds becoming zero; this is not established without the new GPU diagnostic results.
+  Submission precedes readback, and buffer mapping waits for the queued staging copy. No upstream
+  WGSL was forked or modified. The rerun passed all 30 cases: reader and builder agree on the
+  device in every case.
+- **Cost-distance continuation round count — unresolved, no accepted regression:** alpha.16 has
+  2 failures in 10 reported runs (167/163 versus one-shot 168), compared with alpha.14 0 in 9
+  (seven isolated and two full runs). A subsequent 20 reruns all passed; the earlier
+  intermittent observations remain recorded, with no production fix claimed. File:
+  `modules/analysis/test/gpu-raster/cost-distance/gpu-cost-distance-continuation.spec.ts`.
+  Final costs reportedly match; the strict iteration-count equality is retained. Readback audit:
+  `submitGraph` submits before either status read; upstream WebGPU `readAsync` submits a staging
+  copy on the same queue and awaits `mapAsync`; the continuation loop awaits both reads before
+  resubmission. No missing queue-wide `onSubmittedWorkDone` dependency is established. Caller-owned
+  state/working values are imported buffers; continuation stamps are a sub-view of that state,
+  not scratch recycled between executions. Declared read/write resources order resets, rounds,
+  group gates and finalization; per-dispatch bindings are supplied again each encode.
+  Remaining concrete suspect: `raster-relaxation.ts` reads neighboring costs and stamps and
+  writes them in place within one dispatch; sweep `storageBarrier()` is only workgroup-scoped.
+  The existing CPU oracle explicitly chooses a slow legal visibility order. A new diagnostic
+  model over three 16-cell tiles proves forward live visibility can converge in 2 rounds while
+  reverse/snapshot visibility takes 4, with identical exact costs. That does not establish the
+  particular alpha.16 scheduling/compiler trigger for 163/167, so no speculative source change
+  or assertion relaxation was made. The headless test now compares published status to the raw
+  imported continuation-state words and records execution history in a count-mismatch message.
+  Lead action: retain the completed 20-run diagnostics and any recurrence; qualify any future deterministic
+  round-boundary/ownership change against the unchanged equality assertion and performance gates.
+
+#### Other API qualification notes
+
+- **Compile metadata:** alpha.16 defaults to no kernel metadata collection. `compile()` and
+  `compileAsync()` now accept `{kernelMetadata: 'layout' | 'source'}`. The Kepler overrides at
+  `modules/kepler/src/session/metered-command-graph.ts` now accept and forward these options
+  unchanged to `super`, while continuing to record physical transient bytes. The Node regression
+  covers both methods and metadata modes; the recorder still uses its own metadata table.
+- **Inspection previews:** public `GPUCommandGraphInspector` and
+  `GPUCommandGraphEncoding.readResource` (`@luma.gl/graph/gpu-core`) can inspect current
+  resources after submission. This is partial support for diagnostic recording, not an
+  intermediate snapshot: reads may submit separate diagnostic copies, and reused transient
+  allocations explicitly reject reads because their logical contents are no longer available.
+  Keep `GPUSnapshotTap` where intermediate retention is required.
+- **Dispatch metadata:** scan declares `kernel`/`workload`, sort and reduction still do not.
+  Workload counts are estimates, not dispatch dimensions. Do not infer geometry from invocation
+  totals in `gpu-network/network-optimization/network-louvain-dispatch.ts:23` or relax the
+  fallback in `network-louvain-sparse.ts:285,298`; their public dispatch adapter is still needed.
+- **Expressions:** `GPUExpressionOperation` in `@luma.gl/graph/gpu-core` now exposes
+  `integerRounding` (default `truncate`; `nearest` ties away from zero), numeric vectors,
+  swizzles and explicit casts. `makeGPUExpressionFromPortableAST` and
+  `makeGPUPredicateFromPortableAST` in `@luma.gl/graph/gpu-dataframe` handle the supported AST
+  subset; they are not the private query shader-plan/predicate-pass helpers. No direct consumer
+  of these constructors/converters or `GPUSegmentedReduction`/`GPUSegmentedScan` was found under
+  `modules/*/src`. No downstream result change is established for those unused APIs.
+- **Segmented reduction adoption:** the public implementation clamps offsets to input length,
+  returns zero for empty segments even for min/max, forbids output/input buffer identity, and
+  sums lane-strided values before a 256-lane tree. Check the local empty-segment, offset,
+  float-order and exact-sum contracts before removing a helper. Availability alone is no parity test.
+- **Dependency extension:** the lead aligned `.yarnrc.yml` to alpha.16 and reinstalled. The former
+  extension mismatch is resolved; complete Node/GPU/release qualification is still separate.
 
 ## 1. Dropped capabilities
 
@@ -40,7 +191,7 @@ This register tracks gaps against [upstream-first-plan.md](./upstream-first-plan
 | Computation-record annotations | Graph opt-in records local kernel facts only. Formulas/provenance/loop coordinates stay pack-level; regenerate committed records (LN-REC2). | `analysis-core/kernels/wgsl-kernel-nodes.ts`: `recordWGSLKernelNodes`; `computation-record/describe-command-graph.ts`: `describeGPUCommandGraph`; `computation-record/computation-recorder.ts`, `create-kernel-annotation.ts`; lens opt-in: `modules/lenses/src/computation-lenses/lens-view-snapshot.ts`. | Public node shader descriptions/annotations. | workaround (published primitives lack kernel facts) |
 | Contributor operations in `GPUGraph` | Command-node producers lack planning/execution contracts. | `analysis-core/operations/gpu-contributor-operation.ts`: `GPUContributorOperation`, `GPU_CONTRIBUTOR_OPERATION_LOWERING`. | Producer operation with named ports (UPS-CPU-4). | workaround |
 | Packed kernel nodes | Typed packed read/write accessors are local. | `pointcloud-analysis/operations/pointcloud-kernel-nodes.ts`: `getPointCloudKernelNodes`. | Public typed packed-binding helper (`getSpatialOperationNodes`). | workaround |
-| Segmented sum | Segmented reduction/scan have no public entry-point export; gather already delegates to `GPUGather`. | `analysis-core/kernels/sorted-segment-sums.ts`: `getSortedSegmentSumNodes`, `createSegmentSumNode` (256-lane tree). | Public `GPUSegmentedReduction`. | workaround |
+| Segmented sum | Public `GPUSegmentedReduction`/`GPUSegmentedScan` now exist; gather already delegates to `GPUGather`. | `analysis-core/kernels/sorted-segment-sums.ts`: `getSortedSegmentSumNodes`, `createSegmentSumNode` (256-lane tree). | Adopt `GPUSegmentedReduction` from `@luma.gl/graph/gpu-core` after parity. | workaround (replaceable since alpha.16) |
 | Bind-group reuse | `Kernel.dispatch` receives bindings each time; skipping them risks stale shared-pipeline bindings and retained buffers (LUM-03). The same-binding probe saved about 2 µs per avoided group, but does not resolve ownership. | `analysis-core/kernels/wgsl-kernel-nodes.ts`: `createWGSLKernelNode`; no binding-reuse cache (LUM-01). | Binding cache keys on dispatch or compute-pass bindings. | no workaround (performance gap) |
 | Indirect-dispatch geometry/gating | Private geometry prevents gating primitives: `GPUPycnophylactic` still reduces after convergence (GM-03). Local nodes lack loop geometry metadata; loops unroll (GM-04). | `analysis-core/kernels/wgsl-kernel-nodes.ts`: `createWGSLDispatchGate`; `raster-analysis/cost-distance/raster-relaxation.ts`: `createRasterGatedLoopNodes`. | Public geometry getter/predicate gate; continuation without unrolling. | workaround (cannot gate published primitives in local loops) |
 | Bounded dispatch overrides | Local kernels use public `getBoundedDispatchLayout`; override construction remains local. | `analysis-core/kernels/wgsl-kernel-nodes.ts`: `createWGSLKernelNode`. | Public `getBoundedDispatchOverrides`. | workaround |
@@ -52,8 +203,7 @@ This register tracks gaps against [upstream-first-plan.md](./upstream-first-plan
 | Crossfilter extensions (external masks, `invalidate`, `setExternalActive`) | Range/bounds dimensions only: kepler wraps 0/1 masks as ranges; lenses reject explicit key sets. | `modules/kepler/src/exploration/gpu-resident-explorer.ts`: `GPUResidentExplorer.setExternalActive`, `invalidate`; `modules/lenses/src/computation-views/coordinator/gpu-crossfilter-selection-backend.ts`: `GPUCrossfilterSelectionBackend`. | External-mask and invalidate options. | workaround |
 | Primitive signature changes | Published signatures omit `GPUCompaction.strategy`, `GPUScan.algorithm`, `GPUSort.digitBits`, `prepareCRSProjection.targetFrame` (use `destinationOrigin`), voxel `centroids`/`attribute` and graph `recording`. Sort `algorithm`: `'auto' \| 'bitonic' \| 'radix'` only. | Call sites and tests. | None. | workaround (done) |
 | Kepler-compute example | A yarn workspace on deck.gl 10.0.0-alpha.1 (KE-PORT). Kepler 3.3.0-alpha.18 still runs deck.gl 9 and luma.gl 9 code, mapped to the public luma.gl 10 entry points by Vite aliases and a `COORDINATE_SYSTEM` source rewrite. Specs that reach unpublished or undeclared packages stay excluded from runs or typechecking. | `test/kepler-compute-example-specs.json`: `excludedFromRuns`, `excludedFromTypecheck`; `vitest.config.ts`, `scripts/typecheck-tests.mjs`; `examples/deck/kepler-compute/` (`gpu-layers/`, `src/geometry-preparation/`, `src/luma-gaps/`, `kepler-compute-transform.ts`). | A deck.gl 10 release of the community GPU layers; the items in the rows below. | accepted regression |
-| Sparse grounded-Laplacian solve (EC03) | Float32 Jacobi-PCG: 1,048,576 vertices, 2,097,152 edges, 4,096 unrolled iterations; normalize conductances. Published CG lacks preconditioning/caller-graph lowering, also missing for semantic operations (PN-05). | `gpu-spatial-analysis/landscape-ecology/sparse-resistance-system.ts`: `addSparseResistanceSystemNodes`; `sparse-resistance-solver.ts`: `addSparseResistanceSolveNodes` (EC03). | Preconditioned solver nodes/caller-graph lowering with views; continuation. | workaround |
-| Grid cell-coordinate WGSL | Published index and binning cell formulas disagree at edges; readers of their state must copy the matching arithmetic. | `getCoordinate` copies: `gpu-spatial-analysis/trajectory-encounters/encounter-kernels.ts`, `gpu-spatial-analysis/region-statistics/region-statistics-grid.ts`, `gpu-spatial-analysis/spatial-interpolation/gpu-inverse-distance-weighting.ts`, `gpu-spatial-analysis/point-density/point-density-kernels.ts` (same prefix); `gpu-network/flow-aggregation/flow-aggregation-kernels.ts`. Pins: `modules/analysis/test/analysis-core/official-wgsl-copies.node.spec.ts`. | Public unified cell-coordinate WGSL; per-frame active flow-grid size. | workaround (pinned) |
+| Sparse grounded-Laplacian solve (EC03) | Float32 Jacobi-PCG: 1,048,576 vertices, 2,097,152 edges, 4,096 unrolled iterations; normalize conductances. Public `GPUJacobiPCG` now supplies preconditioning and caller-graph view nodes; grounding/status/semantic lowering and continuation remain. | `gpu-spatial-analysis/landscape-ecology/sparse-resistance-system.ts`: `addSparseResistanceSystemNodes`; `sparse-resistance-solver.ts`: `addSparseResistanceSolveNodes` (EC03). | Evaluate `GPUJacobiPCG` from `@luma.gl/graph/gpu-core`, preserving the domain/status contract. | workaround (solver core replaceable since alpha.16) |
 | Other carried WGSL | Small snippets remain; published tile-latitude arithmetic adds about 70 KB of `dggs` text (NC-04, LUM-12). | `safeNormal`: `pointcloud-analysis/operations/pointcloud-kernel-nodes.ts`; `encodeOrderedFloat`: `raster-analysis/raster-zonal-statistics/gpu-raster-zonal-statistics.ts`; `coverTileLatitude`: `gpu-spatial-analysis/cell-cover/cell-cover-kernels.ts`, `cell-cover-scanline.ts`. Pins: `modules/analysis/test/analysis-core/official-wgsl-copies.node.spec.ts`. | Standalone normal, ordered-float and tile-latitude helpers. | workaround (pinned) |
 | H3 face-table parsing | Parsing WGSL literals exceeds its public contract; guards require 20 finite face rows, 122 × 4 homes and 20 × 3 neighbours (SC-05). | `gpu-spatial-analysis/cell-indexing/h3-index-extended-wgsl.ts`: `parseDggsFaceTable`; `cpu-cell-measures-operation.ts`: `readIntegerTable`. | Export face centres, face-axis azimuths, base-cell homes and face neighbours as data. | workaround (guarded) |
 | Double-float WGSL | Extended H3 retains integer-barrier arithmetic (LUM-20). Factory assembly forces integer fp64 on every vendor (LUM-02); published defaults do so only on Apple. Apple/Metal: 1,048,576 rows × 64 rounds, 380 ms published versus 132 ms local including transfer. | `gpu-spatial-analysis/cell-indexing/h3-index-extended-wgsl.ts`: `cellIndexH3ExtTwoSum`, `cellIndexH3ExtTwoProduct`, `cellIndexH3ExtAdd`, `cellIndexH3ExtMultiply`, `cellIndexH3ExtDivide`, `cellIndexH3ExtSinCosDegrees`. | Safe vendor defines (`getPlatformFP64Arithmetic`, `getClassicFP64Defines`) or assembler defaults, plus H3 performance. | workaround (LUM-20) |
@@ -70,7 +220,7 @@ This register tracks gaps against [upstream-first-plan.md](./upstream-first-plan
 | Table-field nullability (KL-11, LUM-13) | No vector-construction `fields`; callers mutate nullability from validity. | `GPUResidentExplorer` in `modules/kepler/src/exploration/gpu-resident-explorer.ts`; `GPUKeplerScalarSelection.createPredicate` in `modules/kepler/src/selection/gpu-scalar-selection.ts`; `GPUKeplerTableInspector` in `modules/kepler/src/exploration/gpu-table-inspector.ts` (KL-11, LUM-13). | Vector-construction `fields`/`nullable`. | workaround |
 | Example geometry, polygon-contiguity and trip preparation | Native GeoArrow, WKB and JSON geometry sources, globe cutting, polygon contiguity topology, GeoJSON and tabular timed trips and fp64 position residuals: 22 symbols with Kepler-prefixed names (for example `prepareKeplerGeometrySourceFromArrow`, `prepareKeplerTabularTrips`), written on public luma.gl and `@math.gl/arrow` APIs only. The unreached parts of `geometry-gpu-vectors.ts` (about 1,200 lines) are kept. Replaces the fork's `makeGeometryGPUVectors` and the geometry, trip and polygon-topology modules. | `examples/deck/kepler-compute/src/geometry-preparation/` (17 importing files in `src/`). | Public geometry and trip preparation in engine or graph/arrow (fork: `modules/engine/src/arrow/geometry/`); proposal 15.5 in [upstream-proposals.md](./upstream-proposals.md). | workaround |
 | Example GPU layers (Point, Line, Arc, Path, Polygon, label, flow, trip marker, globe) | The 30-file closure of the unpublished `@deck.gl-community/gpu-layers`, copied from `e0ed33791:modules/deck-gpu-layers`, ported to deck.gl 10 alpha.1 (`coordinateFrame` replaces `COORDINATE_SYSTEM`, globe meter offsets computed locally). Fork specs that need symbols outside the closure were not ported. `GPUGlobeDepthDiskLayer` is likely unnecessary because deck 10 culls the far side itself. | `examples/deck/kepler-compute/gpu-layers/` (`index.ts` exports 26 symbols); specs in `modules/kepler/test/gpu-layers`. | A published deck.gl 10 GPU layers package. | workaround |
-| Glyph walker and graph-vector view helpers | `walkTextGlyphs` (`@luma.gl/engine`), `alignGraphVectorViews` and `getGraphVectorData` (`@luma.gl/graph`) exist in the alpha.14 `dist` but are not exported from any entry point. The example composes the same behaviour from public pieces (`getCharacterAtlasPage`, `getCharacterLayoutOffset`, `getTextKerningOffset`, `GraphVectorView`, `graph.createDataView`). | `examples/deck/kepler-compute/src/luma-gaps/text-glyph-walk.ts`: `walkKeplerLabelGlyphs`; `graph-vector-chunks.ts`: `alignKeplerGraphVectorViews`, `getKeplerGraphVectorChunks`. | Export the three helpers; proposal 15.1. | workaround |
+| Glyph walker and graph-vector view helpers | `walkTextGlyphs` (`@luma.gl/engine`), `alignGraphVectorViews` and `getGraphVectorData` (`@luma.gl/graph`) exist in the alpha.16 `dist` but are not exported from any entry point. The example composes the same behaviour from public pieces (`getCharacterAtlasPage`, `getCharacterLayoutOffset`, `getTextKerningOffset`, `GraphVectorView`, `graph.createDataView`). | `examples/deck/kepler-compute/src/luma-gaps/text-glyph-walk.ts`: `walkKeplerLabelGlyphs`; `graph-vector-chunks.ts`: `alignKeplerGraphVectorViews`, `getKeplerGraphVectorChunks`. | Export the three helpers; proposal 15.1. | workaround |
 | Mipmapped bitmap label atlas | `GPUTextResources` takes no `mipmaps` option and samples without a mipmap filter, so a 64 px bitmap atlas minified to label size paints about one pixel narrower than the deck.gl 10 `TextLayer` (about 290 differing pixels against a tolerance of 12 in `gpu-point-label-layer.spec.ts`; verified: a mipmapped atlas passes the spec at the original tolerance). | `examples/deck/kepler-compute/src/luma-gaps/mipmapped-text-resources.ts`: `KeplerMipmappedTextResources`, `getKeplerMipChainByteLength`; `gpu-layers/layers/gpu-point-label-layer.ts` reads it through `GPUPointLabelResources`. | `mipmaps` and a mipmap filter on `GPUTextResourcesProps`; proposal 15.4. | workaround |
 | `@deck.gl/core` 10.0.0-alpha.1 patch | Three hunks in `.yarn/patches/@deck.gl-core-npm-10.0.0-alpha.1-*.patch`, resolved by the exact descriptor `@deck.gl/core@npm:10.0.0-alpha.1` in the root `package.json`: a depth attachment on the scene render buffer, a hover clear when the pointer leaves the canvas, and `isHovering` from `info.picked`. Applied and present in the installed files; not yet exercised in a browser. | `.yarn/patches/`, root `package.json` `resolutions`, `examples/deck/kepler-compute/package.json`. | The three fixes in deck.gl; proposal 15.6. | workaround |
 
@@ -145,7 +295,7 @@ These kernels overlap published classes; comparisons distinguish parity specs fr
 3. Check requested APIs in the inventory, including awaited `GPUScatter`, `assertRasterStorageBindingFits`, `makeGPUQueryExpressionShaderPlan` and `addGPUQueryPredicatePass` (not public at alpha.13). Delegate eligible rows, remove workarounds and record release under Retired; require non-trivial parity coverage for section 4.
 4. Bump all luma.gl manifest/peer pins, `.yarnrc.yml` deck-core 9.4.0 package extension and `yarn.lock` together.
 5. Run `node scripts/check-upstream-first.mjs`; exported `_internal` paths remain forbidden.
-6. Run `yarn vitest run --project node modules/analysis/test/analysis-core/official-wgsl-copies.node.spec.ts` and its five per-copy pin specs. Copies reading published state must follow changed upstream arithmetic; update the copy and this file together.
+6. Run `yarn vitest run --project node modules/analysis/test/analysis-core/official-wgsl-copies.node.spec.ts` and its five standalone grid pins. Grid pins now check generated shaders include the public coordinate export verbatim exactly once; keep the builder/reader headless regression aligned with any arithmetic change. Remaining literal copies still need their registered text checks.
 7. Run `yarn lint-fix`, `yarn typecheck`, `yarn typecheck-tests`, `yarn build`, `yarn lint`, `node scripts/verify-package-exports.mjs`, `yarn test-node` and `yarn test-headless`. Inspect `scripts/typecheck-tests.mjs` for its per-stage heap policy before tuning memory; it controls the spawned TypeScript processes. Runtime exclusions and test-typecheck exclusions are separate sets in `test/kepler-compute-example-specs.json`; derive current membership from that manifest rather than copying a count into this guide.
 8. Investigate numerical drift; document changes without silently loosening tolerances. Re-run section 3 benchmarks (`LUMA_CONTRIBUTORS_BENCHMARKS=true`); record benchmark numbers next to each row. Add every new workaround or dropped capability to this file in the same change.
 
@@ -162,6 +312,7 @@ These are Apple/Metal compiler behaviours on headless Chromium WebGPU; see [shad
 
 ## Retired
 
+- Grid cell-coordinate copies (alpha.16, LR-22): the five encounter/region/interpolation/density/flow readers now include public `GPU_GRID_COORDINATE_WGSL` from `@luma.gl/graph/gpu-core`. The official registry and all five standalone checks remain as generated-source pins, with no second `getCoordinate`. CPU references and a 30-case headless builder/reader regression (30 of 30 on the GPU) cover changed arithmetic. No command nodes were added/removed/renamed in production.
 - Sparse resistance connectivity (EC03): public `GPUSort`/`GPUCOOToCSR` plus local Jacobi-PCG; solver gap remains in section 2.
 - SMRF diamonds (alpha.10): `pointcloud-analysis/operations/pointcloud-diamond-morphology.ts`: `getPointCloudDiamondMorphologyNodes` delegates radius-at-most-8 cross passes to `GPURasterErosion`/`GPURasterDilation`.
 - Cast topology: `gpu-terrain/terrain-decode/gpu-terrain-spike-repair.ts`: `GPUTerrainSpikeRepair` uses `createMaskedWeakComponentNodes`; its remaining gap is in section 4.

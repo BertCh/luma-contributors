@@ -3,7 +3,12 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {TRAJECTORY_SATURATED_COUNT_WGSL} from '../trajectory-analysis/trajectory-counts-wgsl';
-import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/graph/gpu-core';
+import {
+  GPU_GRID_COORDINATE_WGSL,
+  type GPUCommandGraph,
+  type GPUCommandNode,
+  type GraphDataView
+} from '@luma.gl/graph/gpu-core';
 import {
   createWGSLKernelNode,
   getWGSLFloatLiteral,
@@ -141,21 +146,8 @@ export function createEncounterScanNode<Parameters>(
 ${SPATIAL_JOIN_WGSL_HELPERS}
 ${props.shape.geodesic ? GEODESIC_WGSL : ''}
 ${getShapeConstants(props.shape)}
-// Same rule as the GPUGridIndex build, so a point and its query agree on the cell. luma.gl does not
-// export the rule; encounter-grid-coordinate-pin.node.spec.ts compares this text with the published
-// kernel, so keep the two identical.
-fn getCoordinate(value: f32, minimum: f32, maximum: f32, size: u32) -> u32 {
-  if (maximum == minimum || value == minimum) { return 0u; }
-  if (value == maximum) { return size - 1u; }
-  if (minimum < 0.0 && maximum > 0.0) {
-    let scale = max(abs(minimum), abs(maximum));
-    let scaledValue = value / scale;
-    let scaledMinimum = minimum / scale;
-    let scaledMaximum = maximum / scale;
-    return min(u32((scaledValue - scaledMinimum) / (scaledMaximum - scaledMinimum) * f32(size)), size - 1u);
-  }
-  return min(u32((value - minimum) / (maximum - minimum) * f32(size)), size - 1u);
-}`,
+// Use the builder's public rule, including its extreme-domain overflow guard.
+${GPU_GRID_COORDINATE_WGSL}`,
     body: `let track = index / BUCKET_COUNT;
   let bucket = index % BUCKET_COUNT;
   let x = positions[positionsOffset + index * 3u];
