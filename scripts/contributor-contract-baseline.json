@@ -1,196 +1,1099 @@
 {
-  "multiple-classes": {
-    "modules/analysis/src/gpu-spatial-analysis/concave-hull/gpu-concave-hull.ts": 2,
-    "modules/analysis/src/gpu-spatial-analysis/geometry-refinement/gpu-precision-reduction.ts": 2,
-    "modules/analysis/src/gpu-spatial-analysis/spatial-autocorrelation/gpu-additional-spatial-statistics.ts": 3,
-    "modules/analysis/src/gpu-spatial-analysis/spatial-autocorrelation/gpu-local-variability.ts": 2,
-    "modules/analysis/src/pointcloud-analysis/gpu-pointcloud-surfaces.ts": 2,
-    "modules/analysis/src/raster-analysis/gpu-raster-fractional-coverage.ts": 2,
-    "modules/analysis/src/raster-analysis/gpu-raster-reconstruction.ts": 2,
-    "modules/analysis/src/raster-analysis/gpu-raster-skeleton.ts": 2,
-    "modules/analysis/src/raster-analysis/gpu-raster-spectral-indices.ts": 4
-  },
-  "root-file": {
-    "modules/analysis/src/gpu-network/gpu-network-inhomogeneous-k.ts": 1,
-    "modules/analysis/src/gpu-network/gpu-network-kernel-density.ts": 1,
-    "modules/analysis/src/gpu-network/network-spatial-context.ts": 1,
-    "modules/analysis/src/gpu-network/network-view-utils.ts": 1,
-    "modules/analysis/src/gpu-network/network-workgroup-counters.ts": 1,
-    "modules/analysis/src/raster-analysis/gpu-raster-fill-nodata.ts": 1,
-    "modules/analysis/src/raster-analysis/gpu-raster-fractional-categorical-statistics.ts": 1,
-    "modules/analysis/src/raster-analysis/gpu-raster-fractional-coverage.ts": 1,
-    "modules/analysis/src/raster-analysis/gpu-raster-fractional-zonal-distribution.ts": 1,
-    "modules/analysis/src/raster-analysis/gpu-raster-rank-filter.ts": 1,
-    "modules/analysis/src/raster-analysis/gpu-raster-reconstruction.ts": 1,
-    "modules/analysis/src/raster-analysis/gpu-raster-reprojection.ts": 1,
-    "modules/analysis/src/raster-analysis/gpu-raster-skeleton.ts": 1,
-    "modules/analysis/src/raster-analysis/gpu-raster-spectral-indices.ts": 1,
-    "modules/analysis/src/raster-analysis/gpu-raster-tile-reprojection.ts": 1,
-    "modules/analysis/src/raster-analysis/gpu-raster-walking-cost.ts": 1,
-    "modules/analysis/src/raster-analysis/gpu-raster-watershed-segmentation.ts": 1,
-    "modules/analysis/src/raster-analysis/raster-band-utils.ts": 1,
-    "modules/analysis/src/raster-analysis/raster-expansion-utils.ts": 1,
-    "modules/analysis/src/raster-analysis/raster-medial-axis.ts": 1,
-    "modules/analysis/src/raster-analysis/raster-watershed-forest.ts": 1
-  },
-  "single-invocation-data-loop": {
-    "modules/analysis/src/dataframe-analysis/column-classification/exact-natural-breaks-nodes.ts": 1,
-    "modules/analysis/src/dataframe-analysis/column-classification/gpu-class-breaks.ts": 3,
-    "modules/analysis/src/dataframe-analysis/column-classification/monotone-natural-breaks-nodes.ts": 1,
-    "modules/analysis/src/dataframe-analysis/column-classification/natural-breaks-nodes.ts": 8,
-    "modules/analysis/src/dataframe-analysis/composite-indicators/gpu-composite-score.ts": 1,
-    "modules/analysis/src/dataframe-analysis/pair-statistics/gpu-marked-point-statistics.ts": 1,
-    "modules/analysis/src/dataframe-analysis/pair-statistics/gpu-point-pattern-indices.ts": 3,
-    "modules/analysis/src/dataframe-analysis/pair-statistics/gpu-ripley-envelope.ts": 1,
-    "modules/analysis/src/dataframe-analysis/pair-statistics/gpu-space-time-diggle-test.ts": 1,
-    "modules/analysis/src/dataframe-analysis/pair-statistics/gpu-spatial-correlogram.ts": 2,
-    "modules/analysis/src/dataframe-analysis/pair-statistics/gpu-variogram.ts": 1,
-    "modules/analysis/src/dataframe-analysis/pair-statistics/variogram-model-fit-nodes.ts": 1,
-    "modules/analysis/src/dataframe-analysis/temporal-reduction/temporal-reduction-sorted-range.ts": 1,
-    "modules/analysis/src/dataframe-analysis/time-window-filter/time-window-sorted-nodes.ts": 1,
-    "modules/analysis/src/gpu-network/edge-bundling/edge-bundling-passes.ts": 1,
-    "modules/analysis/src/gpu-network/gpu-network-inhomogeneous-k.ts": 1,
-    "modules/analysis/src/gpu-network/network-centrality/network-centrality-passes.ts": 1,
-    "modules/analysis/src/gpu-network/network-optimization/gpu-network-facility-optimization.ts": 2,
-    "modules/analysis/src/gpu-network/network-optimization/gpu-network-flow.ts": 1,
-    "modules/analysis/src/gpu-network/network-optimization/gpu-network-louvain.ts": 1,
-    "modules/analysis/src/gpu-network/network-optimization/gpu-network-rational-access.ts": 1,
-    "modules/analysis/src/gpu-network/network-optimization/gpu-network-time-routing.ts": 1,
-    "modules/analysis/src/gpu-network/network-structure/gpu-network-structure.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/cell-topology/gpu-s2-polygon-covering.ts": 2,
-    "modules/analysis/src/gpu-spatial-analysis/delaunay-tessellation/gpu-delaunay-tessellation.ts": 3,
-    "modules/analysis/src/gpu-spatial-analysis/distribution-dynamics/gpu-classification-fit.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/distribution-dynamics/gpu-transition-diagnostics.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/geographical-detector/gpu-geographical-detector.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/geometry-refinement/gpu-line-loop-removal.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/geometry-refinement/gpu-offset-curve-components.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/geometry-refinement/gpu-precision-reduction.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/global-coordinates/gpu-spherical-arc-overlay.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/line-clip/gpu-line-clip-by-polygon.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/line-clip/gpu-shared-paths.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/line-split/gpu-line-split.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/location-allocation/gpu-bounded-facility-allocation.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/location-allocation/gpu-location-allocation.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/multiple-testing/gpu-multiple-testing-adjustment.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/neighbor-search/neighbor-search-derived-parameters.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/permutation-inference/gpu-global-permutation-test.ts": 2,
-    "modules/analysis/src/gpu-spatial-analysis/point-process/gpu-point-pattern-envelope.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/point-process/gpu-point-pattern-rank-envelope.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/point-process/gpu-spatial-balanced-sample.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/rectangle-clip/rectangle-clip-kernels.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/region-statistics/region-statistics-grid.ts": 2,
-    "modules/analysis/src/gpu-spatial-analysis/scan-statistics/gpu-spatial-scan-statistic.ts": 4,
-    "modules/analysis/src/gpu-spatial-analysis/space-time-tests/gpu-jacquez-test.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/space-time-tests/gpu-knox-test.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/space-time-tests/gpu-mantel-test.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/space-time-tests/space-time-stopping.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/spatial-clustering/gpu-optics-xi.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/spatial-entropy/gpu-spatial-entropy.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/spatial-interaction/gpu-spatial-interaction.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/spatial-regionalization/gpu-max-p-regions.ts": 3,
-    "modules/analysis/src/gpu-spatial-analysis/spatial-regionalization/gpu-region-partition-evaluation.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/spatial-regionalization/gpu-skater-regions.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/spatial-regionalization/gpu-ward-regions.ts": 2,
-    "modules/analysis/src/gpu-spatial-analysis/spatial-regionalization/ward-mutual-selection.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/spatial-regression/gpu-geographically-temporally-weighted-regression.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/spatial-regression/gpu-geographically-weighted-regression-nonstationarity-test.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/spatial-regression/gpu-geographically-weighted-regression.ts": 4,
-    "modules/analysis/src/gpu-spatial-analysis/spatial-regression/gpu-multiscale-geographically-temporally-weighted-regression.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/spatial-regression/gpu-multiscale-geographically-weighted-regression.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/spatial-regression/gpu-probit-regression.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/spatial-regression/gpu-restricted-regime-regression.ts": 2,
-    "modules/analysis/src/gpu-spatial-analysis/spatial-regression/gpu-spatial-panel-error-maximum-likelihood.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/spatial-regression/gpu-spatial-panel-lag-maximum-likelihood.ts": 3,
-    "modules/analysis/src/gpu-spatial-analysis/spatial-regression/gpu-spatial-panel-regression.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/spatial-regression/gtwr-bandwidth-search.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/spatial-regression/gwr-golden-section-nodes.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/spatial-regression/gwr-grid-index.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/spatial-regression/multiscale-inference.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/spatial-regression/panel-diagnostics.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/spatial-validation/gpu-area-of-applicability.ts": 2,
-    "modules/analysis/src/gpu-spatial-analysis/spatial-validation/spatial-validation-design.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/study-window/gpu-study-window-preparation.ts": 2,
-    "modules/analysis/src/gpu-spatial-analysis/trajectory-restriction/trajectory-restriction-kernels.ts": 1,
-    "modules/analysis/src/gpu-spatial-analysis/trajectory-staypoints/gpu-trajectory-locations.ts": 2,
-    "modules/analysis/src/gpu-spatial-analysis/trajectory-staypoints/gpu-trajectory-segments.ts": 1,
-    "modules/analysis/src/gpu-terrain/terrain-illumination/gpu-texture-shading.ts": 1,
-    "modules/analysis/src/raster-analysis/cost-distance/gpu-cost-distance-path.ts": 1,
-    "modules/analysis/src/raster-analysis/cost-distance/raster-relaxation.ts": 1,
-    "modules/analysis/src/raster-analysis/distance-field/distance-field-kernels.ts": 1,
-    "modules/analysis/src/raster-analysis/gpu-raster-watershed-segmentation.ts": 1,
-    "modules/analysis/src/raster-analysis/raster-stretch/gpu-raster-stretch.ts": 1
-  },
-  "storage-binding-preflight": {
-    "modules/analysis/src/gpu-network/network-isochrones/gpu-network-isochrones.ts": [
-      "GPUNetworkIsochrones"
+  "_version": 2,
+  "internal-export": {
+    "modules/analysis/src/analysis-core/contracts/study-window.ts": [
+      {
+        "id": "c54cdc92c44e7263a22f3641a0ea575ae491aa337c5a96f241482b784d44b4dd:1",
+        "description": "GPUVariogram.props.studyWindow.getViews.return.packed",
+        "owner": "gates-scripts",
+        "legacy": "count-baseline-2026-11-17",
+        "reason": "Owner: gates-scripts. Pre-existing packed study-window binding returned through the public handle and consumed by Ripley, variogram and density modules outside contracts; retain this exact public type site pending an opaque window-binding contract."
+      },
+      {
+        "id": "57c894132d83f78010c1b5e8f6296bec54dded7b38c8fba63d084258b5cfe857:1",
+        "description": "GPUVariogram.props.studyWindow.getViews.return.slabs",
+        "owner": "gates-scripts",
+        "legacy": "count-baseline-2026-11-17",
+        "reason": "Owner: gates-scripts. Pre-existing study-window slab index returned through the public handle and consumed by pair-statistics and density modules outside contracts; retain this exact public type site pending an opaque window-binding contract."
+      }
+    ],
+    "modules/analysis/src/analysis-core/operations/gpu-contributor-operation.ts": [
+      {
+        "id": "a2835f027507f89c941e8c5bb7ce9f172098fcc1ebbe663f59022257a24294df:1",
+        "description": "GPUContributorOperation.createContributor",
+        "owner": "gates-scripts",
+        "legacy": "count-baseline-2026-11-17",
+        "reason": "Owner: gates-scripts. Pre-existing contributor factory called by mixed-execution lowering and external operation-form parity/lifecycle tests; hiding it would change the established operation adapter contract."
+      }
     ]
   },
-  "_reasons": {
-    "single-invocation-data-loop": {
-      "modules/analysis/src/dataframe-analysis/column-classification/gpu-class-breaks.ts": "Existing publish, maximum-breaks-finish loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged. Review follow-up: conditional expressions/guarded writes expose 1 additional existing loop invocation(s); retained pending data-range/bounded-work review.",
-      "modules/analysis/src/dataframe-analysis/column-classification/natural-breaks-nodes.ts": "Existing natural-breaks-prefix, natural-breaks-backtrack, natural-breaks-snap, natural-breaks-bulk-switch, natural-breaks-bulk-backtrack, natural-breaks-bulk-assemble, natural-breaks-refine-advance, natural-breaks-finalize loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/dataframe-analysis/composite-indicators/gpu-composite-score.ts": "Existing principal-component loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/dataframe-analysis/pair-statistics/gpu-point-pattern-indices.ts": "Existing guard-clark-evans, quadrat-area-totals loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged. Review follow-up: conditional expressions/guarded writes expose 1 additional existing loop invocation(s); retained pending data-range/bounded-work review.",
-      "modules/analysis/src/dataframe-analysis/pair-statistics/gpu-ripley-envelope.ts": "Existing summary loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/dataframe-analysis/pair-statistics/gpu-space-time-diggle-test.ts": "Existing summary loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/dataframe-analysis/pair-statistics/gpu-spatial-correlogram.ts": "Existing overflow, peaks loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/dataframe-analysis/pair-statistics/gpu-variogram.ts": "Existing overflow loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/dataframe-analysis/temporal-reduction/temporal-reduction-sorted-range.ts": "Existing unnamed kernel loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-network/edge-bundling/edge-bundling-passes.ts": "Existing gate loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-network/network-centrality/network-centrality-passes.ts": "Existing converged loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-network/network-optimization/gpu-network-flow.ts": "Existing unnamed kernel loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-network/network-optimization/gpu-network-louvain.ts": "Existing bounded-coarsened-local-moves loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-network/network-optimization/gpu-network-rational-access.ts": "Existing integral-fractional-step loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-network/network-optimization/gpu-network-time-routing.ts": "Existing unnamed kernel loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-spatial-analysis/delaunay-tessellation/gpu-delaunay-tessellation.ts": "Existing initialize-status, serial-insertion-continuation, serial-flip-continuation loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-spatial-analysis/distribution-dynamics/gpu-classification-fit.ts": "Existing summary loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-spatial-analysis/geographical-detector/gpu-geographical-detector.ts": "Existing summary loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-spatial-analysis/geometry-refinement/gpu-line-loop-removal.ts": "Existing publish-offsets loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-spatial-analysis/geometry-refinement/gpu-precision-reduction.ts": "Existing unnamed kernel loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-spatial-analysis/line-clip/gpu-line-clip-by-polygon.ts": "Existing finalize loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-spatial-analysis/line-clip/gpu-shared-paths.ts": "Existing finalize loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-spatial-analysis/line-split/gpu-line-split.ts": "Existing finalize loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-spatial-analysis/permutation-inference/gpu-global-permutation-test.ts": "Existing materialized-init, sequential-init loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-spatial-analysis/rectangle-clip/rectangle-clip-kernels.ts": "Existing polygon-publish loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-spatial-analysis/region-statistics/region-statistics-grid.ts": "Existing polygon-bounds, grid-cell-ranges loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-spatial-analysis/scan-statistics/gpu-spatial-scan-statistic.ts": "Existing margin-cumulative, totals, round-select, summary loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-spatial-analysis/space-time-tests/gpu-jacquez-test.ts": "Existing summary loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-spatial-analysis/space-time-tests/gpu-knox-test.ts": "Existing summary loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-spatial-analysis/space-time-tests/gpu-mantel-test.ts": "Existing shift loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-spatial-analysis/space-time-tests/space-time-stopping.ts": "Existing stop-scan loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-spatial-analysis/spatial-entropy/gpu-spatial-entropy.ts": "Existing summary loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-spatial-analysis/spatial-interaction/gpu-spatial-interaction.ts": "Existing select-grid-optimum loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-spatial-analysis/spatial-regionalization/gpu-max-p-regions.ts": "Existing initialize, round-control, select-start loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-spatial-analysis/spatial-regionalization/gpu-region-partition-evaluation.ts": "Existing summary loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-spatial-analysis/spatial-regionalization/gpu-skater-regions.ts": "Existing apply loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-spatial-analysis/spatial-regionalization/gpu-ward-regions.ts": "Existing apply-merge loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged. Review follow-up: conditional expressions/guarded writes expose 1 additional existing loop invocation(s); retained pending data-range/bounded-work review.",
-      "modules/analysis/src/gpu-spatial-analysis/spatial-regression/gpu-geographically-temporally-weighted-regression.ts": "Existing summary loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-spatial-analysis/spatial-regression/gpu-geographically-weighted-regression-nonstationarity-test.ts": "Existing anchor loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-spatial-analysis/spatial-regression/gpu-geographically-weighted-regression.ts": "Existing ladder-init, refine-ladder, choose, summarize loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-spatial-analysis/spatial-regression/gpu-multiscale-geographically-temporally-weighted-regression.ts": "Existing convergence-score loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-spatial-analysis/spatial-regression/gpu-probit-regression.ts": "Existing pinkse-kp-pinkse-slade loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-spatial-analysis/spatial-regression/gpu-restricted-regime-regression.ts": "Existing nested-models, finish loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-spatial-analysis/spatial-regression/gpu-spatial-panel-error-maximum-likelihood.ts": "Existing absorbed-intercept loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-spatial-analysis/spatial-regression/gtwr-bandwidth-search.ts": "Existing unnamed kernel loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-spatial-analysis/spatial-regression/gwr-golden-section-nodes.ts": "Existing search-init loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-spatial-analysis/spatial-regression/gwr-grid-index.ts": "Existing grid-bounds loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-spatial-analysis/spatial-regression/multiscale-inference.ts": "Existing full-inference-summary loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-spatial-analysis/spatial-validation/gpu-area-of-applicability.ts": "Existing mean-distance, threshold loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-spatial-analysis/trajectory-restriction/trajectory-restriction-kernels.ts": "Existing unnamed kernel loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-spatial-analysis/trajectory-staypoints/gpu-trajectory-locations.ts": "Existing unnamed kernel loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-spatial-analysis/trajectory-staypoints/gpu-trajectory-segments.ts": "Existing unnamed kernel loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/gpu-terrain/terrain-illumination/gpu-texture-shading.ts": "Existing anchor loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/raster-analysis/cost-distance/gpu-cost-distance-path.ts": "Existing walk loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/raster-analysis/cost-distance/raster-relaxation.ts": "Existing iteration-group-gate loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/raster-analysis/distance-field/distance-field-kernels.ts": "Existing jump-flood-steps loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/raster-analysis/raster-stretch/gpu-raster-stretch.ts": "Existing finalize loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged.",
-      "modules/analysis/src/dataframe-analysis/time-window-filter/time-window-sorted-nodes.ts": "Review follow-up: conditional expressions/guarded writes expose 1 additional existing loop invocation(s); retained pending data-range/bounded-work review.",
-      "modules/analysis/src/gpu-spatial-analysis/distribution-dynamics/gpu-transition-diagnostics.ts": "Review follow-up: conditional expressions/guarded writes expose 1 additional existing loop invocation(s); retained pending data-range/bounded-work review.",
-      "modules/analysis/src/gpu-spatial-analysis/multiple-testing/gpu-multiple-testing-adjustment.ts": "Review follow-up: conditional expressions/guarded writes expose 1 additional existing loop invocation(s); retained pending data-range/bounded-work review.",
-      "modules/analysis/src/gpu-spatial-analysis/neighbor-search/neighbor-search-derived-parameters.ts": "Review follow-up: conditional expressions/guarded writes expose 1 additional existing loop invocation(s); retained pending data-range/bounded-work review."
-    },
-    "storage-binding-preflight": {
-      "modules/analysis/src/gpu-network/network-isochrones/gpu-network-isochrones.ts": "IMP landing: accepted AX-owned storage-binding-preflight finding; no AX source change in this integration."
-    }
+  "multiple-classes": {
+    "modules/analysis/src/gpu-spatial-analysis/concave-hull/gpu-concave-hull.ts": [
+      {
+        "id": "481cfc1f9bfe1c51ac21a43c044f495d7ac22282f74d8510dee7c4549d9f6b92:1",
+        "description": "export class GPUConcaveHull implements GPUCommandNodeProducer {",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      },
+      {
+        "id": "ab24270004dfaea272514cab4eff82802dae53abe22d577745bd98c31513ce02:1",
+        "description": "export class GPUGroupConcaveHull implements GPUCommandNodeProducer {",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/geometry-refinement/gpu-precision-reduction.ts": [
+      {
+        "id": "282c0c499eb87d4fffa40791e0093955e62f87c8a455f7d86e21e1a1d9361942:1",
+        "description": "export class GPUPolygonPrecisionReduction implements GPUCommandNodeProducer {",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      },
+      {
+        "id": "283f49d0977716453d07b24b82bd156dbdfd11f43e7cd28d80bb032232050c41:1",
+        "description": "export class GPULinePrecisionReduction implements GPUCommandNodeProducer {",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/spatial-autocorrelation/gpu-additional-spatial-statistics.ts": [
+      {
+        "id": "891675ebacb7ddd991340f0e1f54296ce244d4a566ff5e400c8cb071f83d3e9c:1",
+        "description": "export class GPULocalGeary implements GPUCommandNodeProducer {",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      },
+      {
+        "id": "69cb6f388abb701afd62c19e86497eb640425664a73ff2f2f66e3b81bf29b51b:1",
+        "description": "export class GPUSpatialPearson implements GPUCommandNodeProducer {",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      },
+      {
+        "id": "e3b968d47a44601f2d9469672e89504e2649a1a79963daf0a4e839a1e6a2dd3a:1",
+        "description": "export class GPUGammaStatistic implements GPUCommandNodeProducer {",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/spatial-autocorrelation/gpu-local-variability.ts": [
+      {
+        "id": "872c14be4c98ea335cae3557d6815120af54612d30d6d94105871957516ce4ac:1",
+        "description": "export class GPULocalSpatialHeteroscedasticity implements GPUCommandNodeProducer {",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      },
+      {
+        "id": "b7d81409a4ea00e7b7c6960c8ff17847294b8aebe1f5e189f7b51f475f76fa68:1",
+        "description": "export class GPUMultivariateLocalGeary implements GPUCommandNodeProducer {",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/raster-analysis/gpu-raster-fractional-coverage.ts": [
+      {
+        "id": "766ea5e606fbefdfc4bc753af3b53de51c7428c22d8064ab69d0dbc0709098bc:1",
+        "description": "export class GPURasterFractionalCoverage implements GPUCommandNodeProducer {",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      },
+      {
+        "id": "cf27a09b1e278aacceee98c358cd73957e908fbe0b47fa4f64fd9dd3c55ad092:1",
+        "description": "export class GPURasterFractionalZonalStatistics implements GPUCommandNodeProducer {",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/raster-analysis/gpu-raster-reconstruction.ts": [
+      {
+        "id": "5a6aae9ee0e1d49607ce23b57b0301d513a6bf09a836c2859f6246a7210b2ef6:1",
+        "description": "export class GPURasterReconstruction implements GPUCommandNodeProducer {",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      },
+      {
+        "id": "358bd22b0c43478e7625880cf6edb777127ee5e09691bbe2ccff5aa573cdd47b:1",
+        "description": "export class GPURasterFillHoles implements GPUCommandNodeProducer {",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/raster-analysis/gpu-raster-skeleton.ts": [
+      {
+        "id": "82c84ecc96f9e0fd09f31c3bd0135f4802d77576a2f37b16da7f7058f75b0377:1",
+        "description": "export class GPURasterSkeleton implements GPUCommandNodeProducer {",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      },
+      {
+        "id": "b35bcfbdf91fe3825cf26473174f7418418ce417ee045a76f3c2467ed89ce0ca:1",
+        "description": "export class GPURasterMedialAxis implements GPUCommandNodeProducer {",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ]
+  },
+  "root-file": {
+    "modules/analysis/src/gpu-network/gpu-network-inhomogeneous-k.ts": [
+      {
+        "id": "c3b2a368e2d372df1788a460fdb9b3428927303eafa4c6625a5a962b147beca4:1",
+        "description": "non-index family root file",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/gpu-network/gpu-network-kernel-density.ts": [
+      {
+        "id": "c3b2a368e2d372df1788a460fdb9b3428927303eafa4c6625a5a962b147beca4:1",
+        "description": "non-index family root file",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/gpu-network/network-spatial-context.ts": [
+      {
+        "id": "c3b2a368e2d372df1788a460fdb9b3428927303eafa4c6625a5a962b147beca4:1",
+        "description": "non-index family root file",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/gpu-network/network-view-utils.ts": [
+      {
+        "id": "c3b2a368e2d372df1788a460fdb9b3428927303eafa4c6625a5a962b147beca4:1",
+        "description": "non-index family root file",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/gpu-network/network-workgroup-counters.ts": [
+      {
+        "id": "c3b2a368e2d372df1788a460fdb9b3428927303eafa4c6625a5a962b147beca4:1",
+        "description": "non-index family root file",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/raster-analysis/gpu-raster-fill-nodata.ts": [
+      {
+        "id": "c3b2a368e2d372df1788a460fdb9b3428927303eafa4c6625a5a962b147beca4:1",
+        "description": "non-index family root file",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/raster-analysis/gpu-raster-fractional-categorical-statistics.ts": [
+      {
+        "id": "c3b2a368e2d372df1788a460fdb9b3428927303eafa4c6625a5a962b147beca4:1",
+        "description": "non-index family root file",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/raster-analysis/gpu-raster-fractional-coverage.ts": [
+      {
+        "id": "c3b2a368e2d372df1788a460fdb9b3428927303eafa4c6625a5a962b147beca4:1",
+        "description": "non-index family root file",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/raster-analysis/gpu-raster-fractional-zonal-distribution.ts": [
+      {
+        "id": "c3b2a368e2d372df1788a460fdb9b3428927303eafa4c6625a5a962b147beca4:1",
+        "description": "non-index family root file",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/raster-analysis/gpu-raster-rank-filter.ts": [
+      {
+        "id": "c3b2a368e2d372df1788a460fdb9b3428927303eafa4c6625a5a962b147beca4:1",
+        "description": "non-index family root file",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/raster-analysis/gpu-raster-reconstruction.ts": [
+      {
+        "id": "c3b2a368e2d372df1788a460fdb9b3428927303eafa4c6625a5a962b147beca4:1",
+        "description": "non-index family root file",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/raster-analysis/gpu-raster-reprojection.ts": [
+      {
+        "id": "c3b2a368e2d372df1788a460fdb9b3428927303eafa4c6625a5a962b147beca4:1",
+        "description": "non-index family root file",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/raster-analysis/gpu-raster-skeleton.ts": [
+      {
+        "id": "c3b2a368e2d372df1788a460fdb9b3428927303eafa4c6625a5a962b147beca4:1",
+        "description": "non-index family root file",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/raster-analysis/gpu-raster-spectral-indices.ts": [
+      {
+        "id": "c3b2a368e2d372df1788a460fdb9b3428927303eafa4c6625a5a962b147beca4:1",
+        "description": "non-index family root file",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/raster-analysis/gpu-raster-tile-reprojection.ts": [
+      {
+        "id": "c3b2a368e2d372df1788a460fdb9b3428927303eafa4c6625a5a962b147beca4:1",
+        "description": "non-index family root file",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/raster-analysis/gpu-raster-walking-cost.ts": [
+      {
+        "id": "c3b2a368e2d372df1788a460fdb9b3428927303eafa4c6625a5a962b147beca4:1",
+        "description": "non-index family root file",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/raster-analysis/gpu-raster-watershed-segmentation.ts": [
+      {
+        "id": "c3b2a368e2d372df1788a460fdb9b3428927303eafa4c6625a5a962b147beca4:1",
+        "description": "non-index family root file",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/raster-analysis/raster-band-utils.ts": [
+      {
+        "id": "c3b2a368e2d372df1788a460fdb9b3428927303eafa4c6625a5a962b147beca4:1",
+        "description": "non-index family root file",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/raster-analysis/raster-expansion-utils.ts": [
+      {
+        "id": "c3b2a368e2d372df1788a460fdb9b3428927303eafa4c6625a5a962b147beca4:1",
+        "description": "non-index family root file",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/raster-analysis/raster-medial-axis.ts": [
+      {
+        "id": "c3b2a368e2d372df1788a460fdb9b3428927303eafa4c6625a5a962b147beca4:1",
+        "description": "non-index family root file",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/raster-analysis/raster-watershed-forest.ts": [
+      {
+        "id": "c3b2a368e2d372df1788a460fdb9b3428927303eafa4c6625a5a962b147beca4:1",
+        "description": "non-index family root file",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ]
+  },
+  "single-invocation-data-loop": {
+    "modules/analysis/src/dataframe-analysis/column-classification/exact-natural-breaks-nodes.ts": [
+      {
+        "id": "2221204bc5ebf45fb8cf16e807ebaaeb1f964316ed81ccaf5f00c11a041f6530:1",
+        "description": "getExactNaturalBreaksNodes: kernel [\"\\u0000-exact-natural-breaks-backtrack\"] shader 5de80c0d0dbbf0ec6f5fdf921bc7c41f85eef0a3e9d37f612a44aa3fac89aa47",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/dataframe-analysis/column-classification/gpu-class-breaks.ts": [
+      {
+        "id": "5a1413f1f6a2449b8761c85ebbdfeaeeea831464fb3cfccbb9e44167315cd46b:1",
+        "description": "GPUClassBreaks.getCommandNodes: kernel [\"\\u0000-prepare\"] shader bd9e95a2fefab0b2584dfc3d95347617a5578c5c612f44cded69518c96ae2be1",
+        "reason": "Existing publish, maximum-breaks-finish loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged. Review follow-up: conditional expressions/guarded writes expose 1 additional existing loop invocation(s); retained pending data-range/bounded-work review."
+      },
+      {
+        "id": "ee146a57ed2b3858cc46eef0fa33728e204ef9be392ad8371de30e6b99552c84:1",
+        "description": "GPUClassBreaks.getCommandNodes: kernel [\"\\u0000-publish\"] shader bcad5c3869c271ea6b65cdc7c05cf6bf32500beb100951231411f585c1065d5a",
+        "reason": "Existing publish, maximum-breaks-finish loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged. Review follow-up: conditional expressions/guarded writes expose 1 additional existing loop invocation(s); retained pending data-range/bounded-work review."
+      },
+      {
+        "id": "cd6a01d982b8668362743cbf587c5dbc017723a686cb9617376dc547f7883756:1",
+        "description": "GPUClassBreaks.getMaximumBreaksNodes: kernel [\"\\u0000-maximum-breaks-finish\"] shader f7362abb773c080dc6b04e692259566c73fe02a3a12e157e172a7a4a6eb0d492",
+        "reason": "Existing publish, maximum-breaks-finish loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged. Review follow-up: conditional expressions/guarded writes expose 1 additional existing loop invocation(s); retained pending data-range/bounded-work review."
+      }
+    ],
+    "modules/analysis/src/dataframe-analysis/column-classification/monotone-natural-breaks-nodes.ts": [
+      {
+        "id": "7df0a09c403c26d61a10ee103d9d646a28b6a109b186a94073d5513e12d865aa:1",
+        "description": "getMonotoneNaturalBreaksNodes: kernel [\"\\u0000-monotone-natural-breaks-backtrack\"] shader 212176f7a99e614da6cbbc910295187964f1f9c2ee817021ed4eb06be58f5310",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/dataframe-analysis/column-classification/natural-breaks-nodes.ts": [
+      {
+        "id": "c6034734093d4027c7e7f30e113c40bcdb929e229dddf8f3a9356c3adc4fa1ab:1",
+        "description": "getNaturalBreaksNodes.getCoarseNodes: kernel [\"\\u0000-natural-breaks\\u0000-prefix\"] shader 70d27e7cf4ac178bc28af284c49dd3028bd0a2dbaf43243ebaf2f95b5301b15d",
+        "reason": "Existing natural-breaks-prefix, natural-breaks-backtrack, natural-breaks-snap, natural-breaks-bulk-switch, natural-breaks-bulk-backtrack, natural-breaks-bulk-assemble, natural-breaks-refine-advance, natural-breaks-finalize loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      },
+      {
+        "id": "0774ca3678d3e4548c264c46854ec75574e8549974fd135b111efd64add2587a:1",
+        "description": "getRefinementNodes: kernel [\"\\u0000-backtrack\"] shader 0cbdc47a555ad62866ab3d4126d79460273f0becca63b3beaaf6abac382b541f",
+        "reason": "Existing natural-breaks-prefix, natural-breaks-backtrack, natural-breaks-snap, natural-breaks-bulk-switch, natural-breaks-bulk-backtrack, natural-breaks-bulk-assemble, natural-breaks-refine-advance, natural-breaks-finalize loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      },
+      {
+        "id": "8dbb1bac03ccce946773cc8e7bf0af55896f75eb5afa575332ce8c3a2b322966:1",
+        "description": "getRefinementNodes.createSnapNode: kernel [\"\\u0000\"] shader 1ada1f8e9389fa78c236b82a83d5abb2d50dd48826effb18ee33eab869e6f9d6",
+        "reason": "Existing natural-breaks-prefix, natural-breaks-backtrack, natural-breaks-snap, natural-breaks-bulk-switch, natural-breaks-bulk-backtrack, natural-breaks-bulk-assemble, natural-breaks-refine-advance, natural-breaks-finalize loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      },
+      {
+        "id": "7433e1541e10a8560b9990fee3830af914f88c6837a42754e9a4ba31b048ddd1:1",
+        "description": "getRefinementNodes: kernel [\"\\u0000-bulk-switch\"] shader 9eae081bc5b6ce89f8786b6d3c15399de4f9ac05aadcbbf4b5d2879c2181780a",
+        "reason": "Existing natural-breaks-prefix, natural-breaks-backtrack, natural-breaks-snap, natural-breaks-bulk-switch, natural-breaks-bulk-backtrack, natural-breaks-bulk-assemble, natural-breaks-refine-advance, natural-breaks-finalize loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      },
+      {
+        "id": "122cead6757e372fc1889da17a03f9adb1a17a2dce29953267f689865ba6bdda:1",
+        "description": "getRefinementNodes: kernel [\"\\u0000-bulk-backtrack\"] shader dc158478d7661238b08c29eefee82a30fdffa8425d4b9211e11eb38ab8e06639",
+        "reason": "Existing natural-breaks-prefix, natural-breaks-backtrack, natural-breaks-snap, natural-breaks-bulk-switch, natural-breaks-bulk-backtrack, natural-breaks-bulk-assemble, natural-breaks-refine-advance, natural-breaks-finalize loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      },
+      {
+        "id": "32930ddc943abaed1eb72e9d26a27cd04babb047b2f31fdeeaac0c1916954aa4:1",
+        "description": "getRefinementNodes: kernel [\"\\u0000-bulk-assemble\"] shader f29c8e14a655356948152cd4a27059adcb3233a0de3b69a1d9bf9a0ae5585bfb",
+        "reason": "Existing natural-breaks-prefix, natural-breaks-backtrack, natural-breaks-snap, natural-breaks-bulk-switch, natural-breaks-bulk-backtrack, natural-breaks-bulk-assemble, natural-breaks-refine-advance, natural-breaks-finalize loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      },
+      {
+        "id": "e6eac0cc5ba3b0da4f04bb7a6aa9da247b236965a9a7b4fb5160f063e2dc375e:1",
+        "description": "getRefinementNodes: kernel [\"\\u0000-refine-\\u0000-advance\"] shader d8296611e7006beb237ebad11054733fcc3215d1caff43d4340d0e65907dbbfd",
+        "reason": "Existing natural-breaks-prefix, natural-breaks-backtrack, natural-breaks-snap, natural-breaks-bulk-switch, natural-breaks-bulk-backtrack, natural-breaks-bulk-assemble, natural-breaks-refine-advance, natural-breaks-finalize loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      },
+      {
+        "id": "b188e961c9f88009b894ef8a1be1805a2ed1f97e826f08a8739687267031f899:1",
+        "description": "getRefinementNodes: kernel [\"\\u0000-finalize\"] shader a094b6564f673458b9617553d70b6f436cf7add8305ebee09bdd04d6620df028",
+        "reason": "Existing natural-breaks-prefix, natural-breaks-backtrack, natural-breaks-snap, natural-breaks-bulk-switch, natural-breaks-bulk-backtrack, natural-breaks-bulk-assemble, natural-breaks-refine-advance, natural-breaks-finalize loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/dataframe-analysis/composite-indicators/gpu-composite-score.ts": [
+      {
+        "id": "d16a29762a3a95f7ad47cf6d97d73d73f44fb7a5bfbbac0b32b843d451b5b2c4:1",
+        "description": "GPUCompositeScore.getCommandNodes: kernel [\"\\u0000-principal-component\"] shader 7c17dbd1e6dd34c271aa97369ff90641e9a6fede89b2ff7f36063184d43d55ff",
+        "reason": "Existing principal-component loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/dataframe-analysis/pair-statistics/gpu-marked-point-statistics.ts": [
+      {
+        "id": "cc01fbf69930da70383c23ec457ebbf443ec553b5ac994d8569355b21104a39c:1",
+        "description": "GPUMarkedPointStatistics.getCommandNodes: kernel [\"\\u0000-moments\"] shader f2649596e4f9e7f0493dc73d58f19932b4f9e8dfa4544d073f8ee3b40f1d269a",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/dataframe-analysis/pair-statistics/gpu-point-pattern-indices.ts": [
+      {
+        "id": "4bde15d98c5fc4534b6be67182de5b989a30573c3cbe8846d9217fca65ee653e:1",
+        "description": "GPUPointPatternIndices.getCommandNodes: kernel [\"\\u0000-guard-clark-evans\",\"\\u0000-guard-clark-evans\",\"\\u0000-guard-clark-evans\"] shader 69f54dcde4eab93ce993f294a6937ba9e899121bcc5ed81fdd6b183f80b513a3",
+        "reason": "Existing guard-clark-evans, quadrat-area-totals loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged. Review follow-up: conditional expressions/guarded writes expose 1 additional existing loop invocation(s); retained pending data-range/bounded-work review."
+      },
+      {
+        "id": "9e86b42ba7ed5cee817dd71366064cbdee17a885df0b859b07d557ffd905c889:1",
+        "description": "GPUPointPatternIndices.getCommandNodes: kernel [\"\\u0000-quadrat-area-totals\",\"\\u0000-quadrat-area-totals\",\"\\u0000-quadrat-area-totals\"] shader 3bd4afa37f94396f73130e1f35fca603177018ef6698d44eb695e97242b81c07",
+        "reason": "Existing guard-clark-evans, quadrat-area-totals loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged. Review follow-up: conditional expressions/guarded writes expose 1 additional existing loop invocation(s); retained pending data-range/bounded-work review."
+      },
+      {
+        "id": "e23fa78116c838776c362c6b8630972a3e8183b6d850e1fcd67e286826ec9f9d:1",
+        "description": "GPUPointPatternIndices.getCommandNodes: kernel [\"\\u0000-quadrat-statistics\",\"\\u0000-quadrat-statistics\"] shader fbaa60f58835ca5bb27ea96cf337af8f450e6c138ff53c2e5b62d6f236f6ade1",
+        "reason": "Existing guard-clark-evans, quadrat-area-totals loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged. Review follow-up: conditional expressions/guarded writes expose 1 additional existing loop invocation(s); retained pending data-range/bounded-work review."
+      }
+    ],
+    "modules/analysis/src/dataframe-analysis/pair-statistics/gpu-ripley-envelope.ts": [
+      {
+        "id": "066d1686fd0e8f27ec0dfcfae48b4af640414235fd0cee07df472fd3522653ca:1",
+        "description": "GPURipleyEnvelope.getCommandNodes: kernel [\"\\u0000-summary\"] shader 4a6949b04941ad63e8305c0efc85595e9372f110701b6ab4a42d690c900f42ee",
+        "reason": "Existing summary loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/dataframe-analysis/pair-statistics/gpu-space-time-diggle-test.ts": [
+      {
+        "id": "fb4080806cf0d5ea813ceaf5ebe2c0aaeb478993dfcab185a056884652572e77:1",
+        "description": "GPUSpaceTimeDiggleTest.getCommandNodes: kernel [\"\\u0000-summary\"] shader 764fa945c2ace5c2eeead6e5c4f6a01ca39ed618d09bbb59a6531e85467f1b24",
+        "reason": "Existing summary loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/dataframe-analysis/pair-statistics/gpu-spatial-correlogram.ts": [
+      {
+        "id": "dfd69127d6da746a54d2f5276213cb3ca4c509ea096c4c46e425bc9749651fca:1",
+        "description": "GPUSpatialCorrelogram.getCommandNodes: kernel [\"\\u0000-overflow\"] shader 6f6347fe73671897f3c861848d51aea8973946b15d5fc86ea8bcbfb22d55cd36",
+        "reason": "Existing overflow, peaks loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      },
+      {
+        "id": "46f4182a72f1a1e797478cda29ab672a09064f3afbd801ff5698636cad8e486c:1",
+        "description": "GPUSpatialCorrelogram.getCommandNodes: kernel [\"\\u0000-peaks\"] shader 391a91cc36ab94a6e348b88fce0d4d532bc82a0a5502403c0d576737f17519b4",
+        "reason": "Existing overflow, peaks loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/dataframe-analysis/pair-statistics/gpu-variogram.ts": [
+      {
+        "id": "2cc05eb54f613fd30734c4f28cef7ea9cd5a5d14839aeffeac24e249ab7d09ad:1",
+        "description": "GPUVariogram.getCommandNodes: kernel [\"\\u0000-overflow\"] shader 0385cd3ba84603cec3c335ad0cf48b393d68d4b45109ed5d71fd21d9a60b5640",
+        "reason": "Existing overflow loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/dataframe-analysis/pair-statistics/variogram-model-fit-nodes.ts": [
+      {
+        "id": "160285ba4e40be2e07c6c1b28e309e64e733557ac2047b0012dbadac84c22a4c:1",
+        "description": "getParallelVariogramModelFitNodes.nodes: kernel [\"\\u0000-prepare\"] shader 8de59cbb174fde21adfd1bc0a1371dd3806b6850623dc3f42d0555e63dfec659",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/dataframe-analysis/temporal-reduction/temporal-reduction-sorted-range.ts": [
+      {
+        "id": "a2935548e809d9001a119d90c71ec641c8487df9a5dc55ea18fcf4553c729002:1",
+        "description": "createTemporalReductionRangeNode: kernel [\"\\u0000\"] constants [\"BUCKET_COUNT:props . bucketCount\",\"ROW_COUNT:props . timestamps . length\"] shader 73545b07c2b4cf83ce998c5ddd8463a0be00d3ebc1b2d7a2c08a329dab20c262",
+        "reason": "Existing unnamed kernel loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/dataframe-analysis/time-window-filter/time-window-sorted-nodes.ts": [
+      {
+        "id": "ddd86891c21e4c194f5ed741a12517c917e3da2b7b535b8e59f12713defda6d6:1",
+        "description": "createSortedTimeWindowRangeNode: kernel [\"\\u0000\"] constants [\"rows = = = 0 ? undefined : { ROW_COUNT : rows }\"] shader 425baf603bf710fdca78dc37a1eb6a97840ef0f61db4f70ae5900c2b82cf0673",
+        "reason": "Review follow-up: conditional expressions/guarded writes expose 1 additional existing loop invocation(s); retained pending data-range/bounded-work review."
+      }
+    ],
+    "modules/analysis/src/gpu-network/edge-bundling/edge-bundling-passes.ts": [
+      {
+        "id": "90f9fc1dbada1c6203fb0c17b8883c39020d8f9be4c4b4ccaf24c6fc2deec8db:1",
+        "description": "createEdgeBundlingGateNode: kernel [\"\\u0000\"] shader fc5ce67b9cb5e4ba43792db3dfcdfb8477e723b36e038635c3c228b0d85a94d7",
+        "reason": "Existing gate loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/gpu-network/gpu-network-inhomogeneous-k.ts": [
+      {
+        "id": "44a0321c2558314e886667a3d60e6514f6989c2dc4737fcd124dac468c99eb95:1",
+        "description": "GPUNetworkInhomogeneousK.getCommandNodes: kernel [\"\\u0000-normalize\"] shader 7ab446afd62c8ad62b7fd79d4f1df9656fc74c2ce749bacd466bb3b1ca75161b",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/gpu-network/network-centrality/network-centrality-passes.ts": [
+      {
+        "id": "f8a500fe26e55b760a90db34b11b4c8f26c0ca96d3681a30e71fa4ce2bd7c5d6:1",
+        "description": "createCentralityConvergedNode: kernel [\"\\u0000\"] shader 25ca0e590510ef39e9e62793954503fbc521ec38e0e4f38de87943bc8352b30b",
+        "reason": "Existing converged loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/gpu-network/network-optimization/gpu-network-facility-optimization.ts": [
+      {
+        "id": "6caa8fdb643d575b55d2040f3774381fc54c77da4d9e2c9edb38996016557227:1",
+        "description": "GPUNetworkFacilityOptimization.getCommandNodes.nodes: kernel [\"\\u0000-initialize\"] shader 3ff9a0ae3b1cbb890d13af9637876efae67024e88542395a184429b1a95e03e3",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      },
+      {
+        "id": "db43dea71f8bc142f72279714a7eb9a76271a6ead2a4cb004507c43db8c1e639:1",
+        "description": "GPUNetworkFacilityOptimization.getCommandNodes: kernel [\"\\u0000-publish\"] shader 25d6cfefa59f1e1994c26ec3466134c552ebe6f89e0db44e1d616bbde672da81",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/gpu-network/network-optimization/gpu-network-louvain.ts": [
+      {
+        "id": "fe33b9c7f183e5712b5463dd9e62ac9ed2a5be2a8421498053a0d1818d30a4f9:1",
+        "description": "GPUNetworkLouvain.getCommandNodes: kernel [\"\\u0000\"] shader df1c638f4293ac9e3e0e983f1750146ea0aad7b2aa2b9e86b8b2b81dbc3559b8",
+        "reason": "Existing bounded-coarsened-local-moves loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/gpu-network/network-optimization/gpu-network-rational-access.ts": [
+      {
+        "id": "764139df85f76b08fd573eddabd6277a0f58337ea0e3850ade8cf0a30c425c1f:1",
+        "description": "GPUNetworkRationalAccess.getCommandNodes.nodes: kernel [\"\\u0000\"] shader 0f3c182e604058a4b22e3017ff429a8625a6d617e883fb9d1efee3911faad503",
+        "reason": "Existing integral-fractional-step loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/gpu-network/network-optimization/gpu-network-time-routing.ts": [
+      {
+        "id": "c822991e72454ddd30a785ea865d4adf212e624ac4b31d00bc202464007a79b0:1",
+        "description": "GPUNetworkTimeRouting.getCommandNodes.nodes: kernel [\"\\u0000\"] shader e1b5c663e0058562a9fb275525acb3f9ecc11c4ee4bf58e61f972772f1ac8d65",
+        "reason": "Existing unnamed kernel loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/gpu-network/network-structure/gpu-network-structure.ts": [
+      {
+        "id": "afa141fd42066ec768745b759f0ac05569a25596975e13fbb4212d072acf8642:1",
+        "description": "GPUNetworkStructure.getCommandNodes: kernel [\"\\u0000-resilience\",\"\\u0000-resilience\",\"\\u0000-resilience\"] shader 908f706da2b0130310ce77e4978dc2ffb4c5de002002e23c80d6cae9d4972088",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/analysis-spacing/analysis-spacing-statistics-nodes.ts": [
+      {
+        "id": "3e15dd37112386621d4db96d12256ca6482fe4fea3a55475a4a54e70fab7a7b0:1",
+        "description": "createAnalysisSpacingStatisticsNodes: kernel [\"\\u0000-search-parameters\"] shader 2aa3e440e9f50ee1c573455beec290933e7cce6d3d10c2b5e482855ef741a2a4",
+        "owner": "gates-scripts",
+        "reason": "Owner: gates-scripts. Fixed 12-word search-parameter initialization (literal word < 12u), matching the GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH = 12 record; no input-row scan."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/cell-topology/gpu-s2-polygon-covering.ts": [
+      {
+        "id": "a1559ad381b053ac8d206eb870aa41ec36a326d8b1286e311beee768f6218114:1",
+        "description": "GPUS2PolygonCovering.getSerialNodes: kernel [\"\\u0000\"] shader 3cba186e287510f8c5d9c09f66355ac5866326c4c3db1e6b8aa20066e8b8803f",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      },
+      {
+        "id": "fa9b83a0aa7f1bc657b1b039d6a17dae9c722443c00d124b834aa266cc9d58a3:1",
+        "description": "GPUS2PolygonCovering.getLevelSynchronousNodes.nodes: kernel [\"\\u0000-start\"] shader c6fccc646cf367ab265ce8c66b982efc1fa6534455abfbb4abdd4fae8d6b363a",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/delaunay-tessellation/gpu-delaunay-tessellation.ts": [
+      {
+        "id": "47b6b973163f0380a0ad98745e60aaca333a4208f66718ee5bd1cd7905f2945a:1",
+        "description": "GPUDelaunayTessellation.getCommandNodes.nodes: kernel [\"\\u0000-initialize-status\"] shader fffe35c5e176f99f45e2502b1d37b1a94cb37d064d6660db12d646939db30b09",
+        "reason": "Existing initialize-status, serial-insertion-continuation, serial-flip-continuation loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      },
+      {
+        "id": "e1bb2b001a29a4a8cfb57f7d32b4f1231f5afb26a36e32855a22a85891385379:1",
+        "description": "GPUDelaunayTessellation._getStepNodes: kernel [\"\\u0000-continue-insertion\"] shader 275fc612de020d061373797b84d9ca6376b3807b727e6a3db2bcd6ca4c4c5cf8",
+        "reason": "Existing initialize-status, serial-insertion-continuation, serial-flip-continuation loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      },
+      {
+        "id": "7adc2f3981720f2464f194344bfc07460f2afe87446644e9f5fb134c2fe9b0d7:1",
+        "description": "GPUDelaunayTessellation._getStepNodes: kernel [\"\\u0000-continue-flips\"] shader 908196fa720d96a98a484d81cc768ef4542616530422589811acadf6d97ab77c",
+        "reason": "Existing initialize-status, serial-insertion-continuation, serial-flip-continuation loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/distribution-dynamics/gpu-classification-fit.ts": [
+      {
+        "id": "07ec1537f57d7723de17a3276b1462e37d61c4b344b9613a915e75580170fa42:1",
+        "description": "GPUClassificationFit.getCommandNodes: kernel [\"\\u0000-summary\"] shader 5fed250d6a449b0bfc88dd2262f5ba5fc93b2b9464dd007eb68c5f4d047cbd43",
+        "reason": "Existing summary loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/distribution-dynamics/gpu-transition-diagnostics.ts": [
+      {
+        "id": "081795335bb57b3e79f47f5c54dd077f60283a507364b83bc3ca50f06e0b3178:1",
+        "description": "GPUTransitionDiagnostics.getCommandNodes: kernel [\"\\u0000-summary\",\"\\u0000-summary\",\"\\u0000-summary\"] shader 077936777ef89cc81bc564a2b16cfab9a8aff618310f3e5931f109efda9894d7",
+        "reason": "Review follow-up: conditional expressions/guarded writes expose 1 additional existing loop invocation(s); retained pending data-range/bounded-work review."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/geographical-detector/gpu-geographical-detector.ts": [
+      {
+        "id": "d906755bc29f3863172988d52e943d523e908b18194cb48e64f0244d6f97e581:1",
+        "description": "GPUGeographicalDetector.getCommandNodes: kernel [\"\\u0000-summary\"] shader d6aafc4c218fd554518ddcf5feecfb7e74bd62bd3a102691d87c4e91d09b60c3",
+        "reason": "Existing summary loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/geometry-refinement/gpu-line-loop-removal.ts": [
+      {
+        "id": "3fd20c2c597875308e96fcd5ed63ca7ed3db303a833b2fb8486b3590cb8749e3:1",
+        "description": "GPULineLoopRemoval.getCommandNodes: kernel [\"\\u0000-publish-offsets\"] shader 5a1636f4cb4eae063819acafeaa6b60e51cdf9d028d890920f2e3661bd9a33bc",
+        "reason": "Existing publish-offsets loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/geometry-refinement/gpu-offset-curve-components.ts": [
+      {
+        "id": "e53c1997a2e31879a28ebe313d4b8d916bd9c832f9ea6ff5bb9cd7090b0bea8a:1",
+        "description": "GPUOffsetCurveComponents.getCommandNodes: kernel [\"\\u0000-components\"] shader 4d1142ccbaa07902eb20a2c68f5c2cd5c3158162c47cded2c2453ebb91b1beb9",
+        "owner": "gates-scripts",
+        "reason": "Owner: gates-scripts. Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability. Reconciliation: Serial fragment cancellation and connected-component traversal over segmentCapacity * (6 * original.positions.length + 1) fragments; fragment metadata words are capped by MAXIMUM_FRAGMENT_WORD_COUNT = 0xffffffff, so fragments <= floor(0xffffffff / 4). Output clearing is separately capped by the same named word limit. This is a large legacy serial departure, not a scalability claim."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/geometry-refinement/gpu-precision-reduction.ts": [
+      {
+        "id": "6c77f10f61a345e213b300f31109ff57366b87851c95cb7092fcde2c3799a9cf:1",
+        "description": "GPUPolygonPrecisionReduction.getCommandNodes: kernel [\"\\u0000-empty-status-\\u0000\"] shader 332d1f9d53c4a73e81a47b91f276fcec7bda0304a92e9064ec9bed19d776eb80",
+        "reason": "Existing unnamed kernel loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/global-coordinates/gpu-spherical-arc-overlay.ts": [
+      {
+        "id": "abc0868e8b42f76f35881ad9ca28d0601c5475441664b6fad888ecda860a96be:1",
+        "description": "GPUSphericalArcOverlay.getCommandNodes: kernel [\"\\u0000\"] shader d56dc6a52ce49d5b8c7bdf134cd88423f1ef0fe16d7bad311109258ca0c1ba65",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/line-clip/gpu-line-clip-by-polygon.ts": [
+      {
+        "id": "d7d972b22f1f208c4399f770782c761fea4cc7e81097c98d053c8238c80b9e60:1",
+        "description": "GPULineClipByPolygon.getCommandNodes: kernel [\"\\u0000-finalize\"] shader 68ec7882a71b640b65345d2d9d810baf21c3d217c9bad2bddaf8e38e5ec2ae3f",
+        "reason": "Existing finalize loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/line-clip/gpu-shared-paths.ts": [
+      {
+        "id": "def2a9cfe41f04394f369946437db6cd34fc5f48fdf285eadf8085632e921fa0:1",
+        "description": "GPUSharedPaths.getCommandNodes: kernel [\"\\u0000-finalize\"] shader 53aeede302e82e1fbe97ef57aa9811a34cb4f1f91c662ccf1884838848581dc8",
+        "reason": "Existing finalize loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/line-split/gpu-line-split.ts": [
+      {
+        "id": "8496d4669ba74e5d973c94392bab744a56b5436f64efcae146f396be06ac2b74:1",
+        "description": "GPULineSplit.getCommandNodes: kernel [\"\\u0000-finalize\"] shader 50e318aa9eb2178fe00e2d82893959194d4a1ebb212ac112f9da56191bd6112a",
+        "reason": "Existing finalize loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/location-allocation/gpu-bounded-facility-allocation.ts": [
+      {
+        "id": "7a1e94a8c830872d0979afde58589db056712f4108489f83c9e0b75b9d9e0849:1",
+        "description": "GPUBoundedFacilityAllocation.getCommandNodes: kernel [\"\\u0000-choose\"] shader ae6eaa6cbd4006734b042e42a8d5fd6071d951a52ec7e404763e1b4b85407741",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/location-allocation/gpu-location-allocation.ts": [
+      {
+        "id": "f8bf7c98aef08a4dd7d1a235a7c9bab825386620d05cc77fc2c3fdd7a0298ab1:1",
+        "description": "GPULocationAllocation.getSwapNodes: kernel [\"\\u0000-swap-\\u0000-list\"] shader 952c68394207c9ae653572a8557340f3fb504c4fff11b2a64ae2f390d14f9dd1",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/multiple-testing/gpu-multiple-testing-adjustment.ts": [
+      {
+        "id": "eb35b5f2d803c2febacfea2c83425984a8b8a08c2cf0e195e9c4ad79355c7d10:1",
+        "description": "GPUMultipleTestingAdjustment.getCommandNodes: kernel [\"\\u0000-family\"] shader 3ab83e0bd5f7d666c5d5dd717c4081fe5c7f49b0485e4671736bc72805fe6074",
+        "reason": "Review follow-up: conditional expressions/guarded writes expose 1 additional existing loop invocation(s); retained pending data-range/bounded-work review."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/neighbor-search/neighbor-search-derived-parameters.ts": [
+      {
+        "id": "a6426216d67eb976631bddf2d223f8baa0d501a67856620e1a1bf3b6051f1e02:1",
+        "description": "createNeighborSearchDerivedParameterNodes: kernel [\"\\u0000-parameters\"] shader 49a76ecc179a34ff9e742314a7bdc6bcfa9c8901f97a20e126fa73a3ae1bc2ac",
+        "reason": "Review follow-up: conditional expressions/guarded writes expose 1 additional existing loop invocation(s); retained pending data-range/bounded-work review."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/permutation-inference/gpu-global-permutation-test.ts": [
+      {
+        "id": "4bdeefbacb6f96b084ce7c4a7ec464f7851fd27a1b30721af0de8a94142663c5:1",
+        "description": "GPUGlobalPermutationTest.getMaterializedBatchNodes.nodes: kernel [\"\\u0000-materialized-init\"] shader 5e185db75d0bede6afb2f0e17ecd8fab82e2134811981aeb39eb021af322b041",
+        "reason": "Existing materialized-init, sequential-init loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      },
+      {
+        "id": "8fadbd8c1e4901951972741db473aceae883ad853edafa42be072bfa8ccbc2ce:1",
+        "description": "GPUGlobalPermutationTest.getSequentialBatchNodes.nodes: kernel [\"\\u0000-sequential-init\"] shader c0be25d93bb2a4e32d2092f53834fc1c3f6029919dd82242b8e11f529053f241",
+        "reason": "Existing materialized-init, sequential-init loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/point-process/gpu-point-pattern-envelope.ts": [
+      {
+        "id": "70ee3c675b66cd8693323b48993254779638024af910f6887834a26d39d390d3:1",
+        "description": "GPUPointPatternEnvelope.getCommandNodes: kernel [\"\\u0000-test\"] shader 231c69504b2632a23b7c665087fe367109edd1be242e495acfef4f76d20fbc2a",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/point-process/gpu-point-pattern-rank-envelope.ts": [
+      {
+        "id": "975c5f3445e40b8a0870f131a35ff8d049f6eefca57510b6c35ab8f17d8a7d1b:1",
+        "description": "createRankEnvelopeNodes: kernel [\"\\u0000-rank-test\"] shader 4521981e9ed7d9f9bafb5fea583fdec59323b3fc276404b23d3a8c17b6b2ef3b",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/point-process/gpu-spatial-balanced-sample.ts": [
+      {
+        "id": "02252c53835aaf253a2b09221fa7e50c038408c92301fad55132baffe71fdcff:1",
+        "description": "GPUSpatialBalancedSample.getCommandNodes: kernel [\"\\u0000-select-\\u0000\"] shader 5c726368678b79b89b7fd3598f0596ff6a9e90acff100fea3dbc71f2dd7d7aa9",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/rectangle-clip/rectangle-clip-kernels.ts": [
+      {
+        "id": "ef446f5868031f163055fe2013f012503b8597d6f5ed4cb4bc42e632f17d4256:1",
+        "description": "createPolygonPublishNode: kernel [\"\\u0000\"] shader d3ee10ef117d45868a8cd5a2cadb9b0d19db6d6ae8a6e0a09a8e24e601236383",
+        "reason": "Existing polygon-publish loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/region-statistics/region-statistics-grid.ts": [
+      {
+        "id": "df220d811e6f99ef6aafe5cad442db92d13684e3b6fb8fad58cc02aea77a5b85:1",
+        "description": "getGridCandidateNodes: kernel [\"\\u0000-polygon-bounds-kernel\"] shader d4b838c5f68844cbc667f4a1e8bb1d115c72e91dac2e4ffa10e7ce196beb59e8",
+        "reason": "Existing polygon-bounds, grid-cell-ranges loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      },
+      {
+        "id": "4422bc14178b884699a2728d1c58dcbeced913af294fb1eb0e45d788ee4e0da9:1",
+        "description": "getGridCandidateNodes: kernel [\"\\u0000-cell-ranges\"] shader 97d0dccc328ebdb12c492a99f34ddc8b91054bed733d9ae40d3c4dc41ba8f98b",
+        "reason": "Existing polygon-bounds, grid-cell-ranges loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/scan-statistics/gpu-spatial-scan-statistic.ts": [
+      {
+        "id": "1f2f405b69223c319caf8477d15bef91bb2c82fc007ead4bb59599ddaecbbb97:1",
+        "description": "GPUSpatialScanStatistic.getCommandNodes: kernel [\"\\u0000-margin-cumulative\"] shader 479c8e348e8a0f507f0e0e9cd2d5ed639ca6a292dff797d3d3d9124718a43475",
+        "reason": "Existing margin-cumulative, totals, round-select, summary loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      },
+      {
+        "id": "d4f39e3cd2433f9768bca6477082314ef42b6d59ef5f3e09959925616b0f977e:1",
+        "description": "GPUSpatialScanStatistic.getCommandNodes: kernel [\"\\u0000-totals\"] shader 14bd7a9eb6afcf0b63ab6a9b338e1b2fdbd69931e46f378af8ee9c6c440cb727",
+        "reason": "Existing margin-cumulative, totals, round-select, summary loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      },
+      {
+        "id": "c3b81914f86504e42cb21c0bb66d58d534d7437f44fa7efe5b79a9a8423057e9:1",
+        "description": "GPUSpatialScanStatistic.getCommandNodes: kernel [\"\\u0000-round-select-\\u0000\"] shader fb701266f617dc28c1bbd0eeec20b6952a350ed0294ea99da720f603b3e8826c",
+        "reason": "Existing margin-cumulative, totals, round-select, summary loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      },
+      {
+        "id": "840cc12a19c5c5fe94636706afabe0c15792750b6f620f62a61163b0e5fc135e:1",
+        "description": "GPUSpatialScanStatistic.getCommandNodes: kernel [\"\\u0000-summary\"] shader c99d0841b0998712ee2382203f91e7186a610835b350ce8ca7d2bcf5f9274d98",
+        "reason": "Existing margin-cumulative, totals, round-select, summary loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/space-time-tests/gpu-jacquez-test.ts": [
+      {
+        "id": "4530e63f77f5a2bacb9a807e68fefd7845cb5134f1e803f4c55fd642720297a1:1",
+        "description": "GPUJacquezTest.getCommandNodes: kernel [\"\\u0000-summary\"] shader 1932e9ae17836b18d6c3e2c51a82a99124addaef018c70ab39ff997fa52b96fc",
+        "reason": "Existing summary loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/space-time-tests/gpu-knox-test.ts": [
+      {
+        "id": "4e696cbc7130c49087fd097e231999bf89ba1d78aa540287fc44d8ac24e01f3a:1",
+        "description": "GPUKnoxTest.getCommandNodes.nodes: kernel [\"\\u0000-summary\"] shader dc7ee5ca7acbd89bbe3490d3f7e329a08f27e188fbc6d65da069790f4719b5cf",
+        "reason": "Existing summary loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/space-time-tests/gpu-mantel-test.ts": [
+      {
+        "id": "c1816b47ffb0fe488fdcbb7485bcf5e57b8e9ffa77189b7c42341a9d7559029d:1",
+        "description": "GPUMantelTest.getCommandNodes: kernel [\"\\u0000-shift\"] shader b86fca369fa30543b6f923743bc6e1cfaa1b9f1f7cc21c0d740ece243f27cac4",
+        "reason": "Existing shift loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/space-time-tests/space-time-stopping.ts": [
+      {
+        "id": "11f6f9f3cc11e1f7bfff8a87aa4bddbef13ac9294172941dbd2bae7aee697d40:1",
+        "description": "createSpaceTimeStoppingNodes: kernel [\"\\u0000-batch-\\u0000-scan\"] shader 3e9dd050e8e4e6250e124cd11482ce573bed444b67e05e8d400807771bf3c442",
+        "reason": "Existing stop-scan loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/spatial-clustering/gpu-optics-xi.ts": [
+      {
+        "id": "6a7ffba7d2baaf0557951da2b54e9757a1a6ea2468c2219998aa31726dd717d2:1",
+        "description": "createOPTICSXiNodes: kernel [\"\\u0000-xi-\\u0000\"] shader 23dd28f0e32c86b3290244bc009c77d2e91114fe735197c496e5c7ae8932103e",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/spatial-entropy/gpu-spatial-entropy.ts": [
+      {
+        "id": "20e1435c08b24b8565baf2518a25b80fdb8737680da4abe844d56207f3bd0cfc:1",
+        "description": "GPUSpatialEntropy.getCommandNodes: kernel [\"\\u0000-summary\"] shader fca5d28b896620e59eaa3e9ba50a27aa5743e4c3982d239c30a708b7c45ae924",
+        "reason": "Existing summary loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/spatial-interaction/gpu-spatial-interaction.ts": [
+      {
+        "id": "a95ef9e4ad360437cc524d907a2b1424b6152aa955793bab2fa168531ba7b8eb:1",
+        "description": "GPUSpatialInteraction.getCommandNodes: kernel [\"\\u0000-select\"] shader be89c53836e6c2000f4cf753777c07c9c19a1322368298c36bb63c8ce7f8dbe5",
+        "reason": "Existing select-grid-optimum loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/spatial-regionalization/gpu-max-p-regions.ts": [
+      {
+        "id": "6147af07d6b65a63a5bc79443c23d5728c2e2dd18dd08af0ecb86d5db0976d42:1",
+        "description": "GPUMaxPRegions.getCommandNodes.nodes: kernel [\"\\u0000-initialize\"] shader beb832568b8fb2ab1ba1588f4a9fcd098d960f327ad08365be9e8b940fd174ec",
+        "reason": "Existing initialize, round-control, select-start loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      },
+      {
+        "id": "c99420312ef1f2a901c1af59432d0c4db945e9d70c16ea389be0d7a3648059f3:1",
+        "description": "GPUMaxPRegions.getCommandNodes: kernel [\"\\u0000-round-\\u0000-control\"] shader 5e5586282189efebdaeb2d3fe875269c4396414aca241861c5e9dfb736da3bad",
+        "reason": "Existing initialize, round-control, select-start loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      },
+      {
+        "id": "53054f2915f437df8889e141946342822b158a6a0c16307c9467fbc552bdeb74:1",
+        "description": "GPUMaxPRegions.getCommandNodes: kernel [\"\\u0000-select-start\"] shader bebb5fef2910d13c594de7c8d6ebe9972c7f9bc925dc89ec8aca1693d222deab",
+        "reason": "Existing initialize, round-control, select-start loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/spatial-regionalization/gpu-region-partition-evaluation.ts": [
+      {
+        "id": "156945ffc3e085d21236b2d1c93b4f91702b13d9474d84ddb8fe6284b6c15062:1",
+        "description": "GPURegionPartitionEvaluation.getCommandNodes: kernel [\"\\u0000-summary\"] shader 4c6070d4c94992e4764d40ab125886d7fe218572ba0fd1f0a3389139defb779f",
+        "reason": "Existing summary loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/spatial-regionalization/gpu-skater-regions.ts": [
+      {
+        "id": "53678f33fc62a4de1e322694dc0afd36cb684e894fe71d0904f3aa8367b441e2:1",
+        "description": "GPUSkaterRegions.getCommandNodes: kernel [\"\\u0000-step-\\u0000-apply\"] shader d9a79b636e7db5a2bfc03fce599b45cfb534152b7282bf2c1744a7766c7ecef2",
+        "reason": "Existing apply loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/spatial-regionalization/gpu-ward-regions.ts": [
+      {
+        "id": "192fe60dc5532e0f566b87a3fdc286a1352626f758445c4ab9db2c59afce173a:1",
+        "description": "GPUWardRegions.getCommandNodes: kernel [\"\\u0000-iteration-\\u0000-apply\"] shader 8283751d4b197564746d3ba0ae768a508e31acc6fb7e61b6e3928ba9618ebad8",
+        "reason": "Existing apply-merge loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged. Review follow-up: conditional expressions/guarded writes expose 1 additional existing loop invocation(s); retained pending data-range/bounded-work review."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/spatial-regionalization/ward-mutual-selection.ts": [
+      {
+        "id": "f5abd9dcfe9eaea3340819d96a008916571ea6800d66b257519067756c97cec6:1",
+        "description": "getWardMutualSelectionNodes: kernel [\"\\u0000-selection-choose-\\u0000\"] shader 504a696053130cd47b55b885d7aba1846acb172ffc1259014c9f26fe4d200739",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/spatial-regression/gpu-geographically-temporally-weighted-regression.ts": [
+      {
+        "id": "887e250ad50eeed53ffd19235ac9e0e3bee01bee9d65ff1fc8512477e76d5f04:1",
+        "description": "GPUGeographicallyTemporallyWeightedRegression.createNodes: kernel [\"\\u0000-summary\"] shader d18e03edcba07ec3adf1210c7e2088fe65715f2d1550dbe03b4cd8b69235a636",
+        "reason": "Existing summary loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/spatial-regression/gpu-geographically-weighted-regression-nonstationarity-test.ts": [
+      {
+        "id": "40329174dcefa0f3e483d361d33fab991940512a019898350ff3f0505df36ed7:1",
+        "description": "GPUGeographicallyWeightedRegressionNonstationarityTest.getCommandNodes.nodes: kernel [\"\\u0000-anchor\"] shader 6b30f9fd8d9ad4b66aac994865fd251c3fffe5accae1096b3458c4d8b8cfbb8e",
+        "reason": "Existing anchor loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/spatial-regression/gpu-geographically-weighted-regression.ts": [
+      {
+        "id": "bb4923682e2a36ca3fd5bafdceb1e1e9ba9a0d1e307e5a7c62b64d6c566e9e5b:1",
+        "description": "GPUGeographicallyWeightedRegression.getCommandNodes: kernel [\"\\u0000-ladder-init\"] shader c656900f6e1bd636e4b1237fe5d8e8442fd8a1fdf1d8eca039d9c54531a96922",
+        "reason": "Existing ladder-init, refine-ladder, choose, summarize loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      },
+      {
+        "id": "8aeb1172653b2ac5571650203e9edd0f90fd0e9b63a02815726304603cf28f4e:1",
+        "description": "GPUGeographicallyWeightedRegression.getCommandNodes: kernel [\"\\u0000-refine-\\u0000-ladder\",\"\\u0000-refine-\\u0000-ladder\"] shader 1e073f9542c2d5fa3fd753229ee1991953b787f785865a22b754f3974970cf64",
+        "reason": "Existing ladder-init, refine-ladder, choose, summarize loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      },
+      {
+        "id": "97dd00d09923aa44b214d214a0b93c9a9d0e3bffc82825abc2ae9f923c2a4163:1",
+        "description": "GPUGeographicallyWeightedRegression.getCommandNodes: kernel [\"\\u0000-choose\"] shader d8deeabf10eef9585e2224e47554d9656e2967edd788a1b17b4cef6d9008dfb4",
+        "reason": "Existing ladder-init, refine-ladder, choose, summarize loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      },
+      {
+        "id": "444864ecd1b37cc590fe5cb361dbc39d91ce367d93c6dca9a8a1575a47a12b75:1",
+        "description": "GPUGeographicallyWeightedRegression.getCommandNodes.appendSummaryNodes: kernel [\"\\u0000-summarize\"] shader 7a91f3b1cd0ddd4f47d74ffc3c0e2d67d6eb087fea4176f645dd7ec611f012a4",
+        "reason": "Existing ladder-init, refine-ladder, choose, summarize loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/spatial-regression/gpu-instrumental-variables-covariance.ts": [
+      {
+        "id": "a240dd4f20f99481279a810a71d7c7c7ba483cc322041c18fd4d9b1921c3c20f:1",
+        "description": "GPUInstrumentalVariablesCovariance.getCommandNodes.nodes: kernel [\"\\u0000-projection\"] shader fea09e026ecba0f956320d998d12ae921431456dd2e260d2c667ac3833febdab",
+        "owner": "gates-scripts",
+        "reason": "Owner: gates-scripts. Dense projection/Cholesky loops over at most 15 centered coefficients and 16 instruments, capped by INSTRUMENTAL_VARIABLES_COVARIANCE_MAXIMUM_COEFFICIENT_COUNT and INSTRUMENTAL_VARIABLES_COVARIANCE_MAXIMUM_INSTRUMENT_COUNT; row moments are reduced separately."
+      },
+      {
+        "id": "d327d93aee3be50f9f65a66acf01ae50fe31775dff84e327458f7a623157910d:1",
+        "description": "GPUInstrumentalVariablesCovariance.getCommandNodes: kernel [\"\\u0000-finish\"] shader 48f41d876383b9bb613b1b13c0daafe263d51c5170fc5b122f17a08ca7390ec5",
+        "owner": "gates-scripts",
+        "reason": "Owner: gates-scripts. Covariance symmetrization, PSD check and publication over at most 16 total coefficients (15 centered plus intercept), hence 256 matrix entries; capped by INSTRUMENTAL_VARIABLES_COVARIANCE_MAXIMUM_COEFFICIENT_COUNT = 15."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/spatial-regression/gpu-multiscale-geographically-temporally-weighted-regression.ts": [
+      {
+        "id": "2efc4edb2fd3104ff2ec72a8d3ee432d42285d423d8dc24b06dbbfe9eb1265c4:1",
+        "description": "GPUMultiscaleGeographicallyTemporallyWeightedRegression.getCommandNodes: kernel [\"\\u0000-iteration-\\u0000-score\"] shader 7ae20ecd372bbad803ea40a94e9bc0cea8f959a61e660972802d9dd15e9e4d03",
+        "reason": "Existing convergence-score loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/spatial-regression/gpu-probit-regression.ts": [
+      {
+        "id": "f681340abbe4ae11bea5091108aaa3c0fc460fd084bf42db2aa446181558e1dc:1",
+        "description": "GPUProbitRegression.getCommandNodes: kernel [\"\\u0000-spatial-diagnostics\"] shader 82b07e10d9a30fad487c6e198c3a697ff4ec5017d1c818c320ebf10fdec1b722",
+        "reason": "Existing pinkse-kp-pinkse-slade loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/spatial-regression/gpu-spatial-error-gm.ts": [
+      {
+        "id": "a58bb6e93d5c1d0a4861f772fc56004325087c024a200c2be7be02fa8144c371:1",
+        "description": "GPUSpatialErrorGM.getCommandNodes.nodes: kernel [\"\\u0000-weights-norm-merge\"] shader 5e3267757679cc5bda90f49259cc30429e39cd0520150f958770183736593d29",
+        "owner": "gates-scripts",
+        "reason": "Owner: gates-scripts. Serial maximum over TILE_COUNT CSR row-tile partials. Constructor validateMaximumCount enforces tileCount <= MAXIMUM_TILE_COUNT = 4096, including caller tileRowCount and the sum of per-chunk tile counts."
+      },
+      {
+        "id": "478880ea39c114ceee97a6d98c3bda35f70b5162c045df1b7928bbce6a98150d:1",
+        "description": "GPUSpatialErrorGM.getCommandNodes: kernel [\"\\u0000-filtered-solve\"] shader ac0c89ea63710cca0d519eb3eeb3d60563faa823a75ff1b7e4f6cba1a947d800",
+        "owner": "gates-scripts",
+        "reason": "Owner: gates-scripts. Dense filtered regression/conditioning loops over predictorCount + 1 <= 16 coefficients, capped by GPU_SPATIAL_ERROR_GM_MAXIMUM_PREDICTOR_COUNT = 15; spectral diagnostics use SYMMETRIC_EIGENVALUE_SWEEP_COUNT = 16. No input-row scan."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/spatial-regression/gpu-spatial-panel-error-maximum-likelihood.ts": [
+      {
+        "id": "32e96b6d288e660055b7b58f2ac77df6fd662c86a5a7fc7b16337e538c84e054:1",
+        "description": "GPUSpatialPanelErrorMaximumLikelihood.getCommandNodes: kernel [\"\\u0000-finish\"] shader ca2472bc22209f91a8f43d977d448c645a425ecbd91cbd6c5650030b957faaa2",
+        "reason": "Existing absorbed-intercept loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/spatial-regression/gpu-spatial-panel-lag-maximum-likelihood.ts": [
+      {
+        "id": "9624136d18ed8d0afc2bd3ab4095f7e5a884d7e77f31223abb537f20f50880ed:1",
+        "description": "GPUSpatialPanelLagMaximumLikelihood.getCommandNodes.addFit: kernel [\"\\u0000-random-fit\",\"\\u0000-unit-fit\"] shader 742a4e8dce81b6a14996e9ed59b093150bb2de3bcec12980c3a8ff9a5f3f99aa",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      },
+      {
+        "id": "46dd6d127f4fd4a0b7fb5cd8c591bff81bc7cda5efb04adad6439c80f4d8cbfc:1",
+        "description": "GPUSpatialPanelLagMaximumLikelihood.getCommandNodes: kernel [\"\\u0000-publish\"] shader a30d472b67f6afa128e1cdd222b65caec21809531111270e925d8e2b0bd68962",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      },
+      {
+        "id": "206a3883bcad25458928a4fdcbf9bee34ec4860e7621b0c0ae9c4fa46ffe4aff:1",
+        "description": "GPUSpatialPanelLagMaximumLikelihood.getCommandNodes: kernel [\"\\u0000-hausman\"] shader 12e8dcd6f548fe84ede6ec9c6afa14a6c8d1dffbc6e5c7ee9d06312f1349575f",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/spatial-regression/gpu-spatial-panel-regression.ts": [
+      {
+        "id": "aca5907ac322fe173217b208fde7315aaecfdb35685410fe655dd11ae7518dcf:1",
+        "description": "GPUSpatialPanelRegression.getCommandNodes: kernel [\"\\u0000-within-finish\"] shader 3728d5b73c5d74b4929fe5e1edb40c14e26e0ec473e6a46e9e1f096122f6ce8f",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/spatial-regression/gpu-spatial-two-stage-least-squares.ts": [
+      {
+        "id": "d4e8fcba566d8ddee68b1e90d920f196a05b1e08aca272fac30eb3413db54fd8:1",
+        "description": "GPUSpatialTwoStageLeastSquares.getCommandNodes.nodes: kernel [\"\\u0000-weights-norm-merge\"] shader 2aae379cfa0851c4bac23b7cb064863b56247d5698c710bea07892921c053af8",
+        "owner": "gates-scripts",
+        "reason": "Owner: gates-scripts. Serial maximum and pairwise sum over TILE_COUNT row-tile partials. Constructor validateMaximumCount enforces tileCount <= MAXIMUM_TILE_COUNT = 4096, including caller tileRowCount."
+      },
+      {
+        "id": "06d772c17f688004944624461ac4900b774f7431a7588a6af0c28a7b7dffdda9:1",
+        "description": "GPUSpatialTwoStageLeastSquares.getCommandNodes.nodes: kernel [\"\\u0000-solve\"] shader 5d0ae0c0b5240cd40d2283e48d700dd219082f157f2c85dab9aa86c7548ebdbd",
+        "owner": "gates-scripts",
+        "reason": "Owner: gates-scripts. Dense instrumented normal-system solve over M <= 16 instrument columns and Q <= 9 regression columns, capped by getGPUSpatialTwoStageLeastSquaresMaximumPredictorCount(order) = floor(16 / (order + 1)); spectral diagnostics use SYMMETRIC_EIGENVALUE_SWEEP_COUNT = 16. Row moments are pre-reduced."
+      },
+      {
+        "id": "2136be76d145eb9a6c436fb156443bd795652abf6edf3534b17c8c2d443709b6:1",
+        "description": "GPUSpatialTwoStageLeastSquares.getCommandNodes.nodes: kernel [\"\\u0000-refine\"] shader 76f8f4879d624ca02c0d10b9a68cd09a3b7cb62922e7b0debf3ddd50a69d398b",
+        "owner": "gates-scripts",
+        "reason": "Owner: gates-scripts. Dense residual-correction solve over M <= 16 instrument columns and Q <= 9 regression columns, capped by getGPUSpatialTwoStageLeastSquaresMaximumPredictorCount(order) = floor(16 / (order + 1)); spectral diagnostics use SYMMETRIC_EIGENVALUE_SWEEP_COUNT = 16. No input-row scan."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/spatial-regression/gpu-spatial-weights-traces.ts": [
+      {
+        "id": "050157e51e899f5d0b2886c6ce3c16422d9b4ee61e3110126a26718e6217ae37:1",
+        "description": "GPUSpatialWeightsTraces.getCommandNodes: kernel [\"\\u0000-norm-merge\"] shader 227c2f5b9c5ed27dc1e4ec8663bf82a9e3ee4c63521a29364286f1768b81b91d",
+        "owner": "gates-scripts",
+        "reason": "Owner: gates-scripts. Serial maximum over TILE_COUNT CSR norm partials. Constructor validateMaximumCount enforces tileCount <= MAXIMUM_TILE_COUNT = 4096, including caller tileRowCount and the sum of per-chunk tile counts; the default whole-CSR target remains 1024."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/spatial-regression/gtwr-bandwidth-search.ts": [
+      {
+        "id": "f99721c03eaa76052930ba411badbb077e8aaeea43ae8a880abf85a020977a9d:1",
+        "description": "createMGTWRComponentEvaluationNodes: kernel [\"\\u0000-summary\"] shader 7768c303261fd6f2e6d4be0ea9386d09a3cd471e7a9d5ac3345d39b1d0ebda93",
+        "reason": "Existing unnamed kernel loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/spatial-regression/gwr-grid-index.ts": [
+      {
+        "id": "73939737b05e7fc45cf88d286b394142c14d119934910c524429efecd827b6e2:1",
+        "description": "createGridIndexNodes.nodes: kernel [\"\\u0000-grid-bounds\"] shader f44c5c372814ac2b71ef8b79a0c40c208424d7d9b41b747fffa1bdf1648ddd14",
+        "reason": "Existing grid-bounds loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/spatial-regression/multiscale-inference.ts": [
+      {
+        "id": "2cb830d77696c235ae124f05fb94887daa67e39ac5b03bdf7f034a48d79fcfce:1",
+        "description": "createMultiscaleInference: kernel [\"\\u0000-full-inference-summary\"] shader 0ba30dfbad203e6877a8a41b2804adf523edc35d1a4e1e0bd944dcadca5fc9ed",
+        "reason": "Existing full-inference-summary loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/spatial-regression/ordinary-sur-nodes.ts": [
+      {
+        "id": "722537cb750c079d8317693513874dd9974df53197b12821d6bbcfe79783d691:1",
+        "description": "getOrdinarySURNodes: kernel [\"\\u0000-merge-means\"] shader 082235ba6ed4cb8e10b97558b8df639454ba4c65fe87a891b8bc5ee17badc5fb",
+        "owner": "gates-scripts",
+        "reason": "Owner: gates-scripts. Merge at most MAXIMUM_DEFAULT_TILE_COUNT = 4096 row tiles from getRegressionTileLayout; coefficient/output loops are capped by MAXIMUM_SYSTEM_COEFFICIENT_COUNT = 16 (256 covariance entries) and MAXIMUM_EQUATION_COUNT = 4."
+      },
+      {
+        "id": "1b9a5d46437af05438617f830fd1a72fb67e670d3ffa8e4c2ca74f5cc8433aa2:1",
+        "description": "getOrdinarySURNodes: kernel [\"\\u0000-solve-ols\"] shader b800e20741f7649800d33dea2f021cd4c284b4c649e49007d21ee2f59638b7ca",
+        "owner": "gates-scripts",
+        "reason": "Owner: gates-scripts. Per-equation dense OLS solves over <= MAXIMUM_EQUATION_COUNT = 4 equations and <= MAXIMUM_PREDICTOR_COUNT = 7 centered columns; each sumPartials merge visits <= MAXIMUM_DEFAULT_TILE_COUNT = 4096 tiles from getRegressionTileLayout."
+      },
+      {
+        "id": "d13e0174d169cafc36d4689249e311f5894be000b68ae5242454ecbe62035e8a:1",
+        "description": "getOrdinarySURNodes: kernel [\"\\u0000-solve-error-covariance\"] shader f228c4390d25e1f7bd65bfc57041ac8f223619dd0fb8c52948df2b2f9f1b478f",
+        "owner": "gates-scripts",
+        "reason": "Owner: gates-scripts. Dense residual-covariance solve over <= MAXIMUM_EQUATION_COUNT = 4 equations (16 matrix entries); each sumPartials merge visits <= MAXIMUM_DEFAULT_TILE_COUNT = 4096 tiles from getRegressionTileLayout."
+      },
+      {
+        "id": "f0c79cb1a198890744f4b2d9d27e9b2384f6bee49f8d515f456d0576ed3b1cc9:1",
+        "description": "getOrdinarySURNodes: kernel [\"\\u0000-solve-gls\"] shader 107f4f2869015c647a56ed92d5eea7796656ae6708fa07fd7cc266b8c83d9bd7",
+        "owner": "gates-scripts",
+        "reason": "Owner: gates-scripts. Dense GLS solve/publication over <= MAXIMUM_SYSTEM_COEFFICIENT_COUNT = 16 coefficients (256 covariance entries); each sumPartials merge visits <= MAXIMUM_DEFAULT_TILE_COUNT = 4096 tiles from getRegressionTileLayout."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/spatial-regression/panel-diagnostics.ts": [
+      {
+        "id": "61866dfd358eed342036ede92c2f6c57ae41f56d2a13d6948ea4e3cfe788f4db:1",
+        "description": "getPanelDiagnosticNodes: kernel [\"\\u0000-diagnostic-tests\"] shader dc55d725351e05638d5545d9c35d4da221f9414fc39ace1e73475e6cd83d7d8a",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/spatial-validation/gpu-area-of-applicability.ts": [
+      {
+        "id": "530aba615f83f5a37e0624ac4afb4a6821e2aeb136eca484c5e8b63205d4280f:1",
+        "description": "GPUAreaOfApplicability.getCommandNodes: kernel [\"\\u0000-mean-distance\"] shader f176c567e6ecaabd68a32a32fd512bfe2631c953d2b4358c281af1274299e21c",
+        "reason": "Existing mean-distance, threshold loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      },
+      {
+        "id": "1632a982d368fe8124870eecec7a08fc3d2c4bc0c0597c7075fbb8eb32c9beaf:1",
+        "description": "GPUAreaOfApplicability.getCommandNodes: kernel [\"\\u0000-threshold\"] shader 93d782c201e920b76c7b29fb43769d67f7304ce300ab2a8a9cbd9c9888a57a29",
+        "reason": "Existing mean-distance, threshold loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/spatial-validation/nested-validation-nodes.ts": [
+      {
+        "id": "3887860872eaf9238a041c9ff91f6cb9a89f8bb01db17b29c7dedbcb68929748:1",
+        "description": "getNestedValidationNodes: kernel [\"\\u0000-fold-\\u0000-select\"] shader 184bcb501b5caa4a992f3c2402fe544157dbbc4f6ae0f07c85d2f22876b67832",
+        "owner": "gates-scripts",
+        "reason": "Owner: gates-scripts. Candidate-score selection over <= MAXIMUM_CANDIDATE_COUNT = 16 candidates, enforced by GPUNestedInterpolationValidation; no input-row scan."
+      },
+      {
+        "id": "aa74f96278305ce4932b4798e3a1d3806fe372b1ac4ad4124bdd8ce1c4622911:1",
+        "description": "getNestedValidationNodes: kernel [\"\\u0000-fold-\\u0000-metric-merge\"] shader b4e41154469b9eec84397f8d6e8f02e6f6ee1ad4de92e5e66851f8241a096d39",
+        "owner": "gates-scripts",
+        "reason": "Owner: gates-scripts. Merge metric partials from at most 64 tiles: GPU_NESTED_VALIDATION_MAXIMUM_ROW_COUNT = 4096 and getRegressionTileLayout minimum tile rows = 64; the reference route uses one tile with <= GPU_NESTED_VALIDATION_REFERENCE_MAXIMUM_ROW_COUNT = 256 rows."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/spatial-validation/spatial-validation-design.ts": [
+      {
+        "id": "c16f2fe38e5ba2a8c4dd655ca4e3d27c3fe4dae2ac8797f90d24356d72353431:1",
+        "description": "createSpatialValidationDesignNodes: kernel [\"\\u0000-design\"] shader c013b90cbf92b7fc6fbc04f8437065d17ac61e3580b6db37064a05bc2d2941f5",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/study-window/gpu-study-window-preparation.ts": [
+      {
+        "id": "e87ba0c7ea9ca56945ad73c3511ce07fd6c554efb24bd4208c044b6b284d7dbe:1",
+        "description": "GPUStudyWindowPreparation.getCommandNodes: kernel [\"\\u0000-summarize\"] shader f264130155b52fbe3b342c0f130a150db2acca79d30a5082d075f7b4767f6e7c",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      },
+      {
+        "id": "9a414c0c094f13ab8654c34599be73041a101707788619c266be58f7c526e27f:1",
+        "description": "GPUStudyWindowPreparation.getCommandNodes: kernel [\"\\u0000-sample-parameters\"] shader e1de6a9de5996fbaddccf3f4a28bc72d935de8c3b7be6c357f7d15f250c2f48d",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/trajectory-restriction/trajectory-restriction-kernels.ts": [
+      {
+        "id": "31b4283543f673adb19e617bcf460b325ffa2c025390959e10da70e5a42173cf:1",
+        "description": "createTrajectoryRestrictionNodes: kernel [\"\\u0000-compact\"] shader 2790e197ec5f97089565b597d25a6ae25c971b2dccec93e7517cdc944766c34a",
+        "reason": "Existing unnamed kernel loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/trajectory-staypoints/gpu-trajectory-locations.ts": [
+      {
+        "id": "0cba76409fe62377d685e085d3098f9d71f6035691823517a7639a2ad293070c:1",
+        "description": "GPUTrajectoryLocations.getCommandNodes.nodes: kernel [\"\\u0000-groups\"] shader 3ed25b7224776b874b52981aa92187bb23ddd4b68cc38f9c2c5cade28bfdeda7",
+        "reason": "Existing unnamed kernel loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      },
+      {
+        "id": "5856c9357265cafedb3f98ebd484620a7f3aba26b7d84fef81565a78b8af324a:1",
+        "description": "GPUTrajectoryLocations.getCommandNodes: kernel [\"\\u0000-relabel\"] shader 6f72ea1fd5e97fada88146b9c7826e9894241d840491df7089a5b4f75ea7d644",
+        "reason": "Existing unnamed kernel loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/gpu-spatial-analysis/trajectory-staypoints/gpu-trajectory-segments.ts": [
+      {
+        "id": "1d4a165b6d447a412cd2376e23724f8ede918fe5a05bec1e371a13d74a9a2bf0:1",
+        "description": "GPUTrajectorySegments.createTripNodes.nodes: kernel [\"\\u0000-trip-offsets\"] shader 6978c349894be85782cfad723a5db808c41d25dff9753cd7e7bdaa1e4761729d",
+        "reason": "Existing unnamed kernel loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/gpu-terrain/terrain-illumination/gpu-texture-shading.ts": [
+      {
+        "id": "27c453c67373754b0ee862afd2320b357a6448da14c618714dd2baf6bcd600d1:1",
+        "description": "GPUTextureShading.getCommandNodes: kernel [\"\\u0000-anchor\"] shader 6f72b1a0cf8899e2adace9b1696391ab20ed44a66b1e113d19bd25b23ed18757",
+        "reason": "Existing anchor loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/raster-analysis/cost-distance/gpu-cost-distance-path.ts": [
+      {
+        "id": "3055e73e1cb17627ac1ffc8fa3356255884530b484ee564906254de8eee7ec61:1",
+        "description": "GPUCostDistancePath.getCommandNodes: kernel [\"\\u0000-walk\"] shader ba909ce9320bd17a2d9209667e6190202a96095c2db032f04ec317c26cdac406",
+        "reason": "Existing walk loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/raster-analysis/cost-distance/raster-relaxation.ts": [
+      {
+        "id": "794f9b2b2170a95f136d245964f2b2af5ad9f1fd3e166379decf2251ec239ccc:1",
+        "description": "createRasterIterationGroupGateNode: kernel [\"\\u0000\"] shader fe2aaf5c844a6c1595572a171475a0de7eab5962a92653017e12fb44f951c0a5",
+        "reason": "Existing iteration-group-gate loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/raster-analysis/distance-field/distance-field-kernels.ts": [
+      {
+        "id": "3f6d4ce67046a44d7eaa2305f4ab6f059063f8ccc417dbd265c2447ac1a421dc:1",
+        "description": "createDistanceFieldJumpFloodNodes: kernel [\"\\u0000-jump-flood-steps\"] shader 6afce38c99a34f5382947e68f512d9cb75eec6f9561ce2fcfd38c3069519b9d7",
+        "reason": "Existing jump-flood-steps loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ],
+    "modules/analysis/src/raster-analysis/gpu-raster-watershed-segmentation.ts": [
+      {
+        "id": "8db97b0157080c4633592909f658f57f883df6a37483ef13e94b352b08cccd6b:1",
+        "description": "GPURasterWatershedSegmentation.getCommandNodes: kernel [\"\\u0000\"] shader db84ed46ee49f7c0a30304f8767592a0dca56d18e965cf56b38be903d42165a1",
+        "reason": "Pre-review legacy departure retained for a separate contributor fix; site identity is now frozen, without claiming scalability."
+      }
+    ],
+    "modules/analysis/src/raster-analysis/raster-stretch/gpu-raster-stretch.ts": [
+      {
+        "id": "73efb8044fec4241c7eb74f1382a7cb07af57c20aa069943885246f589bcd451:1",
+        "description": "GPURasterStretch.getCommandNodes: kernel [\"\\u0000-finalize\"] shader 75ee1914d4c8ec291270bb96a5d73a14e3c2876c17ec2301a68e91f17c44d426",
+        "reason": "Existing finalize loops exposed by generic kernel calls. Retained as legacy heuristic findings pending data-range/bounded-work review; contributor sources unchanged."
+      }
+    ]
   }
 }

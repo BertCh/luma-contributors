@@ -41,7 +41,12 @@ const data = {
   ])
 };
 const bytes = `${JSON.stringify(data)}\n`;
-const destination = new URL('modules/lenses/src/computation-lenses/data/n-chicago-loop-crashes.json', root);
+const destination = new URL(
+  'modules/lenses/src/computation-lenses/data/n-chicago-loop-crashes.json',
+  root
+);
 writeFileSync(destination, bytes);
 // biome-ignore lint/suspicious/noConsole: Extraction reports its deterministic sizes and counts.
-console.log(`${fileURLToPath(destination)}: ${Buffer.byteLength(bytes)} bytes; ${eventCount} of ${candidates.length} eligible crashes (every ${step}th)`);
+console.log(
+  `${fileURLToPath(destination)}: ${Buffer.byteLength(bytes)} bytes; ${eventCount} of ${candidates.length} eligible crashes (every ${step}th)`
+);

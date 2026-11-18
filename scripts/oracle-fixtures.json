@@ -1,0 +1,1755 @@
+{
+  "version": 1,
+  "profiles": {
+    "python-pinned": {
+      "runtime": "python",
+      "executables": ["python3.14"],
+      "pythonVersion": "3.14",
+      "description": "CPython 3.14 with oracles/requirements.txt; additional packages named by generator errors."
+    },
+    "python-legacy": {
+      "runtime": "python",
+      "executables": ["python3.12", "python3"],
+      "description": "Separate legacy environment from requirements.txt: NumPy 2.2.6, SciPy 1.15.3, scikit-image 0.25.2, Shapely 2.1.2, rasterio 1.4.3; install the generator's additional recorded packages."
+    },
+    "python-pyxccd": {
+      "runtime": "python",
+      "executables": ["python3.12"],
+      "pythonVersion": "3.12",
+      "description": "CPython 3.12, pyxccd 1.1.0, NumPy 2.5.4, SciPy 1.18.1, PyYAML; see GENERATORS.md."
+    },
+    "python-visibility": {
+      "runtime": "python",
+      "description": "NumPy, SciPy, rasterio in the selected Python; ORACLE_REFERENCE_PYTHON with GDAL bindings and ORACLE_GRASS executable."
+    },
+    "node": {
+      "runtime": "node",
+      "description": "Running Node executable and installed workspace dependencies."
+    },
+    "rscript": {
+      "runtime": "rscript",
+      "description": "Rscript with the packages named by the generator."
+    },
+    "cgal": {
+      "runtime": "unsupported",
+      "description": "CGAL 6.0.1 and compiler; not executed by this runner."
+    }
+  },
+  "generators": {
+    "adaptive-generalized-gwr.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/adaptive-generalized-gwr.json"]
+    },
+    "alternative-routes.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/alternative-routes.json"]
+    },
+    "cells-cover-thin.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "cells-h3.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/cell-indexing-h3.json"]
+    },
+    "coverage-validity-gaps.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/coverage-validity-gaps.json"]
+    },
+    "cr01-geodesic-envelopes.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "dasymetric-redistribution.py": {
+      "kind": "fixture",
+      "profile": "python-legacy",
+      "outputs": ["oracles/fixtures/dasymetric-redistribution.json"]
+    },
+    "dataframe-class-breaks.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/dataframe-class-breaks.json"]
+    },
+    "dataframe-quantile-rational-rank.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/dataframe-quantile-rational-rank.json"]
+    },
+    "dataframe-time-zones.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/dataframe-time-zones.json"]
+    },
+    "dataframe-variogram.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/dataframe-variogram.json"]
+    },
+    "datum-horizontal.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "difficult-geodesics.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "distribution-class-assignment-numpy.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/distribution-class-assignment-numpy.json"]
+    },
+    "distribution-mapclassify-fit.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/distribution-mapclassify-fit.json"]
+    },
+    "emb01-embedding-codecs-numpy.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "fractional-zonal-distribution.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/fractional-zonal-distribution.json"]
+    },
+    "generalized-gwr-aicc.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "generate-flow-field-extensions.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "geodesic-area-adaptive.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "geodesic-trajectory.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/geodesic-trajectory.json"]
+    },
+    "geometry-advanced.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/geometry-advanced.json"]
+    },
+    "geometry-buffer-collapsed-holes.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "geometry-buffer-mitre-limit.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "geometry-cleanup.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/geometry-cleanup.json"]
+    },
+    "geometry-convex-hull.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/geometry-convex-hull.json"]
+    },
+    "geometry-dot-density.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/geometry-dot-density.json"]
+    },
+    "geometry-hole-rules.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "geometry-kernel-density-binned.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/geometry-kernel-density-binned.json"]
+    },
+    "geometry-kernel-density.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/geometry-kernel-density.json"]
+    },
+    "geometry-map-coloring.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/geometry-map-coloring.json"]
+    },
+    "geometry-neighbor-search-clustered.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/geometry-neighbor-search-clustered.json"]
+    },
+    "geometry-overlay-snap-rounding.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "geometry-properties.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "geometry-refinement.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/geometry-refinement.json"]
+    },
+    "geometry-relate-near-parallel.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/geometry-relate-near-parallel.json"]
+    },
+    "geometry-straight-skeleton.cpp": {
+      "kind": "unconfigured",
+      "profile": "cgal",
+      "reason": "C++ compilation is not supported by oracle-fixture."
+    },
+    "geometry-straight-skeleton.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/geometry-straight-skeleton.json"]
+    },
+    "geometry-subdivision-postgis.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/geometry-subdivision-postgis.json"],
+      "inputs": ["oracles/fixtures/geometry-advanced.json"]
+    },
+    "geometry-triangulation-large.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/geometry-triangulation-large.json"]
+    },
+    "geospatial-expansion-recipes.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/geospatial-expansion-recipes.json"]
+    },
+    "geospatial-expansion-statistics.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/geospatial-expansion-statistics.json"]
+    },
+    "global-coordinates.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "gtwr-bandwidth-search-oracle.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "gtwr-mgtwr-oracle.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/gtwr-mgtwr.json"]
+    },
+    "gwr-nonstationarity-mgwr.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "interpolation-advanced.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "interpolation-cgal.cpp": {
+      "kind": "unconfigured",
+      "profile": "cgal",
+      "reason": "C++ compilation is not supported by oracle-fixture."
+    },
+    "interpolation-coverage.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "interpolation-gstat.R": {
+      "kind": "unconfigured",
+      "profile": "rscript",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "interpolation-rbf-default-degree.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "isolines-tiles.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "k-shortest-paths.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "losh-backlog-inference.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/losh-backlog-inference.json"]
+    },
+    "matern-kriging-gstools.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/matern-kriging-gstools.json"]
+    },
+    "movement-cleaning.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/movement-cleaning.json"]
+    },
+    "movement-scikit-mobility.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/movement-scikit-mobility.json"]
+    },
+    "movement-trackintel.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/movement-trackintel.json"]
+    },
+    "multivariate-quantile-lisa-numpy.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/multivariate-quantile-lisa-numpy.json"]
+    },
+    "nested-validation-oracle.py": {
+      "kind": "fixture",
+      "profile": "python-legacy",
+      "outputs": ["oracles/fixtures/nested-validation-oracle.json"]
+    },
+    "network-centrality.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/network-centrality.json"]
+    },
+    "network-cost-weights-2sfca.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/network-cost-weights-2sfca.json"]
+    },
+    "network-expansion.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/network-expansion.json"]
+    },
+    "network-louvain-sparse.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "network-movement-advanced.py": {
+      "kind": "fixture",
+      "profile": "python-legacy",
+      "outputs": ["oracles/fixtures/network-movement-advanced.json"],
+      "inputs": ["oracles/fixtures/network-movement-benchmark.json"]
+    },
+    "network-movement-coverage.py": {
+      "kind": "fixture",
+      "profile": "python-legacy",
+      "outputs": ["oracles/fixtures/network-movement-coverage.json"],
+      "inputs": ["oracles/fixtures/network-movement-benchmark.json"]
+    },
+    "network-movement-postgres.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/network-movement-postgres.json"],
+      "inputs": ["oracles/fixtures/network-movement-benchmark.json"]
+    },
+    "network-shortest-paths.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/network-shortest-paths.json"]
+    },
+    "network-statistics.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/network-statistics.json"]
+    },
+    "network-time-geography-mob09.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/network-time-geography-mob09.json"]
+    },
+    "p-median-oracle.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "parity-wp1-algebra-modes.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "Historical scratch/tool dependency; port explicit arguments before enabling."
+    },
+    "parity-wp1-areal-interpolation.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/parity-wp1-areal-interpolation.json"]
+    },
+    "parity-wp1-areal-modes.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "Historical scratch/tool dependency; port explicit arguments before enabling."
+    },
+    "parity-wp1-clustering-modes.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "Historical scratch/tool dependency; port explicit arguments before enabling."
+    },
+    "parity-wp1-emerging-hot-spots.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/parity-wp1-emerging-hot-spots.json"]
+    },
+    "parity-wp1-emerging-lengths.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "Historical scratch/tool dependency; port explicit arguments before enabling."
+    },
+    "parity-wp1-emerging-weighted.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "Historical scratch/tool dependency; port explicit arguments before enabling."
+    },
+    "parity-wp1-geographic-modes.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "Historical scratch/tool dependency; port explicit arguments before enabling."
+    },
+    "parity-wp1-huff-trade-areas.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/parity-wp1-huff-trade-areas.json"]
+    },
+    "parity-wp1-inverse-distance-weighting.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/parity-wp1-inverse-distance-weighting.json"]
+    },
+    "parity-wp1-mantel-band.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "Historical scratch/tool dependency; port explicit arguments before enabling."
+    },
+    "parity-wp1-mantel.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/parity-wp1-mantel.json"]
+    },
+    "parity-wp1-pycnophylactic.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "Historical scratch/tool dependency; port explicit arguments before enabling."
+    },
+    "parity-wp1-raster-modes.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "Historical scratch/tool dependency; port explicit arguments before enabling."
+    },
+    "parity-wp1-round4.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "parity-wp1-round5.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": [
+        "oracles/fixtures/parity-wp1-round5-neighborhood.json",
+        "oracles/fixtures/parity-wp1-round5-partition.json",
+        "oracles/fixtures/parity-wp1-round5-region-real.json",
+        "oracles/fixtures/parity-wp1-round5-region-small.json"
+      ]
+    },
+    "parity-wp1-round6.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": [
+        "oracles/fixtures/parity-wp1-round6-algebra.json",
+        "oracles/fixtures/parity-wp1-round6-forest.json",
+        "oracles/fixtures/parity-wp1-round6-transpose.json"
+      ]
+    },
+    "parity-wp1-scan.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "Historical scratch/tool dependency; port explicit arguments before enabling."
+    },
+    "parity-wp1-showcase-audit.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "Historical scratch/tool dependency; port explicit arguments before enabling."
+    },
+    "parity-wp1-skater-lag.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/parity-wp1-skater-lag.json"]
+    },
+    "parity-wp1-sparse-modes.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "Historical scratch/tool dependency; port explicit arguments before enabling."
+    },
+    "parity-wp1-spatial-clustering.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/parity-wp1-spatial-clustering.json"]
+    },
+    "parity-wp1-study-window.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "Historical scratch/tool dependency; port explicit arguments before enabling."
+    },
+    "parity-wp1-trend-reference.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/parity-wp1-trend-reference.json"]
+    },
+    "parity-wp1-zonal-half-open.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "Historical scratch/tool dependency; port explicit arguments before enabling."
+    },
+    "parity-wp1-zonal-showcase.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "Historical scratch/tool dependency; port explicit arguments before enabling."
+    },
+    "parity-wp2-buffer-selection.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "inputs": ["oracles/fixtures/parity-wp2-prepared-nearest.json"],
+      "outputs": ["oracles/fixtures/parity-wp2-buffer-selection.json"]
+    },
+    "parity-wp2-cells.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "parity-wp2-geodesics.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "parity-wp2-great-circle-arcs.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "parity-wp2-line-density.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "inputs": ["oracles/fixtures/parity-wp2-prepared-nearest.json"],
+      "outputs": ["oracles/fixtures/parity-wp2-line-density.json"]
+    },
+    "parity-wp2-line-length-per-polygon.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "inputs": ["oracles/fixtures/parity-wp2-prepared-nearest.json"],
+      "outputs": ["oracles/fixtures/parity-wp2-line-length-per-polygon.json"]
+    },
+    "parity-wp2-line-simplification.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "parity-wp2-local-frame.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/parity-wp2-local-frame.json"]
+    },
+    "parity-wp2-nearest-weights.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "inputs": ["oracles/fixtures/parity-wp2-prepared-nearest.json"],
+      "outputs": ["oracles/fixtures/parity-wp2-nearest-weights.json"]
+    },
+    "parity-wp2-prepared-nearest.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/parity-wp2-prepared-nearest.json"]
+    },
+    "parity-wp2-round5-geometry.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "parity-wp2-round8-arcs.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "parity-wp2-round8-geodesics.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "parity-wp2-round8-local-frame.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/parity-wp2-round8-local-frame.json"]
+    },
+    "parity-wp2-round8-modes.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": [
+        "oracles/fixtures/parity-wp2-round8-encounters.json",
+        "oracles/fixtures/parity-wp2-round8-joins.json",
+        "oracles/fixtures/parity-wp2-round8-weights.json",
+        "oracles/fixtures/parity-wp2-round8-zone-caps.json"
+      ]
+    },
+    "parity-wp2-round8-polygons.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/parity-wp2-round8-polygons.json"]
+    },
+    "parity-wp2-round8-simplification.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "parity-wp2-round8-spherical-lines.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "inputs": [
+        "oracles/fixtures/parity-wp2-line-length-per-polygon.json",
+        "oracles/fixtures/parity-wp2-prepared-nearest.json"
+      ],
+      "outputs": [
+        "oracles/fixtures/parity-wp2-round8-spherical-density.json",
+        "oracles/fixtures/parity-wp2-round8-spherical-polygons.json"
+      ]
+    },
+    "parity-wp2-trajectory-encounters.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/parity-wp2-trajectory-encounters.json"]
+    },
+    "parity-wp2-zone-events.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/parity-wp2-zone-events.json"]
+    },
+    "parity-wp3-accessibility-modes.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/parity-wp3-accessibility-showcase.json"]
+    },
+    "parity-wp3-cost-matrix-live.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "inputs": ["oracles/fixtures/parity-wp3-cost-matrix-synthetic-input.json"],
+      "outputs": ["oracles/fixtures/parity-wp3-cost-matrix-live.json"]
+    },
+    "parity-wp3-cost-matrix.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "inputs": ["oracles/fixtures/parity-wp3-service-areas-chicago-input.json"],
+      "outputs": [
+        "oracles/fixtures/parity-wp3-cost-matrix-chicago-forward-five-minutes.json",
+        "oracles/fixtures/parity-wp3-cost-matrix-chicago-forward-input.json",
+        "oracles/fixtures/parity-wp3-cost-matrix-chicago-forward-unlimited.json",
+        "oracles/fixtures/parity-wp3-cost-matrix-chicago-reverse-five-minutes.json",
+        "oracles/fixtures/parity-wp3-cost-matrix-chicago-reverse-input.json",
+        "oracles/fixtures/parity-wp3-cost-matrix-chicago-reverse-unlimited.json",
+        "oracles/fixtures/parity-wp3-cost-matrix-synthetic-boundary.json",
+        "oracles/fixtures/parity-wp3-cost-matrix-synthetic-input.json",
+        "oracles/fixtures/parity-wp3-cost-matrix-synthetic-unlimited.json",
+        "oracles/fixtures/parity-wp3-cost-matrix-synthetic-zero.json"
+      ]
+    },
+    "parity-wp3-force-layout.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "parity-wp3-graph-communities.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": [
+        "oracles/fixtures/parity-wp3-graph-communities-cliques.json",
+        "oracles/fixtures/parity-wp3-graph-communities-directed.json",
+        "oracles/fixtures/parity-wp3-graph-communities-openflights.json",
+        "oracles/fixtures/parity-wp3-graph-communities-undirected.json"
+      ]
+    },
+    "parity-wp3-graph-metrics.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": [
+        "oracles/fixtures/parity-wp3-graph-metrics-isolates.json",
+        "oracles/fixtures/parity-wp3-graph-metrics-openflights-directed.json",
+        "oracles/fixtures/parity-wp3-graph-metrics-openflights-undirected.json",
+        "oracles/fixtures/parity-wp3-graph-metrics-synthetic-directed.json",
+        "oracles/fixtures/parity-wp3-graph-metrics-synthetic-undirected.json"
+      ]
+    },
+    "parity-wp3-graph-showcase.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/parity-wp3-graph-showcase.json"]
+    },
+    "parity-wp3-layout-showcase.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": [
+        "oracles/fixtures/parity-wp3-force-layout-showcase.json",
+        "oracles/fixtures/parity-wp3-spatial-force-layout-showcase-unpinned.json",
+        "oracles/fixtures/parity-wp3-spatial-force-layout-showcase.json"
+      ]
+    },
+    "parity-wp3-line-graph.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "parity-wp3-map-matching.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": [
+        "oracles/fixtures/parity-wp3-map-matching-chicago.json",
+        "oracles/fixtures/parity-wp3-map-matching-synthetic.json"
+      ]
+    },
+    "parity-wp3-modularity-optimization.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": [
+        "oracles/fixtures/parity-wp3-modularity-optimization-cliques.json",
+        "oracles/fixtures/parity-wp3-modularity-optimization-directed.json",
+        "oracles/fixtures/parity-wp3-modularity-optimization-openflights.json",
+        "oracles/fixtures/parity-wp3-modularity-optimization-undirected.json"
+      ]
+    },
+    "parity-wp3-network-accessibility.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": [
+        "oracles/fixtures/parity-wp3-network-accessibility-chicago-exponential.json",
+        "oracles/fixtures/parity-wp3-network-accessibility-chicago-five-minutes.json",
+        "oracles/fixtures/parity-wp3-network-accessibility-chicago-input.json",
+        "oracles/fixtures/parity-wp3-network-accessibility-chicago-power.json",
+        "oracles/fixtures/parity-wp3-network-accessibility-chicago-unlimited.json",
+        "oracles/fixtures/parity-wp3-network-accessibility-chicago-zero.json",
+        "oracles/fixtures/parity-wp3-network-accessibility-synthetic-boundary.json",
+        "oracles/fixtures/parity-wp3-network-accessibility-synthetic-exponential.json",
+        "oracles/fixtures/parity-wp3-network-accessibility-synthetic-input.json",
+        "oracles/fixtures/parity-wp3-network-accessibility-synthetic-power.json",
+        "oracles/fixtures/parity-wp3-network-accessibility-synthetic-unlimited.json",
+        "oracles/fixtures/parity-wp3-network-accessibility-synthetic-zero.json"
+      ]
+    },
+    "parity-wp3-network-analysis.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": [
+        "oracles/fixtures/parity-wp3-network-analysis-chicago-bounded.json",
+        "oracles/fixtures/parity-wp3-network-analysis-chicago-clamped.json",
+        "oracles/fixtures/parity-wp3-network-analysis-chicago-components.json",
+        "oracles/fixtures/parity-wp3-network-analysis-chicago-degree.json",
+        "oracles/fixtures/parity-wp3-network-analysis-chicago-empty.json",
+        "oracles/fixtures/parity-wp3-network-analysis-chicago-inDegree.json",
+        "oracles/fixtures/parity-wp3-network-analysis-chicago-incoming.json",
+        "oracles/fixtures/parity-wp3-network-analysis-chicago-input.json",
+        "oracles/fixtures/parity-wp3-network-analysis-chicago-outgoing.json",
+        "oracles/fixtures/parity-wp3-network-analysis-chicago-reverse.json",
+        "oracles/fixtures/parity-wp3-network-analysis-chicago-zero.json",
+        "oracles/fixtures/parity-wp3-network-analysis-isolates-bounded.json",
+        "oracles/fixtures/parity-wp3-network-analysis-isolates-clamped.json",
+        "oracles/fixtures/parity-wp3-network-analysis-isolates-components.json",
+        "oracles/fixtures/parity-wp3-network-analysis-isolates-degree.json",
+        "oracles/fixtures/parity-wp3-network-analysis-isolates-empty.json",
+        "oracles/fixtures/parity-wp3-network-analysis-isolates-inDegree.json",
+        "oracles/fixtures/parity-wp3-network-analysis-isolates-incoming.json",
+        "oracles/fixtures/parity-wp3-network-analysis-isolates-input.json",
+        "oracles/fixtures/parity-wp3-network-analysis-isolates-outgoing.json",
+        "oracles/fixtures/parity-wp3-network-analysis-isolates-reverse.json",
+        "oracles/fixtures/parity-wp3-network-analysis-isolates-zero.json",
+        "oracles/fixtures/parity-wp3-network-analysis-synthetic-directed-bounded.json",
+        "oracles/fixtures/parity-wp3-network-analysis-synthetic-directed-clamped.json",
+        "oracles/fixtures/parity-wp3-network-analysis-synthetic-directed-components.json",
+        "oracles/fixtures/parity-wp3-network-analysis-synthetic-directed-degree.json",
+        "oracles/fixtures/parity-wp3-network-analysis-synthetic-directed-empty.json",
+        "oracles/fixtures/parity-wp3-network-analysis-synthetic-directed-inDegree.json",
+        "oracles/fixtures/parity-wp3-network-analysis-synthetic-directed-incoming.json",
+        "oracles/fixtures/parity-wp3-network-analysis-synthetic-directed-input.json",
+        "oracles/fixtures/parity-wp3-network-analysis-synthetic-directed-outgoing.json",
+        "oracles/fixtures/parity-wp3-network-analysis-synthetic-directed-reverse.json",
+        "oracles/fixtures/parity-wp3-network-analysis-synthetic-directed-zero.json",
+        "oracles/fixtures/parity-wp3-network-analysis-synthetic-undirected-bounded.json",
+        "oracles/fixtures/parity-wp3-network-analysis-synthetic-undirected-clamped.json",
+        "oracles/fixtures/parity-wp3-network-analysis-synthetic-undirected-components.json",
+        "oracles/fixtures/parity-wp3-network-analysis-synthetic-undirected-degree.json",
+        "oracles/fixtures/parity-wp3-network-analysis-synthetic-undirected-empty.json",
+        "oracles/fixtures/parity-wp3-network-analysis-synthetic-undirected-inDegree.json",
+        "oracles/fixtures/parity-wp3-network-analysis-synthetic-undirected-incoming.json",
+        "oracles/fixtures/parity-wp3-network-analysis-synthetic-undirected-input.json",
+        "oracles/fixtures/parity-wp3-network-analysis-synthetic-undirected-outgoing.json",
+        "oracles/fixtures/parity-wp3-network-analysis-synthetic-undirected-reverse.json",
+        "oracles/fixtures/parity-wp3-network-analysis-synthetic-undirected-zero.json"
+      ]
+    },
+    "parity-wp3-network-k-function.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "parity-wp3-noding.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": [
+        "oracles/fixtures/parity-wp3-noding-chicago-loop.json",
+        "oracles/fixtures/parity-wp3-noding-chicago-west.json",
+        "oracles/fixtures/parity-wp3-noding-cross-overlap.json",
+        "oracles/fixtures/parity-wp3-noding-snap-cells.json"
+      ]
+    },
+    "parity-wp3-routing.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": [
+        "oracles/fixtures/parity-wp3-routing-chicago-forward-input.json",
+        "oracles/fixtures/parity-wp3-routing-chicago-forward-multi.json",
+        "oracles/fixtures/parity-wp3-routing-chicago-forward-single.json",
+        "oracles/fixtures/parity-wp3-routing-chicago-reverse-input.json",
+        "oracles/fixtures/parity-wp3-routing-chicago-reverse-multi.json",
+        "oracles/fixtures/parity-wp3-routing-chicago-reverse-single.json",
+        "oracles/fixtures/parity-wp3-routing-synthetic-empty.json",
+        "oracles/fixtures/parity-wp3-routing-synthetic-input.json",
+        "oracles/fixtures/parity-wp3-routing-synthetic-multi.json",
+        "oracles/fixtures/parity-wp3-routing-synthetic-single.json"
+      ]
+    },
+    "parity-wp3-service-areas.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": [
+        "oracles/fixtures/parity-wp3-service-areas-chicago-fifteen-minutes.json",
+        "oracles/fixtures/parity-wp3-service-areas-chicago-five-minutes.json",
+        "oracles/fixtures/parity-wp3-service-areas-chicago-input.json",
+        "oracles/fixtures/parity-wp3-service-areas-chicago-unlimited.json",
+        "oracles/fixtures/parity-wp3-service-areas-synthetic-boundary.json",
+        "oracles/fixtures/parity-wp3-service-areas-synthetic-input.json",
+        "oracles/fixtures/parity-wp3-service-areas-synthetic-unlimited.json",
+        "oracles/fixtures/parity-wp3-service-areas-synthetic-zero.json"
+      ]
+    },
+    "parity-wp3-showcase-modes.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/parity-wp3-map-matching-showcase.json"]
+    },
+    "parity-wp3-snapping.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": [
+        "oracles/fixtures/parity-wp3-snapping-chicago-positions.json",
+        "oracles/fixtures/parity-wp3-snapping-chicago-queries.json",
+        "oracles/fixtures/parity-wp3-snapping-chicago-topology.json",
+        "oracles/fixtures/parity-wp3-snapping-chicago-weights.json",
+        "oracles/fixtures/parity-wp3-snapping-synthetic-positions.json",
+        "oracles/fixtures/parity-wp3-snapping-synthetic-queries.json",
+        "oracles/fixtures/parity-wp3-snapping-synthetic-topology.json",
+        "oracles/fixtures/parity-wp3-snapping-synthetic-weights.json"
+      ]
+    },
+    "parity-wp3-spatial-force-layout.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "parity-wp3-topology-modes.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "inputs": [
+        "oracles/fixtures/parity-wp3-graph-communities-undirected.json",
+        "oracles/fixtures/parity-wp3-network-analysis-synthetic-directed-input.json",
+        "oracles/fixtures/parity-wp3-network-analysis-synthetic-directed-outgoing.json"
+      ],
+      "outputs": [
+        "oracles/fixtures/parity-wp3-graph-communities-showcase.json",
+        "oracles/fixtures/parity-wp3-neighborhood-showcase.json",
+        "oracles/fixtures/parity-wp3-noding-showcase-large-snap.json"
+      ]
+    },
+    "parity-wp4-advection.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/parity-wp4-advection.json"]
+    },
+    "parity-wp4-cell-statistics.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "parity-wp4-change-detection.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/parity-wp4-change-detection.json"]
+    },
+    "parity-wp4-change-modes.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "inputs": ["oracles/fixtures/parity-wp4-change-detection.json"],
+      "outputs": ["oracles/fixtures/parity-wp4-change-modes.json"]
+    },
+    "parity-wp4-components.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "parity-wp4-contours.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "inputs": ["oracles/fixtures/parity-wp4-isobands.json"],
+      "outputs": ["oracles/fixtures/parity-wp4-contours.json"]
+    },
+    "parity-wp4-cost-distance.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/parity-wp4-cost-distance.json"]
+    },
+    "parity-wp4-cost-modes.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/parity-wp4-cost-modes.json"]
+    },
+    "parity-wp4-distance-field.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "parity-wp4-isobands.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/parity-wp4-isobands.json"]
+    },
+    "parity-wp4-lic-modes.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "parity-wp4-lic.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/parity-wp4-lic.json"]
+    },
+    "parity-wp4-lifecycle.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "parity-wp4-overlay-showcase.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "parity-wp4-particle-topology.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/parity-wp4-particle-topology.json"]
+    },
+    "parity-wp4-polygon-centres.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": [
+        "oracles/fixtures/parity-wp4-polygon-centres.json",
+        "oracles/fixtures/parity-wp4-polygons.json"
+      ]
+    },
+    "parity-wp4-polygon-modes.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/parity-wp4-polygon-modes.json"]
+    },
+    "parity-wp4-raster-final.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "parity-wp4-raster-lookups.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": [
+        "oracles/fixtures/parity-wp4-join-real.json",
+        "oracles/fixtures/parity-wp4-join-synthetic.json",
+        "oracles/fixtures/parity-wp4-sampling-real.json",
+        "oracles/fixtures/parity-wp4-sampling-synthetic.json"
+      ]
+    },
+    "parity-wp4-raster-values.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "parity-wp4-raster-zones.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "parity-wp4-showcase-modes.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "parity-wp4-sieve-modes.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "parity-wp4-stitched.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "inputs": ["oracles/fixtures/parity-wp4-contours.json"],
+      "outputs": ["oracles/fixtures/parity-wp4-stitched.json"]
+    },
+    "parity-wp4-streamline-modes.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "parity-wp4-streamlines.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/parity-wp4-streamlines.json"]
+    },
+    "parity-wp4-zonal-modes.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": [
+        "oracles/fixtures/parity-wp4-zonal-modes.json",
+        "oracles/fixtures/parity-wp4-zonal.json"
+      ]
+    },
+    "parity-wp5-deep-audit.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "Historical scratch/tool dependency; port explicit arguments before enabling."
+    },
+    "parity-wp5-deep-geomorphons.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "Imports parity-wp5-round8-grass.py, whose GRASS/GDAL commands still use historical scratch paths; parameterize the dependency first.",
+      "outputs": [
+        "oracles/fixtures/parity-wp5-deep-alps-dem-geomorphons.json",
+        "oracles/fixtures/parity-wp5-deep-grand-canyon-dem-geomorphons.json",
+        "oracles/fixtures/parity-wp5-deep-plane-geomorphons.json",
+        "oracles/fixtures/parity-wp5-deep-ridge-geomorphons.json"
+      ]
+    },
+    "parity-wp5-deep-horizon.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "Imports parity-wp5-round8-grass.py, whose GRASS/GDAL commands still use historical scratch paths; parameterize the dependency first.",
+      "outputs": ["oracles/fixtures/parity-wp5-deep-horizon.json"]
+    },
+    "parity-wp5-deep-visibility.py": {
+      "kind": "fixture",
+      "profile": "python-visibility",
+      "outputs": [
+        "oracles/fixtures/parity-wp5-deep-alps-dem-visibility.json",
+        "oracles/fixtures/parity-wp5-deep-grand-canyon-dem-visibility.json",
+        "oracles/fixtures/parity-wp5-deep-ridge-visibility.json",
+        "oracles/fixtures/parity-wp5-deep-saddle-visibility.json"
+      ],
+      "inputs": [
+        "oracles/fixtures/parity-wp5-round8-alps-dem-visibility.json",
+        "oracles/fixtures/parity-wp5-round8-grand-canyon-dem-visibility.json",
+        "oracles/fixtures/parity-wp5-round8-ridge-visibility.json"
+      ],
+      "toolArguments": {
+        "--reference-python": "ORACLE_REFERENCE_PYTHON",
+        "--grass": "ORACLE_GRASS"
+      }
+    },
+    "parity-wp5-hydrology.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "parity-wp5-relief.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "parity-wp5-round10-audit.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "Historical scratch/tool dependency; port explicit arguments before enabling."
+    },
+    "parity-wp5-round10-grass.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "Imports parity-wp5-round8-grass.py, whose GRASS/GDAL commands still use historical scratch paths; parameterize the dependency first.",
+      "outputs": [
+        "oracles/fixtures/parity-wp5-round10-alps-dem-geomorphons.json",
+        "oracles/fixtures/parity-wp5-round10-alps-dem-horizon.json",
+        "oracles/fixtures/parity-wp5-round10-grand-canyon-dem-geomorphons.json",
+        "oracles/fixtures/parity-wp5-round10-grand-canyon-dem-horizon.json",
+        "oracles/fixtures/parity-wp5-round10-ridge-geomorphons.json",
+        "oracles/fixtures/parity-wp5-round10-ridge-horizon.json"
+      ]
+    },
+    "parity-wp5-round5.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "parity-wp5-round6.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "parity-wp5-round7.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "parity-wp5-round8-composites.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "Historical scratch/tool dependency; port explicit arguments before enabling."
+    },
+    "parity-wp5-round8-curvature.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "Historical scratch/tool dependency; port explicit arguments before enabling."
+    },
+    "parity-wp5-round8-grass.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "Historical scratch/tool dependency; port explicit arguments before enabling."
+    },
+    "parity-wp5-round8-showcase.py": {
+      "kind": "inventory",
+      "profile": "python-pinned",
+      "reason": "AST source inventory, not a numerical fixture; invoke directly with --output-directory."
+    },
+    "parity-wp5-solar-noaa.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": [
+        "oracles/fixtures/parity-wp5-solar-noaa-position.json",
+        "oracles/fixtures/parity-wp5-solar-position.json"
+      ]
+    },
+    "parity-wp5-solar.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "parity-wp5-terrain-curvature.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "parity-wp5-watersheds.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "parity-wp6-chi-square.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/parity-wp6-chi-square.json"]
+    },
+    "parity-wp6-column-analysis.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": [
+        "oracles/fixtures/parity-wp6-column-profile.json",
+        "oracles/fixtures/parity-wp6-column-quantiles.json",
+        "oracles/fixtures/parity-wp6-composite-score.json"
+      ]
+    },
+    "parity-wp6-correlogram.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/parity-wp6-correlogram.json"]
+    },
+    "parity-wp6-dataframe-reductions.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": [
+        "oracles/fixtures/parity-wp6-earthquake-input.json",
+        "oracles/fixtures/parity-wp6-group-statistics.json",
+        "oracles/fixtures/parity-wp6-histogram.json",
+        "oracles/fixtures/parity-wp6-temporal-reduction.json"
+      ]
+    },
+    "parity-wp6-inequality.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/parity-wp6-inequality.json"]
+    },
+    "parity-wp6-point-patterns.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": [
+        "oracles/fixtures/parity-wp6-point-patterns-distances.json",
+        "oracles/fixtures/parity-wp6-point-patterns-ids.json",
+        "oracles/fixtures/parity-wp6-point-patterns-positions.json",
+        "oracles/fixtures/parity-wp6-point-patterns-statistics.json"
+      ]
+    },
+    "parity-wp6-ripley.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "inputs": ["oracles/fixtures/parity-wp6-point-patterns-positions.json"],
+      "outputs": [
+        "oracles/fixtures/parity-wp6-ripley-distance.json",
+        "oracles/fixtures/parity-wp6-ripley.json"
+      ]
+    },
+    "parity-wp6-round5.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": [
+        "oracles/fixtures/parity-wp6-bivariate.json",
+        "oracles/fixtures/parity-wp6-key-join.json",
+        "oracles/fixtures/parity-wp6-offset-moments.json",
+        "oracles/fixtures/parity-wp6-offset-profiles.json",
+        "oracles/fixtures/parity-wp6-time-window-edges.json",
+        "oracles/fixtures/parity-wp6-time-window-real.json"
+      ]
+    },
+    "parity-wp6-round6.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "parity-wp6-round8-points.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "Historical scratch/tool dependency; port explicit arguments before enabling."
+    },
+    "parity-wp6-round8-spatstat.mjs": {
+      "kind": "unconfigured",
+      "profile": "node",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "parity-wp6-round8.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "inputs": ["oracles/fixtures/parity-wp6-correlogram.json"],
+      "outputs": [
+        "oracles/fixtures/parity-wp6-round8-groups.json",
+        "oracles/fixtures/parity-wp6-round8-profiles.json",
+        "oracles/fixtures/parity-wp6-round8-composite-min-max.json",
+        "oracles/fixtures/parity-wp6-round8-composite-z-score.json",
+        "oracles/fixtures/parity-wp6-round8-composite-rank.json",
+        "oracles/fixtures/parity-wp6-round8-histograms.json",
+        "oracles/fixtures/parity-wp6-round8-temporal.json",
+        "oracles/fixtures/parity-wp6-round8-correlogram.json",
+        "oracles/fixtures/parity-wp6-round8-quantiles.json",
+        "oracles/fixtures/parity-wp6-round8-composite-pca-selectors.json"
+      ]
+    },
+    "pointcloud-normal-scale.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "polygon-triangulation-touching-rings.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/polygon-triangulation-touching-rings.json"]
+    },
+    "quantile-lisa-geoda.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/quantile-lisa-geoda.json"]
+    },
+    "raster-esmf.py": {
+      "kind": "fixture",
+      "profile": "python-legacy",
+      "outputs": ["oracles/fixtures/raster-esmf.json"]
+    },
+    "raster-fill-four-quadrant.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "raster-focal-pairs.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/raster-focal-pairs.json"]
+    },
+    "raster-otb-unmixing.py": {
+      "kind": "fixture",
+      "profile": "python-legacy",
+      "outputs": ["oracles/fixtures/raster-otb-unmixing.json"]
+    },
+    "raster-registration-regions.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/raster-registration-regions.json"]
+    },
+    "raster-remote-sensing.py": {
+      "kind": "fixture",
+      "profile": "python-legacy",
+      "outputs": ["oracles/fixtures/raster-remote-sensing.json"]
+    },
+    "raster-round-two.py": {
+      "kind": "fixture",
+      "profile": "python-legacy",
+      "outputs": ["oracles/fixtures/raster-round-two.json"]
+    },
+    "raster-seasonal-extended.py": {
+      "kind": "fixture",
+      "profile": "python-legacy",
+      "outputs": ["oracles/fixtures/raster-seasonal-extended.json"]
+    },
+    "raster-spectral-filter.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "raster-spectral-indices.py": {
+      "kind": "fixture",
+      "profile": "python-legacy",
+      "outputs": ["oracles/fixtures/raster-spectral-indices.json"]
+    },
+    "raster-stretch-references.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/raster-stretch-references.json"]
+    },
+    "raster-terra.R": {
+      "kind": "fixture",
+      "profile": "rscript",
+      "outputs": ["oracles/fixtures/raster-terra.json"]
+    },
+    "raster-terrain-expansion.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "raster-tile-reprojection.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "ring-assembly-float32-choices.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/ring-assembly-float32-choices.json"]
+    },
+    "rs02-fractional-categories.py": {
+      "kind": "fixture",
+      "profile": "python-legacy",
+      "outputs": ["oracles/fixtures/rs02-fractional-categories.json"]
+    },
+    "rts02-whittaker-hants-scipy.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/rts02-whittaker-hants-scipy.json"]
+    },
+    "rts02-whittaker-sparse-exact.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/rts02-whittaker-sparse-exact.json"]
+    },
+    "rts03-embedding-rasters-numpy.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/rts03-embedding-rasters-numpy.json"],
+      "inputs": ["oracles/fixtures/statistics-multiple-testing.json"]
+    },
+    "rts04-change-monitoring-numpy.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/rts04-change-monitoring-numpy.json"]
+    },
+    "rts04-cold-pyxccd.py": {
+      "kind": "fixture",
+      "profile": "python-pyxccd",
+      "outputs": [
+        "oracles/fixtures/rts04-cold-pyxccd.json",
+        "oracles/fixtures/rts04-cold-pyxccd-break-sizes.json"
+      ]
+    },
+    "rts05-compositing-numpy.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/rts05-compositing-numpy.json"]
+    },
+    "rts06-climate-indices-xclim.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/rts06-climate-indices-xclim.json"]
+    },
+    "rts07-snapshot-eof-numpy.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/rts07-snapshot-eof-numpy.json"]
+    },
+    "rts08-healpix-geo.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/rts08-healpix-geo.json"]
+    },
+    "s2-polygon-covering.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "scoring-rules-fair.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/scoring-rules-fair.json"]
+    },
+    "scoring-rules.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/scoring-rules.json"]
+    },
+    "space-time-clustering.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/space-time-clustering.json"]
+    },
+    "space-time-diggle-splancs-port.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/space-time-diggle-splancs-port.json"]
+    },
+    "space-time-hdbscan.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "space-time-metric-gstools.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/space-time-metric-gstools.json"]
+    },
+    "space-time-near-repeat.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/space-time-near-repeat.json"]
+    },
+    "space-time-statistics.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/space-time-statistics.json"]
+    },
+    "spatial-clustering-hdbscan.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/spatial-clustering-hdbscan.json"]
+    },
+    "spatial-panel-fixed-effects.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/spatial-panel-fixed-effects.json"]
+    },
+    "spatial-validation-advanced.R": {
+      "kind": "unconfigured",
+      "profile": "rscript",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "spherical-arc-overlay.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "spherical-polygon-contains.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "spherical-polygon-overlay.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "sql-null-expressions.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/sql-null-expressions.json"]
+    },
+    "statistics-advanced.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/statistics-advanced.json"]
+    },
+    "statistics-azp.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/statistics-azp.json"]
+    },
+    "statistics-blockcv.R": {
+      "kind": "fixture",
+      "profile": "rscript",
+      "outputs": ["oracles/fixtures/statistics-blockcv.json"]
+    },
+    "statistics-coverage.py": {
+      "kind": "fixture",
+      "profile": "python-legacy",
+      "outputs": ["oracles/fixtures/statistics-coverage.json"]
+    },
+    "statistics-edge-policy.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/statistics-edge-policy.json"]
+    },
+    "statistics-emerging-hot-spots.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/statistics-emerging-hot-spots.json"]
+    },
+    "statistics-global-autocorrelation.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/statistics-global-autocorrelation.json"]
+    },
+    "statistics-gwr.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "inputs": ["oracles/fixtures/statistics-regression-scenes.json"],
+      "outputs": ["oracles/fixtures/statistics-gwr.json"]
+    },
+    "statistics-hot-spot-recipe.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/statistics-hot-spot-recipe.json"]
+    },
+    "statistics-local-autocorrelation.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/statistics-local-autocorrelation.json"]
+    },
+    "statistics-local-join-counts-and-bivariate.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/statistics-local-join-counts-and-bivariate.json"]
+    },
+    "statistics-markov.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/statistics-markov.json"]
+    },
+    "statistics-max-p.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/statistics-max-p.json"]
+    },
+    "statistics-multiple-testing.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/statistics-multiple-testing.json"]
+    },
+    "statistics-neighbor-search.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/statistics-neighbor-search.json"]
+    },
+    "statistics-permutation-alternative.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/statistics-permutation-alternative.json"]
+    },
+    "statistics-probit-tails.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/statistics-probit-tails.json"]
+    },
+    "statistics-rate-cluster-recipe.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/statistics-rate-cluster-recipe.json"]
+    },
+    "statistics-rate-smoothing.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/statistics-rate-smoothing.json"]
+    },
+    "statistics-rate-standardization.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/statistics-rate-standardization.json"]
+    },
+    "statistics-regression-lag-conditioning.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/statistics-regression-lag-conditioning.json"]
+    },
+    "statistics-regression-large-mean.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/statistics-regression-large-mean.json"]
+    },
+    "statistics-regression-panel-lag-conditioning.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/statistics-regression-panel-lag-conditioning.json"]
+    },
+    "statistics-segregation.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/statistics-segregation.json"]
+    },
+    "statistics-spatial-regression.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "inputs": ["oracles/fixtures/statistics-regression-scenes.json"],
+      "outputs": ["oracles/fixtures/statistics-spatial-regression.json"]
+    },
+    "statistics-spatial-weights-traces.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": [
+        "oracles/fixtures/statistics-spatial-weights-traces-scenes.json",
+        "oracles/fixtures/statistics-spatial-weights-traces.json"
+      ]
+    },
+    "statistics-spatial-weights.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/statistics-spatial-weights.json"]
+    },
+    "statistics-upstream.py": {
+      "kind": "fixture",
+      "profile": "python-legacy",
+      "inputs": ["oracles/fixtures/statistics-coverage.json"],
+      "outputs": ["oracles/fixtures/statistics-upstream.json"]
+    },
+    "statistics-ward.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/statistics-ward.json"]
+    },
+    "stm09-sinkhorn-pot.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/stm09-sinkhorn-pot.json"]
+    },
+    "stx06-change-points.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/stx06-change-points.json"]
+    },
+    "stx08-spatial-methods.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/stx08-spatial-methods.json"]
+    },
+    "terrain-derivatives.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": [
+        "oracles/fixtures/terrain-derivatives.json",
+        "oracles/fixtures/terrain-ruggedness.json"
+      ]
+    },
+    "terrain-dinf-hand.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "terrain-fill-depressions.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/terrain-fill-depressions.json"]
+    },
+    "terrain-hydrology.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/terrain-hydrology.json"]
+    },
+    "terrain-peak-prominence.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "terrain-processing.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "terrain-sky-view-rvt.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/terrain-sky-view-rvt.json"]
+    },
+    "terrain-tiled-branching.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "terrain-upstream.py": {
+      "kind": "unconfigured",
+      "profile": "python-pinned",
+      "reason": "No unique literal fixture mapping; review explicit output paths before enabling."
+    },
+    "track-similarity-dtw-frechet.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/track-similarity-dtw-frechet.json"]
+    },
+    "track-similarity-edit-measures.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/track-similarity-edit-measures.json"]
+    },
+    "trajectories-lines-numpy-checks.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/trajectories-lines-numpy-checks.json"]
+    },
+    "trajectory-closest-approach.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/trajectory-closest-approach.json"]
+    },
+    "upstream-golden-references.py": {
+      "kind": "fixture",
+      "profile": "python-legacy",
+      "outputs": [
+        "oracles/fixtures/circuitscape-upstream-golden.json",
+        "oracles/fixtures/pdal-m3c2-upstream-golden.json"
+      ]
+    },
+    "urban-depthmap.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/urban-depthmap.json"]
+    },
+    "urban-ecology-advanced.py": {
+      "kind": "fixture",
+      "profile": "python-legacy",
+      "outputs": ["oracles/fixtures/urban-ecology-advanced.json"]
+    },
+    "urban-ecology.py": {
+      "kind": "fixture",
+      "profile": "python-pinned",
+      "outputs": ["oracles/fixtures/urban-ecology.json"]
+    },
+    "urban-landscape.R": {
+      "kind": "fixture",
+      "profile": "rscript",
+      "outputs": ["oracles/fixtures/urban-landscape.json"]
+    }
+  }
+}

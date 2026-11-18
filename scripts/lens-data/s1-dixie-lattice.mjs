@@ -20,7 +20,8 @@ for (let row = FIRST; row < FIRST + SIZE; row++) {
 }
 const result = {
   id: 's1-dixie-lattice',
-  description: 'Central 32 x 32 block of the Dixie DEM (rows north to south), a regular lattice for rook and queen contiguity.',
+  description:
+    'Central 32 x 32 block of the Dixie DEM (rows north to south), a regular lattice for rook and queen contiguity.',
   source: dem.source,
   licence: dem.licence,
   crs: dem.crs,

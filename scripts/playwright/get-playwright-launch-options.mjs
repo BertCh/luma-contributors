@@ -41,7 +41,11 @@ export function getPlaywrightLaunchOptions(options = {}) {
   const launchOptions = {
     ...playwrightConfig.launchOptions,
     ...customLaunchOptions,
-    channel: options.channel || playwrightConfig.channel || customLaunchOptions.channel || DEFAULT_PLAYWRIGHT_CHANNEL,
+    channel:
+      options.channel ||
+      playwrightConfig.channel ||
+      customLaunchOptions.channel ||
+      DEFAULT_PLAYWRIGHT_CHANNEL,
     args
   };
 

@@ -41,6 +41,11 @@ jobs:
       - name: Lint
         run: yarn lint
 
+      - name: Build packages
+        run: yarn build
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
+
       - name: Typecheck sources
         run: yarn typecheck
         env:
@@ -55,11 +60,7 @@ jobs:
         run: |
           npx tsc --noEmit -p examples/deck/spatial-analysis-showcase
           npx tsc --noEmit -p examples/deck/spatial-analysis-explorer
-        env:
-          NODE_OPTIONS: --max-old-space-size=8192
-
-      - name: Build packages
-        run: yarn build
+          npx tsc --noEmit -p examples/deck/kepler-compute
         env:
           NODE_OPTIONS: --max-old-space-size=8192
 
@@ -96,6 +97,11 @@ jobs:
 
       - name: Install dependencies
         run: yarn install --immutable
+
+      - name: Build packages
+        run: yarn build
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
 
       - name: Typecheck website
         run: npx tsc -p website/tsconfig.json --noEmit

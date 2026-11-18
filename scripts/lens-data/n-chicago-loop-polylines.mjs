@@ -18,7 +18,6 @@ const readColumn = (file, Type) => {
   const bytes = readFileSync(new URL(`chicago-roads/${file}.bin`, source));
   return new Type(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
 };
-const nodes = readColumn('nodes', Float32Array);
 const edgeSource = readColumn('edgeSource', Uint32Array);
 const edgeTarget = readColumn('edgeTarget', Uint32Array);
 const edgeClass = readColumn('edgeClass', Uint8Array);
@@ -49,7 +48,13 @@ for (let edge = 0; edge < edgeSource.length; edge++) {
     path.push([vertices[2 * vertex], vertices[2 * vertex + 1]]);
   // Orient from the lower node id.
   const oriented = from < to ? path : path.slice().reverse();
-  segments.push({from: Math.min(from, to), to: Math.max(from, to), path: oriented, cls: edgeClass[edge], length: edgeLength[edge]});
+  segments.push({
+    from: Math.min(from, to),
+    to: Math.max(from, to),
+    path: oriented,
+    cls: edgeClass[edge],
+    length: edgeLength[edge]
+  });
 }
 const incident = new Map();
 segments.forEach((segment, index) => {
@@ -77,7 +82,8 @@ for (const [node, list] of [...incident].sort((a, b) => a[0] - b[0])) {
       const [ax, ay] = direction(segments[list[i]], node);
       const [bx, by] = direction(segments[list[j]], node);
       const cosine = ax * bx + ay * by;
-      if (cosine <= -Math.cos((20 * Math.PI) / 180)) candidates.push({cosine, i: list[i], j: list[j]});
+      if (cosine <= -Math.cos((20 * Math.PI) / 180))
+        candidates.push({cosine, i: list[i], j: list[j]});
     }
   candidates.sort((a, b) => a.cosine - b.cosine || a.i - b.i || a.j - b.j);
   const used = new Set();
@@ -124,11 +130,17 @@ for (let start = 0; start < segments.length; start++) {
   const junctions = [];
   let metres = 0;
   chain.forEach(({path, farNode, length}, index) => {
-    for (let vertex = index === 0 ? 0 : 1; vertex < path.length; vertex++) points.push(path[vertex]);
+    for (let vertex = index === 0 ? 0 : 1; vertex < path.length; vertex++)
+      points.push(path[vertex]);
     junctions.push(points.length - 1);
     metres += length;
   });
-  streets.push({points, junctions: junctions.slice(0, -1), metres, cls: Math.min(...chain.map(part => part.cls))});
+  streets.push({
+    points,
+    junctions: junctions.slice(0, -1),
+    metres,
+    cls: Math.min(...chain.map(part => part.cls))
+  });
 }
 streets.sort((a, b) => b.metres - a.metres);
 // The eight longest streets of each orientation, so the selection forms a crossing grid.
@@ -143,7 +155,8 @@ const selected = [
 // Drop junction vertices that are locally straight, so crossings are interior crossings.
 const keyOf = point => `${point[0].toFixed(6)},${point[1].toFixed(6)}`;
 const counts = new Map();
-for (const street of selected) for (const point of street.points) counts.set(keyOf(point), (counts.get(keyOf(point)) ?? 0) + 1);
+for (const street of selected)
+  for (const point of street.points) counts.set(keyOf(point), (counts.get(keyOf(point)) ?? 0) + 1);
 let dropped = 0;
 const lines = selected.map(street => {
   const kept = street.points.filter((point, index) => {
@@ -181,7 +194,12 @@ const data = {
 const bytes = `${JSON.stringify(data)}\n`;
 if (data.lineCount < 10 || data.lineCount > 40 || Buffer.byteLength(bytes) > 150000)
   throw new Error('Polyline budget failed');
-const destination = new URL('modules/lenses/src/computation-lenses/data/n-chicago-loop-polylines.json', root);
+const destination = new URL(
+  'modules/lenses/src/computation-lenses/data/n-chicago-loop-polylines.json',
+  root
+);
 writeFileSync(destination, bytes);
 // biome-ignore lint/suspicious/noConsole: Extraction reports its deterministic sizes and counts.
-console.log(`${fileURLToPath(destination)}: ${Buffer.byteLength(bytes)} bytes; ${data.lineCount} lines; ${data.vertexCount} vertices; ${dropped} straight junction vertices dropped; lengths ${selected.map(street => Math.round(street.metres)).join(',')}`);
+console.log(
+  `${fileURLToPath(destination)}: ${Buffer.byteLength(bytes)} bytes; ${data.lineCount} lines; ${data.vertexCount} vertices; ${dropped} straight junction vertices dropped; lengths ${selected.map(street => Math.round(street.metres)).join(',')}`
+);

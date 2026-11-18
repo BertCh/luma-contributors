@@ -26,7 +26,8 @@ const runs = [];
 for (let trace = 0; trace < pathOffsets.length - 1; trace++) {
   let start = -1;
   for (let fix = pathOffsets[trace]; fix <= pathOffsets[trace + 1]; fix++) {
-    const isInside = fix < pathOffsets[trace + 1] && inside(vertices[2 * fix], vertices[2 * fix + 1]);
+    const isInside =
+      fix < pathOffsets[trace + 1] && inside(vertices[2 * fix], vertices[2 * fix + 1]);
     if (isInside && start < 0) start = fix;
     if (!isInside && start >= 0) {
       runs.push({trace, start, length: fix - start});
@@ -61,7 +62,12 @@ const data = {
 const bytes = `${JSON.stringify(data)}\n`;
 if (data.sampleCount < 100 || data.sampleCount > 300 || Buffer.byteLength(bytes) > 150000)
   throw new Error('Trace budget failed');
-const destination = new URL('modules/lenses/src/computation-lenses/data/n-chicago-loop-traces.json', root);
+const destination = new URL(
+  'modules/lenses/src/computation-lenses/data/n-chicago-loop-traces.json',
+  root
+);
 writeFileSync(destination, bytes);
 // biome-ignore lint/suspicious/noConsole: Extraction reports its deterministic sizes and counts.
-console.log(`${fileURLToPath(destination)}: ${Buffer.byteLength(bytes)} bytes; ${data.trackCount} tracks; ${data.sampleCount} samples; source traces ${data.sourceTraces}; sigma ${data.noiseSigmaMeters}`);
+console.log(
+  `${fileURLToPath(destination)}: ${Buffer.byteLength(bytes)} bytes; ${data.trackCount} tracks; ${data.sampleCount} samples; source traces ${data.sourceTraces}; sigma ${data.noiseSigmaMeters}`
+);

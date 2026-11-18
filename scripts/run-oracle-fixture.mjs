@@ -10,8 +10,9 @@
 // <generator> is a file in modules/analysis/test/oracles, with or without its extension
 // (`statistics-markov`, `interpolation-gstat.R`). The generator runs in a sandbox: a copy-on-write
 // clone of modules/analysis/test inside a temporary directory, with every other repository
-// directory symlinked, so the committed fixtures are never touched while it runs. Files it wrote
-// are compared with the committed ones and nothing is copied back unless --write is given.
+// directory symlinked, so normal fixture writes are staged. oracle-fixtures.json declares the
+// interpreter profile and exact outputs; all must be recreated before any comparison/copy-back.
+// Nothing is copied back unless --write is given. This is not an OS security sandbox.
 //
 // Exit codes: 0 identical or written, 1 differences (without --write), 2 environment problem
 // (missing interpreter, Python package or R), 3 generator failure, 64 usage error.
@@ -46,7 +47,7 @@ export function resolveGenerator(name, oracleDirectory) {
   return {error: `no generator named ${name} in ${ORACLE_DIRECTORY}`};
 }
 
-/** Maps generator file to the fixture names GENERATORS.md lists for it (informational). */
+/** Reads the historical prose inventory; runtime declarations live in oracle-fixtures.json. */
 export function parseExpectedFixtures(generatorsMarkdown) {
   const expected = new Map();
   let current = null;
@@ -97,7 +98,10 @@ export function diffJson(committed, regenerated) {
       changed.push({path: key, committed: value, regenerated: after.get(key)});
       if (typeof value === 'number' && typeof after.get(key) === 'number') {
         changedNumberCount++;
-        maximumAbsoluteDifference = Math.max(maximumAbsoluteDifference, Math.abs(value - after.get(key)));
+        maximumAbsoluteDifference = Math.max(
+          maximumAbsoluteDifference,
+          Math.abs(value - after.get(key))
+        );
       }
     }
   }
@@ -118,13 +122,17 @@ export function diffJson(committed, regenerated) {
 /** Classifies interpreter stderr into an environment problem, or undefined for a generator failure. */
 export function classifyFailure(extension, standardError) {
   if (extension === '.py') {
-    const missing = standardError.match(/(?:ModuleNotFoundError|ImportError): No module named '([^']+)'/);
+    const missing = standardError.match(
+      /(?:ModuleNotFoundError|ImportError): No module named '([^']+)'/
+    );
     if (missing) {
       return `missing Python package: ${missing[1].split('.')[0]} (pins: ${ORACLE_DIRECTORY}/requirements.txt; install it into a virtual environment and pass --python <venv>/bin/python)`;
     }
     const importFailure = standardError.match(/ImportError: (.+)/);
     if (importFailure) return `Python import failure: ${importFailure[1]}`;
-    const metadata = standardError.match(/PackageNotFoundError: No package metadata was found for (\S+)/);
+    const metadata = standardError.match(
+      /PackageNotFoundError: No package metadata was found for (\S+)/
+    );
     if (metadata) return `missing Python package: ${metadata[1]} (version lookup failed)`;
   }
   if (extension === '.R') {
@@ -136,19 +144,6 @@ export function classifyFailure(extension, standardError) {
     if (missing) return `missing Node module: ${missing[1]}`;
   }
   return undefined;
-}
-
-function listFiles(directory) {
-  const files = [];
-  const walk = current => {
-    for (const entry of fs.readdirSync(current, {withFileTypes: true})) {
-      const full = path.join(current, entry.name);
-      if (entry.isDirectory()) walk(full);
-      else if (entry.isFile()) files.push(full);
-    }
-  };
-  walk(directory);
-  return files;
 }
 
 /** Builds the sandbox root: a clone of the test tree, symlinks to everything else. */
@@ -203,6 +198,60 @@ function describeValue(value) {
   return text && text.length > 60 ? `${text.slice(0, 57)}...` : text;
 }
 
+/** Validate declarations without executing any generator. Paths are relative to the test tree. */
+export function validateOracleManifest(manifest) {
+  if (manifest.version !== 1 || !manifest.generators || !manifest.profiles)
+    throw new Error('expected version 1, profiles and generators');
+  const validatePath = relative => {
+    if (
+      typeof relative !== 'string' ||
+      !relative ||
+      relative.includes('\\') ||
+      path.isAbsolute(relative) ||
+      relative.split('/').some(part => part === '..' || part === '.' || !part)
+    )
+      throw new Error(`invalid test-relative fixture path ${relative}`);
+  };
+  for (const [file, declaration] of Object.entries(manifest.generators)) {
+    if (
+      path.basename(file) !== file ||
+      !['fixture', 'inventory', 'unconfigured'].includes(declaration.kind)
+    )
+      throw new Error(`invalid generator declaration ${file}`);
+    const profile = manifest.profiles[declaration.profile];
+    if (!profile || !['python', 'rscript', 'node', 'unsupported'].includes(profile.runtime))
+      throw new Error(`${file}: invalid interpreter profile`);
+    if (declaration.kind !== 'fixture') {
+      if (typeof declaration.reason !== 'string' || !declaration.reason.trim())
+        throw new Error(`${file}: a reason is required for ${declaration.kind}`);
+      continue;
+    }
+    if (
+      profile.runtime === 'unsupported' ||
+      !Array.isArray(declaration.outputs) ||
+      !declaration.outputs.length
+    )
+      throw new Error(`${file}: fixture outputs and a runnable profile are required`);
+    if (declaration.inputs !== undefined && !Array.isArray(declaration.inputs))
+      throw new Error(`${file}: inputs must be an array`);
+    for (const relative of [...declaration.outputs, ...(declaration.inputs ?? [])])
+      validatePath(relative);
+    if (
+      new Set(declaration.outputs).size !== declaration.outputs.length ||
+      declaration.outputs.some(output => declaration.inputs?.includes(output))
+    )
+      throw new Error(`${file}: outputs must be unique and separate from inputs`);
+    for (const [option, environment] of Object.entries(declaration.toolArguments ?? {})) {
+      if (
+        !/^--[a-z][a-z-]*$/.test(option) ||
+        typeof environment !== 'string' ||
+        !/^[A-Z][A-Z_0-9]*$/.test(environment)
+      )
+        throw new Error(`${file}: invalid tool argument declaration`);
+    }
+  }
+}
+
 function main() {
   const options = parseArguments(process.argv.slice(2));
   if (options.error) {
@@ -210,14 +259,22 @@ function main() {
     return 64;
   }
   const oracleDirectory = path.join(REPOSITORY_ROOT, ORACLE_DIRECTORY);
-  const expectedByGenerator = parseExpectedFixtures(
-    fs.readFileSync(path.join(oracleDirectory, 'GENERATORS.md'), 'utf8')
-  );
+  let manifest;
+  try {
+    manifest = JSON.parse(
+      fs.readFileSync(path.join(REPOSITORY_ROOT, 'scripts/oracle-fixtures.json'), 'utf8')
+    );
+    validateOracleManifest(manifest);
+  } catch (error) {
+    console.error(`oracle-fixture: invalid oracle-fixtures.json: ${error.message}`);
+    return 64;
+  }
   if (options.list) {
-    for (const file of fs.readdirSync(oracleDirectory).sort()) {
-      if (!GENERATOR_EXTENSIONS.has(path.extname(file))) continue;
-      const fixtures = expectedByGenerator.get(file) ?? [];
-      console.log(`${file}${fixtures.length ? `  ->  ${fixtures.join(', ')}` : ''}`);
+    for (const [file, declaration] of Object.entries(manifest.generators).sort(([left], [right]) =>
+      left.localeCompare(right)
+    )) {
+      if (declaration.kind === 'fixture')
+        console.log(`${file} [${declaration.profile}]  ->  ${declaration.outputs.join(', ')}`);
     }
     return 0;
   }
@@ -227,19 +284,86 @@ function main() {
     console.error(`oracle-fixture: ${resolved.error}`);
     return 64;
   }
+  const declaration = manifest.generators[resolved.file];
+  if (declaration?.kind !== 'fixture') {
+    console.error(
+      `oracle-fixture: ${resolved.file} has no declared fixture outputs for execution (${declaration?.kind ?? 'unconfigured'}): ${declaration?.reason ?? 'add a reviewed declaration to scripts/oracle-fixtures.json'}`
+    );
+    return 64;
+  }
+  const profile = manifest.profiles[declaration.profile];
+  if (
+    !profile ||
+    !['python', 'rscript', 'node'].includes(profile.runtime) ||
+    !Array.isArray(declaration.outputs) ||
+    !declaration.outputs.length
+  ) {
+    console.error(
+      `oracle-fixture: ${resolved.file}: invalid profile or empty outputs in oracle-fixtures.json`
+    );
+    return 64;
+  }
+  const expectedPaths = [...new Set(declaration.outputs)];
+  for (const relative of [...expectedPaths, ...(declaration.inputs ?? [])]) {
+    if (
+      typeof relative !== 'string' ||
+      !relative ||
+      relative.includes('\\') ||
+      path.isAbsolute(relative) ||
+      relative.split('/').some(part => part === '..' || part === '.' || !part)
+    ) {
+      console.error(`oracle-fixture: invalid test-relative fixture path ${relative}`);
+      return 64;
+    }
+    const committedPath = path.join(REPOSITORY_ROOT, TEST_DIRECTORY, relative);
+    const testRoot = fs.realpathSync(path.join(REPOSITORY_ROOT, TEST_DIRECTORY));
+    if (
+      !fs.existsSync(committedPath) ||
+      !fs.statSync(committedPath).isFile() ||
+      !fs.realpathSync(committedPath).startsWith(`${testRoot}${path.sep}`)
+    ) {
+      console.error(
+        `oracle-fixture: expected fixture ${path.basename(relative)} is missing or escapes the committed test tree: ${relative}`
+      );
+      return 3;
+    }
+  }
   const extension = path.extname(resolved.file);
   let command;
   let commandArguments;
   const generatorPath = `${ORACLE_DIRECTORY}/${resolved.file}`;
-  if (extension === '.py') {
-    command = findExecutable([options.python, process.env.ORACLE_PYTHON, 'python3.14', 'python3']);
+  if (profile.runtime === 'python') {
+    const requested = options.python ?? process.env.ORACLE_PYTHON;
+    command = findExecutable(
+      requested !== undefined ? [requested] : (profile.executables ?? ['python3.14', 'python3'])
+    );
     if (!command) {
-      console.error('oracle-fixture: no Python interpreter found; pass --python <path> or set ORACLE_PYTHON');
+      console.error(
+        'oracle-fixture: no Python interpreter found; pass --python <path> or set ORACLE_PYTHON'
+      );
       return 2;
     }
+    if (profile.pythonVersion) {
+      const version = spawnSync(
+        command,
+        [
+          '-I',
+          '-c',
+          'import sys; print(str(sys.version_info.major) + "." + str(sys.version_info.minor))'
+        ],
+        {encoding: 'utf8'}
+      );
+      if (version.status !== 0 || version.stdout.trim() !== profile.pythonVersion) {
+        console.error(
+          `oracle-fixture: ${declaration.profile} requires Python ${profile.pythonVersion}; ${command} reported ${version.stdout?.trim() || 'no version'}`
+        );
+        return 2;
+      }
+    }
     commandArguments = ['-I', generatorPath];
-  } else if (extension === '.R') {
-    command = findExecutable([options.rscript, process.env.ORACLE_RSCRIPT, 'Rscript']);
+  } else if (profile.runtime === 'rscript') {
+    const requested = options.rscript ?? process.env.ORACLE_RSCRIPT;
+    command = findExecutable(requested !== undefined ? [requested] : ['Rscript']);
     if (!command) {
       console.error(
         `oracle-fixture: R is not installed (Rscript not found), so ${resolved.file} cannot run; pass --rscript <path> or set ORACLE_RSCRIPT. The committed fixture is unchecked.`
@@ -251,12 +375,34 @@ function main() {
     command = process.execPath;
     commandArguments = [generatorPath];
   }
+  if (
+    (profile.runtime === 'python' && extension !== '.py') ||
+    (profile.runtime === 'rscript' && extension !== '.R') ||
+    (profile.runtime === 'node' && extension !== '.mjs')
+  ) {
+    console.error(`oracle-fixture: ${resolved.file}: runtime does not match generator extension`);
+    return 64;
+  }
+  for (const [option, environment] of Object.entries(declaration.toolArguments ?? {})) {
+    const value = process.env[environment];
+    if (!value) {
+      console.error(
+        `oracle-fixture: ${resolved.file} needs ${environment} for ${option}; profile ${declaration.profile} (${profile.description ?? ''})`
+      );
+      return 2;
+    }
+    commandArguments.push(option, value);
+  }
 
   const sandboxRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'oracle-fixture-'));
-  const startTime = Date.now() - 2000;
   try {
     createSandbox(sandboxRoot);
-    console.log(`oracle-fixture: ${[command, ...commandArguments].join(' ')} (sandbox ${sandboxRoot})`);
+    const sandboxTest = path.join(sandboxRoot, TEST_DIRECTORY);
+    // Remove staged copies first: an untouched old fixture is never proof of regeneration.
+    for (const relative of expectedPaths) fs.unlinkSync(path.join(sandboxTest, relative));
+    console.log(
+      `oracle-fixture: ${[command, ...commandArguments].join(' ')} (sandbox ${sandboxRoot})`
+    );
     const run = spawnSync(command, commandArguments, {
       cwd: sandboxRoot,
       encoding: 'utf8',
@@ -269,18 +415,33 @@ function main() {
     if (run.status !== 0) {
       const problem = classifyFailure(extension, run.stderr ?? '');
       if (problem) {
-        console.error(`oracle-fixture: ${problem}\noracle-fixture: ${resolved.file} did not run; the committed fixtures are unchecked.`);
+        console.error(
+          `oracle-fixture: ${problem}\noracle-fixture: ${resolved.file} did not run; the committed fixtures are unchecked.`
+        );
         return 2;
       }
-      console.error(`${run.stderr}\noracle-fixture: ${resolved.file} failed with status ${run.status}`);
+      console.error(
+        `${run.stderr}\noracle-fixture: ${resolved.file} failed with status ${run.status}`
+      );
       return 3;
     }
 
-    const sandboxTest = path.join(sandboxRoot, TEST_DIRECTORY);
-    const written = listFiles(sandboxTest)
-      .filter(file => fs.statSync(file).mtimeMs >= startTime)
-      .filter(file => !file.includes('__pycache__') && path.basename(file) !== resolved.file);
-    const expected = expectedByGenerator.get(resolved.file) ?? [];
+    const written = expectedPaths.map(relative => path.join(sandboxTest, relative));
+    const sandboxTestRoot = fs.realpathSync(sandboxTest);
+    const missing = written.filter(
+      file =>
+        !fs.existsSync(file) ||
+        !fs.statSync(file).isFile() ||
+        !fs.realpathSync(file).startsWith(`${sandboxTestRoot}${path.sep}`)
+    );
+    if (missing.length) {
+      for (const file of missing)
+        console.error(
+          `NOT WRITTEN ${path.relative(sandboxTest, file)} (required by oracle-fixtures.json for ${resolved.file})`
+        );
+      console.error('oracle-fixture: incomplete generation; no fixtures compared or copied back');
+      return 3;
+    }
     let differenceCount = 0;
     for (const file of written) {
       const relative = path.relative(sandboxTest, file);
@@ -299,7 +460,9 @@ function main() {
       }
       differenceCount++;
       if (extension === '.R' || path.extname(file) !== '.json') {
-        console.log(`DIFFERS    ${label} (${committedBytes.length} -> ${regeneratedBytes.length} bytes; not JSON)`);
+        console.log(
+          `DIFFERS    ${label} (${committedBytes.length} -> ${regeneratedBytes.length} bytes; not JSON)`
+        );
         continue;
       }
       const diff = diffJson(JSON.parse(committedBytes), JSON.parse(regeneratedBytes));
@@ -307,23 +470,19 @@ function main() {
         `DIFFERS    ${label}: ${diff.changed.length} changed (${diff.changedNumberCount} numeric, max abs ${diff.maximumAbsoluteDifference}), ${diff.added.length} added, ${diff.removed.length} removed${diff.metadataOnly ? ' (metadata only: versions or hashes)' : ''}`
       );
       for (const item of diff.changed.slice(0, MAXIMUM_REPORTED_DIFFERENCES)) {
-        console.log(`             ${item.path}: ${describeValue(item.committed)} -> ${describeValue(item.regenerated)}`);
+        console.log(
+          `             ${item.path}: ${describeValue(item.committed)} -> ${describeValue(item.regenerated)}`
+        );
       }
       for (const key of diff.added.slice(0, 3)) console.log(`             + ${key}`);
       for (const key of diff.removed.slice(0, 3)) console.log(`             - ${key}`);
     }
-    if (written.length === 0) console.log('oracle-fixture: the generator wrote no file');
-    for (const name of expected) {
-      if (!written.some(file => path.basename(file) === name)) {
-        console.log(`NOT WRITTEN ${name} (listed in GENERATORS.md for ${resolved.file})`);
-      }
-    }
-
     if (options.write && differenceCount > 0) {
       for (const file of written) {
         const relative = path.relative(sandboxTest, file);
         const target = path.join(REPOSITORY_ROOT, TEST_DIRECTORY, relative);
-        if (fs.existsSync(target) && fs.readFileSync(target).equals(fs.readFileSync(file))) continue;
+        if (fs.existsSync(target) && fs.readFileSync(target).equals(fs.readFileSync(file)))
+          continue;
         fs.mkdirSync(path.dirname(target), {recursive: true});
         fs.copyFileSync(file, target);
         console.log(`WROTE      ${TEST_DIRECTORY}/${relative}`);
@@ -331,7 +490,9 @@ function main() {
       return 0;
     }
     if (differenceCount > 0) {
-      console.log('oracle-fixture: differences found; nothing was written (use --write to accept them).');
+      console.log(
+        'oracle-fixture: differences found; nothing was written (use --write to accept them).'
+      );
       return 1;
     }
     return 0;

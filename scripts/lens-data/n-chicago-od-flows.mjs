@@ -33,10 +33,16 @@ const rows = Array.from({length: origin.length}, (_, row) => row)
   .slice(0, 150);
 const pairKey = (from, to) => from * 77 + to;
 const chosen = new Set(rows.map(row => pairKey(origin[row], destination[row])));
-const zoneIds = [...new Set(rows.flatMap(row => [origin[row], destination[row]]))].sort((a, b) => a - b);
+const zoneIds = [...new Set(rows.flatMap(row => [origin[row], destination[row]]))].sort(
+  (a, b) => a - b
+);
 const zoneIndex = new Map(zoneIds.map((id, index) => [id, index]));
 const annual = rows
-  .map(row => ({origin: zoneIndex.get(origin[row]), destination: zoneIndex.get(destination[row]), trips: count[row]}))
+  .map(row => ({
+    origin: zoneIndex.get(origin[row]),
+    destination: zoneIndex.get(destination[row]),
+    trips: count[row]
+  }))
   .sort((a, b) => a.origin - b.origin || a.destination - b.destination);
 const hourly = [];
 for (let row = 0; row < hourlyOrigin.length; row++)
@@ -58,7 +64,10 @@ const data = {
   note: 'Taxi trips between Chicago community-area centroids; zone positions are centroids, not trip endpoints',
   zoneCount: zoneIds.length,
   zoneNames: zoneIds.map(id => manifest.properties.areaNames[id]),
-  zonePositions: zoneIds.flatMap(id => [Number(locations[2 * id].toFixed(5)), Number(locations[2 * id + 1].toFixed(5))]),
+  zonePositions: zoneIds.flatMap(id => [
+    Number(locations[2 * id].toFixed(5)),
+    Number(locations[2 * id + 1].toFixed(5))
+  ]),
   annual: {
     originZones: annual.map(row => row.origin),
     destinationZones: annual.map(row => row.destination),
@@ -72,9 +81,16 @@ const data = {
   }
 };
 const bytes = `${JSON.stringify(data)}\n`;
-if (annual.length < 100 || hourly.length > 500 || hourly.length < 100 || Buffer.byteLength(bytes) > 150000)
+if (
+  annual.length < 100 ||
+  hourly.length > 500 ||
+  hourly.length < 100 ||
+  Buffer.byteLength(bytes) > 150000
+)
   throw new Error('OD flow budget failed');
 const output = new URL('modules/lenses/src/computation-lenses/data/n-chicago-od-flows.json', root);
 writeFileSync(output, bytes);
 // biome-ignore lint/suspicious/noConsole: Extraction reports its deterministic sizes and counts.
-console.log(`${fileURLToPath(output)}: ${Buffer.byteLength(bytes)} bytes; ${data.zoneCount} zones; ${annual.length} annual rows; ${hourly.length} hourly rows`);
+console.log(
+  `${fileURLToPath(output)}: ${Buffer.byteLength(bytes)} bytes; ${data.zoneCount} zones; ${annual.length} annual rows; ${hourly.length} hourly rows`
+);

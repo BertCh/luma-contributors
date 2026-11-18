@@ -3,6 +3,11 @@
 
 import {readFileSync} from 'node:fs';
 import {getVitestConfig} from '@vis.gl/dev-tools';
+import {
+  BENCHMARK_PATTERNS,
+  getOptInBrowserDefines,
+  getOptInTestExclusions
+} from './scripts/verification-policy.mjs';
 
 // Kepler specs that exercise examples/deck/kepler-compute run against the example sources in
 // place. Those whose imports reach deck.gl, other undeclared packages or luma.gl APIs that are
@@ -10,7 +15,7 @@ import {getVitestConfig} from '@vis.gl/dev-tools';
 // LUMA_CONTRIBUTORS_RUN_EXCLUDED_SPECS=true lifts the exclusion so the listed specs can be
 // retried (for example after an example change) without editing the JSON.
 const keplerComputeExampleSpecs: string[] =
-  process.env.LUMA_CONTRIBUTORS_RUN_EXCLUDED_SPECS === 'true'
+  process.env['LUMA_CONTRIBUTORS_RUN_EXCLUDED_SPECS'] === 'true'
     ? []
     : Object.keys(
         JSON.parse(
@@ -20,42 +25,13 @@ const keplerComputeExampleSpecs: string[] =
 
 const excludePatterns = [
   '**/*.disabled.*',
-  ...keplerComputeExampleSpecs
+  ...keplerComputeExampleSpecs,
+  ...getOptInTestExclusions()
 ];
 
 // Benchmarks stay out of correctness runs; LUMA_CONTRIBUTORS_BENCHMARKS=true runs only these.
-const browserBenchmarkTestPatterns = [
-  'modules/analysis/test/gpu-spatial-analysis/point-process/point-process-benchmark.spec.ts',
-  'modules/analysis/test/gpu-spatial-analysis/urban-ecology/urban-ecology-benchmark.spec.ts',
-  'modules/analysis/test/gpu-pointcloud/gpu-pointcloud-benchmark.spec.ts',
-  'modules/analysis/test/gpu-pointcloud/gpu-pointcloud-advanced-benchmark.spec.ts',
-  'modules/analysis/test/gpu-spatial-analysis/global-coordinates/global-coordinates-benchmark.spec.ts',
-  'modules/analysis/test/gpu-network/network-optimization/network-movement-benchmark.spec.ts',
-  'modules/analysis/test/gpu-spatial-analysis/spatial-interpolation/interpolation-performance-benchmark.spec.ts',
-  'modules/analysis/test/gpu-spatial-analysis/spatial-interpolation/variogram-profile-benchmark.spec.ts',
-  'modules/analysis/test/gpu-spatial-analysis/spatial-interpolation/conditional-simulation-reuse-benchmark.spec.ts',
-  'modules/lenses/test/computation-lenses/raster-terrain/coverage-tranche-one-benchmark.spec.ts',
-  'modules/analysis/test/geospatial-expansion/backlog-performance-benchmark.spec.ts',
-  'modules/analysis/test/geospatial-expansion/irregular-geospatial-profile-benchmark.spec.ts',
-  'modules/analysis/test/geospatial-expansion/neighborhood-strategy-benchmark.spec.ts',
-  'modules/analysis/test/gpu-terrain/terrain-analysis/shared-pyramid-benchmark.spec.ts',
-  'modules/analysis/test/gpu-terrain/terrain-processing/terrain-processing-benchmark.spec.ts',
-  'modules/analysis/test/gpu-raster/remote-sensing/raster-performance-benchmark.spec.ts',
-  'modules/analysis/test/gpu-raster/medial-axis/gpu-raster-medial-axis-benchmark.spec.ts',
-  'modules/analysis/test/gpu-network/network-reachability/gpu-network-reachability-bench.spec.ts',
-  'modules/analysis/test/gpu-network/network-accessibility/gpu-network-accessibility-bench.spec.ts',
-  'modules/analysis/test/gpu-spatial-analysis/region-statistics/region-statistics-benchmark.spec.ts',
-  'modules/analysis/test/gpu-terrain/relief-visualization/relief-visualization-benchmark.spec.ts',
-  'modules/analysis/test/gpu-terrain/terrain-illumination/terrain-illumination-benchmark.spec.ts',
-  'modules/analysis/test/gpu-spatial-analysis/spatial-join/spatial-join-benchmark.spec.ts',
-  'modules/analysis/test/gpu-spatial-analysis/spatial-join/spatialbench-scale-benchmark.spec.ts',
-  'modules/analysis/test/gpu-spatial-analysis/neighbor-search/neighbor-search-benchmark.spec.ts',
-  'modules/analysis/test/gpu-spatial-analysis/spatial-regression/gwr-benchmark.spec.ts',
-  'modules/analysis/test/gpu-spatial-analysis/spatial-regression/statistics-performance-benchmark.spec.ts',
-  'modules/analysis/test/gpu-spatial-analysis/spatial-regression/spatial-validation-performance-benchmark.spec.ts',
-  'modules/analysis/test/gpu-dataframe/pair-statistics/ripley-isotropic-envelope-benchmark.spec.ts'
-];
-const runBrowserBenchmarks = process.env.LUMA_CONTRIBUTORS_BENCHMARKS === 'true';
+const browserBenchmarkTestPatterns = BENCHMARK_PATTERNS;
+const runBrowserBenchmarks = process.env['LUMA_CONTRIBUTORS_BENCHMARKS'] === 'true';
 
 const browserExcludePatterns = [
   'modules/**/*.node.spec.{ts,js}',
@@ -66,12 +42,13 @@ const browserExcludePatterns = [
 const launchArguments = [
   '--enable-unsafe-webgpu',
   '--ignore-gpu-blocklist',
-  ...(process.env.CI && process.platform === 'linux'
+  ...(process.env['CI'] && process.platform === 'linux'
     ? ['--use-angle=swiftshader', '--enable-unsafe-swiftshader']
     : [])
 ];
 
 const browserProject = {
+  define: getOptInBrowserDefines(),
   // Declared up front so the first run that reaches DuckDB does not make Vite re-optimise
   // dependencies and reload mid-test, which can leave two apache-arrow module instances.
   optimizeDeps: {include: ['@duckdb/duckdb-wasm', 'apache-arrow']},
@@ -79,7 +56,10 @@ const browserProject = {
     environment: 'node',
     // Concurrent pages contend for one GPU; match CI locally.
     fileParallelism: false,
-    setupFiles: ['./test/utils/browser-process-shim.mjs'],
+    setupFiles: [
+      './test/utils/browser-process-shim.mjs',
+      './test/utils/verification-opt-in-env.mjs'
+    ],
     include: runBrowserBenchmarks ? browserBenchmarkTestPatterns : ['modules/**/*.spec.{ts,js}'],
     exclude: runBrowserBenchmarks ? excludePatterns : browserExcludePatterns
   }
@@ -93,6 +73,7 @@ export default getVitestConfig({
       test: {
         browser: {enabled: false},
         pool: 'threads',
+        maxWorkers: 1,
         isolate: false,
         include: ['modules/**/*.node.spec.{ts,js}'],
         exclude: excludePatterns

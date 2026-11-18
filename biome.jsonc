@@ -7,6 +7,8 @@
       "!**/dist/**",
       "!**/.cache/**",
       "!**/.docusaurus/**",
+      "scripts/**/*.mjs",
+      "vitest.config.ts",
       "modules/**/*.js",
       "modules/**/*.jsx",
       "modules/**/*.ts",
@@ -16,6 +18,7 @@
       "docs/**/*.ts",
       "docs/**/*.tsx",
       "test/**/*.js",
+      "test/**/*.mjs",
       "test/**/*.jsx",
       "test/**/*.ts",
       "test/**/*.tsx",
@@ -67,6 +70,10 @@
     }
   },
   "overrides": [
+    {
+      "includes": ["scripts/**/*.mjs"],
+      "linter": {"rules": {"suspicious": {"noConsole": "off"}}}
+    },
     {
       "includes": ["modules/core/src/webgpu/**/*.ts", "modules/core/src/webgpu/**/*.js"],
       "javascript": {

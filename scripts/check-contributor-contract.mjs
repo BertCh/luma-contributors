@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {createHash} from 'node:crypto';
 // Report departures from dev-docs/contributor-contract.md across modules/analysis/src.
 //
 //   node scripts/check-contributor-contract.mjs                  new findings only; exit 1 if any
@@ -9,25 +10,110 @@
 //   node scripts/check-contributor-contract.mjs --rule <id>      one rule only
 //   node scripts/check-contributor-contract.mjs --all --paths <file-or-directory> [...]
 //   node scripts/check-contributor-contract.mjs --update-baseline
+//   node scripts/check-contributor-contract.mjs --update-baseline --reason '<reviewed departure>'
+//   node scripts/check-contributor-contract.mjs --check-stale   read-only expired-site audit
 //
 // The baseline (scripts/contributor-contract-baseline.json) records existing findings by rule and
-// file (a count, or a list of symbols), never by line number, so unrelated edits do not churn it.
+// file and stable site signature, with a reason; line-number shifts do not renew an allowance.
 // TypeScript is parsed without typechecking. WGSL checks inspect statically resolvable snippets;
 // they are heuristics, not a replacement for compiling and testing the shaders.
 import fs from 'node:fs';
 import path from 'node:path';
 import typeScript from 'typescript';
+import {findInternalPublicMembers} from './contributor-contract-public-surface.mjs';
 
 const SOURCE_ROOT = 'modules/analysis/src';
 const BASELINE_PATH = 'scripts/contributor-contract-baseline.json';
 const SKIPPED_DIRECTORIES = new Set(['testing', 'computation-record']);
-const ROOT_FILE_DIRECTORIES = new Set([
-  'gpu-network',
-  'gpu-terrain',
-  'raster-analysis',
-  'dataframe-analysis',
-  'gpu-spatial-analysis'
+// These public entries organize infrastructure rather than contributor families.
+const ROOT_FILE_EXCEPTIONS = new Map([
+  ['.', 'Package-wide forwarding barrel; source-root placement is checked by upstream-first.'],
+  ['./computation-record', 'Recording infrastructure, not an operator family.'],
+  ['./gpu-spatial-analysis/ontology', 'Shared catalog infrastructure, not an operator family.']
 ]);
+const analysisManifest = JSON.parse(fs.readFileSync('modules/analysis/package.json', 'utf8'));
+const SOURCE_EXTENSION_PATTERN = /\.(?:[cm]?[jt]s|[jt]sx)$/;
+const DECLARATION_SOURCE_PATTERN = /\.d\.[cm]?ts$/;
+const SOURCE_SUFFIX_PATTERN = /\.(?:d\.[cm]?ts|[cm]?[jt]s|[jt]sx)$/;
+
+function collectExportTargets(entry, target) {
+  if (typeof target === 'string') return [target];
+  if (target === null) return []; // An explicitly disabled export has no public source root.
+  if (target && typeof target === 'object')
+    return Object.values(target).flatMap(value => collectExportTargets(entry, value));
+  throw new Error(`Cannot resolve root-file export ${entry} target ${JSON.stringify(target)}`);
+}
+
+// Root coverage is independent of the .ts-only traversal used by the other contract rules.
+function listExportSourceFiles(directory) {
+  return fs.readdirSync(directory, {withFileTypes: true}).flatMap(entry => {
+    if (entry.name === 'node_modules' || entry.name === 'dist') return [];
+    const file = path.join(directory, entry.name);
+    if (entry.isDirectory()) return listExportSourceFiles(file);
+    return entry.isFile() && SOURCE_EXTENSION_PATTERN.test(entry.name) ? [file] : [];
+  });
+}
+
+function resolvePublicRootDirectories() {
+  const directories = new Set();
+  let sourceCandidates;
+  for (const [entry, exported] of Object.entries(analysisManifest.exports)) {
+    if (ROOT_FILE_EXCEPTIONS.has(entry)) continue;
+    for (const target of collectExportTargets(entry, exported)) {
+      if (
+        !target.startsWith('./dist/') ||
+        !SOURCE_SUFFIX_PATTERN.test(target) ||
+        target
+          .split('/')
+          .slice(1)
+          .some(segment => segment === '.' || segment === '..')
+      ) {
+        throw new Error(
+          `Cannot resolve root-file export ${entry} target ${target}: unsupported source target`
+        );
+      }
+      const sourceStem = target.slice('./dist/'.length).replace(SOURCE_SUFFIX_PATTERN, '');
+      if (!sourceStem.includes('*')) {
+        const directory = path.posix.dirname(sourceStem);
+        directories.add(directory === '.' ? '' : directory);
+        continue;
+      }
+      // Node export patterns replace '*' with a subpath, which can itself contain '/'.
+      const [prefix, ...suffixes] = sourceStem
+        .split('*')
+        .map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+      const pattern = new RegExp(`^${prefix}(?<subpath>.*)${suffixes.join('\\k<subpath>')}$`);
+      sourceCandidates ??= listExportSourceFiles(SOURCE_ROOT);
+      const matchingFiles = sourceCandidates.filter(file =>
+        pattern.test(
+          path
+            .relative(SOURCE_ROOT, file)
+            .split(path.sep)
+            .join('/')
+            .replace(SOURCE_SUFFIX_PATTERN, '')
+        )
+      );
+      if (!matchingFiles.length) {
+        throw new Error(
+          `Cannot resolve root-file export ${entry} target ${target}: no matching source files`
+        );
+      }
+      for (const file of matchingFiles) {
+        const directory = path.relative(SOURCE_ROOT, path.dirname(file));
+        directories.add(directory.split(path.sep).join('/'));
+      }
+    }
+  }
+  return directories;
+}
+
+let ROOT_FILE_DIRECTORIES;
+try {
+  ROOT_FILE_DIRECTORIES = resolvePublicRootDirectories();
+} catch (error) {
+  process.stderr.write(`${error.message}\n`);
+  process.exit(2);
+}
 const ONTOLOGY_DIRECTORY = `${SOURCE_ROOT}/gpu-spatial-analysis/ontology`;
 
 // Rules reported as one finding per file with an occurrence count. The rest are one per symbol.
@@ -53,7 +139,8 @@ const RULE_IDENTIFIERS = [
   'storage-binding-preflight'
 ];
 
-// These rules reached zero. Updating or hand-editing a baseline must never excuse a regression.
+// Generic baseline updates cannot excuse strict-rule regressions. Final reconciliation can retain
+// explicitly reviewed pre-pass internal exports; their site, owner and revision must all match.
 const STRICT_RULES = new Set([
   'bare-assert',
   'missing-producer-declaration',
@@ -76,7 +163,29 @@ const getLineNumber = (text, offset) => text.slice(0, offset).split('\n').length
 const isCommentLine = line => /^\s*(\/\/|\*|\/\*)/.test(line);
 
 const findings = [];
-const addFinding = (rule, file, details) => findings.push({rule, file, ...details});
+const normalizeSite = text =>
+  text
+    .replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, '')
+    .match(/\w+|[^\s]/g)
+    ?.join(' ') ?? '';
+const hashSite = text => createHash('sha256').update(text).digest('hex');
+const addFinding = (rule, file, details) => {
+  const descriptions =
+    details.siteDescriptions ??
+    (rule === 'root-file'
+      ? ['non-index family root file']
+      : details.symbol
+        ? [details.symbol]
+        : details.lines.map(line => normalizeSite(fileTexts.get(file).split('\n')[line - 1])));
+  const occurrences = new Map();
+  const sites = descriptions.map(description => {
+    const signature = hashSite(description);
+    const occurrence = (occurrences.get(signature) ?? 0) + 1;
+    occurrences.set(signature, occurrence);
+    return {id: `${signature}:${occurrence}`, description};
+  });
+  findings.push({rule, file, ...details, sites});
+};
 
 const sourceFiles = walk(SOURCE_ROOT);
 const fileTexts = new Map(sourceFiles.map(file => [file, fs.readFileSync(file, 'utf8')]));
@@ -84,10 +193,22 @@ const getTopDirectory = file => path.relative(SOURCE_ROOT, file).split(path.sep)
 const isCheckedFile = file => !SKIPPED_DIRECTORIES.has(getTopDirectory(file));
 const checkedFiles = sourceFiles.filter(isCheckedFile);
 
-// Names exported by every file under the ontology directory.
-const ontologyText = walk(ONTOLOGY_DIRECTORY)
-  .map(file => fileTexts.get(file))
-  .join('\n');
+// Inspect immediate implementations in each concrete public directory, even under an
+// infrastructure subtree skipped by the other rules. Only exact entries are exceptions.
+for (const directory of ROOT_FILE_DIRECTORIES) {
+  const sourceDirectory = path.join(SOURCE_ROOT, directory);
+  if (!fs.existsSync(sourceDirectory)) continue;
+  for (const entry of fs.readdirSync(sourceDirectory, {withFileTypes: true})) {
+    if (
+      entry.isFile() &&
+      SOURCE_EXTENSION_PATTERN.test(entry.name) &&
+      !DECLARATION_SOURCE_PATTERN.test(entry.name) &&
+      entry.name.replace(SOURCE_SUFFIX_PATTERN, '') !== 'index'
+    ) {
+      addFinding('root-file', path.join(sourceDirectory, entry.name), {count: 1, lines: [1]});
+    }
+  }
+}
 
 const sourceTrees = new Map(
   sourceFiles.map(file => [
@@ -95,6 +216,223 @@ const sourceTrees = new Map(
     typeScript.createSourceFile(file, fileTexts.get(file), typeScript.ScriptTarget.Latest, true)
   ])
 );
+
+// Read the actual catalog construction inputs. Comments, descriptions, annotations and kind
+// records are not registrations. These collections feed ALL_OPERATORS in the public catalog.
+const registeredIdentities = new Set();
+const SPATIAL_ENTRY_POINT = '@luma-contributors/analysis/gpu-spatial-analysis';
+const catalogCollections = new Set([
+  'GPU_SPATIAL_ANALYSIS_CAPABILITIES',
+  'ENTRY_POINT_CAPABILITIES',
+  'CAPABILITY_DEFINITIONS',
+  'KEPLER_ANALYSIS_CAPABILITIES',
+  'COVERAGE_EXPANSION_CAPABILITIES',
+  'COVERAGE_FAMILIES',
+  'SPATIOTEMPORAL_REVIEW_OPERATOR_OVERRIDES',
+  'NESTED_VALIDATION_CAPABILITY',
+  'REUSED_ANALYSIS_OPERATORS',
+  'SPATIOTEMPORAL_REVIEW_OPERATORS',
+  'FITTING_KERNEL_OPERATORS',
+  'ALL_OPERATORS'
+]);
+const catalogTrees = [
+  ...walk(ONTOLOGY_DIRECTORY),
+  `${SOURCE_ROOT}/gpu-spatial-analysis/spatial-validation/spatial-validation-descriptors.ts`
+]
+  .filter(file => sourceTrees.has(file))
+  .map(file => sourceTrees.get(file));
+const visitCatalog = (node, visitor) => {
+  visitor(node);
+  typeScript.forEachChild(node, child => visitCatalog(child, visitor));
+};
+const unwrapCatalog = node => {
+  while (
+    node &&
+    (typeScript.isParenthesizedExpression(node) ||
+      typeScript.isAsExpression(node) ||
+      typeScript.isSatisfiesExpression(node) ||
+      typeScript.isNonNullExpression(node))
+  )
+    node = node.expression;
+  return node;
+};
+const catalogPropertyName = name => {
+  const key = typeScript.isComputedPropertyName(name) ? unwrapCatalog(name.expression) : name;
+  return typeScript.isStringLiteralLike(key) ||
+    typeScript.isNumericLiteral(key) ||
+    (!typeScript.isComputedPropertyName(name) && typeScript.isIdentifier(key))
+    ? key.text
+    : undefined;
+};
+const catalogProperty = (object, name) =>
+  object.properties.findLast(
+    property =>
+      typeScript.isPropertyAssignment(property) && catalogPropertyName(property.name) === name
+  )?.initializer;
+const catalogDeclarations = catalogTrees.map(tree => {
+  const declarations = new Map();
+  visitCatalog(tree, node => {
+    if (
+      typeScript.isVariableDeclaration(node) &&
+      typeScript.isIdentifier(node.name) &&
+      node.initializer
+    )
+      declarations.set(node.name.text, node.initializer);
+  });
+  const readText = (expression, visiting = new Set()) => {
+    const node = unwrapCatalog(expression);
+    if (!node) return undefined;
+    if (typeScript.isStringLiteralLike(node)) return node.text;
+    if (typeScript.isIdentifier(node) && !visiting.has(node.text))
+      return readText(declarations.get(node.text), new Set([...visiting, node.text]));
+    if (typeScript.isTemplateExpression(node)) {
+      let text = node.head.text;
+      for (const span of node.templateSpans) {
+        const value = readText(span.expression, visiting);
+        if (value === undefined) return undefined;
+        text += value + span.literal.text;
+      }
+      return text;
+    }
+    return undefined;
+  };
+  return {declarations, readText};
+});
+// Details and overrides supply package identities, but cannot register an operator by themselves.
+const entryPointPackages = new Map();
+const spatialPackages = new Map();
+for (const {declarations, readText} of catalogDeclarations) {
+  for (const name of [
+    'ENTRY_POINT_OPERATOR_DETAILS',
+    'OPERATOR_OVERRIDES',
+    'KEPLER_ANALYSIS_OPERATOR_OVERRIDES',
+    'COVERAGE_EXPANSION_OPERATOR_OVERRIDES'
+  ]) {
+    const object = unwrapCatalog(declarations.get(name));
+    if (!object || !typeScript.isObjectLiteralExpression(object)) continue;
+    for (const property of object.properties) {
+      if (!typeScript.isPropertyAssignment(property)) continue;
+      const detail = unwrapCatalog(property.initializer);
+      if (!typeScript.isObjectLiteralExpression(detail)) continue;
+      const entryPoint = readText(catalogProperty(detail, 'package'));
+      if (entryPoint)
+        (name === 'ENTRY_POINT_OPERATOR_DETAILS' ? entryPointPackages : spatialPackages).set(
+          property.name.getText().replace(/['"]/g, ''),
+          entryPoint
+        );
+    }
+  }
+}
+const clonedRegistrations = [];
+for (const {declarations, readText} of catalogDeclarations) {
+  for (const [collection, initializer] of declarations) {
+    if (!catalogCollections.has(collection)) continue;
+    const register = (name, entryPoint) => {
+      if (name && entryPoint) registeredIdentities.add(`${entryPoint}:${name}`);
+    };
+    if (collection === 'SPATIOTEMPORAL_REVIEW_OPERATOR_OVERRIDES') {
+      const object = unwrapCatalog(initializer);
+      if (typeScript.isObjectLiteralExpression(object))
+        for (const property of object.properties) {
+          if (typeScript.isPropertyAssignment(property))
+            register(property.name.getText().replace(/['"]/g, ''), SPATIAL_ENTRY_POINT);
+        }
+    }
+    visitCatalog(initializer, node => {
+      if (!typeScript.isObjectLiteralExpression(node)) return;
+      if (collection === 'ALL_OPERATORS') {
+        // A literal nested inside a record contributes fields, not a separate catalog entry.
+        for (let parent = node.parent; parent && parent !== initializer; parent = parent.parent) {
+          if (typeScript.isObjectLiteralExpression(parent)) return;
+        }
+        let exportName;
+        let entryPoint;
+        let sourceExportName;
+        // Object spreads and assignments overwrite earlier identity fields in source order.
+        const applyProperties = properties => {
+          for (const property of properties) {
+            if (typeScript.isSpreadAssignment(property)) {
+              const spread = unwrapCatalog(property.expression);
+              if (typeScript.isObjectLiteralExpression(spread)) {
+                // A literal spread overwrites only the fields it actually contains.
+                applyProperties(spread.properties);
+                continue;
+              }
+              exportName = entryPoint = sourceExportName = undefined;
+              const call = spread;
+              if (
+                !typeScript.isCallExpression(call) ||
+                !typeScript.isPropertyAccessExpression(call.expression) ||
+                call.expression.name.text !== 'find' ||
+                call.expression.expression.getText() !== 'GPU_SPATIAL_ANALYSIS_OPERATORS'
+              )
+                continue;
+              const predicate = unwrapCatalog(call.arguments[0]);
+              const condition =
+                predicate && typeScript.isArrowFunction(predicate)
+                  ? unwrapCatalog(predicate.body)
+                  : undefined;
+              if (
+                !condition ||
+                !typeScript.isBinaryExpression(condition) ||
+                condition.operatorToken.kind !== typeScript.SyntaxKind.EqualsEqualsEqualsToken ||
+                !typeScript.isPropertyAccessExpression(condition.left) ||
+                condition.left.name.text !== 'exportName'
+              )
+                continue;
+              sourceExportName = readText(condition.right);
+              exportName = sourceExportName;
+              entryPoint = SPATIAL_ENTRY_POINT;
+            } else if (property.name) {
+              const key = typeScript.isComputedPropertyName(property.name)
+                ? (readText(property.name.expression) ?? catalogPropertyName(property.name))
+                : catalogPropertyName(property.name);
+              const value = typeScript.isPropertyAssignment(property)
+                ? readText(property.initializer)
+                : typeScript.isShorthandPropertyAssignment(property)
+                  ? readText(property.name)
+                  : undefined;
+              if (key === undefined) exportName = entryPoint = undefined;
+              if (key === 'exportName') exportName = value;
+              if (key === 'package') entryPoint = value;
+            }
+          }
+        };
+        applyProperties(node.properties);
+        if (exportName && entryPoint) {
+          if (sourceExportName)
+            clonedRegistrations.push({sourceExportName, exportName, entryPoint});
+          else register(exportName, entryPoint);
+        }
+        return;
+      }
+      const explicitPackage = readText(catalogProperty(node, 'package'));
+      const defaultPackage =
+        collection === 'FITTING_KERNEL_OPERATORS'
+          ? '@luma-contributors/analysis/analysis-core'
+          : SPATIAL_ENTRY_POINT;
+      const name = readText(catalogProperty(node, 'exportName'));
+      if (name) register(name, explicitPackage ?? defaultPackage);
+      const operators = unwrapCatalog(catalogProperty(node, 'operators'));
+      if (operators && typeScript.isArrayLiteralExpression(operators))
+        for (const operator of operators.elements) {
+          const exportName = readText(operator);
+          register(
+            exportName,
+            explicitPackage ??
+              (collection === 'ENTRY_POINT_CAPABILITIES'
+                ? entryPointPackages.get(exportName)
+                : (spatialPackages.get(exportName) ?? defaultPackage))
+          );
+        }
+    });
+  }
+}
+for (const {sourceExportName, exportName, entryPoint} of clonedRegistrations) {
+  // A copy requires its source record, but registers only its final, possibly renamed identity.
+  if (registeredIdentities.has(`${SPATIAL_ENTRY_POINT}:${sourceExportName}`))
+    registeredIdentities.add(`${entryPoint}:${exportName}`);
+}
 
 // 4. internal-export: resolve export chains from each entry barrel by reading files.
 const resolveModule = (fromFile, specifier) => {
@@ -163,7 +501,36 @@ const barrelFiles = [
     .readdirSync(SOURCE_ROOT, {withFileTypes: true})
     .filter(entry => entry.isDirectory())
     .map(entry => `${SOURCE_ROOT}/${entry.name}/index.ts`)
-].filter(file => fileTexts.has(file));
+]
+  .filter(file => fileTexts.has(file))
+  .sort();
+// Public identities come from package entry points and resolved barrel exports, including aliases.
+const publicIdentities = new Map();
+const packageName = analysisManifest.name ?? '@luma-contributors/analysis';
+for (const [entry, exported] of Object.entries(analysisManifest.exports)) {
+  for (const target of collectExportTargets(entry, exported)) {
+    if (!target.startsWith('./dist/') || !SOURCE_SUFFIX_PATTERN.test(target)) continue;
+    const stem = target.slice('./dist/'.length).replace(SOURCE_SUFFIX_PATTERN, '');
+    const pattern = new RegExp(
+      `^${stem
+        .split('*')
+        .map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+        .join('(.*)')}$`
+    );
+    for (const file of sourceFiles) {
+      const match = pattern.exec(
+        path.relative(SOURCE_ROOT, file).replace(SOURCE_SUFFIX_PATTERN, '')
+      );
+      if (!match) continue;
+      const entryPoint =
+        packageName + (entry === '.' ? '' : entry.slice(1).replaceAll('*', match[1] ?? ''));
+      for (const [exportName, origin] of getExports(file)) {
+        if (!publicIdentities.has(origin)) publicIdentities.set(origin, new Set());
+        publicIdentities.get(origin).add(`${entryPoint}:${exportName}`);
+      }
+    }
+  }
+}
 for (const barrel of barrelFiles) {
   for (const [exportedName, origin] of getExports(barrel)) {
     if (internalSymbols.has(origin)) {
@@ -219,6 +586,18 @@ const findBinding = identifier => {
   }
   return null;
 };
+// Shader analysis is synchronous. Resolve a local factory's parameters only for the current
+// call site, then restore the previous context; callers must never share shader fragments.
+let kernelParameterBindings = new Map();
+const withKernelParameterBindings = (bindings, callback) => {
+  const previous = kernelParameterBindings;
+  kernelParameterBindings = bindings;
+  try {
+    return callback();
+  } finally {
+    kernelParameterBindings = previous;
+  }
+};
 const isExpressionWrapper = expression =>
   typeScript.isParenthesizedExpression(expression) ||
   typeScript.isAsExpression(expression) ||
@@ -228,6 +607,9 @@ const isExpressionWrapper = expression =>
 const resolveDeclaration = (expression, visiting = new Set()) => {
   if (!expression || visiting.has(expression)) return null;
   visiting.add(expression);
+  if (typeScript.isParameter(expression) && kernelParameterBindings.has(expression)) {
+    return resolveDeclaration(kernelParameterBindings.get(expression), visiting);
+  }
   if (typeScript.isIdentifier(expression)) {
     const binding = findBinding(expression);
     return binding ? resolveDeclaration(binding, visiting) : null;
@@ -253,6 +635,77 @@ const resolveDeclaration = (expression, visiting = new Set()) => {
   if (isExpressionWrapper(expression)) return resolveDeclaration(expression.expression, visiting);
   return expression;
 };
+// Internal members also leak through exported props aliases and visible class signatures.
+// Resolve each declaration origin once, even when several package barrels re-export it.
+const checkedPublicOrigins = new Set();
+const reportedPublicSites = new Set();
+const resolvePublicType = reference => {
+  if (typeScript.isQualifiedName(reference) || typeScript.isPropertyAccessExpression(reference)) {
+    const owner = typeScript.isQualifiedName(reference) ? reference.left : reference.expression;
+    const member = typeScript.isQualifiedName(reference) ? reference.right : reference.name;
+    if (typeScript.isIdentifier(owner)) {
+      const source = owner.getSourceFile();
+      const imported = source.statements.find(
+        statement =>
+          typeScript.isImportDeclaration(statement) &&
+          statement.importClause?.namedBindings &&
+          typeScript.isNamespaceImport(statement.importClause.namedBindings) &&
+          statement.importClause.namedBindings.name.text === owner.text
+      );
+      const target = imported && resolveModule(source.fileName, imported.moduleSpecifier.text);
+      const origin = target && getExports(target).get(member.text);
+      if (origin) {
+        const separator = origin.lastIndexOf('#');
+        const targetSource = sourceTrees.get(origin.slice(0, separator));
+        return targetSource && getScopeBindings(targetSource).get(origin.slice(separator + 1));
+      }
+    }
+  }
+  if (typeScript.isIdentifier(reference)) {
+    for (let scope = reference.parent; scope; scope = scope.parent) {
+      const parameter = scope.typeParameters?.find(
+        parameter => parameter.name.text === reference.text
+      );
+      if (parameter) return parameter;
+    }
+  }
+  return resolveDeclaration(reference);
+};
+for (const barrel of barrelFiles) {
+  for (const [publicName, origin] of getExports(barrel)) {
+    if (checkedPublicOrigins.has(origin)) continue;
+    const separator = origin.lastIndexOf('#');
+    const source = sourceTrees.get(origin.slice(0, separator));
+    const declaration = source && getScopeBindings(source).get(origin.slice(separator + 1));
+    if (
+      !declaration ||
+      !(
+        typeScript.isClassDeclaration(declaration) ||
+        ((/Props$/.test(publicName) || /Props$/.test(declaration.name?.text ?? '')) &&
+          (typeScript.isTypeAliasDeclaration(declaration) ||
+            typeScript.isInterfaceDeclaration(declaration)))
+      )
+    )
+      continue;
+    checkedPublicOrigins.add(origin);
+    for (const {node, name} of findInternalPublicMembers(
+      declaration,
+      resolvePublicType,
+      publicName
+    )) {
+      const file = node.getSourceFile().fileName;
+      const site = `${file}:${node.getStart()}`;
+      if (reportedPublicSites.has(site)) continue;
+      reportedPublicSites.add(site);
+      addFinding('internal-export', file, {
+        symbol: name,
+        lines: [getLineNumber(fileTexts.get(file), node.getStart())],
+        origin
+      });
+    }
+  }
+}
+
 const isNamedReference = (expression, name) => {
   const declaration = resolveDeclaration(expression);
   if (declaration && typeScript.isImportSpecifier(declaration)) {
@@ -351,6 +804,10 @@ const getStaticValue = (expression, visiting = new Set()) => {
   if (!expression || visiting.has(expression)) return UNKNOWN_STATIC_VALUE;
   const nextVisiting = new Set(visiting).add(expression);
   const evaluate = node => getStaticValue(node, nextVisiting);
+  if (typeScript.isParameter(expression) && kernelParameterBindings.has(expression)) {
+    const argument = kernelParameterBindings.get(expression);
+    return argument ? evaluate(argument) : undefined;
+  }
   if (expression.kind === typeScript.SyntaxKind.TrueKeyword) return true;
   if (expression.kind === typeScript.SyntaxKind.FalseKeyword) return false;
   if (expression.kind === typeScript.SyntaxKind.NullKeyword) return null;
@@ -385,22 +842,24 @@ const getStaticNullish = expression => {
   return value === UNKNOWN_STATIC_VALUE ? undefined : value === null || value === undefined;
 };
 const stableConditionBindings = new WeakMap();
-const getStableConditionText = expression => {
-  if (typeScript.isParenthesizedExpression(expression))
-    return getStableConditionText(expression.expression);
+const getStableConditionText = (expression, visiting = new Set()) => {
+  if (!expression || visiting.has(expression)) return null;
+  const nextVisiting = new Set(visiting).add(expression);
+  const expand = node => getStableConditionText(node, nextVisiting);
+  if (typeScript.isParenthesizedExpression(expression)) return expand(expression.expression);
   if (typeScript.isStringLiteralLike(expression) || typeScript.isNumericLiteral(expression)) {
     return `${expression.kind}:${expression.text}`;
   }
   if (typeScript.isPropertyAccessExpression(expression)) {
-    const owner = getStableConditionText(expression.expression);
+    const owner = expand(expression.expression);
     return owner === null ? null : `${owner}.${expression.name.text}`;
   }
   if (
     typeScript.isBinaryExpression(expression) &&
     expression.operatorToken.kind < typeScript.SyntaxKind.FirstAssignment
   ) {
-    const left = getStableConditionText(expression.left);
-    const right = getStableConditionText(expression.right);
+    const left = expand(expression.left);
+    const right = expand(expression.right);
     return left === null || right === null
       ? null
       : `(${left} ${expression.operatorToken.kind} ${right})`;
@@ -408,6 +867,10 @@ const getStableConditionText = expression => {
   if (!typeScript.isIdentifier(expression)) return null;
   const binding = findBinding(expression);
   if (!binding) return null;
+  if (kernelParameterBindings.has(binding)) {
+    const argument = kernelParameterBindings.get(binding);
+    return argument ? expand(argument) : null;
+  }
   if (!stableConditionBindings.has(binding)) {
     let scope = binding.parent;
     while (scope.parent && !typeScript.isFunctionLike(scope) && !typeScript.isSourceFile(scope)) {
@@ -544,6 +1007,9 @@ const getStaticTextVariants = (expression, visiting = new Set()) => {
   if (!expression || visiting.has(expression)) return [createTextVariant(UNKNOWN_WGSL_TEXT)];
   const nextVisiting = new Set(visiting).add(expression);
   const expand = node => getStaticTextVariants(node, nextVisiting);
+  if (typeScript.isParameter(expression) && kernelParameterBindings.has(expression)) {
+    return expand(kernelParameterBindings.get(expression));
+  }
   if (typeScript.isStringLiteralLike(expression) || typeScript.isNumericLiteral(expression)) {
     return [createTextVariant(expression.text)];
   }
@@ -629,6 +1095,9 @@ const getStaticNumber = (expression, visiting = new Set()) => {
   if (!expression || visiting.has(expression)) return undefined;
   const nextVisiting = new Set(visiting).add(expression);
   const evaluate = node => getStaticNumber(node, nextVisiting);
+  if (typeScript.isParameter(expression) && kernelParameterBindings.has(expression)) {
+    return evaluate(kernelParameterBindings.get(expression));
+  }
   if (typeScript.isNumericLiteral(expression)) return Number(expression.text);
   if (isExpressionWrapper(expression)) return evaluate(expression.expression);
   if (typeScript.isIdentifier(expression)) return evaluate(findBinding(expression));
@@ -669,6 +1138,78 @@ const getPropertyValue = property =>
   property &&
   (typeScript.isShorthandPropertyAssignment(property) ? property.name : property.initializer);
 
+// One local function/arrow layer, including aliases, generic calls, defaults, and lexical
+// captures. This deliberately does not attempt arbitrary interprocedural TypeScript execution.
+const getEnclosingFunction = node => {
+  for (let parent = node.parent; parent; parent = parent.parent) {
+    if (typeScript.isFunctionLike(parent)) return parent;
+  }
+  return null;
+};
+const getKernelCallSites = sourceTree => {
+  const calls = [];
+  visitNodes(sourceTree, node => {
+    if (typeScript.isCallExpression(node)) calls.push(node);
+  });
+  const kernelCalls = calls.filter(call =>
+    isNamedReference(call.expression, 'createWGSLKernelNode')
+  );
+  const wrappers = new Map();
+  for (const call of kernelCalls) {
+    const owner = getEnclosingFunction(call);
+    if (!owner) continue;
+    const properties = resolveDeclaration(call.arguments[1]);
+    if (!properties || !typeScript.isObjectLiteralExpression(properties)) continue;
+    const count = resolveDeclaration(getPropertyValue(getProperty(properties, 'invocationCount')));
+    const body = resolveDeclaration(getPropertyValue(getProperty(properties, 'body')));
+    // Recognize a forwarding wrapper, not every larger contributor factory that happens
+    // to contain a kernel. Keeping count and body tied to the same owner avoids expansion
+    // of unrelated graph builders and duplicate reports for their fixed kernels.
+    if (!owner.parameters.includes(count) || !owner.parameters.includes(body)) continue;
+    const owned = wrappers.get(owner) ?? [];
+    owned.push(call);
+    wrappers.set(owner, owned);
+  }
+  const expandedCalls = new Set();
+  const sites = [];
+  for (const callSite of calls) {
+    if (callSite.arguments.some(typeScript.isSpreadElement)) continue;
+    const owner = resolveDeclaration(callSite.expression);
+    const owned = wrappers.get(owner);
+    if (!owned || owner.getSourceFile() !== sourceTree) continue;
+    if (getEnclosingFunction(callSite) === owner) continue;
+    if (getStableConditionText(callSite.expression) === null) continue;
+    if (
+      owner.parameters.some(
+        parameter => !typeScript.isIdentifier(parameter.name) || parameter.dotDotDotToken
+      )
+    )
+      continue;
+    const parameterBindings = new Map();
+    for (const [index, parameter] of owner.parameters.entries()) {
+      // A parameter overwritten inside the factory cannot be replaced by its incoming value.
+      if (getStableConditionText(parameter.name) === null) continue;
+      const argument = callSite.arguments[index];
+      const omitted =
+        !argument ||
+        (typeScript.isIdentifier(argument) &&
+          argument.text === 'undefined' &&
+          !findBinding(argument));
+      parameterBindings.set(parameter, omitted ? parameter.initializer : argument);
+    }
+    for (const call of owned) {
+      expandedCalls.add(call);
+      sites.push({call, callSite, parameterBindings});
+    }
+  }
+  for (const call of kernelCalls) {
+    if (!expandedCalls.has(call)) {
+      sites.push({call, callSite: call, parameterBindings: new Map()});
+    }
+  }
+  return sites;
+};
+
 // WGSL has nested block comments. Keep offsets/newlines intact for scans and diagnostics.
 const maskWGSLComments = text => {
   let commentDepth = 0;
@@ -700,9 +1241,24 @@ const maskWGSLComments = text => {
 };
 // A shared declarations string often includes bounded helpers the kernel never calls. Follow
 // the call graph from the body so an unused helper's loop does not create a serial-work finding.
-const getReachableWGSLText = (declarations, body) => {
+const getReachableWGSLText = (declarations, body, includeReferencedDeclarations = false) => {
   const cleanDeclarations = maskWGSLComments(declarations);
   const functions = new Map();
+  const moduleDeclarations = new Map();
+  if (includeReferencedDeclarations) {
+    let depth = 0;
+    let previousEnd = 0;
+    for (const match of cleanDeclarations.matchAll(
+      /\b(?:const|override|alias)\s+([A-Za-z_]\w*)[^;]*;/g
+    )) {
+      for (const character of cleanDeclarations.slice(previousEnd, match.index)) {
+        if (character === '{') depth++;
+        if (character === '}') depth--;
+      }
+      previousEnd = match.index;
+      if (depth === 0) moduleDeclarations.set(match[1], match[0]);
+    }
+  }
   for (const match of cleanDeclarations.matchAll(/(?<![\w\u0000])fn\s+([A-Za-z_][\w]*)\s*\(/g)) {
     const start = cleanDeclarations.indexOf('{', match.index);
     if (start < 0) continue;
@@ -717,6 +1273,15 @@ const getReachableWGSLText = (declarations, body) => {
   const pieces = [maskWGSLComments(body)];
   const visited = new Set();
   for (let index = 0; index < pieces.length; index++) {
+    if (includeReferencedDeclarations) {
+      for (const match of pieces[index].matchAll(/\b[A-Za-z_]\w*\b/g)) {
+        const key = `declaration:${match[0]}`;
+        if (moduleDeclarations.has(match[0]) && !visited.has(key)) {
+          visited.add(key);
+          pieces.push(moduleDeclarations.get(match[0]));
+        }
+      }
+    }
     for (const match of pieces[index].matchAll(/(?<![\w\u0000])([A-Za-z_][\w]*)\s*\(/g)) {
       if (functions.has(match[1]) && !visited.has(match[1])) {
         visited.add(match[1]);
@@ -792,18 +1357,28 @@ const getReferenceName = expression => {
   const declaration = resolveDeclaration(expression);
   return typeScript.isImportSpecifier(declaration ?? expression)
     ? (declaration.propertyName ?? declaration.name).text
-    : declaration?.name?.text ?? expression.name?.text ?? expression.text;
+    : (declaration?.name?.text ?? expression.name?.text ?? expression.text);
 };
 // Named-capacity wrappers are preflights too when their accepted maximum derives from the
 // device storage binding. Follow local/imported returns and const aliases, without typechecking.
 const referencesStorageBindingLimit = (node, visiting = new Set()) => {
   if (!node || visiting.has(node)) return false;
   const nextVisiting = new Set(visiting).add(node);
-  if (typeScript.isPropertyAccessExpression(node) && node.name.text === 'maxStorageBufferBindingSize') return true;
-  if (typeScript.isCallExpression(node) &&
-    ['getStorageBindingElementLimit', 'getAnalysisMaximumRowCount'].includes(getReferenceName(node.expression))) return true;
+  if (
+    typeScript.isPropertyAccessExpression(node) &&
+    node.name.text === 'maxStorageBufferBindingSize'
+  )
+    return true;
+  if (
+    typeScript.isCallExpression(node) &&
+    ['getStorageBindingElementLimit', 'getAnalysisMaximumRowCount'].includes(
+      getReferenceName(node.expression)
+    )
+  )
+    return true;
   const resolved = resolveDeclaration(node);
-  if (resolved && resolved !== node && referencesStorageBindingLimit(resolved, nextVisiting)) return true;
+  if (resolved && resolved !== node && referencesStorageBindingLimit(resolved, nextVisiting))
+    return true;
   if (typeScript.isCallExpression(node)) {
     const helper = resolveDeclaration(node.expression);
     if (helper?.body && referencesStorageBindingLimit(helper.body, nextVisiting)) return true;
@@ -816,9 +1391,14 @@ const referencesStorageBindingLimit = (node, visiting = new Set()) => {
 };
 const isStorageCapacityCheck = call => {
   const name = getReferenceName(call.expression);
-  const limit = name === 'validateCapacity' ? call.arguments[4]
-    : name === 'validateMaximumCount' ? call.arguments[3]
-      : name === 'validateRequirement' ? call.arguments[1] : null;
+  const limit =
+    name === 'validateCapacity'
+      ? call.arguments[4]
+      : name === 'validateMaximumCount'
+        ? call.arguments[3]
+        : name === 'validateRequirement'
+          ? call.arguments[1]
+          : null;
   return referencesStorageBindingLimit(limit);
 };
 
@@ -838,21 +1418,34 @@ const isCollectionBindingPreflight = loop => {
     if (typeScript.isIfStatement(node)) {
       let condition = node.expression;
       while (isExpressionWrapper(condition)) condition = condition.expression;
-      if (typeScript.isPrefixUnaryExpression(condition) && condition.operator === typeScript.SyntaxKind.ExclamationToken) {
+      if (
+        typeScript.isPrefixUnaryExpression(condition) &&
+        condition.operator === typeScript.SyntaxKind.ExclamationToken
+      ) {
         condition = condition.operand;
       }
       if (!typeScript.isIdentifier(condition) || !names.has(condition.text)) safe = false;
     }
     if (typeScript.isCallExpression(node)) {
       const name = getReferenceName(node.expression);
-      if (STORAGE_DECLARATION_HELPERS.has(name) || /^(createTransientBuffer|createBuffer|createDataView|add)$/.test(name)) safe = false;
+      if (
+        STORAGE_DECLARATION_HELPERS.has(name) ||
+        /^(createTransientBuffer|createBuffer|createDataView|add)$/.test(name)
+      )
+        safe = false;
       if (name === 'validateGPUStorageBindingByteLength') {
         visitNodes(node.arguments[3], value => {
-          if (typeScript.isCallExpression(value) && getReferenceName(value.expression) === 'getViewBindingRange') foundRangeCheck = true;
+          if (
+            typeScript.isCallExpression(value) &&
+            getReferenceName(value.expression) === 'getViewBindingRange'
+          )
+            foundRangeCheck = true;
         });
       }
     }
-    typeScript.forEachChild(node, child => { inspect(child); });
+    typeScript.forEachChild(node, child => {
+      inspect(child);
+    });
   };
   inspect(loop.statement);
   return safe && foundRangeCheck;
@@ -860,7 +1453,9 @@ const isCollectionBindingPreflight = loop => {
 
 const getStoragePreflightFinding = declaration => {
   const members = getClassMembers(declaration);
-  const entry = members.find(member => member.name?.getText().replace(/['"]/g, '') === 'getCommandNodes');
+  const entry = members.find(
+    member => member.name?.getText().replace(/['"]/g, '') === 'getCommandNodes'
+  );
   const entryBody = entry?.body ?? entry?.initializer?.body;
   if (!entryBody) return null;
   let hasRowStorage = false;
@@ -873,12 +1468,16 @@ const getStoragePreflightFinding = declaration => {
     if (typeScript.isArrayLiteralExpression(expression)) {
       return expression.elements.some(element => !typeScript.isSpreadElement(element));
     }
-    if (typeScript.isCallExpression(expression) && typeScript.isPropertyAccessExpression(expression.expression) &&
-      expression.expression.name.text === 'entries') {
+    if (
+      typeScript.isCallExpression(expression) &&
+      typeScript.isPropertyAccessExpression(expression.expression) &&
+      expression.expression.name.text === 'entries'
+    ) {
       return isNonemptyIterable(expression.expression.expression, nextSeen);
     }
     const resolved = resolveDeclaration(expression);
-    if (parameterValues.has(resolved)) return isNonemptyIterable(parameterValues.get(resolved), nextSeen);
+    if (parameterValues.has(resolved))
+      return isNonemptyIterable(parameterValues.get(resolved), nextSeen);
     if (resolved && resolved !== expression) return isNonemptyIterable(resolved, nextSeen);
     return false;
   };
@@ -890,7 +1489,8 @@ const getStoragePreflightFinding = declaration => {
     const resolved = resolveDeclaration(expression);
     if (resolved === entry.parameters?.[0]) return true;
     if (resolved?.type && /\bGPUCommandGraph\b/.test(resolved.type.getText())) return true;
-    if (parameterValues.has(resolved)) return isCommandGraphReceiver(parameterValues.get(resolved), nextSeen);
+    if (parameterValues.has(resolved))
+      return isCommandGraphReceiver(parameterValues.get(resolved), nextSeen);
     if (resolved && typeScript.isNewExpression(resolved)) {
       return getReferenceName(resolved.expression) === 'GPUCommandGraph';
     }
@@ -918,18 +1518,23 @@ const getStoragePreflightFinding = declaration => {
         ...analyze(node.whenFalse, new Set(conditions))
       ]);
     }
-    if (typeScript.isBinaryExpression(node) && [
-      typeScript.SyntaxKind.AmpersandAmpersandToken,
-      typeScript.SyntaxKind.BarBarToken,
-      typeScript.SyntaxKind.QuestionQuestionToken
-    ].includes(node.operatorToken.kind)) {
+    if (
+      typeScript.isBinaryExpression(node) &&
+      [
+        typeScript.SyntaxKind.AmpersandAmpersandToken,
+        typeScript.SyntaxKind.BarBarToken,
+        typeScript.SyntaxKind.QuestionQuestionToken
+      ].includes(node.operatorToken.kind)
+    ) {
       const leftStates = analyze(node.left, states);
       return new Set([...leftStates, ...analyze(node.right, new Set(leftStates))]);
     }
     if (typeScript.isSwitchStatement(node)) {
       const conditions = analyze(node.expression, states);
-      return new Set([...conditions, ...node.caseBlock.clauses.flatMap(clause =>
-        [...analyzeBody(clause, new Set(conditions))])]);
+      return new Set([
+        ...conditions,
+        ...node.caseBlock.clauses.flatMap(clause => [...analyzeBody(clause, new Set(conditions))])
+      ]);
     }
     if (typeScript.isTryStatement(node)) {
       const outcomes = new Set([
@@ -946,15 +1551,18 @@ const getStoragePreflightFinding = declaration => {
       });
       // A literal nonempty list (also through a shared helper parameter) runs at least once.
       // Unknown row/chunk/round loops retain the zero-iteration path.
-      return isCollectionBindingPreflight(node) ? new Set([true])
+      return isCollectionBindingPreflight(node)
+        ? new Set([true])
         : typeScript.isForOfStatement(node) && isNonemptyIterable(node.expression)
-          ? iterationStates : states;
+          ? iterationStates
+          : states;
     }
     if (typeScript.isCallExpression(node)) {
       let nextStates = states;
       for (const argument of node.arguments) nextStates = analyze(argument, nextStates);
       const name = getReferenceName(node.expression);
-      if (STORAGE_PREFLIGHT_HELPERS.has(name) || isStorageCapacityCheck(node)) return new Set([true]);
+      if (STORAGE_PREFLIGHT_HELPERS.has(name) || isStorageCapacityCheck(node))
+        return new Set([true]);
       const isGraphDeclaration =
         typeScript.isPropertyAccessExpression(node.expression) &&
         (/^(createTransientBuffer|createBuffer|createDataView)$/.test(name) ||
@@ -967,20 +1575,27 @@ const getStoragePreflightFinding = declaration => {
           hasRowStorage = true;
         } else if (/KernelNode|ComputeCommandNode/.test(name)) {
           const properties = resolveDeclaration(node.arguments[1] ?? node.arguments[0]);
-          const invocation = properties && typeScript.isObjectLiteralExpression(properties)
-            ? getPropertyValue(getProperty(properties, 'invocationCount'))
-            : null;
+          const invocation =
+            properties && typeScript.isObjectLiteralExpression(properties)
+              ? getPropertyValue(getProperty(properties, 'invocationCount'))
+              : null;
           // A one-invocation reference kernel may still bind a row-sized input. Without a
           // type checker, any caller-provided binding array is potentially row-proportional.
-          hasRowStorage ||= getStaticNumber(invocation) === undefined ||
-            Boolean(properties && typeScript.isObjectLiteralExpression(properties) &&
-              getProperty(properties, 'bindings'));
+          hasRowStorage ||=
+            getStaticNumber(invocation) === undefined ||
+            Boolean(
+              properties &&
+                typeScript.isObjectLiteralExpression(properties) &&
+                getProperty(properties, 'bindings')
+            );
         }
         return nextStates;
       }
       let helper = resolveDeclaration(node.expression);
-      if (typeScript.isPropertyAccessExpression(node.expression) &&
-        node.expression.expression.kind === typeScript.SyntaxKind.ThisKeyword) {
+      if (
+        typeScript.isPropertyAccessExpression(node.expression) &&
+        node.expression.expression.kind === typeScript.SyntaxKind.ThisKeyword
+      ) {
         helper = members.find(member => member.name?.getText() === node.expression.name.text);
       }
       const body = helper?.body ?? helper?.initializer?.body;
@@ -1005,7 +1620,9 @@ const getStoragePreflightFinding = declaration => {
       return nextStates;
     }
     let nextStates = states;
-    typeScript.forEachChild(node, child => { nextStates = analyzeBody(child, nextStates); });
+    typeScript.forEachChild(node, child => {
+      nextStates = analyzeBody(child, nextStates);
+    });
     return nextStates;
   };
   let returnStates = [];
@@ -1024,7 +1641,6 @@ const getStoragePreflightFinding = declaration => {
 for (const file of checkedFiles) {
   const text = fileTexts.get(file);
   const lines = text.split('\n');
-  const relativeToSource = path.relative(SOURCE_ROOT, file).split(path.sep);
 
   // 1. bare-assert: assert imported from @luma.gl/core and called.
   if (/import\s*\{[^}]*\bassert\b[^}]*\}\s*from\s*'@luma\.gl\/core'/.test(text)) {
@@ -1077,18 +1693,15 @@ for (const file of checkedFiles) {
   // 3. single-invocation-data-loop: all WGSL loop forms, including referenced helper snippets.
   // Bounded dense loops remain reviewable heuristics with an explicit contract-allow comment.
   const invocationLines = [];
+  const invocationDescriptions = [];
   const analysisLimitLines = [];
   const duplicateLinesByName = new Map();
-  visitNodes(sourceTree, call => {
-    if (
-      !typeScript.isCallExpression(call) ||
-      !isNamedReference(call.expression, 'createWGSLKernelNode')
-    )
-      return;
+  const checkKernelCallSite = ({call, callSite}) => {
     const properties = resolveDeclaration(call.arguments[1]);
     if (!properties || !typeScript.isObjectLiteralExpression(properties)) return;
     const {guards: callGuards} = getExecutionGuards(call);
-    const callPaths = applyExecutionGuards([createTextVariant('')], callGuards);
+    const siteGuards = callSite === call ? [] : getExecutionGuards(callSite).guards;
+    const callPaths = applyExecutionGuards([createTextVariant('')], [...siteGuards, ...callGuards]);
     if (!callPaths.length) return;
     const invocation = getProperty(properties, 'invocationCount');
     const limitedProperties = [];
@@ -1109,9 +1722,32 @@ for (const file of checkedFiles) {
     };
     const declarations = getPropertyVariants('declarations');
     const bodies = getPropertyVariants('body');
-    if (limitedProperties.length) analysisLimitLines.push(getLineNumber(text, call.getStart()));
+    const kernelIds = getProperty(properties, 'id')
+      ? getPropertyVariants('id')
+          .map(variant => variant.text)
+          .sort()
+      : ['<anonymous>'];
+    const constants = resolveDeclaration(getPropertyValue(getProperty(properties, 'constants')));
+    const kernelConstants =
+      constants && typeScript.isObjectLiteralExpression(constants)
+        ? constants.properties
+            .map(property => {
+              if (!typeScript.isPropertyAssignment(property))
+                return normalizeSite(property.getText());
+              const value = getPropertyValue(property);
+              const numericValue = getStaticNumber(value);
+              return `${property.name.getText()}:${numericValue ?? normalizeSite((resolveDeclaration(value) ?? value).getText())}`;
+            })
+            .sort()
+        : constants
+          ? [normalizeSite(constants.getText())]
+          : [];
+    if (limitedProperties.length) analysisLimitLines.push(getLineNumber(text, callSite.getStart()));
     if (getStaticNumber(getPropertyValue(invocation)) === 1) {
-      const line = getLineNumber(text, invocation.getStart());
+      const line = getLineNumber(
+        text,
+        callSite === call ? invocation.getStart() : callSite.getStart()
+      );
       const hasLoop = declarations.some(declaration =>
         bodies.some(
           body =>
@@ -1123,6 +1759,28 @@ for (const file of checkedFiles) {
       );
       if (hasLoop && !/contract-allow:\s*single-invocation/.test(lines[line - 2] ?? '')) {
         invocationLines.push(line);
+        const context = [];
+        for (let parent = callSite.parent; parent; parent = parent.parent) {
+          if (
+            (typeScript.isFunctionDeclaration(parent) ||
+              typeScript.isMethodDeclaration(parent) ||
+              typeScript.isClassDeclaration(parent) ||
+              typeScript.isVariableDeclaration(parent)) &&
+            parent.name
+          ) {
+            context.unshift(parent.name.getText());
+          }
+        }
+        const shaders = declarations.flatMap(declaration =>
+          bodies.flatMap(body =>
+            combineTextVariants([declaration], [body]).length
+              ? [normalizeSite(getReachableWGSLText(declaration.text, body.text, true))]
+              : []
+          )
+        );
+        invocationDescriptions.push(
+          `${context.join('.') || '<module>'}: kernel ${JSON.stringify(kernelIds)}${kernelConstants.length ? ` constants ${JSON.stringify(kernelConstants)}` : ''} shader ${hashSite([...new Set(shaders)].sort().join('\n'))}`
+        );
       }
     }
     // Module declarations and the main body have different lexical scopes. Analyze them
@@ -1133,14 +1791,18 @@ for (const file of checkedFiles) {
     ]);
     for (const name of duplicateNames) {
       const linesForName = duplicateLinesByName.get(name) ?? [];
-      linesForName.push(getLineNumber(text, call.getStart()));
+      linesForName.push(getLineNumber(text, callSite.getStart()));
       duplicateLinesByName.set(name, linesForName);
     }
-  });
+  };
+  for (const site of getKernelCallSites(sourceTree)) {
+    withKernelParameterBindings(site.parameterBindings, () => checkKernelCallSite(site));
+  }
   if (invocationLines.length) {
     addFinding('single-invocation-data-loop', file, {
       count: invocationLines.length,
-      lines: invocationLines
+      lines: invocationLines,
+      siteDescriptions: invocationDescriptions
     });
   }
   if (analysisLimitLines.length) {
@@ -1171,15 +1833,6 @@ for (const file of checkedFiles) {
     });
   }
 
-  // 7. root-file: only index.ts directly in a package root directory.
-  if (
-    relativeToSource.length === 2 &&
-    ROOT_FILE_DIRECTORIES.has(relativeToSource[0]) &&
-    relativeToSource[1] !== 'index.ts'
-  ) {
-    addFinding('root-file', file, {count: 1, lines: [1]});
-  }
-
   // 8. unregistered-contributor: exported contributor classes and add*Recipe functions.
   const registrableNames = [
     ...contributorClasses.map(declaration => ({
@@ -1192,39 +1845,63 @@ for (const file of checkedFiles) {
     }))
   ];
   for (const {name, offset} of registrableNames) {
-    if (
-      !internalSymbols.has(`${file}#${name}`) &&
-      !new RegExp(`\\b${name}\\b`).test(ontologyText)
-    ) {
-      addFinding('unregistered-contributor', file, {
-        symbol: name,
-        lines: [getLineNumber(text, offset)]
-      });
+    if (internalSymbols.has(`${file}#${name}`)) continue;
+    const identities =
+      publicIdentities.get(`${file}#${name}`) ??
+      new Set([`${packageName}/${getTopDirectory(file)}:${name}`]);
+    for (const identity of identities) {
+      if (!registeredIdentities.has(identity))
+        addFinding('unregistered-contributor', file, {
+          symbol: name,
+          entryPoint: identity.slice(0, identity.lastIndexOf(':')),
+          lines: [getLineNumber(text, offset)]
+        });
     }
   }
 }
 
-// Baseline handling: { rule: { file: count | [symbols] }, _reasons?: { rule: { file: reason } }.
-// Reasons document newly discovered legacy findings and survive baseline regeneration.
-const buildBaseline = foundList => {
-  const baseline = {};
+// Version 2: { _version: 2, rule: { file: [{id, description, reason}] } }.
+// Legacy counts are accepted only by the explicit migration, never by the checking path.
+const buildBaseline = (foundList, previous, reason, migrate) => {
+  const baseline = {_version: 2};
   for (const finding of [...foundList].sort(compareFindings)) {
-    baseline[finding.rule] ??= {};
-    if (COUNT_RULES.has(finding.rule)) baseline[finding.rule][finding.file] = finding.count;
-    else {
-      baseline[finding.rule][finding.file] ??= [];
-      baseline[finding.rule][finding.file].push(finding.symbol);
-    }
-  }
-  const previousReasons = loadBaseline()._reasons ?? {};
-  for (const [rule, entries] of Object.entries(previousReasons)) {
-    for (const [file, reason] of Object.entries(entries)) {
-      if (baseline[rule]?.[file] !== undefined) {
-        baseline._reasons ??= {};
-        baseline._reasons[rule] ??= {};
-        baseline._reasons[rule][file] = reason;
+    if (STRICT_RULES.has(finding.rule) && !hasReviewedLegacyInternalAllowance(finding, previous))
+      continue;
+    const recorded = previous[finding.rule]?.[finding.file];
+    if (migrate) {
+      const permitted = COUNT_RULES.has(finding.rule)
+        ? typeof recorded === 'number' && finding.count <= recorded
+        : Array.isArray(recorded) && recorded.includes(finding.symbol);
+      if (!permitted) {
+        process.stdout.write(
+          `NOT MIGRATED ${finding.rule} ${finding.file}: not covered by the legacy baseline\n`
+        );
+        continue;
       }
     }
+    const entries = finding.sites.map(site => {
+      const prior =
+        previous._version === 2 && Array.isArray(recorded)
+          ? recorded.find(entry => entry.id === site.id)
+          : null;
+      const explanation =
+        prior?.reason ||
+        (migrate ? previous._reasons?.[finding.rule]?.[finding.file] : '') ||
+        reason;
+      if (typeof explanation !== 'string' || !explanation.trim()) {
+        throw new Error(
+          `A nonempty reason is required for ${finding.rule} ${finding.file} ${site.id}; pass --reason <explanation>`
+        );
+      }
+      if (!prior)
+        process.stdout.write(
+          `ADDED ${finding.rule} ${finding.file} ${site.id} ${site.description}: ${explanation}\n`
+        );
+      return {...prior, ...site, reason: explanation};
+    });
+    baseline[finding.rule] ??= {};
+    baseline[finding.rule][finding.file] ??= [];
+    baseline[finding.rule][finding.file].push(...entries);
   }
   return baseline;
 };
@@ -1237,19 +1914,51 @@ function compareFindings(left, right) {
 }
 const loadBaseline = () =>
   fs.existsSync(BASELINE_PATH) ? JSON.parse(fs.readFileSync(BASELINE_PATH, 'utf8')) : {};
+function hasReviewedLegacyInternalAllowance(finding, baseline) {
+  if (finding.rule !== 'internal-export' || baseline._version !== 2) return false;
+  const entries = baseline[finding.rule]?.[finding.file];
+  return (
+    Array.isArray(entries) &&
+    finding.sites.every(site =>
+      entries.some(
+        entry =>
+          entry.id === site.id &&
+          entry.description === site.description &&
+          entry.legacy === 'count-baseline-2026-11-17' &&
+          typeof entry.owner === 'string' &&
+          entry.owner.trim() &&
+          typeof entry.reason === 'string' &&
+          entry.reason.trim()
+      )
+    )
+  );
+}
 const isNewFinding = (finding, baseline) => {
-  if (STRICT_RULES.has(finding.rule)) return true;
+  if (STRICT_RULES.has(finding.rule)) return !hasReviewedLegacyInternalAllowance(finding, baseline);
+  if (baseline._version !== 2) return true;
   const recorded = baseline[finding.rule]?.[finding.file];
-  if (recorded === undefined) return true;
-  return COUNT_RULES.has(finding.rule)
-    ? finding.count > recorded
-    : !recorded.includes(finding.symbol);
+  return (
+    !Array.isArray(recorded) ||
+    finding.sites.some(
+      site =>
+        !recorded.some(
+          entry => entry.id === site.id && typeof entry.reason === 'string' && entry.reason.trim()
+        )
+    )
+  );
 };
 
 // Command line.
 const arguments_ = process.argv.slice(2);
 const ruleIndex = arguments_.indexOf('--rule');
 const selectedRule = ruleIndex >= 0 ? arguments_[ruleIndex + 1] : null;
+const reasonIndex = arguments_.indexOf('--reason');
+const reason = reasonIndex >= 0 ? arguments_[reasonIndex + 1] : null;
+if (reasonIndex >= 0 && (!reason?.trim() || reason.startsWith('--'))) {
+  process.stderr.write('--reason requires a nonempty explanation\n');
+  process.exit(2);
+}
+const migrate = arguments_.includes('--migrate-baseline');
 const selectedPaths = [];
 for (let index = 0; index < arguments_.length; index++) {
   if (arguments_[index] !== '--paths') continue;
@@ -1262,27 +1971,46 @@ for (let index = 0; index < arguments_.length; index++) {
     process.exit(2);
   }
 }
-if (selectedPaths.length && arguments_.includes('--update-baseline')) {
-  process.stderr.write('--paths cannot be combined with --update-baseline; update the complete baseline explicitly\n');
+if (selectedPaths.length && (arguments_.includes('--update-baseline') || migrate)) {
+  process.stderr.write(
+    '--paths cannot be combined with --update-baseline; update the complete baseline explicitly\n'
+  );
   process.exit(2);
 }
-const matchesSelectedPath = file => !selectedPaths.length || selectedPaths.some(selected =>
-  selected === '' || file === selected || file.startsWith(`${selected}${path.sep}`));
+const matchesSelectedPath = file =>
+  !selectedPaths.length ||
+  selectedPaths.some(
+    selected => selected === '' || file === selected || file.startsWith(`${selected}${path.sep}`)
+  );
 
 if (selectedRule && !RULE_IDENTIFIERS.includes(selectedRule)) {
   process.stderr.write(`Unknown rule '${selectedRule}'. Rules: ${RULE_IDENTIFIERS.join(', ')}\n`);
   process.exit(2);
 }
 
-if (arguments_.includes('--update-baseline')) {
-  const strictFindings = findings.filter(finding => STRICT_RULES.has(finding.rule));
-  if (strictFindings.length) {
+if (arguments_.includes('--update-baseline') || migrate) {
+  const previous = loadBaseline();
+  if (migrate && previous._version === 2) {
+    process.stderr.write('Baseline is already version 2; use --update-baseline\n');
+    process.exit(2);
+  }
+  const strictFindings = findings.filter(
+    finding =>
+      STRICT_RULES.has(finding.rule) && !hasReviewedLegacyInternalAllowance(finding, previous)
+  );
+  if (strictFindings.length && !migrate) {
     process.stderr.write(
       `Rules with zero baselines cannot be baselined: ${[...new Set(strictFindings.map(finding => finding.rule))].join(', ')}\n`
     );
     process.exit(1);
   }
-  const baseline = buildBaseline(findings);
+  let baseline;
+  try {
+    baseline = buildBaseline(findings, previous, reason, migrate);
+  } catch (error) {
+    process.stderr.write(`${error.message}\n`);
+    process.exit(1);
+  }
   fs.writeFileSync(BASELINE_PATH, `${JSON.stringify(baseline, null, 2)}\n`);
   process.stdout.write(`Wrote ${BASELINE_PATH} with ${findings.length} findings.\n`);
   process.exit(0);
@@ -1290,10 +2018,30 @@ if (arguments_.includes('--update-baseline')) {
 
 const baseline = loadBaseline();
 const shownFindings = findings
-  .filter(finding => (!selectedRule || finding.rule === selectedRule) && matchesSelectedPath(finding.file))
+  .filter(
+    finding => (!selectedRule || finding.rule === selectedRule) && matchesSelectedPath(finding.file)
+  )
   .sort(compareFindings);
 const newFindings = shownFindings.filter(finding => isNewFinding(finding, baseline));
 const printedFindings = arguments_.includes('--all') ? shownFindings : newFindings;
+let staleCount = 0;
+if (arguments_.includes('--check-stale')) {
+  for (const [rule, files] of Object.entries(baseline)) {
+    if (rule.startsWith('_') || (selectedRule && rule !== selectedRule)) continue;
+    for (const [file, sites] of Object.entries(files)) {
+      if (!matchesSelectedPath(file) || !Array.isArray(sites)) continue;
+      const current = findings
+        .filter(finding => finding.rule === rule && finding.file === file)
+        .flatMap(finding => finding.sites);
+      for (const site of sites) {
+        if (!current.some(entry => entry.id === site.id)) {
+          process.stdout.write(`STALE ${rule} ${file} ${site.id} ${site.description}\n`);
+          staleCount++;
+        }
+      }
+    }
+  }
+}
 
 process.stdout.write('rule                           total  new\n');
 for (const rule of selectedRule ? [selectedRule] : RULE_IDENTIFIERS) {
@@ -1313,9 +2061,12 @@ for (const finding of printedFindings) {
       ? ` x${finding.count}`
       : '';
   const marker = isNewFinding(finding, baseline) ? 'NEW ' : '';
-  process.stdout.write(`${marker}${finding.rule} ${finding.file}:${finding.lines[0]}${detail}\n`);
+  const qualification = finding.entryPoint ? ` (${finding.entryPoint})` : '';
+  process.stdout.write(
+    `${marker}${finding.rule} ${finding.file}:${finding.lines[0]}${qualification}${detail}\n`
+  );
 }
-if (newFindings.length) {
+if (newFindings.length || staleCount) {
   process.stdout.write(`${newFindings.length} new contributor-contract findings\n`);
   process.exitCode = 1;
 } else {
